@@ -27,11 +27,29 @@ export default async function handler(req, res) {
     minimumBalances = {};
   }
 
+  const fromDate = req.query.from ? new Date(String(req.query.from)) : null;
+  const toDate = req.query.to ? new Date(String(req.query.to)) : null;
+  if (toDate) toDate.setHours(23, 59, 59, 999);
+
+  function isoDay(dateValue) {
+    const d = new Date(dateValue);
+    if (!Number.isFinite(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  }
+
   function numberOrNull(value) {
     if (value && typeof value === "object" && "amount" in value) value = value.amount;
     if (typeof value === "string") value = value.replace(/[$,]/g, "");
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
+  }
+
+  function inRange(dateValue) {
+    const d = new Date(dateValue);
+    if (!Number.isFinite(d.getTime())) return false;
+    if (fromDate && d < fromDate) return false;
+    if (toDate && d > toDate) return false;
+    return true;
   }
 
   async function clioFetch(url) {
@@ -67,7 +85,7 @@ export default async function handler(req, res) {
     }
   }
 
-  async function fetchLatestTrustFromTransactions(matterId) {
+  async function fetchTrustTransactions(matterId) {
     let url = new URL("https://app.clio.com/api/v4/bank_transactions.json");
     url.searchParams.set("limit", "200");
     url.searchParams.set("matter_id", matterId);
@@ -83,26 +101,10 @@ export default async function handler(req, res) {
     }
 
     txs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
-    let running = 0;
-    let latestExplicit = null;
-    let latestRunning = null;
-
-    for (const tx of txs) {
-      const explicit = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
-      if (explicit !== null) {
-        latestExplicit = { date: tx.date || new Date().toISOString().slice(0, 10), balance: explicit, transaction_id: tx.id };
-        running = explicit;
-      } else {
-        running += Number(tx.funds_in || 0) - Number(tx.funds_out || 0);
-      }
-      if (tx.date) latestRunning = { date: tx.date, balance: running, transaction_id: tx.id };
-    }
-
-    return latestExplicit || latestRunning || null;
+    return txs;
   }
 
   async function fetchWipFromActivities(matterId) {
-    // Fast, forgiving WIP fallback. If Clio does not return activity totals, use zero so the graph still renders.
     let url = new URL("https://app.clio.com/api/v4/activities.json");
     url.searchParams.set("limit", "200");
     url.searchParams.set("matter_id", matterId);
@@ -139,41 +141,148 @@ export default async function handler(req, res) {
     return trust;
   }
 
-  async function buildSeries(matterId) {
-    const today = new Date().toISOString().slice(0, 10);
-    const matter = await fetchMatterBasic(matterId);
+  function buildTrustHistoryPoints(txs) {
+    const points = [];
+    let running = 0;
+    let lastBeforeRange = null;
 
-    const [trustInfo, wip] = await Promise.all([
-      fetchLatestTrustFromTransactions(matterId).catch(() => null),
+    for (const tx of txs) {
+      const txDay = isoDay(tx.date);
+      if (!txDay) continue;
+
+      const explicit = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
+      if (explicit !== null) {
+        running = explicit;
+      } else {
+        running += Number(tx.funds_in || 0) - Number(tx.funds_out || 0);
+      }
+
+      const point = {
+        date: txDay,
+        trust: Number(running || 0),
+        transaction_id: tx.id,
+        source: explicit !== null ? "clio_current_account_balance" : "computed_from_transactions",
+      };
+
+      if (inRange(txDay)) {
+        points.push(point);
+      } else if (fromDate && new Date(txDay) < fromDate) {
+        lastBeforeRange = point;
+      }
+    }
+
+    if (fromDate && lastBeforeRange && !points.some((p) => p.date === isoDay(fromDate))) {
+      points.unshift({
+        ...lastBeforeRange,
+        date: isoDay(fromDate),
+        source: `${lastBeforeRange.source}_carried_forward_to_range_start`,
+      });
+    }
+
+    return points;
+  }
+
+  async function buildSeries(matterId) {
+    const [matter, txs, wip] = await Promise.all([
+      fetchMatterBasic(matterId),
+      fetchTrustTransactions(matterId).catch(() => []),
       ["wip", "trust_minus_wip", "trust_minus_wip_minus_minimum"].includes(requestedType)
         ? fetchWipFromActivities(matterId).catch(() => 0)
         : Promise.resolve(0),
     ]);
 
-    const trust = numberOrNull(trustInfo?.balance) ?? 0;
     const minimum = Number(minimumBalances[String(matterId)] ?? 2000) || 2000;
-    const value = outputValue({ requestedType, trust, wip: Number(wip || 0), minimum });
+    const today = new Date().toISOString().slice(0, 10);
+
+    let trustHistory = buildTrustHistoryPoints(txs);
+
+    // If the selected date range has no transactions, carry the last known balance into the range
+    // so the graph still shows the selected X-axis range instead of collapsing to one day.
+    if (!trustHistory.length && txs.length) {
+      const allHistory = buildTrustHistoryPoints(txs.map((tx) => ({ ...tx })));
+      const lastTx = txs[txs.length - 1];
+      let running = 0;
+      for (const tx of txs) {
+        const explicit = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
+        if (explicit !== null) running = explicit;
+        else running += Number(tx.funds_in || 0) - Number(tx.funds_out || 0);
+      }
+      const carryDate = fromDate ? isoDay(fromDate) : (isoDay(lastTx.date) || today);
+      trustHistory = [{
+        date: carryDate,
+        trust: Number(running || 0),
+        transaction_id: lastTx.id,
+        source: "last_known_balance_carried_forward",
+      }];
+    }
+
+    if (!trustHistory.length) {
+      const fallbackDate = fromDate ? isoDay(fromDate) : today;
+      trustHistory = [{
+        date: fallbackDate,
+        trust: 0,
+        source: "fallback_zero_no_clio_transactions",
+      }];
+    }
+
+    // Put an endpoint at the end date/today so each matter draws as a horizontal line across the chosen range.
+    const endDay = toDate ? isoDay(toDate) : today;
+    if (endDay && trustHistory.length) {
+      const last = trustHistory[trustHistory.length - 1];
+      if (last.date !== endDay) {
+        trustHistory.push({
+          ...last,
+          date: endDay,
+          source: `${last.source}_carried_forward_to_range_end`,
+        });
+      }
+    }
+
+    const points = trustHistory.map((p) => ({
+      date: p.date,
+      balance: outputValue({
+        requestedType,
+        trust: Number(p.trust || 0),
+        wip: Number(wip || 0),
+        minimum,
+      }),
+      transaction_id: p.transaction_id,
+      source: p.source,
+    }));
 
     return {
       matter_id: String(matterId),
-      display_number: matter?.display_number || trustInfo?.display_number || `Matter ${matterId}`,
+      display_number: matter?.display_number || `Matter ${matterId}`,
       description: matter?.description || "",
       client_name: matter?.client?.name || "",
       account_type: requestedType,
-      current_trust_balance: trust,
+      current_trust_balance: Number(trustHistory[trustHistory.length - 1]?.trust || 0),
       current_work_in_progress: Number(wip || 0),
       minimum_balance: minimum,
-      points: [{
-        date: today,
-        balance: Number(value || 0),
-        source: trustInfo ? "latest_clio_trust_balance" : "fallback_zero_so_graph_renders",
-      }],
+      points,
     };
   }
 
+  async function mapWithConcurrency(items, limit, mapper) {
+    const results = [];
+    let index = 0;
+    async function worker() {
+      while (index < items.length) {
+        const currentIndex = index++;
+        try {
+          results[currentIndex] = { status: "fulfilled", value: await mapper(items[currentIndex]) };
+        } catch (error) {
+          results[currentIndex] = { status: "rejected", reason: error };
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+  }
+
   try {
-    // Parallel loading prevents Vercel/API timeouts when 15+ matters are selected.
-    const settled = await Promise.allSettled(matterIds.map((id) => buildSeries(id)));
+    // Keep concurrency modest to avoid Clio rate limits while still preventing Vercel stalls.
+    const settled = await mapWithConcurrency(matterIds, 5, buildSeries);
     const series = settled
       .filter((result) => result.status === "fulfilled" && result.value)
       .map((result) => result.value);
@@ -185,6 +294,8 @@ export default async function handler(req, res) {
         requested: matterIds.length,
         returned: series.length,
         failed: rejected.length,
+        from: req.query.from || null,
+        to: req.query.to || null,
       },
     });
   } catch (error) {
