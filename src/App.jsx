@@ -22578,8 +22578,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
 
   function renderClioBillingIntegrationPanel() {
-    const clioClientId = 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv'
-    const clioRedirectUri = 'http://127.0.0.1:3000/api/auth/callback'
+    const clioClientId = import.meta.env.VITE_CLIO_CLIENT_ID || 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv'
+    const clioRedirectUri = `${window.location.origin}/api/auth/callback`
     const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
 
     async function loadClioMatters() {
@@ -22691,9 +22691,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         )}
 
         <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#f8fafc', color: '#475569' }}>
-          <strong>Required backend routes:</strong>
-          <div><code>app/api/auth/callback/route.ts</code> exchanges the Clio code for a token and stores the cookie.</div>
-          <div><code>app/api/clio/matters/route.ts</code> reads the cookie and calls Clio's API.</div>
+          <strong>Required Vercel API routes:</strong>
+          <div><code>api/auth/callback.js</code> exchanges the Clio code for a token and stores the cookie.</div>
+          <div><code>api/clio/matters.js</code> reads the cookie and calls Clio's API.</div>
         </div>
       </div>
     )
