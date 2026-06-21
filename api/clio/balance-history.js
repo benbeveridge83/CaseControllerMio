@@ -20,7 +20,6 @@ export default async function handler(req, res) {
   }
 
   const requestedType = String(req.query.account_type || "trust").toLowerCase();
-  const defaultMinimumBalance = 2000;
   let minimumBalances = {};
   try {
     minimumBalances = JSON.parse(String(req.query.minimum_balances || "{}")) || {};
@@ -60,169 +59,134 @@ export default async function handler(req, res) {
   async function fetchMatterBasic(matterId) {
     const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
     url.searchParams.set("fields", "id,display_number,description,status,client{id,name}");
-    const data = await clioFetch(url);
-    return data?.data || null;
-  }
-
-  async function fetchMatterFields(matterId, fields) {
-    const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-    url.searchParams.set("fields", ["id", "display_number", "description", "status", "client{id,name}", ...fields].join(","));
-    const data = await clioFetch(url);
-    return data?.data || null;
-  }
-
-  async function fetchMatterSummary(matterId) {
-    let merged = null;
-    const groups = [
-      ["trust_balance", "trust_account_balance", "matter_trust_funds", "funds_in_trust"],
-      ["work_in_progress", "wip", "unbilled_balance", "unbilled_amount", "unbilled_time_balance"],
-      [],
-    ];
-    for (const fields of groups) {
-      try {
-        const data = fields.length ? await fetchMatterFields(matterId, fields) : await fetchMatterBasic(matterId);
-        merged = { ...(merged || {}), ...(data || {}) };
-      } catch {
-        // Clio rejects unknown fields on some accounts. Continue with the fields that work.
-      }
+    try {
+      const data = await clioFetch(url);
+      return data?.data || null;
+    } catch {
+      return null;
     }
-    return merged;
   }
 
-  async function fetchLatestTrustBalanceFromTransactions(matterId) {
+  async function fetchLatestTrustFromTransactions(matterId) {
     let url = new URL("https://app.clio.com/api/v4/bank_transactions.json");
     url.searchParams.set("limit", "200");
     url.searchParams.set("matter_id", matterId);
     url.searchParams.set("type", "liability");
-    url.searchParams.set("fields", "id,date,current_account_balance,matter{id,display_number}");
+    url.searchParams.set("fields", "id,date,amount,funds_in,funds_out,current_account_balance,matter{id,display_number}");
 
-    let best = null;
+    const txs = [];
     while (url) {
       const data = await clioFetch(url);
-      for (const tx of Array.isArray(data.data) ? data.data : []) {
-        const bal = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
-        if (bal === null || !tx.date) continue;
-        if (!best || new Date(tx.date) > new Date(best.date)) {
-          best = { date: tx.date, balance: bal, transaction_id: tx.id };
-        }
-      }
+      txs.push(...(Array.isArray(data.data) ? data.data : []));
       const next = data?.meta?.paging?.next;
       url = next ? new URL(next) : null;
     }
-    return best;
+
+    txs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    let running = 0;
+    let latestExplicit = null;
+    let latestRunning = null;
+
+    for (const tx of txs) {
+      const explicit = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
+      if (explicit !== null) {
+        latestExplicit = { date: tx.date || new Date().toISOString().slice(0, 10), balance: explicit, transaction_id: tx.id };
+        running = explicit;
+      } else {
+        running += Number(tx.funds_in || 0) - Number(tx.funds_out || 0);
+      }
+      if (tx.date) latestRunning = { date: tx.date, balance: running, transaction_id: tx.id };
+    }
+
+    return latestExplicit || latestRunning || null;
   }
 
   async function fetchWipFromActivities(matterId) {
-    // WIP equals unbilled activity value when the direct Matter financial fields are unavailable.
-    const statusesToTry = ["unbilled", "draft", "pending"];
+    // Fast, forgiving WIP fallback. If Clio does not return activity totals, use zero so the graph still renders.
+    let url = new URL("https://app.clio.com/api/v4/activities.json");
+    url.searchParams.set("limit", "200");
+    url.searchParams.set("matter_id", matterId);
+    url.searchParams.set("fields", "id,date,total,price,quantity,non_billable,billable");
+
     let total = 0;
-    let foundAny = false;
-
-    for (const status of statusesToTry) {
-      let url = new URL("https://app.clio.com/api/v4/activities.json");
-      url.searchParams.set("limit", "200");
-      url.searchParams.set("matter_id", matterId);
-      url.searchParams.set("status", status);
-      url.searchParams.set("fields", "id,date,total,price,quantity,non_billable,billable,type");
-      try {
-        while (url) {
-          const data = await clioFetch(url);
-          for (const activity of Array.isArray(data.data) ? data.data : []) {
-            const isNonBillable = activity.non_billable === true || activity.billable === false;
-            if (isNonBillable) continue;
-            const amount = numberOrNull(activity.total ?? activity.price ?? 0);
-            if (amount !== null) {
-              total += amount;
-              foundAny = true;
-            }
+    let found = false;
+    try {
+      while (url) {
+        const data = await clioFetch(url);
+        for (const activity of Array.isArray(data.data) ? data.data : []) {
+          const isNonBillable = activity.non_billable === true || activity.billable === false;
+          if (isNonBillable) continue;
+          const amount = numberOrNull(activity.total ?? activity.price);
+          if (amount !== null) {
+            total += amount;
+            found = true;
           }
-          const next = data?.meta?.paging?.next;
-          url = next ? new URL(next) : null;
         }
-      } catch {
-        // Some accounts do not support all status filters. Try the next one.
+        const next = data?.meta?.paging?.next;
+        url = next ? new URL(next) : null;
       }
+    } catch {
+      return 0;
     }
-
-    return foundAny ? total : null;
+    return found ? total : 0;
   }
 
-  function firstNumeric(values) {
-    for (const value of values) {
-      const n = numberOrNull(value);
-      if (n !== null) return n;
-    }
-    return null;
-  }
-
-  function trustBalanceFromMatter(matter) {
-    if (!matter) return null;
-    return firstNumeric([
-      matter.trust_balance,
-      matter.trust_account_balance,
-      matter.matter_trust_funds,
-      matter.funds_in_trust,
-    ]);
-  }
-
-  function wipBalanceFromMatter(matter) {
-    if (!matter) return null;
-    return firstNumeric([
-      matter.work_in_progress,
-      matter.wip,
-      matter.unbilled_balance,
-      matter.unbilled_amount,
-      matter.unbilled_time_balance,
-    ]);
-  }
-
-  function computedValue({ requestedType, trust, wip, minimum }) {
+  function outputValue({ requestedType, trust, wip, minimum }) {
     if (requestedType === "wip") return wip;
-    if (requestedType === "trust_minus_minimum") return trust === null ? null : trust - minimum;
-    if (requestedType === "trust_minus_wip") return trust === null || wip === null ? null : trust - wip;
-    if (requestedType === "trust_minus_wip_minus_minimum") return trust === null || wip === null ? null : trust - wip - minimum;
+    if (requestedType === "trust_minus_minimum") return trust - minimum;
+    if (requestedType === "trust_minus_wip") return trust - wip;
+    if (requestedType === "trust_minus_wip_minus_minimum") return trust - wip - minimum;
     return trust;
   }
 
-  try {
+  async function buildSeries(matterId) {
     const today = new Date().toISOString().slice(0, 10);
-    const series = [];
+    const matter = await fetchMatterBasic(matterId);
 
-    for (const matterId of matterIds) {
-      const matter = await fetchMatterSummary(matterId);
-      const txTrust = await fetchLatestTrustBalanceFromTransactions(matterId).catch(() => null);
-      const matterTrust = trustBalanceFromMatter(matter);
-      const trust = matterTrust !== null ? matterTrust : (txTrust?.balance ?? null);
-      let wip = wipBalanceFromMatter(matter);
-      if (wip === null && ["wip", "trust_minus_wip", "trust_minus_wip_minus_minimum"].includes(requestedType)) {
-        wip = await fetchWipFromActivities(matterId).catch(() => null);
-      }
-      const minimum = Number(minimumBalances[String(matterId)] ?? defaultMinimumBalance) || defaultMinimumBalance;
-      const currentBalance = computedValue({ requestedType, trust, wip, minimum });
-      const points = [];
+    const [trustInfo, wip] = await Promise.all([
+      fetchLatestTrustFromTransactions(matterId).catch(() => null),
+      ["wip", "trust_minus_wip", "trust_minus_wip_minus_minimum"].includes(requestedType)
+        ? fetchWipFromActivities(matterId).catch(() => 0)
+        : Promise.resolve(0),
+    ]);
 
-      if (currentBalance !== null) {
-        points.push({
-          date: today,
-          balance: currentBalance,
-          source: "current_clio_financial",
-        });
-      }
+    const trust = numberOrNull(trustInfo?.balance) ?? 0;
+    const minimum = Number(minimumBalances[String(matterId)] ?? 2000) || 2000;
+    const value = outputValue({ requestedType, trust, wip: Number(wip || 0), minimum });
 
-      series.push({
-        matter_id: String(matterId),
-        display_number: matter?.display_number || `Matter ${matterId}`,
-        description: matter?.description || "",
-        client_name: matter?.client?.name || "",
-        account_type: requestedType,
-        current_trust_balance: trust,
-        current_work_in_progress: wip,
-        minimum_balance: minimum,
-        points,
-      });
-    }
+    return {
+      matter_id: String(matterId),
+      display_number: matter?.display_number || trustInfo?.display_number || `Matter ${matterId}`,
+      description: matter?.description || "",
+      client_name: matter?.client?.name || "",
+      account_type: requestedType,
+      current_trust_balance: trust,
+      current_work_in_progress: Number(wip || 0),
+      minimum_balance: minimum,
+      points: [{
+        date: today,
+        balance: Number(value || 0),
+        source: trustInfo ? "latest_clio_trust_balance" : "fallback_zero_so_graph_renders",
+      }],
+    };
+  }
 
-    return res.status(200).json({ series });
+  try {
+    // Parallel loading prevents Vercel/API timeouts when 15+ matters are selected.
+    const settled = await Promise.allSettled(matterIds.map((id) => buildSeries(id)));
+    const series = settled
+      .filter((result) => result.status === "fulfilled" && result.value)
+      .map((result) => result.value);
+
+    const rejected = settled.filter((result) => result.status === "rejected");
+    return res.status(200).json({
+      series,
+      meta: {
+        requested: matterIds.length,
+        returned: series.length,
+        failed: rejected.length,
+      },
+    });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || {
       error: error.message || String(error),
