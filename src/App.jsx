@@ -1117,6 +1117,14 @@ function App() {
     } catch { return ['all'] }
   })
   const [clioGraphMatterLabelMode, setClioGraphMatterLabelMode] = useState('clio')
+  const [clioGraphMappingFilter, setClioGraphMappingFilter] = useState(() => localStorage.getItem('caseMioClioGraphMappingFilter') || 'all')
+  const [clioGraphDatePreset, setClioGraphDatePreset] = useState(() => localStorage.getItem('caseMioClioGraphDatePreset') || 'custom')
+  const [clioInvoicingDashboardFilters, setClioInvoicingDashboardFilters] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('caseMioClioInvoicingDashboardFilters') || '[]')
+      return Array.isArray(raw) ? raw.slice(0, 4) : []
+    } catch { return [] }
+  })
   const [clioSavedGraphFilters, setClioSavedGraphFilters] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioClioSavedGraphFilters') || '{}') }
     catch { return {} }
@@ -2249,6 +2257,18 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioClioGraphMatterLabelMode', clioGraphMatterLabelMode || 'clio') } catch {}
   }, [clioGraphMatterLabelMode])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioClioGraphMappingFilter', clioGraphMappingFilter || 'all') } catch {}
+  }, [clioGraphMappingFilter])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioClioGraphDatePreset', clioGraphDatePreset || 'custom') } catch {}
+  }, [clioGraphDatePreset])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioClioInvoicingDashboardFilters', JSON.stringify((clioInvoicingDashboardFilters || []).slice(0, 4))) } catch {}
+  }, [clioInvoicingDashboardFilters])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioClioSavedGraphFilters', JSON.stringify(clioSavedGraphFilters || {})) } catch {}
@@ -22710,13 +22730,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function clioMatterMatchesGraphCaseType(clioMatter) {
+    const mioMatter = mappedMioMatterForClioId(clioMatter?.id)
+    if (clioGraphMappingFilter === 'mapped' && !mioMatter) return false
+    if (clioGraphMappingFilter === 'unmapped' && mioMatter) return false
     const filters = Array.isArray(clioGraphCaseTypeFilters) && clioGraphCaseTypeFilters.length ? clioGraphCaseTypeFilters : ['all']
     if (filters.includes('all')) return true
-    const mioMatter = mappedMioMatterForClioId(clioMatter?.id)
     const mioType = String(mioMatter?.matter_type || '').trim()
-    if (!mioMatter) return filters.includes('__unmapped__')
-    if (!mioType) return filters.includes('__blank__')
-    return filters.includes(mioType)
+    return Boolean(mioMatter && mioType && filters.includes(mioType))
   }
 
   function toggleClioGraphCaseTypeFilter(value) {
@@ -22962,6 +22982,28 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
     const graphCaseTypeOptions = options('matter_type').map((item) => String(item.name || '').trim()).filter(Boolean)
     const graphVisibleClioMatters = clioMatters.filter(clioMatterMatchesGraphCaseType)
+    const graphDatePresetOptions = [
+      { value: '6m', label: 'Past 6 months', days: 183 },
+      { value: '3m', label: 'Past 3 months', days: 92 },
+      { value: '1m', label: 'Past month', days: 31 },
+      { value: '2w', label: 'Past 2 weeks', days: 14 },
+      { value: 'custom', label: 'Custom', days: null }
+    ]
+
+    function isoDateDaysAgo(days) {
+      const d = new Date()
+      d.setDate(d.getDate() - days)
+      return d.toISOString().slice(0, 10)
+    }
+
+    function applyClioGraphDatePreset(value) {
+      setClioGraphDatePreset(value)
+      if (value === 'custom') return
+      const preset = graphDatePresetOptions.find((item) => item.value === value)
+      if (!preset) return
+      setClioBalanceFrom(isoDateDaysAgo(preset.days))
+      setClioBalanceTo(new Date().toISOString().slice(0, 10))
+    }
 
     async function loadClioMatters() {
       const loadedMatters = await loadOpenClioMattersIntoState()
@@ -23034,6 +23076,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           to: clioBalanceTo,
           default_minimum_balance: clioMinimumBalance,
           case_type_filters: clioGraphCaseTypeFilters,
+          mapping_filter: clioGraphMappingFilter,
+          date_preset: clioGraphDatePreset,
           matter_label_mode: clioGraphMatterLabelMode,
           selected_matter_ids: clioSelectedMatterIds,
           minimum_balances_by_matter_id: clioMinimumBalancesByMatterId
@@ -23051,6 +23095,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       setClioBalanceTo(filter.to || '')
       setClioMinimumBalance(filter.default_minimum_balance ?? 2000)
       setClioGraphCaseTypeFilters(Array.isArray(filter.case_type_filters) && filter.case_type_filters.length ? filter.case_type_filters : ['all'])
+      setClioGraphMappingFilter(filter.mapping_filter || 'all')
+      setClioGraphDatePreset(filter.date_preset || 'custom')
       setClioGraphMatterLabelMode(filter.matter_label_mode || 'clio')
       setClioSelectedMatterIds(Array.isArray(filter.selected_matter_ids) ? filter.selected_matter_ids.map(String) : [])
       if (filter.minimum_balances_by_matter_id) setClioMinimumBalancesByMatterId(filter.minimum_balances_by_matter_id)
@@ -23091,7 +23137,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const allBalances = allGraphPoints
       .map((point) => Number(point.balance))
       .filter((value) => Number.isFinite(value))
-    const minLine = clioAccountType === 'trust_minus_minimum' || clioAccountType === 'trust_minus_wip' ? 0 : (Number(clioMinimumBalance) || 0)
+    const minLine = ['trust_minus_minimum', 'trust_minus_wip', 'trust_minus_wip_minus_minimum'].includes(clioAccountType) ? 0 : (Number(clioMinimumBalance) || 0)
     const graphHasData = allDates.length > 0 && allBalances.length > 0
     const graphWidth = 960
     const graphHeight = 360
@@ -23178,16 +23224,23 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <option value="operating">Operating / outstanding balance</option>
                 <option value="trust_minus_minimum">Trust minus matter minimum</option>
                 <option value="trust_minus_wip">Trust minus work in progress</option>
+                <option value="trust_minus_wip_minus_minimum">Trust minus work in progress minus minimum amount</option>
                 <option value="wip">Work in progress</option>
               </select>
             </label>
             <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Date range</div>
+              <select value={clioGraphDatePreset} onChange={(event) => applyClioGraphDatePreset(event.target.value)} style={{ width: '100%' }}>
+                {graphDatePresetOptions.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
+              </select>
+            </label>
+            <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>From date</div>
-              <input type="date" value={clioBalanceFrom} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} />
+              <input type="date" value={clioBalanceFrom} onChange={(event) => { setClioGraphDatePreset('custom'); setClioBalanceFrom(event.target.value) }} disabled={clioGraphDatePreset !== 'custom'} style={{ width: '100%' }} />
             </label>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
-              <input type="date" value={clioBalanceTo} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
+              <input type="date" value={clioBalanceTo} onChange={(event) => { setClioGraphDatePreset('custom'); setClioBalanceTo(event.target.value) }} disabled={clioGraphDatePreset !== 'custom'} style={{ width: '100%' }} />
             </label>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>Minimum balance warning line</div>
@@ -23200,17 +23253,21 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 style={{ width: '100%' }}
               />
             </label>
-            <div style={{ border: '1px solid #dbe4ee', borderRadius: 8, padding: 8, background: '#fff' }}>
-              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>Case type filter</div>
-              <div style={{ maxHeight: 120, overflow: 'auto', display: 'grid', gap: 4 }}>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
+              <select value={clioGraphMappingFilter} onChange={(event) => { setClioGraphMappingFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+                <option value="all">All mapped/unmapped Clio matters</option>
+                <option value="mapped">Mapped Mio matters only</option>
+                <option value="unmapped">Unmapped Clio matters only</option>
+              </select>
+            </label>
+            <details style={{ border: '1px solid #dbe4ee', borderRadius: 8, padding: 8, background: '#fff', position: 'relative' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700 }}>
+                Case types ({(clioGraphCaseTypeFilters || ['all']).includes('all') ? 'All' : (clioGraphCaseTypeFilters || []).length})
+              </summary>
+              <div style={{ maxHeight: 180, overflow: 'auto', display: 'grid', gap: 4, marginTop: 8 }}>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <input type="checkbox" checked={(clioGraphCaseTypeFilters || ['all']).includes('all')} onChange={() => toggleClioGraphCaseTypeFilter('all')} /> All case types
-                </label>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" checked={(clioGraphCaseTypeFilters || []).includes('__unmapped__')} onChange={() => toggleClioGraphCaseTypeFilter('__unmapped__')} /> Unmapped Clio matters
-                </label>
-                <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input type="checkbox" checked={(clioGraphCaseTypeFilters || []).includes('__blank__')} onChange={() => toggleClioGraphCaseTypeFilter('__blank__')} /> Mapped with blank case type
                 </label>
                 {graphCaseTypeOptions.map((caseType) => (
                   <label key={caseType} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -23218,7 +23275,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   </label>
                 ))}
               </div>
-            </div>
+            </details>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>Matter names shown as</div>
               <select value={clioGraphMatterLabelMode} onChange={(event) => setClioGraphMatterLabelMode(event.target.value)} style={{ width: '100%' }}>
@@ -23246,9 +23303,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <details style={{ marginBottom: 12, border: '1px solid #e5e7eb', borderRadius: 10, padding: 8, background: '#fff' }}>
             <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Matter minimum balances</summary>
             <p style={{ color: '#64748b', margin: '8px 0' }}>Set a custom minimum trust balance for each matter. Blank uses the default above.</p>
-            <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 8 }}>
-              {clioMatters.map((matter) => (
-                <label key={matter.id} style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 8, alignItems: 'center' }}>
+            <div style={{ maxHeight: 260, overflow: 'auto', display: 'grid', gridTemplateColumns: '1fr', gap: 6 }}>
+              {graphVisibleClioMatters.map((matter) => (
+                <label key={matter.id} style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 8, alignItems: 'center', borderBottom: '1px solid #f1f5f9', padding: '4px 0' }}>
                   <span style={{ fontSize: 13 }}>{clioGraphMatterLabel(matter)}</span>
                   <input type="number" step="50" min="0" placeholder={String(Number(clioMinimumBalance) || 2000)} value={clioMinimumBalancesByMatterId?.[String(matter.id)] ?? ''} onChange={(event) => updateClioMatterMinimumBalance(matter.id, event.target.value)} />
                 </label>
@@ -23265,10 +23322,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           </div>
 
           {clioMatters.length > 0 && (
-            <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 6 }}>
+            <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 8, background: '#fff', marginBottom: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2 }}>
                 {graphVisibleClioMatters.map((matter) => (
-                  <label key={matter.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                  <label key={matter.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid #f1f5f9', padding: '4px 2px' }}>
                     <input
                       type="checkbox"
                       checked={clioSelectedMatterIds.includes(String(matter.id))}
@@ -23277,7 +23334,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                     <span>{clioGraphMatterLabel(matter)}</span>
                   </label>
                 ))}
-                {!graphVisibleClioMatters.length && <div style={{ color: '#64748b' }}>No loaded Clio matters match this case type filter.</div>}
+                {!graphVisibleClioMatters.length && <div style={{ color: '#64748b' }}>No loaded Clio matters match these filters.</div>}
               </div>
             </div>
           )}
@@ -23306,7 +23363,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
                   <line x1={plotLeft} x2={plotRight} y1={minLineY} y2={minLineY} stroke="#ef4444" strokeDasharray="6 5" />
                   <text x={plotRight - 4} y={minLineY - 6} textAnchor="end" fontSize="12" fill="#b91c1c">
-                    {clioAccountType === 'trust_minus_minimum' ? 'Threshold ' : 'Minimum '}{money(minLine)}
+                    {['trust_minus_minimum', 'trust_minus_wip', 'trust_minus_wip_minus_minimum'].includes(clioAccountType) ? 'Threshold ' : 'Minimum '}{money(minLine)}
                   </text>
                   <text x={plotLeft} y={graphHeight - 18} fontSize="12" fill="#64748b">{shortDate(minDate)}</text>
                   <text x={plotRight} y={graphHeight - 18} textAnchor="end" fontSize="12" fill="#64748b">{shortDate(maxDate)}</text>
@@ -23360,17 +23417,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Matter #</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Clio ID</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>ETag</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Clio matter</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Client</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {clioMatters.slice(0, 50).map((matter) => (
                   <tr key={matter.id}>
-                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.display_number || '(no display number)'}</td>
-                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.id}</td>
-                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8, color: '#64748b' }}>{matter.etag || ''}</td>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.display_number || '(no display number)'}{matter.description ? ` - ${matter.description}` : ''}</td>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.client?.name || matter.client_name || ''}</td>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8, color: '#64748b' }}>{matter.status || ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -23384,6 +23441,82 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <div><code>api/auth/callback.js</code> exchanges the Clio code for a token and stores the cookie.</div>
           <div><code>api/clio/matters.js</code> reads the cookie and calls Clio's matters API.</div>
           <div><code>api/clio/balance-history.js</code> reads Clio bank transactions and prepares graph points.</div>
+        </div>
+      </div>
+    )
+  }
+
+
+
+  function renderClientInvoicingPage() {
+    const savedNames = Object.keys(clioSavedGraphFilters || {}).sort()
+    const slots = [0, 1, 2, 3]
+    function updateDashboardFilter(index, value) {
+      setClioInvoicingDashboardFilters((current) => {
+        const next = [...(Array.isArray(current) ? current : [])]
+        next[index] = value
+        return next.slice(0, 4)
+      })
+    }
+    function filterLabel(name) {
+      const filter = clioSavedGraphFilters?.[name]
+      if (!filter) return 'No saved graph selected'
+      const y = filter.account_type || 'trust'
+      const dateText = filter.date_preset && filter.date_preset !== 'custom'
+        ? filter.date_preset
+        : [filter.from || 'any start', filter.to || 'any end'].join(' to ')
+      const mappedText = filter.mapping_filter || 'all'
+      const caseTypes = Array.isArray(filter.case_type_filters) ? filter.case_type_filters.join(', ') : 'all'
+      return `${y}; ${dateText}; ${mappedText}; ${caseTypes}`
+    }
+    function applyDashboardSavedClioGraphFilter(name) {
+      const filter = clioSavedGraphFilters?.[name]
+      if (!filter) return
+      setBillingTab('clio_billing')
+      setClioSelectedSavedGraphFilter(name)
+      setClioAccountType(filter.account_type || 'trust')
+      setClioBalanceFrom(filter.from || '')
+      setClioBalanceTo(filter.to || '')
+      setClioMinimumBalance(filter.default_minimum_balance ?? 2000)
+      setClioGraphCaseTypeFilters(Array.isArray(filter.case_type_filters) && filter.case_type_filters.length ? filter.case_type_filters : ['all'])
+      setClioGraphMappingFilter(filter.mapping_filter || 'all')
+      setClioGraphDatePreset(filter.date_preset || 'custom')
+      setClioGraphMatterLabelMode(filter.matter_label_mode || 'clio')
+      setClioSelectedMatterIds(Array.isArray(filter.selected_matter_ids) ? filter.selected_matter_ids.map(String) : [])
+      if (filter.minimum_balances_by_matter_id) setClioMinimumBalancesByMatterId(filter.minimum_balances_by_matter_id)
+    }
+    return (
+      <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
+        <h2 style={{ marginTop: 0 }}>Client Invoicing</h2>
+        <p style={{ color: '#475569' }}>
+          Select up to four saved Clio graph filters to keep on the invoicing dashboard. Save graph filters on the Clio Billing Integration tab first.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(280px, 1fr))', gap: 12 }}>
+          {slots.map((slot) => {
+            const selectedName = clioInvoicingDashboardFilters?.[slot] || ''
+            return (
+              <div key={slot} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12, background: '#f8fafc', minHeight: 160 }}>
+                <label>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Dashboard graph {slot + 1}</div>
+                  <select value={selectedName} onChange={(event) => updateDashboardFilter(slot, event.target.value)} style={{ width: '100%' }}>
+                    <option value="">-- Select saved graph --</option>
+                    {savedNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                </label>
+                <div style={{ marginTop: 12, border: '1px dashed #cbd5e1', borderRadius: 10, padding: 12, background: '#fff', color: '#475569' }}>
+                  <strong>{selectedName || 'Empty graph slot'}</strong>
+                  <div style={{ marginTop: 8, fontSize: 13 }}>{filterLabel(selectedName)}</div>
+                  {selectedName ? (
+                    <button type="button" style={{ marginTop: 10 }} onClick={() => applyDashboardSavedClioGraphFilter(selectedName)}>
+                      Load this saved graph on Clio Billing Integration
+                    </button>
+                  ) : (
+                    <div style={{ marginTop: 10, fontSize: 13 }}>Choose a saved graph filter for this dashboard slot.</div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     )
@@ -23414,10 +23547,15 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <button type="button" style={tabButtonStyle('clio_billing')} onClick={() => setBillingTab('clio_billing')}>
             Clio Billing Integration
           </button>
+          <button type="button" style={tabButtonStyle('client_invoicing')} onClick={() => setBillingTab('client_invoicing')}>
+            Client Invoicing
+          </button>
         </div>
 
         {billingTab === 'clio_billing' ? (
           renderClioBillingIntegrationPanel()
+        ) : billingTab === 'client_invoicing' ? (
+          renderClientInvoicingPage()
         ) : (
           <>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>

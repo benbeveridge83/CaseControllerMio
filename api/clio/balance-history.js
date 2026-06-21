@@ -157,6 +157,7 @@ export default async function handler(req, res) {
     if (requestedType === "wip") return wip;
     if (requestedType === "trust_minus_minimum") return trust === null ? null : trust - matterMinimum;
     if (requestedType === "trust_minus_wip") return trust === null || wip === null ? null : trust - wip;
+    if (requestedType === "trust_minus_wip_minus_minimum") return trust === null || wip === null ? null : trust - wip - matterMinimum;
     return trust;
   }
 
