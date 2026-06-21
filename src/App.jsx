@@ -1119,6 +1119,8 @@ function App() {
   })
   const [clioGraphMatterLabelMode, setClioGraphMatterLabelMode] = useState('clio')
   const [clioGraphMappedFilter, setClioGraphMappedFilter] = useState('all')
+  const [clioGraphCaseStatusFilter, setClioGraphCaseStatusFilter] = useState('all')
+  const [clioGraphMatterStatusFilter, setClioGraphMatterStatusFilter] = useState('all')
   const [clioMatterTableCollapsed, setClioMatterTableCollapsed] = useState(true)
   const [clioClientInvoicingFilterSlots, setClioClientInvoicingFilterSlots] = useState(['', '', '', ''])
   const [clioSavedGraphFilters, setClioSavedGraphFilters] = useState(() => {
@@ -22722,6 +22724,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     if (clioGraphMappedFilter === 'mapped' && !mioMatter) return false
     if (clioGraphMappedFilter === 'unmapped' && mioMatter) return false
 
+    if (mioMatter) {
+      const caseStatus = String(mioMatter.case_status || '').trim()
+      const matterStatus = String(mioMatter.matter_status || '').trim()
+      if (clioGraphCaseStatusFilter === '__blank__' && caseStatus) return false
+      if (clioGraphCaseStatusFilter && clioGraphCaseStatusFilter !== 'all' && clioGraphCaseStatusFilter !== '__blank__' && caseStatus !== clioGraphCaseStatusFilter) return false
+      if (clioGraphMatterStatusFilter === '__blank__' && matterStatus) return false
+      if (clioGraphMatterStatusFilter && clioGraphMatterStatusFilter !== 'all' && clioGraphMatterStatusFilter !== '__blank__' && matterStatus !== clioGraphMatterStatusFilter) return false
+    } else if ((clioGraphCaseStatusFilter && clioGraphCaseStatusFilter !== 'all') || (clioGraphMatterStatusFilter && clioGraphMatterStatusFilter !== 'all')) {
+      return false
+    }
+
     const filters = Array.isArray(clioGraphCaseTypeFilters) && clioGraphCaseTypeFilters.length ? clioGraphCaseTypeFilters : ['all']
     if (filters.includes('all')) return true
     const mioType = String(mioMatter?.matter_type || '').trim()
@@ -22743,7 +22756,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function clioMatterMinimumBalance(matterId) {
     const custom = Number(clioMinimumBalancesByMatterId?.[String(matterId)])
-    return Number.isFinite(custom) ? custom : (Number(clioMinimumBalance) || 2000)
+    return Number.isFinite(custom) ? custom : 2000
   }
 
   function updateClioMatterMinimumBalance(matterId, value) {
@@ -22939,7 +22952,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                         style={{ width: '100%' }}
                       >
                         <option value="">-- Not mapped --</option>
-                        {mapRow.clio_matter_id && !selectedClio && <option value={mapRow.clio_matter_id}>{mapRow.clio_matter_label || `Load open Clio matters to show matter/client for ID ${mapRow.clio_matter_id}`}</option>}
+                        {mapRow.clio_matter_id && !selectedClio && <option value={mapRow.clio_matter_id}>{mapRow.clio_matter_label || `Saved Clio matter ${mapRow.clio_matter_id}`}</option>}
                         {clioMatters.map((clioMatter) => (
                           <option key={clioMatter.id} value={clioMatter.id} disabled={usedIds.has(String(clioMatter.id))}>
                             {clioMatterDisplay(clioMatter)}{usedIds.has(String(clioMatter.id)) ? ' (already used)' : ''}
@@ -22988,6 +23001,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
     const graphCaseTypeOptions = options('matter_type').map((item) => String(item.name || '').trim()).filter(Boolean)
+    const graphCaseStatusOptions = options('case_status').map((item) => String(item.name || '').trim()).filter(Boolean)
+    const graphMatterStatusOptions = options('matter_status').map((item) => String(item.name || '').trim()).filter(Boolean)
     const graphVisibleClioMatters = clioMatters.filter(clioMatterMatchesGraphCaseType)
 
     function applyClioDateRangePreset(value) {
@@ -23030,7 +23045,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         })
         if (clioBalanceFrom) params.set('from', clioBalanceFrom)
         if (clioBalanceTo) params.set('to', clioBalanceTo)
-        params.set('default_minimum_balance', String(Number(clioMinimumBalance) || 2000))
+        params.set('default_minimum_balance', '2000')
         params.set('minimum_balances', JSON.stringify(clioMinimumBalancesByMatterId || {}))
 
         const response = await fetch(`/api/clio/balance-history?${params.toString()}`, {
@@ -23073,9 +23088,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           date_range_preset: clioDateRangePreset,
           from: clioBalanceFrom,
           to: clioBalanceTo,
-          default_minimum_balance: clioMinimumBalance,
           case_type_filters: clioGraphCaseTypeFilters,
           mapped_filter: clioGraphMappedFilter,
+          case_status_filter: clioGraphCaseStatusFilter,
+          matter_status_filter: clioGraphMatterStatusFilter,
           matter_label_mode: clioGraphMatterLabelMode,
           selected_matter_ids: clioSelectedMatterIds,
           minimum_balances_by_matter_id: clioMinimumBalancesByMatterId
@@ -23092,9 +23108,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       setClioDateRangePreset(filter.date_range_preset || 'custom')
       setClioBalanceFrom(filter.from || '')
       setClioBalanceTo(filter.to || '')
-      setClioMinimumBalance(filter.default_minimum_balance ?? 2000)
       setClioGraphCaseTypeFilters(Array.isArray(filter.case_type_filters) && filter.case_type_filters.length ? filter.case_type_filters : ['all'])
       setClioGraphMappedFilter(filter.mapped_filter || 'all')
+      setClioGraphCaseStatusFilter(filter.case_status_filter || 'all')
+      setClioGraphMatterStatusFilter(filter.matter_status_filter || 'all')
       setClioGraphMatterLabelMode(filter.matter_label_mode || 'clio')
       setClioSelectedMatterIds(Array.isArray(filter.selected_matter_ids) ? filter.selected_matter_ids.map(String) : [])
       if (filter.minimum_balances_by_matter_id) setClioMinimumBalancesByMatterId(filter.minimum_balances_by_matter_id)
@@ -23242,15 +23259,20 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <input type="date" value={clioBalanceTo} onChange={(event) => { setClioDateRangePreset('custom'); setClioBalanceTo(event.target.value) }} style={{ width: '100%' }} />
             </label>
             <label>
-              <div style={{ fontSize: 12, color: '#64748b' }}>Default matter minimum</div>
-              <input
-                type="number"
-                min="0"
-                step="50"
-                value={clioMinimumBalance}
-                onChange={(event) => setClioMinimumBalance(event.target.value)}
-                style={{ width: '100%' }}
-              />
+              <div style={{ fontSize: 12, color: '#64748b' }}>Case status</div>
+              <select value={clioGraphCaseStatusFilter} onChange={(event) => { setClioGraphCaseStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+                <option value="all">All case statuses</option>
+                <option value="__blank__">Blank case status</option>
+                {graphCaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Matter status</div>
+              <select value={clioGraphMatterStatusFilter} onChange={(event) => { setClioGraphMatterStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+                <option value="all">All matter statuses</option>
+                <option value="__blank__">Blank matter status</option>
+                {graphMatterStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
             </label>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
@@ -23302,12 +23324,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
           <details style={{ marginBottom: 12, border: '1px solid #e5e7eb', borderRadius: 10, padding: 8, background: '#fff' }}>
             <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Matter minimum balances</summary>
-            <p style={{ color: '#64748b', margin: '8px 0' }}>Set a custom minimum trust balance for each matter. Blank uses the default above.</p>
+            <p style={{ color: '#64748b', margin: '8px 0' }}>Set a custom minimum trust balance for each matter. Blank uses $2,000.</p>
             <div style={{ maxHeight: 540, overflow: 'auto', display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
               {graphVisibleClioMatters.map((matter) => (
                 <label key={matter.id} style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 13 }}>{clioGraphMatterLabel(matter)}</span>
-                  <input type="number" step="50" min="0" placeholder={String(Number(clioMinimumBalance) || 2000)} value={clioMinimumBalancesByMatterId?.[String(matter.id)] ?? ''} onChange={(event) => updateClioMatterMinimumBalance(matter.id, event.target.value)} />
+                  <input type="number" step="50" min="0" placeholder="2000" value={clioMinimumBalancesByMatterId?.[String(matter.id)] ?? ''} onChange={(event) => updateClioMatterMinimumBalance(matter.id, event.target.value)} />
                 </label>
               ))}
             </div>
@@ -23397,7 +23419,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             </div>
           ) : (
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>
-              No graph data loaded yet. Select matters, choose trust or operating account, then click <strong>Load balance graph</strong>.
+              No graph data loaded yet. Select matters, choose a current-financial Y-axis, then click <strong>Load balance graph</strong>.
             </div>
           )}
         </div>
