@@ -1095,6 +1095,15 @@ function App() {
   const [clioBillingLoading, setClioBillingLoading] = useState(false)
   const [clioBillingError, setClioBillingError] = useState('')
   const [clioBillingLastLoaded, setClioBillingLastLoaded] = useState(null)
+  const [clioSelectedMatterIds, setClioSelectedMatterIds] = useState([])
+  const [clioAccountType, setClioAccountType] = useState('trust')
+  const [clioBalanceFrom, setClioBalanceFrom] = useState('')
+  const [clioBalanceTo, setClioBalanceTo] = useState('')
+  const [clioMinimumBalance, setClioMinimumBalance] = useState(2000)
+  const [clioBalanceSeries, setClioBalanceSeries] = useState([])
+  const [clioBalanceLoading, setClioBalanceLoading] = useState(false)
+  const [clioBalanceError, setClioBalanceError] = useState('')
+  const [clioBalanceLastLoaded, setClioBalanceLastLoaded] = useState(null)
   const [settingsTab, setSettingsTab] = useState(() => {
     try {
       const hashPage = (typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : '')
@@ -22581,6 +22590,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const clioClientId = import.meta.env.VITE_CLIO_CLIENT_ID || 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv'
     const clioRedirectUri = `${window.location.origin}/api/auth/callback`
     const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
+    const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
 
     async function loadClioMatters() {
       setClioBillingLoading(true)
@@ -22598,7 +22608,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           return
         }
 
-        setClioMatters(Array.isArray(data?.data) ? data.data : [])
+        const loadedMatters = Array.isArray(data?.data) ? data.data : []
+        setClioMatters(loadedMatters)
+        setClioSelectedMatterIds((current) => {
+          const stillValid = current.filter((id) => loadedMatters.some((matter) => String(matter.id) === String(id)))
+          if (stillValid.length) return stillValid
+          return loadedMatters.slice(0, 5).map((matter) => String(matter.id))
+        })
         setClioBillingLastLoaded(new Date().toLocaleString())
       } catch (error) {
         setClioBillingError(error?.message || String(error))
@@ -22608,11 +22624,95 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       }
     }
 
+    async function loadClioBalanceHistory() {
+      const selectedIds = clioSelectedMatterIds.map(String)
+      if (!selectedIds.length) {
+        setClioBalanceError('Select at least one Clio matter before loading the graph.')
+        return
+      }
+
+      setClioBalanceLoading(true)
+      setClioBalanceError('')
+      try {
+        const params = new URLSearchParams({
+          matter_ids: selectedIds.join(','),
+          account_type: clioAccountType
+        })
+        if (clioBalanceFrom) params.set('from', clioBalanceFrom)
+        if (clioBalanceTo) params.set('to', clioBalanceTo)
+
+        const response = await fetch(`/api/clio/balance-history?${params.toString()}`, {
+          credentials: 'include'
+        })
+        const data = await response.json()
+
+        if (!response.ok) {
+          setClioBalanceError(data?.error || data?.message || 'Could not load Clio balance history.')
+          setClioBalanceSeries([])
+          return
+        }
+
+        setClioBalanceSeries(Array.isArray(data?.series) ? data.series : [])
+        setClioBalanceLastLoaded(new Date().toLocaleString())
+      } catch (error) {
+        setClioBalanceError(error?.message || String(error))
+        setClioBalanceSeries([])
+      } finally {
+        setClioBalanceLoading(false)
+      }
+    }
+
+    function toggleClioMatter(matterId) {
+      const id = String(matterId)
+      setClioSelectedMatterIds((current) => (
+        current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+      ))
+    }
+
+    function selectFirstClioMatters(count) {
+      setClioSelectedMatterIds(clioMatters.slice(0, count).map((matter) => String(matter.id)))
+    }
+
+    function clearSelectedClioMatters() {
+      setClioSelectedMatterIds([])
+    }
+
+    const allGraphPoints = clioBalanceSeries.flatMap((series) => series.points || [])
+    const allDates = allGraphPoints
+      .map((point) => new Date(point.date).getTime())
+      .filter((value) => Number.isFinite(value))
+    const allBalances = allGraphPoints
+      .map((point) => Number(point.balance))
+      .filter((value) => Number.isFinite(value))
+    const minLine = Number(clioMinimumBalance) || 0
+    const graphHasData = allDates.length > 0 && allBalances.length > 0
+    const graphWidth = 960
+    const graphHeight = 360
+    const graphPadding = { top: 24, right: 28, bottom: 52, left: 82 }
+    const minDate = graphHasData ? Math.min(...allDates) : Date.now() - 86400000
+    const maxDate = graphHasData ? Math.max(...allDates) : Date.now()
+    const minBalance = graphHasData ? Math.min(...allBalances, minLine) : 0
+    const maxBalance = graphHasData ? Math.max(...allBalances, minLine) : 100
+    const ySpan = Math.max(1, maxBalance - minBalance)
+    const xSpan = Math.max(1, maxDate - minDate)
+    const plotLeft = graphPadding.left
+    const plotRight = graphWidth - graphPadding.right
+    const plotTop = graphPadding.top
+    const plotBottom = graphHeight - graphPadding.bottom
+    const plotWidth = plotRight - plotLeft
+    const plotHeight = plotBottom - plotTop
+    const xForDate = (date) => plotLeft + ((new Date(date).getTime() - minDate) / xSpan) * plotWidth
+    const yForBalance = (balance) => plotBottom - ((Number(balance) - minBalance) / ySpan) * plotHeight
+    const money = (value) => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
+    const shortDate = (value) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
+    const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minBalance + ratio * ySpan)
+    const minLineY = yForBalance(minLine)
+
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Clio Billing Integration</h2>
         <p style={{ color: '#566', marginTop: -6 }}>
-          Connect this dashboard to Clio, confirm the access token is working, and preview matters that can be used for billing and trust-balance reporting.
+          Connect this dashboard to Clio, preview open matters, and graph matter balances over time. The graph can show either trust-style liability transactions or operating-style asset transactions.
         </p>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
@@ -22646,7 +22746,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <strong>{clioMatters.length}</strong>
           </div>
           <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Last loaded</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Last matters load</div>
             <strong>{clioBillingLastLoaded || 'Not loaded yet'}</strong>
           </div>
         </div>
@@ -22659,6 +22759,132 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             </div>
           </div>
         )}
+
+        <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, marginBottom: 16, background: '#f8fafc' }}>
+          <h3 style={{ marginTop: 0 }}>Matter Balance Graph</h3>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis account type</div>
+              <select value={clioAccountType} onChange={(event) => setClioAccountType(event.target.value)} style={{ width: '100%' }}>
+                <option value="trust">Client trust account / liability</option>
+                <option value="operating">Operating account / asset</option>
+              </select>
+            </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>From date</div>
+              <input type="date" value={clioBalanceFrom} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} />
+            </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
+              <input type="date" value={clioBalanceTo} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
+            </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Minimum balance warning line</div>
+              <input
+                type="number"
+                min="0"
+                step="50"
+                value={clioMinimumBalance}
+                onChange={(event) => setClioMinimumBalance(event.target.value)}
+                style={{ width: '100%' }}
+              />
+            </label>
+            <button type="button" onClick={loadClioBalanceHistory} disabled={clioBalanceLoading || !clioSelectedMatterIds.length}>
+              {clioBalanceLoading ? 'Loading graph...' : 'Load balance graph'}
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+            <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!clioMatters.length}>Select first 5</button>
+            <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!clioMatters.length}>Select first 15</button>
+            <button type="button" onClick={clearSelectedClioMatters} disabled={!clioSelectedMatterIds.length}>Clear selected</button>
+            <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length} matter(s) selected</span>
+          </div>
+
+          {clioMatters.length > 0 && (
+            <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 6 }}>
+                {clioMatters.map((matter) => (
+                  <label key={matter.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                    <input
+                      type="checkbox"
+                      checked={clioSelectedMatterIds.includes(String(matter.id))}
+                      onChange={() => toggleClioMatter(matter.id)}
+                    />
+                    <span>{matter.display_number || matter.description || `Matter ${matter.id}`}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {clioBalanceError && (
+            <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}>
+              <strong>Graph error:</strong> {clioBalanceError}
+            </div>
+          )}
+
+          {graphHasData ? (
+            <div>
+              <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
+                <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Clio matter balance history graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
+                  <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
+                  {yTicks.map((tick, index) => {
+                    const y = yForBalance(tick)
+                    return (
+                      <g key={`y-${index}`}>
+                        <line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" />
+                        <text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text>
+                      </g>
+                    )
+                  })}
+                  <line x1={plotLeft} x2={plotRight} y1={plotBottom} y2={plotBottom} stroke="#94a3b8" />
+                  <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
+                  <line x1={plotLeft} x2={plotRight} y1={minLineY} y2={minLineY} stroke="#ef4444" strokeDasharray="6 5" />
+                  <text x={plotRight - 4} y={minLineY - 6} textAnchor="end" fontSize="12" fill="#b91c1c">
+                    Minimum {money(minLine)}
+                  </text>
+                  <text x={plotLeft} y={graphHeight - 18} fontSize="12" fill="#64748b">{shortDate(minDate)}</text>
+                  <text x={plotRight} y={graphHeight - 18} textAnchor="end" fontSize="12" fill="#64748b">{shortDate(maxDate)}</text>
+                  <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>
+                    Dollars
+                  </text>
+                  {clioBalanceSeries.map((series, seriesIndex) => {
+                    const points = (series.points || []).filter((point) => Number.isFinite(Number(point.balance)))
+                    if (!points.length) return null
+                    const path = points.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'} ${xForDate(point.date)} ${yForBalance(point.balance)}`).join(' ')
+                    const color = graphColors[seriesIndex % graphColors.length]
+                    return (
+                      <g key={series.matter_id}>
+                        <path d={path} fill="none" stroke={color} strokeWidth="2.5" />
+                        {points.map((point, pointIndex) => (
+                          <circle key={`${series.matter_id}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3" fill={color}>
+                            <title>{series.display_number}: {shortDate(point.date)} balance {money(point.balance)}</title>
+                          </circle>
+                        ))}
+                      </g>
+                    )
+                  })}
+                </svg>
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
+                {clioBalanceSeries.map((series, index) => (
+                  <span key={series.matter_id} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                    <span style={{ width: 12, height: 12, borderRadius: 999, background: graphColors[index % graphColors.length], display: 'inline-block' }} />
+                    {series.display_number}
+                  </span>
+                ))}
+              </div>
+              {clioBalanceLastLoaded && <p style={{ color: '#64748b' }}>Graph last loaded {clioBalanceLastLoaded}.</p>}
+            </div>
+          ) : (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>
+              No graph data loaded yet. Select matters, choose trust or operating account, then click <strong>Load balance graph</strong>.
+            </div>
+          )}
+        </div>
 
         {!clioMatters.length && !clioBillingError && (
           <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569' }}>
@@ -22693,11 +22919,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#f8fafc', color: '#475569' }}>
           <strong>Required Vercel API routes:</strong>
           <div><code>api/auth/callback.js</code> exchanges the Clio code for a token and stores the cookie.</div>
-          <div><code>api/clio/matters.js</code> reads the cookie and calls Clio's API.</div>
+          <div><code>api/clio/matters.js</code> reads the cookie and calls Clio's matters API.</div>
+          <div><code>api/clio/balance-history.js</code> reads Clio bank transactions and prepares graph points.</div>
         </div>
       </div>
     )
   }
+
 
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
