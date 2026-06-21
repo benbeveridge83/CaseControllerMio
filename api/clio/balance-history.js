@@ -21,27 +21,17 @@ export default async function handler(req, res) {
   }
 
   const requestedType = String(req.query.account_type || "trust").toLowerCase();
-  const accountType = requestedType === "operating" ? "asset" : "liability";
   const defaultMinimumBalance = Number(req.query.default_minimum_balance || 2000) || 2000;
   let minimumBalances = {};
-  try { minimumBalances = JSON.parse(String(req.query.minimum_balances || '{}')) || {}; } catch { minimumBalances = {}; }
-  const from = req.query.from ? new Date(req.query.from) : null;
-  const to = req.query.to ? new Date(req.query.to) : null;
-
-  function validDate(value) {
-    const d = new Date(value);
-    return Number.isFinite(d.getTime()) ? d : null;
-  }
-
-  function dateInRange(dateValue) {
-    const d = validDate(dateValue);
-    if (!d) return false;
-    if (from && d < from) return false;
-    if (to && d > to) return false;
-    return true;
+  try {
+    minimumBalances = JSON.parse(String(req.query.minimum_balances || "{}")) || {};
+  } catch {
+    minimumBalances = {};
   }
 
   function numberOrNull(value) {
+    if (value && typeof value === "object" && "amount" in value) value = value.amount;
+    if (typeof value === "string") value = value.replace(/[$,]/g, "");
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
@@ -68,60 +58,32 @@ export default async function handler(req, res) {
     return data;
   }
 
-  async function fetchMatterSummary(matterId) {
+  async function fetchMatterWithFields(matterId, extraFields) {
+    const safe = ["id", "display_number", "description", "status", "client{id,name}"];
     const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-    url.searchParams.set(
-      "fields",
-      [
-        "id",
-        "display_number",
-        "description",
-        "status",
-        "client{id,name}",
-        "trust_balance",
-        "trust_account_balance",
-        "account_balance",
-        "outstanding_balance",
-        "balance",
-        "total_balance",
-        "work_in_progress",
-        "wip",
-        "unbilled_balance",
-        "unbilled_amount",
-        "unbilled_time_balance",
-      ].join(",")
-    );
-
-    try {
-      const data = await clioFetch(url);
-      return data?.data || null;
-    } catch (error) {
-      // Some Clio fields may not be enabled for a given account. Retry with only safe matter fields.
-      const fallbackUrl = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-      fallbackUrl.searchParams.set("fields", "id,display_number,description,status,client{id,name}");
-      const fallback = await clioFetch(fallbackUrl);
-      return fallback?.data || null;
-    }
+    url.searchParams.set("fields", [...safe, ...extraFields].join(","));
+    const data = await clioFetch(url);
+    return data?.data || null;
   }
 
-  async function fetchAllTransactionsForMatter(matterId) {
-    let url = new URL("https://app.clio.com/api/v4/bank_transactions.json");
-    url.searchParams.set("limit", "200");
-    url.searchParams.set("matter_id", matterId);
-    url.searchParams.set("type", accountType);
-    url.searchParams.set(
-      "fields",
-      "id,date,amount,funds_in,funds_out,current_account_balance,matter{id,display_number}"
-    );
+  async function fetchMatterSummary(matterId) {
+    const groups = [
+      ["trust_balance", "trust_account_balance", "matter_trust_funds", "funds_in_trust"],
+      ["work_in_progress", "wip", "unbilled_balance", "unbilled_amount", "unbilled_time_balance"],
+      ["outstanding_balance", "account_balance", "balance", "total_balance"],
+      [],
+    ];
 
-    const all = [];
-    while (url) {
-      const data = await clioFetch(url);
-      all.push(...(Array.isArray(data.data) ? data.data : []));
-      const next = data?.meta?.paging?.next;
-      url = next ? new URL(next) : null;
+    let merged = null;
+    for (const fields of groups) {
+      try {
+        const data = await fetchMatterWithFields(matterId, fields);
+        merged = { ...(merged || {}), ...(data || {}) };
+      } catch (error) {
+        // Clio rejects unknown fields for some accounts. Keep trying smaller groups.
+      }
     }
-    return all;
+    return merged;
   }
 
   function firstNumeric(values) {
@@ -134,26 +96,30 @@ export default async function handler(req, res) {
 
   function trustBalanceFromMatter(matter) {
     if (!matter) return null;
-    return firstNumeric([matter.trust_balance, matter.trust_account_balance, matter.account_balance, matter.balance]);
-  }
-
-  function operatingBalanceFromMatter(matter) {
-    if (!matter) return null;
-    return firstNumeric([matter.outstanding_balance, matter.account_balance, matter.balance, matter.total_balance]);
+    return firstNumeric([
+      matter.trust_balance,
+      matter.trust_account_balance,
+      matter.matter_trust_funds,
+      matter.funds_in_trust,
+    ]);
   }
 
   function wipBalanceFromMatter(matter) {
     if (!matter) return null;
-    return firstNumeric([matter.work_in_progress, matter.wip, matter.unbilled_balance, matter.unbilled_amount, matter.unbilled_time_balance]);
+    return firstNumeric([
+      matter.work_in_progress,
+      matter.wip,
+      matter.unbilled_balance,
+      matter.unbilled_amount,
+      matter.unbilled_time_balance,
+    ]);
   }
 
   function currentBalanceFromMatter(matter, matterId) {
     const trust = trustBalanceFromMatter(matter);
-    const operating = operatingBalanceFromMatter(matter);
     const wip = wipBalanceFromMatter(matter);
     const matterMinimum = Number(minimumBalances[String(matterId)] ?? defaultMinimumBalance) || defaultMinimumBalance;
 
-    if (requestedType === "operating") return operating;
     if (requestedType === "wip") return wip;
     if (requestedType === "trust_minus_minimum") return trust === null ? null : trust - matterMinimum;
     if (requestedType === "trust_minus_wip") return trust === null || wip === null ? null : trust - wip;
@@ -162,72 +128,30 @@ export default async function handler(req, res) {
   }
 
   try {
+    const today = new Date().toISOString().slice(0, 10);
     const series = [];
 
     for (const matterId of matterIds) {
-      const [matter, transactions] = await Promise.all([
-        fetchMatterSummary(matterId),
-        fetchAllTransactionsForMatter(matterId),
-      ]);
-
-      const sorted = transactions
-        .filter((tx) => tx.date)
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-      let runningBalance = 0;
-      const points = [];
-      const canUseTransactionHistory = requestedType === 'trust' || requestedType === 'operating';
-
-      for (const tx of (canUseTransactionHistory ? sorted : [])) {
-        const explicitBalance = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
-        if (explicitBalance !== null) {
-          runningBalance = explicitBalance;
-        } else {
-          runningBalance += Number(tx.funds_in || 0) - Number(tx.funds_out || 0);
-        }
-
-        if (dateInRange(tx.date)) {
-          points.push({
-            date: tx.date,
-            balance: runningBalance,
-            transaction_id: tx.id,
-            source: "bank_transaction",
-          });
-        }
-      }
-
+      const matter = await fetchMatterSummary(matterId);
       const currentBalance = currentBalanceFromMatter(matter, matterId);
-      const today = new Date().toISOString().slice(0, 10);
-      if (currentBalance !== null && dateInRange(today)) {
-        const last = points[points.length - 1];
-        if (!last || String(last.date).slice(0, 10) !== today || Number(last.balance) !== currentBalance) {
-          points.push({
-            date: today,
-            balance: currentBalance,
-            source: "current_matter_balance",
-          });
-        }
-      }
+      const points = [];
 
-      if (!points.length && currentBalance !== null) {
+      if (currentBalance !== null) {
         points.push({
           date: today,
           balance: currentBalance,
-          source: "current_matter_balance",
+          source: "current_clio_matter_financial",
         });
       }
 
-      const displayNumber =
-        matter?.display_number ||
-        sorted[0]?.matter?.display_number ||
-        `Matter ${matterId}`;
-
       series.push({
         matter_id: String(matterId),
-        display_number: displayNumber,
+        display_number: matter?.display_number || `Matter ${matterId}`,
         description: matter?.description || "",
         client_name: matter?.client?.name || "",
         account_type: requestedType,
+        current_trust_balance: trustBalanceFromMatter(matter),
+        current_work_in_progress: wipBalanceFromMatter(matter),
         minimum_balance: Number(minimumBalances[String(matterId)] ?? defaultMinimumBalance) || defaultMinimumBalance,
         points,
       });
