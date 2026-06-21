@@ -22895,7 +22895,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           return
         }
 
-        setClioBalanceSeries(Array.isArray(data?.series) ? data.series : [])
+        if (!Array.isArray(data?.series)) {
+          setClioBalanceError(`The balance API responded, but it did not return graph series. Check that api/clio/balance-history.js contains the balance-history code, not the matters.js code. Response keys: ${Object.keys(data || {}).join(', ') || 'none'}`)
+          setClioBalanceSeries([])
+          return
+        }
+
+        setClioBalanceSeries(data.series)
         setClioBalanceLastLoaded(new Date().toLocaleString())
       } catch (error) {
         setClioBalanceError(error?.message || String(error))
