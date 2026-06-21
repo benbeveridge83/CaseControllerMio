@@ -10,18 +10,16 @@ export default async function handler(req, res) {
   }
 
   const token = tokenCookie.split("=")[1];
-
-  const status = String(req.query.status || "open"); // default: open
+  const requestedStatus = String(req.query.status || "open");
   const limit = String(req.query.limit || "200");
 
-  let url = new URL("https://app.clio.com/api/v4/matters");
-  url.searchParams.set("limit", limit);
-  url.searchParams.set("status", status);
-  url.searchParams.set("fields", "id,display_number,status,description,client{id,name}");
+  async function fetchPageSet({ status }) {
+    let url = new URL("https://app.clio.com/api/v4/matters");
+    url.searchParams.set("limit", limit);
+    if (status && status !== "all") url.searchParams.set("status", status);
+    url.searchParams.set("fields", "id,display_number,status,description,client{id,name}");
 
-  const allMatters = [];
-
-  try {
+    const allMatters = [];
     while (url) {
       const clioResponse = await fetch(url.toString(), {
         headers: {
@@ -31,25 +29,41 @@ export default async function handler(req, res) {
       });
 
       const data = await clioResponse.json();
-
       if (!clioResponse.ok) {
-        return res.status(clioResponse.status).json(data);
+        const err = new Error(data?.error?.message || data?.message || data?.error || `Clio matters failed with ${clioResponse.status}`);
+        err.status = clioResponse.status;
+        err.payload = data;
+        throw err;
       }
 
-      allMatters.push(...(data.data || []));
-
+      allMatters.push(...(Array.isArray(data.data) ? data.data : []));
       const nextUrl = data?.meta?.paging?.next;
       url = nextUrl ? new URL(nextUrl) : null;
+    }
+    return allMatters;
+  }
+
+  try {
+    let matters;
+    let sourceStatus = requestedStatus;
+    try {
+      matters = await fetchPageSet({ status: requestedStatus });
+    } catch (error) {
+      // Some Clio accounts reject status=open. If that happens, load all pages and filter locally.
+      if (requestedStatus !== "open") throw error;
+      const all = await fetchPageSet({ status: "all" });
+      matters = all.filter((matter) => String(matter.status || "").toLowerCase() === "open");
+      sourceStatus = "all-filtered-open";
     }
 
     return res.status(200).json({
       meta: {
-        records: allMatters.length,
-        status,
+        records: matters.length,
+        status: sourceStatus,
       },
-      data: allMatters,
+      data: matters,
     });
   } catch (error) {
-    return res.status(500).json({ error: String(error?.message || error) });
+    return res.status(error.status || 500).json(error.payload || { error: String(error?.message || error) });
   }
 }
