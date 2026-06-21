@@ -1089,6 +1089,12 @@ function App() {
     setPageState(nextPage)
     if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${nextPage}`)
   }
+
+  const [billingTab, setBillingTab] = useState('firm_billing')
+  const [clioMatters, setClioMatters] = useState([])
+  const [clioBillingLoading, setClioBillingLoading] = useState(false)
+  const [clioBillingError, setClioBillingError] = useState('')
+  const [clioBillingLastLoaded, setClioBillingLastLoaded] = useState(null)
   const [settingsTab, setSettingsTab] = useState(() => {
     try {
       const hashPage = (typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : '')
@@ -1190,10 +1196,11 @@ function App() {
         tenantId: '12d8cd52-6795-4f0f-b429-42134cb096d3',
         redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
         mode: 'mock',
+        useLocalHelper: false,
         ...JSON.parse(localStorage.getItem('caseMioServiceGraphConfig') || '{}')
       }
     } catch {
-      return { clientId: 'aa98edfe-f366-4714-8f44-3f2009b87422', tenantId: '12d8cd52-6795-4f0f-b429-42134cb096d3', redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173', mode: 'mock' }
+      return { clientId: 'aa98edfe-f366-4714-8f44-3f2009b87422', tenantId: '12d8cd52-6795-4f0f-b429-42134cb096d3', redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173', mode: 'mock', useLocalHelper: false }
     }
   })
   const [serviceGraphAuth, setServiceGraphAuth] = useState(() => {
@@ -1777,6 +1784,8 @@ function App() {
   const mioCloudStateSaveTimersRef = useRef({})
   const mioCloudStateSkipSaveRef = useRef(false)
   const mioCloudStateLastValuesRef = useRef({})
+  const mioBillingRelationalLoadedRef = useRef('')
+  const mioBillingRelationalSavingRef = useRef({})
 
   function parseMioStoredValue(record, fallback = null) {
     if (!record) return fallback
@@ -1976,6 +1985,133 @@ function App() {
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
     mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, value), 350)
   }
+
+  function billingEntryFromRelationalRow(row) {
+    const payload = row?.payload && typeof row.payload === 'object' ? row.payload : {}
+    const id = String(row?.id || payload.id || '')
+    const doNotBill = Boolean(row?.do_not_bill || payload.do_not_bill || payload.non_billable)
+    return {
+      ...payload,
+      id,
+      matter_id: row?.matter_id ?? payload.matter_id ?? '',
+      client_id: row?.client_id ?? payload.client_id ?? '',
+      task_id: row?.task_id ?? payload.task_id ?? '',
+      user_id: row?.user_member_id ?? payload.user_id ?? '',
+      date: row?.entry_date || payload.date || '',
+      description: row?.description ?? payload.description ?? '',
+      matter_status: row?.matter_status ?? payload.matter_status ?? '',
+      matter_step: row?.matter_step ?? payload.matter_step ?? '',
+      billing_time: row?.billing_time ?? payload.billing_time ?? '',
+      rate: row?.rate ?? payload.rate ?? '',
+      amount: doNotBill ? 0 : (row?.amount ?? payload.amount ?? 0),
+      non_billable: doNotBill,
+      do_not_bill: doNotBill,
+      created_at: row?.created_at || payload.created_at || row?.updated_at || ''
+    }
+  }
+
+  function billingEntryToRelationalRow(entry, privateNoteValue = '') {
+    if (!session?.user?.id || !entry?.id) return null
+    const doNotBill = Boolean(entry.non_billable || entry.do_not_bill)
+    const matterId = entry.matter_id || ''
+    return {
+      user_id: session.user.id,
+      id: String(entry.id),
+      matter_id: matterId || null,
+      client_id: entry.client_id || billingMatterClientId(matterId) || null,
+      task_id: entry.task_id || null,
+      user_member_id: entry.user_id || null,
+      entry_date: /^\d{4}-\d{2}-\d{2}/.test(String(entry.date || '')) ? String(entry.date).slice(0, 10) : null,
+      description: entry.description || '',
+      matter_status: entry.matter_status || billingMatterStatus(entry) || null,
+      matter_step: entry.matter_step || null,
+      billing_time: Number.isFinite(Number(entry.billing_time)) ? Number(entry.billing_time) : null,
+      rate: Number.isFinite(Number(entry.rate)) ? Number(entry.rate) : null,
+      amount: doNotBill ? 0 : (Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : null),
+      do_not_bill: doNotBill,
+      private_note: privateNoteValue || null,
+      payload: { ...entry, relational_live_at: new Date().toISOString() },
+      created_at: entry.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }
+  }
+
+  function billingRateRowsToState(rows = []) {
+    const defaults = {}
+    const matterRates = {}
+    rows.forEach((row) => {
+      if (!row?.user_member_id) return
+      const rate = Number(row.rate)
+      if (!Number.isFinite(rate)) return
+      if (row.scope === 'matter' && row.matter_id) {
+        matterRates[row.matter_id] = { ...(matterRates[row.matter_id] || {}), [row.user_member_id]: rate }
+      } else if (row.scope === 'default') {
+        defaults[row.user_member_id] = rate
+      }
+    })
+    return { defaults, matterRates }
+  }
+
+  async function loadBillingRelationalData(userId) {
+    if (!userId || mioBillingRelationalLoadedRef.current === userId) return
+    try {
+      const [{ data: entryRows, error: entryError }, { data: rateRows, error: rateError }] = await Promise.all([
+        supabase.from('mio_billing_entries').select('*').eq('user_id', userId).order('entry_date', { ascending: false }),
+        supabase.from('mio_billing_rates').select('*').eq('user_id', userId)
+      ])
+      if (entryError) throw entryError
+      if (rateError) throw rateError
+      const privateNotes = {}
+      const entries = (entryRows || []).map((row) => {
+        const entry = billingEntryFromRelationalRow(row)
+        if (row.private_note) privateNotes[entry.id] = row.private_note
+        return entry
+      })
+      const { defaults, matterRates } = billingRateRowsToState(rateRows || [])
+      setBillingEntries(entries)
+      setBillingPrivateNotes((current) => ({ ...current, ...privateNotes }))
+      setBillingRates(defaults)
+      setMatterBillingRates(matterRates)
+      mioBillingRelationalLoadedRef.current = userId
+    } catch (error) {
+      console.warn('Billing relational load failed. Using cloud-state/browser fallback for billing.', error)
+    }
+  }
+
+  async function saveBillingEntryToRelational(entry, privateNoteValue = '') {
+    const row = billingEntryToRelationalRow(entry, privateNoteValue)
+    if (!row) return
+    mioBillingRelationalSavingRef.current[row.id] = true
+    const { error } = await supabase.from('mio_billing_entries').upsert(row, { onConflict: 'user_id,id' })
+    delete mioBillingRelationalSavingRef.current[row.id]
+    if (error) console.warn('Billing entry Supabase save failed:', error)
+  }
+
+  async function deleteBillingEntryFromRelational(entryId) {
+    if (!session?.user?.id || !entryId) return
+    const { error } = await supabase.from('mio_billing_entries').delete().eq('user_id', session.user.id).eq('id', String(entryId))
+    if (error) console.warn('Billing entry Supabase delete failed:', error)
+  }
+
+  async function saveBillingRateToRelational({ scope, matterId = '', memberId, rate }) {
+    if (!session?.user?.id || !memberId) return
+    const id = scope === 'matter' ? `matter:${matterId}:${memberId}` : `default:${memberId}`
+    const { error } = await supabase.from('mio_billing_rates').upsert({
+      user_id: session.user.id,
+      id,
+      scope,
+      matter_id: scope === 'matter' ? matterId : null,
+      user_member_id: memberId,
+      rate: Number(rate),
+      payload: { scope, matter_id: matterId, member_id: memberId, rate: Number(rate), relational_live_at: new Date().toISOString() },
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id,id' })
+    if (error) console.warn('Billing rate Supabase save failed:', error)
+  }
+
+  useEffect(() => {
+    if (session?.user?.id) loadBillingRelationalData(session.user.id)
+  }, [session?.user?.id])
 
 
   useEffect(() => {
@@ -15322,7 +15458,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function serviceGraphRedirectUri() {
-    // Full-page MSAL redirect must return to the React app, not to the static
+    // Full-page MSAL redirect must return to the currently hosted React app, not to the static
     // /auth-redirect.html placeholder. The placeholder is fine for some popup
     // flows, but in Chrome it was leaving the popup stuck on "Signing in..."
     // until MSAL timed out. Returning to the app lets handleRedirectPromise()
@@ -15440,6 +15576,33 @@ useEffect(() => {
   }
 
   finishMicrosoftRedirectSignIn()
+}, [])
+
+useEffect(() => {
+  let cancelled = false
+  async function restoreMicrosoftGraphConnection() {
+    try {
+      const clientId = (serviceGraphConfig.clientId || '').trim()
+      if (!clientId) return
+      const app = await getServiceMsalApp()
+      const account = app.getActiveAccount() || app.getAllAccounts()[0]
+      if (!account || cancelled) return
+      app.setActiveAccount(account)
+      await app.acquireTokenSilent({ scopes: serviceGraphScopes, account }).catch(() => null)
+      if (cancelled) return
+      setServiceGraphAuth({
+        connected: true,
+        account: { username: account.username || '', name: account.name || '' },
+        connected_at: new Date().toISOString()
+      })
+      setServiceGraphConfig((config) => ({ ...config, mode: 'live' }))
+      setServiceEmailScanNote(`Microsoft email connection restored for ${account.username || account.name || 'signed-in user'}.`)
+    } catch (error) {
+      console.warn('Microsoft connection restore skipped:', error)
+    }
+  }
+  restoreMicrosoftGraphConnection()
+  return () => { cancelled = true }
 }, [])
  async function connectMicrosoftGraph() {
   setServiceGraphBusy(true)
@@ -16397,10 +16560,13 @@ useEffect(() => {
       cause_number: billingMatterCauseNumber(row.suggested_matter_id),
       created_at: new Date().toISOString()
     }
+    let shouldSaveRelational = false
     setBillingEntries((current) => {
       const alreadyLogged = current.some((item) => (item.source_service_email_id && item.source_service_email_id === sourceKey) || (row.outlook_message_id && item.source_outlook_message_id === row.outlook_message_id))
+      shouldSaveRelational = !alreadyLogged
       return alreadyLogged ? current : [entry, ...current]
     })
+    if (shouldSaveRelational) saveBillingEntryToRelational(entry)
     return entry
   }
 
@@ -16654,7 +16820,7 @@ useEffect(() => {
         rowId: currentRow.id
       })
     } catch (error) {
-      throw new Error(`Local save helper failed: ${error.message || error}. Start the local helper with: node mio-local-efile-helper.cjs, then click Save PDF + move again.`)
+      throw new Error(`Optional local save helper failed: ${error.message || error}. The online version can continue without the helper by using browser folder access.`)
     }
 
     const savedFileName = result.fileName || targetFileName
@@ -16940,17 +17106,18 @@ useEffect(() => {
     const currentRow = serviceEmailRows.find((item) => item.id === row?.id) || row
     if (!currentRow) return false
 
-    // Preferred production workflow: a small local helper saves the eFile PDF to the exact
-    // Windows path from the row and uses the exact Document name from the row. This avoids
-    // Chrome Save As / Open File Picker limitations, which cannot reliably write to an
-    // arbitrary C:\ path from a React-only page.
-    if (!providedAttachment && options.preferLocalHelper !== false && primaryServiceFilingLink(currentRow)?.url) {
+    // Online hosting workflow: do not require the old local Node helper.
+    // The app now uses Microsoft Graph/browser file access first. The local helper
+    // remains available only as an optional legacy fallback if it is explicitly enabled
+    // in serviceGraphConfig.useLocalHelper.
+    const shouldUseLegacyLocalHelper = serviceGraphConfig?.useLocalHelper === true && options.preferLocalHelper === true
+    if (!providedAttachment && shouldUseLegacyLocalHelper && primaryServiceFilingLink(currentRow)?.url) {
       try {
         return await saveServicePdfViaLocalHelper(currentRow)
       } catch (helperError) {
-        console.warn('Local PDF save helper failed:', helperError)
+        console.warn('Optional local PDF save helper failed:', helperError)
         if (options.localHelperOnly) throw helperError
-        setServiceEmailScanNote(`${helperError.message || helperError}`)
+        setServiceEmailScanNote(`Optional local helper was unavailable, so Case Controller will use the browser/Graph save flow instead: ${helperError.message || helperError}`)
       }
     }
 
@@ -17358,9 +17525,9 @@ useEffect(() => {
     const label = serviceEmailRowCategory(row) === 'accepted' ? 'Saved accepted PDF and moved email to Read' : 'Processed notification of service and moved email to Read'
     setServiceGraphBusy(true)
     try {
-      setServiceEmailScanNote(`Saving PDF for ${row.subject || 'email'} with the local helper...`)
-      const savedPdf = await saveDownloadedServicePdf(row, null, { preferLocalHelper: true, localHelperOnly: true, allowPick: false })
-      if (!savedPdf) throw new Error('The PDF was not saved. Start the local helper with: node mio-local-efile-helper.cjs, confirm the Matter efile folder and Document name on the row, then click Save PDF + move again.')
+      setServiceEmailScanNote(`Saving PDF for ${row.subject || 'email'} using Microsoft Graph/browser folder access...`)
+      const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+      if (!savedPdf) throw new Error('The PDF was not saved. Confirm the matter efile folder, allow folder access when prompted, and choose the PDF if the browser cannot fetch it automatically.')
       const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
       const billingEntry = maybeCreateServiceEmailBillingEntry(row, serviceEmailRowCategory(row) === 'accepted' ? 'Accepted e-filing review' : 'Notification of service review')
       if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected) await moveLiveRowToRead(row)
@@ -17556,12 +17723,11 @@ useEffect(() => {
         setServiceEmailScanNote(`Processing filing/service email ${index + 1} of ${total}: ${rowLabel}`)
 
         try {
-          // Bulk must use the local helper only. Do NOT open Chrome's Save As dialog and
-          // do NOT trigger the browser download fallback, because that creates extra PDFs
-          // in the Case Controller Mio folder. The helper saves directly to the Matter
-          // efile folder shown on the row, using the row's Document name.
-          const savedPdf = await saveDownloadedServicePdf(row, null, { preferLocalHelper: true, localHelperOnly: true, allowPick: false })
-          if (!savedPdf) throw new Error('PDF was not saved by the local helper.')
+          // Online version: use Microsoft Graph/browser folder access instead of the old
+          // local Node helper. The browser writes directly to the selected matter efile
+          // folder with the row's Document name after the user grants folder access.
+          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+          if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
 
@@ -17743,8 +17909,8 @@ useEffect(() => {
                 </div>
                 {!compact && <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {primaryServiceFilingLink(row) && <button type="button" onClick={() => downloadServiceFilingLink(row)} style={{ fontSize: 12 }}>Preview/open eFile PDF</button>}
-                  <button type="button" onClick={() => saveDownloadedServicePdf(row, null, { preferLocalHelper: true, localHelperOnly: true })} style={{ fontSize: 12 }}>Save PDF to row folder</button>
-                  <span style={{ fontSize: 12, color: '#64748b' }}>Uses local helper, row folder, and row document name.</span>
+                  <button type="button" onClick={() => saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })} style={{ fontSize: 12 }}>Save PDF to row folder</button>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>No helper needed; uses Microsoft Graph/browser folder access and the row document name.</span>
                 </div>}
                 {!compact && (serviceEmailPathIsKnown(row)
                   ? <div><strong>Save:</strong> {serviceEmailSavePath(row)}</div>
@@ -17914,12 +18080,11 @@ useEffect(() => {
         setServiceEmailScanNote(`Bulk saving ${index + 1} of ${total}: ${rowLabel}`)
 
         try {
-          // IMPORTANT: use the local helper only. Do not open the eFile link in Chrome and
-          // do not use the browser Save As dialog, because that saves duplicate PDFs in
-          // Documents\Apps\Case Controller Mio. The helper writes straight to the row's
-          // Matter efile folder with the row's Document name.
-          const savedPdf = await saveDownloadedServicePdf(row, null, { preferLocalHelper: true, localHelperOnly: true, allowPick: false })
-          if (!savedPdf) throw new Error('PDF was not saved by the local helper.')
+          // Online version: use Microsoft Graph/browser folder access instead of the old
+          // local Node helper. Do not use Chrome's Save As dialog; write directly to
+          // the selected matter efile folder with the row's Document name.
+          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+          if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
 
@@ -18071,7 +18236,7 @@ useEffect(() => {
       <>
         <h1>Service Inbox</h1>
         <p style={{ color: '#566', maxWidth: 1120 }}>
-          Review Outlook emails by mailbox and folder before the app acts. Use live Microsoft Graph mode for real scan/move testing, or mock mode to keep testing the workflow. This version supports no-response cleanup, drafted replies, eFileTexas filing review, matter matching, 6-minute billing entries, OneDrive save paths, and moving approved emails to Read.
+          Review Outlook emails by mailbox and folder before the app acts. Use live Microsoft Graph mode for real scan/move testing, or mock mode to keep testing the workflow. The hosted version connects directly to Microsoft; no local helper has to be started. This version supports no-response cleanup, drafted replies, eFileTexas filing review, matter matching, 6-minute billing entries, OneDrive save paths, and moving approved emails to Read.
         </p>
 
         <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fbff', marginBottom: 16 }}>
@@ -18281,7 +18446,7 @@ useEffect(() => {
             {serviceGraphBusy && <span style={{ color: '#1d4ed8' }}>Working...</span>}
           </div>
           <p style={{ color: '#64748b', marginBottom: 0 }}>
-            First live milestone: read configured folders and move approved emails to Read. Sending, OneDrive downloads, calendar entries, and billing records should be tested after scan/move works.
+            Online live mode: connects directly to Microsoft Graph from the hosted site. No separate local email helper is required for scanning, sending, moving mail, or saving PDFs through the browser folder picker.
           </p>
         </section>
 
@@ -18694,6 +18859,7 @@ useEffect(() => {
     if (String(billingForm.private_note || '').trim()) {
       setBillingPrivateNotes((current) => ({ ...current, [entry.id]: billingForm.private_note }))
     }
+    saveBillingEntryToRelational(entry, String(billingForm.private_note || '').trim())
     setShowBillingWindow(false)
   }
 
@@ -18701,6 +18867,7 @@ useEffect(() => {
     if (!window.confirm('Delete this billing entry?')) return
     setBillingEntries((current) => current.filter((entry) => entry.id !== entryId))
     setBillingPrivateNotes((current) => { const next = { ...current }; delete next[entryId]; return next })
+    deleteBillingEntryFromRelational(entryId)
   }
 
   function billingEntriesForFilters(overrides = {}) {
@@ -18887,6 +19054,458 @@ create index if not exists case_mio_user_state_updated_at_idx
     alert(`Saved ${rows.length} Mio local-state records to Supabase cloud-state table.`)
   }
 
+
+  function downloadMioRelationalPhase2Sql() {
+    const sql = `-- Case Controller Mio relational tables phase 2
+-- Run this in Supabase SQL Editor after the original case_mio_user_state migration.
+-- These tables hold the high-volume Mio features as first-class Supabase rows instead of one browser/cloud-state bucket.
+
+create table if not exists public.mio_billing_entries (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  matter_id text,
+  client_id text,
+  task_id text,
+  user_member_id text,
+  entry_date date,
+  description text,
+  matter_status text,
+  matter_step text,
+  billing_time numeric,
+  rate numeric,
+  amount numeric,
+  do_not_bill boolean not null default false,
+  private_note text,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_billing_rates (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  scope text not null,
+  matter_id text,
+  user_member_id text,
+  rate numeric,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_discovery_requests (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  matter_id text,
+  side text,
+  request_type text,
+  request_text text,
+  response_text text,
+  status text,
+  due_date date,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_requested_reliefs (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  matter_id text,
+  side text,
+  issue_id text,
+  relief_option_id text,
+  title text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_requested_relief_options (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  parent_id text,
+  name text,
+  is_relief_option boolean,
+  option_type text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_requested_relief_sets (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  set_type text not null,
+  title text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_documents (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  matter_id text,
+  title text,
+  file_name text,
+  mime_type text,
+  tag_ids text[],
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_tags (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  parent_id text,
+  name text,
+  color text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_workflow_items (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  matter_id text,
+  title text,
+  status text,
+  sort_order numeric,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_service_inbox_rows (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  source_id text,
+  matter_id text,
+  subject text,
+  sender text,
+  received_at timestamptz,
+  status text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_service_inbox_sources (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  label text,
+  source_type text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_matter_timeline_options (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  name text,
+  payload jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+create table if not exists public.mio_relational_migration_log (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  summary jsonb not null default '{}'::jsonb,
+  origin text,
+  created_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+
+alter table public.mio_billing_entries enable row level security;
+alter table public.mio_billing_rates enable row level security;
+alter table public.mio_discovery_requests enable row level security;
+alter table public.mio_requested_reliefs enable row level security;
+alter table public.mio_requested_relief_options enable row level security;
+alter table public.mio_requested_relief_sets enable row level security;
+alter table public.mio_documents enable row level security;
+alter table public.mio_tags enable row level security;
+alter table public.mio_workflow_items enable row level security;
+alter table public.mio_service_inbox_rows enable row level security;
+alter table public.mio_service_inbox_sources enable row level security;
+alter table public.mio_matter_timeline_options enable row level security;
+alter table public.mio_relational_migration_log enable row level security;
+
+-- Recreate same-owner RLS policies for every Mio phase-2 table.
+do $$
+declare
+  table_name text;
+begin
+  foreach table_name in array array[
+    'mio_billing_entries',
+    'mio_billing_rates',
+    'mio_discovery_requests',
+    'mio_requested_reliefs',
+    'mio_requested_relief_options',
+    'mio_requested_relief_sets',
+    'mio_documents',
+    'mio_tags',
+    'mio_workflow_items',
+    'mio_service_inbox_rows',
+    'mio_service_inbox_sources',
+    'mio_matter_timeline_options',
+    'mio_relational_migration_log'
+  ] loop
+    execute format('drop policy if exists %I on public.%I', table_name || '_select_own', table_name);
+    execute format('create policy %I on public.%I for select using (auth.uid() = user_id)', table_name || '_select_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_insert_own', table_name);
+    execute format('create policy %I on public.%I for insert with check (auth.uid() = user_id)', table_name || '_insert_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_update_own', table_name);
+    execute format('create policy %I on public.%I for update using (auth.uid() = user_id) with check (auth.uid() = user_id)', table_name || '_update_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_delete_own', table_name);
+    execute format('create policy %I on public.%I for delete using (auth.uid() = user_id)', table_name || '_delete_own', table_name);
+  end loop;
+end $$;
+
+create index if not exists mio_billing_entries_matter_date_idx on public.mio_billing_entries(user_id, matter_id, entry_date desc);
+create index if not exists mio_billing_entries_client_date_idx on public.mio_billing_entries(user_id, client_id, entry_date desc);
+create index if not exists mio_discovery_requests_matter_idx on public.mio_discovery_requests(user_id, matter_id);
+create index if not exists mio_requested_reliefs_matter_idx on public.mio_requested_reliefs(user_id, matter_id);
+create index if not exists mio_documents_matter_idx on public.mio_documents(user_id, matter_id);
+create index if not exists mio_tags_parent_idx on public.mio_tags(user_id, parent_id);
+create index if not exists mio_workflow_items_matter_idx on public.mio_workflow_items(user_id, matter_id);
+create index if not exists mio_service_inbox_rows_received_idx on public.mio_service_inbox_rows(user_id, received_at desc);
+`
+    downloadTextFile(sql, 'case-mio-relational-phase2.sql', 'text/sql;charset=utf-8;')
+  }
+
+  function mioArray(value) {
+    if (Array.isArray(value)) return value
+    if (value && typeof value === 'object') return Object.values(value)
+    return []
+  }
+
+  function mioRecordId(record, prefix, index = 0) {
+    const raw = record?.id || record?.uuid || record?.key || record?.source_id || record?.email_id || record?.name || `${prefix}-${index}`
+    return String(raw)
+  }
+
+  function mioDate(value) {
+    const raw = String(value || '').trim()
+    return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : null
+  }
+
+  function mioTimestamp(value) {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    const parsed = new Date(raw)
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+  }
+
+  function mioNumber(value) {
+    const num = Number(value)
+    return Number.isFinite(num) ? num : null
+  }
+
+  async function mioUpsertRows(table, rows, counts) {
+    if (!rows.length) {
+      counts[table] = 0
+      return
+    }
+    const chunkSize = 500
+    let saved = 0
+    for (let start = 0; start < rows.length; start += chunkSize) {
+      const chunk = rows.slice(start, start + chunkSize)
+      const { error } = await supabase.from(table).upsert(chunk, { onConflict: 'user_id,id' })
+      if (error) throw new Error(`${table}: ${error.message || JSON.stringify(error)}`)
+      saved += chunk.length
+    }
+    counts[table] = saved
+  }
+
+  async function migrateMioPriorityDataToRelationalSupabase() {
+    if (!session?.user?.id) return alert('Please sign in before migrating Mio data to relational Supabase tables.')
+    const userId = session.user.id
+    const now = new Date().toISOString()
+    const counts = {}
+    try {
+      const billingRows = mioArray(billingEntries).map((entry, index) => {
+        const id = mioRecordId(entry, 'billing', index)
+        const doNotBill = Boolean(entry?.non_billable || entry?.do_not_bill)
+        const matterId = entry?.matter_id || ''
+        return {
+          user_id: userId,
+          id,
+          matter_id: matterId || null,
+          client_id: entry?.client_id || billingMatterClientId(matterId) || null,
+          task_id: entry?.task_id || null,
+          user_member_id: entry?.user_id || null,
+          entry_date: mioDate(entry?.date),
+          description: entry?.description || '',
+          matter_status: entry?.matter_status || billingMatterStatus(entry) || null,
+          matter_step: entry?.matter_step || null,
+          billing_time: mioNumber(entry?.billing_time),
+          rate: mioNumber(entry?.rate),
+          amount: doNotBill ? 0 : mioNumber(entry?.amount),
+          do_not_bill: doNotBill,
+          private_note: billingPrivateNotes?.[id] || billingPrivateNotes?.[entry?.id] || null,
+          payload: { ...entry, relational_migrated_at: now },
+          created_at: mioTimestamp(entry?.created_at) || now,
+          updated_at: now
+        }
+      })
+      await mioUpsertRows('mio_billing_entries', billingRows, counts)
+
+      const rateRows = []
+      Object.entries(billingRates || {}).forEach(([memberId, rate]) => {
+        rateRows.push({ user_id: userId, id: `default:${memberId}`, scope: 'default', matter_id: null, user_member_id: memberId, rate: mioNumber(rate), payload: { member_id: memberId, rate }, updated_at: now })
+      })
+      Object.entries(matterBillingRates || {}).forEach(([matterId, memberRates]) => {
+        Object.entries(memberRates || {}).forEach(([memberId, rate]) => {
+          rateRows.push({ user_id: userId, id: `matter:${matterId}:${memberId}`, scope: 'matter', matter_id: matterId, user_member_id: memberId, rate: mioNumber(rate), payload: { matter_id: matterId, member_id: memberId, rate }, updated_at: now })
+        })
+      })
+      await mioUpsertRows('mio_billing_rates', rateRows, counts)
+
+      const discoveryRows = mioArray(discoveryRequests).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'discovery', index),
+        matter_id: row?.matter_id || row?.matterId || null,
+        side: row?.side || row?.request_side || row?.owner || null,
+        request_type: row?.request_type || row?.type || row?.category || null,
+        request_text: row?.request_text || row?.request || row?.text || row?.description || '',
+        response_text: row?.response_text || row?.response || '',
+        status: row?.status || '',
+        due_date: mioDate(row?.due_date || row?.deadline || row?.date),
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_discovery_requests', discoveryRows, counts)
+
+      const reliefRows = mioArray(requestedReliefs).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'relief', index),
+        matter_id: row?.matter_id || row?.matterId || null,
+        side: row?.side || row?.party_side || null,
+        issue_id: row?.issue_id || row?.issueId || null,
+        relief_option_id: row?.relief_option_id || row?.option_id || row?.optionId || null,
+        title: row?.title || row?.name || row?.label || '',
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_requested_reliefs', reliefRows, counts)
+
+      const reliefOptionRows = mioArray(requestedReliefOptions).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'relief-option', index),
+        parent_id: row?.parent_id || row?.parentId || null,
+        name: row?.name || row?.title || row?.label || '',
+        is_relief_option: Boolean(row?.is_relief_option),
+        option_type: row?.option_type || null,
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_requested_relief_options', reliefOptionRows, counts)
+
+      const reliefSetRows = [
+        ...mioArray(requestedReliefIssueSets).map((row, index) => [row, 'issue_set', index]),
+        ...mioArray(requestedReliefTemplates).map((row, index) => [row, 'template', index]),
+        ...mioArray(requestedReliefTables).map((row, index) => [row, 'table', index])
+      ].map(([row, setType, index]) => ({
+        user_id: userId,
+        id: `${setType}:${mioRecordId(row, setType, index)}`,
+        set_type: setType,
+        title: row?.title || row?.name || row?.label || '',
+        payload: { ...row, set_type: setType, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_requested_relief_sets', reliefSetRows, counts)
+
+      const documentRows = mioArray(documents).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'document', index),
+        matter_id: row?.matter_id || row?.matterId || null,
+        title: row?.title || row?.name || row?.file_name || row?.filename || '',
+        file_name: row?.file_name || row?.filename || row?.name || '',
+        mime_type: row?.mime_type || row?.type || null,
+        tag_ids: Array.isArray(row?.tag_ids) ? row.tag_ids.map(String) : Array.isArray(row?.tags) ? row.tags.map(String) : [],
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_documents', documentRows, counts)
+
+      const tagRows = mioArray(tags).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'tag', index),
+        parent_id: row?.parent_id || row?.parentId || null,
+        name: row?.name || row?.title || row?.label || '',
+        color: row?.color || row?.background || null,
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_tags', tagRows, counts)
+
+      const workflowRows = mioArray(workflowItems).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'workflow', index),
+        matter_id: row?.matter_id || row?.matterId || null,
+        title: row?.title || row?.name || row?.text || row?.description || '',
+        status: row?.status || '',
+        sort_order: mioNumber(row?.sort_order ?? row?.order ?? index),
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_workflow_items', workflowRows, counts)
+
+      const serviceRowRows = mioArray(serviceEmailRows).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'service-email-row', index),
+        source_id: row?.source_id || row?.sourceId || null,
+        matter_id: row?.matter_id || row?.matterId || null,
+        subject: row?.subject || row?.title || '',
+        sender: row?.sender || row?.from || row?.from_email || '',
+        received_at: mioTimestamp(row?.received_at || row?.date || row?.created_at),
+        status: row?.status || '',
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_service_inbox_rows', serviceRowRows, counts)
+
+      const serviceSourceRows = mioArray(serviceEmailSources).map((row, index) => ({
+        user_id: userId,
+        id: mioRecordId(row, 'service-email-source', index),
+        label: row?.label || row?.name || row?.email || '',
+        source_type: row?.type || row?.source_type || null,
+        payload: { ...row, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_service_inbox_sources', serviceSourceRows, counts)
+
+      const timelineOptionRows = Object.entries(matterTimelineOptions || {}).map(([key, value], index) => ({
+        user_id: userId,
+        id: String(key || `timeline-option-${index}`),
+        name: value?.name || value?.label || key,
+        payload: { key, value, relational_migrated_at: now },
+        updated_at: now
+      }))
+      await mioUpsertRows('mio_matter_timeline_options', timelineOptionRows, counts)
+
+      await mioUpsertRows('mio_relational_migration_log', [{
+        user_id: userId,
+        id: `migration:${now}`,
+        summary: counts,
+        origin: window.location.origin,
+        created_at: now
+      }], counts)
+
+      const total = Object.entries(counts).filter(([table]) => table !== 'mio_relational_migration_log').reduce((sum, [, count]) => sum + Number(count || 0), 0)
+      alert(`Phase 2 relational migration complete. Saved ${total} rows across ${Object.keys(counts).length - 1} feature tables.`)
+    } catch (error) {
+      console.error('Phase 2 relational migration failed:', error)
+      alert(`Phase 2 relational migration failed. Run the case-mio-relational-phase2.sql file in Supabase first, then try again. Detail: ${error.message || error}`)
+    }
+  }
+
   function clioCsvMatterName(entry) {
     const matter = matters.find((item) => String(item.id) === String(entry.matter_id))
     const baseName = billingMatterName(entry.matter_id)
@@ -18954,6 +19573,7 @@ create index if not exists case_mio_user_state_updated_at_idx
     const rate = Number(billingSettingsDraft.rate)
     if (!Number.isFinite(rate) || rate < 0) return alert('Please enter a valid rate.')
     setBillingRates((current) => ({ ...current, [billingSettingsDraft.user_id]: rate }))
+    saveBillingRateToRelational({ scope: 'default', memberId: billingSettingsDraft.user_id, rate })
     setBillingSettingsDraft({ user_id: '', rate: '' })
   }
 
@@ -18966,6 +19586,7 @@ create index if not exists case_mio_user_state_updated_at_idx
       ...current,
       [matterRateDraft.matter_id]: { ...(current[matterRateDraft.matter_id] || {}), [matterRateDraft.user_id]: rate }
     }))
+    saveBillingRateToRelational({ scope: 'matter', matterId: matterRateDraft.matter_id, memberId: matterRateDraft.user_id, rate })
     setMatterRateDraft({ matter_id: '', user_id: '', rate: '' })
   }
 
@@ -20041,6 +20662,7 @@ create index if not exists case_mio_user_state_updated_at_idx
   }
 
   function updateBillingEntryInline(entryId, patch) {
+    let updatedEntry = null
     setBillingEntries((current) => current.map((entry) => {
       if (String(entry.id) !== String(entryId)) return entry
       const next = { ...entry, ...patch }
@@ -20054,8 +20676,13 @@ create index if not exists case_mio_user_state_updated_at_idx
         next.do_not_bill = doNotBill
         next.amount = doNotBill ? 0 : Number((Number(next.billing_time || 0) * Number(next.rate || 0)).toFixed(2))
       }
+      updatedEntry = next
       return next
     }))
+    if (updatedEntry) {
+      const noteValue = patch.private_note !== undefined ? patch.private_note : billingPrivateNotes?.[entryId]
+      saveBillingEntryToRelational(updatedEntry, noteValue || '')
+    }
   }
 
   function renderStepBillingEntryNotes(context = {}) {
@@ -21949,68 +22576,217 @@ create index if not exists case_mio_user_state_updated_at_idx
     )
   }
 
+
+  function renderClioBillingIntegrationPanel() {
+    const clioClientId = 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv'
+    const clioRedirectUri = 'http://127.0.0.1:3000/api/auth/callback'
+    const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
+
+    async function loadClioMatters() {
+      setClioBillingLoading(true)
+      setClioBillingError('')
+      try {
+        const response = await fetch('/api/clio/matters', {
+          credentials: 'include'
+        })
+        const data = await response.json()
+
+        if (!response.ok) {
+          setClioBillingError(data?.error || data?.message || 'Clio request failed.')
+          setClioMatters([])
+          setClioBillingLoading(false)
+          return
+        }
+
+        setClioMatters(Array.isArray(data?.data) ? data.data : [])
+        setClioBillingLastLoaded(new Date().toLocaleString())
+      } catch (error) {
+        setClioBillingError(error?.message || String(error))
+        setClioMatters([])
+      } finally {
+        setClioBillingLoading(false)
+      }
+    }
+
+    return (
+      <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
+        <h2 style={{ marginTop: 0 }}>Clio Billing Integration</h2>
+        <p style={{ color: '#566', marginTop: -6 }}>
+          Connect this dashboard to Clio, confirm the access token is working, and preview matters that can be used for billing and trust-balance reporting.
+        </p>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+          <a
+            href={clioAuthUrl}
+            style={{
+              display: 'inline-block',
+              padding: '10px 14px',
+              background: '#0b5fff',
+              color: '#fff',
+              borderRadius: 8,
+              textDecoration: 'none',
+              fontWeight: 700
+            }}
+          >
+            Connect to Clio
+          </a>
+          <button type="button" onClick={loadClioMatters} disabled={clioBillingLoading}>
+            {clioBillingLoading ? 'Loading Clio data...' : 'Load Clio Matters'}
+          </button>
+          <a href="/api/clio/matters" target="_blank" rel="noreferrer">Open raw Clio matters JSON</a>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 14 }}>
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Connection status</div>
+            <strong>{clioMatters.length ? 'Connected' : clioBillingError ? 'Needs attention' : 'Ready to test'}</strong>
+          </div>
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Matters loaded</div>
+            <strong>{clioMatters.length}</strong>
+          </div>
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Last loaded</div>
+            <strong>{clioBillingLastLoaded || 'Not loaded yet'}</strong>
+          </div>
+        </div>
+
+        {clioBillingError && (
+          <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}>
+            <strong>Clio error:</strong> {clioBillingError}
+            <div style={{ marginTop: 6 }}>
+              If this says "Not authenticated", click <strong>Connect to Clio</strong>, approve access, then return here and click <strong>Load Clio Matters</strong>.
+            </div>
+          </div>
+        )}
+
+        {!clioMatters.length && !clioBillingError && (
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569' }}>
+            No Clio matters loaded yet. Click <strong>Load Clio Matters</strong> after connecting to Clio.
+          </div>
+        )}
+
+        {clioMatters.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Matter #</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Clio ID</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>ETag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clioMatters.slice(0, 50).map((matter) => (
+                  <tr key={matter.id}>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.display_number || '(no display number)'}</td>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.id}</td>
+                    <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8, color: '#64748b' }}>{matter.etag || ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {clioMatters.length > 50 && <p style={{ color: '#64748b' }}>Showing first 50 of {clioMatters.length} matters.</p>}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#f8fafc', color: '#475569' }}>
+          <strong>Required backend routes:</strong>
+          <div><code>app/api/auth/callback/route.ts</code> exchanges the Clio code for a token and stores the cookie.</div>
+          <div><code>app/api/clio/matters/route.ts</code> reads the cookie and calls Clio's API.</div>
+        </div>
+      </div>
+    )
+  }
+
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
+    const tabButtonStyle = (tab) => ({
+      border: '1px solid #cbd5e1',
+      borderBottom: billingTab === tab ? '2px solid #0b5fff' : '1px solid #cbd5e1',
+      background: billingTab === tab ? '#eff6ff' : '#fff',
+      color: billingTab === tab ? '#0b5fff' : '#334155',
+      borderRadius: 8,
+      padding: '8px 12px',
+      fontWeight: billingTab === tab ? 700 : 500
+    })
+
     return (
       <>
         <h1>Billing</h1>
-        <p style={{ color: '#566', marginTop: -6 }}>Firmwide timekeeping, filters, and billing reports.</p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
-          <button type="button" onClick={() => openBillingWindow()}>Add Billing Time</button>
-          <LabeledField label="Matter">
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <SmartMatterSelect
-                value={billingFilters.matter_id === 'all' ? '' : billingFilters.matter_id}
-                onChange={(value) => setBillingFilters({ ...billingFilters, matter_id: value || 'all' })}
-                placeholder="All matters / type to search"
-                style={{ minWidth: 240 }}
-              />
-              {billingFilters.matter_id !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, matter_id: 'all' })}>All</button>}
-            </div>
-          </LabeledField>
-          <LabeledField label="Client">
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <SmartClientSelect
-                value={(billingFilters.client_id || 'all') === 'all' ? '' : billingFilters.client_id}
-                onChange={(value) => setBillingFilters({ ...billingFilters, client_id: value || 'all', client_search: '' })}
-                placeholder="All clients / type to search"
-                style={{ minWidth: 220 }}
-              />
-              {(billingFilters.client_id || 'all') !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, client_id: 'all' })}>All</button>}
-            </div>
-          </LabeledField>
-          <LabeledField label="Search client">
-            <input type="search" list="billing-client-search-options" value={billingFilters.client_search || ''} onChange={(e) => setBillingFilters({ ...billingFilters, client_search: e.target.value, client_id: 'all' })} placeholder="Type client name or email" style={{ minWidth: 180 }} />
-            <datalist id="billing-client-search-options">
-              {clients
-                .filter((client) => !(billingFilters.client_search || '') || matchesSmartSearch(billingFilters.client_search, clientOptionLabel(client)) || matchesSmartSearch(billingFilters.client_search, client.email))
-                .slice(0, 25)
-                .map((client) => <option key={client.id} value={clientOptionLabel(client)} />)}
-            </datalist>
-          </LabeledField>
-          <LabeledField label="User">
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <SmartTeamMemberSelect
-                value={billingFilters.user_id === 'all' ? '' : billingFilters.user_id}
-                onChange={(value) => setBillingFilters({ ...billingFilters, user_id: value || 'all' })}
-                placeholder="All users / type to search"
-                style={{ minWidth: 180 }}
-              />
-              {billingFilters.user_id !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, user_id: 'all' })}>All</button>}
-            </div>
-          </LabeledField>
-          <LabeledField label="From">
-            <input type="date" value={billingFilters.date_from} onChange={(e) => setBillingFilters({ ...billingFilters, date_from: e.target.value })} />
-          </LabeledField>
-          <LabeledField label="To">
-            <input type="date" value={billingFilters.date_to} onChange={(e) => setBillingFilters({ ...billingFilters, date_to: e.target.value })} />
-          </LabeledField>
-          <button type="button" onClick={() => setBillingFilters({ matter_id: 'all', client_id: 'all', client_search: '', user_id: 'all', date_from: '', date_to: '' })}>Reset filters</button>
-          <button type="button" onClick={() => downloadBillingExcel(entries, 'firm-billing-report')} disabled={!entries.length}>Excel report</button>
-          <button type="button" onClick={() => downloadBillingWord(entries, 'firm-billing-report')} disabled={!entries.length}>Word report</button>
-          <button type="button" onClick={() => downloadClioBillingCsv(entries, 'clio-activities-billing-export')} disabled={!entries.length}>Export Clio CSV</button>
+        <p style={{ color: '#566', marginTop: -6 }}>Firmwide timekeeping, filters, billing reports, and Clio billing integration.</p>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '12px 0 16px' }}>
+          <button type="button" style={tabButtonStyle('firm_billing')} onClick={() => setBillingTab('firm_billing')}>
+            Firm Billing
+          </button>
+          <button type="button" style={tabButtonStyle('clio_billing')} onClick={() => setBillingTab('clio_billing')}>
+            Clio Billing Integration
+          </button>
         </div>
-        {renderBillingEntryTable(entries)}
+
+        {billingTab === 'clio_billing' ? (
+          renderClioBillingIntegrationPanel()
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
+              <button type="button" onClick={() => openBillingWindow()}>Add Billing Time</button>
+              <LabeledField label="Matter">
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <SmartMatterSelect
+                    value={billingFilters.matter_id === 'all' ? '' : billingFilters.matter_id}
+                    onChange={(value) => setBillingFilters({ ...billingFilters, matter_id: value || 'all' })}
+                    placeholder="All matters / type to search"
+                    style={{ minWidth: 240 }}
+                  />
+                  {billingFilters.matter_id !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, matter_id: 'all' })}>All</button>}
+                </div>
+              </LabeledField>
+              <LabeledField label="Client">
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <SmartClientSelect
+                    value={(billingFilters.client_id || 'all') === 'all' ? '' : billingFilters.client_id}
+                    onChange={(value) => setBillingFilters({ ...billingFilters, client_id: value || 'all', client_search: '' })}
+                    placeholder="All clients / type to search"
+                    style={{ minWidth: 220 }}
+                  />
+                  {(billingFilters.client_id || 'all') !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, client_id: 'all' })}>All</button>}
+                </div>
+              </LabeledField>
+              <LabeledField label="Search client">
+                <input type="search" list="billing-client-search-options" value={billingFilters.client_search || ''} onChange={(e) => setBillingFilters({ ...billingFilters, client_search: e.target.value, client_id: 'all' })} placeholder="Type client name or email" style={{ minWidth: 180 }} />
+                <datalist id="billing-client-search-options">
+                  {clients
+                    .filter((client) => !(billingFilters.client_search || '') || matchesSmartSearch(billingFilters.client_search, clientOptionLabel(client)) || matchesSmartSearch(billingFilters.client_search, client.email))
+                    .slice(0, 25)
+                    .map((client) => <option key={client.id} value={clientOptionLabel(client)} />)}
+                </datalist>
+              </LabeledField>
+              <LabeledField label="User">
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <SmartTeamMemberSelect
+                    value={billingFilters.user_id === 'all' ? '' : billingFilters.user_id}
+                    onChange={(value) => setBillingFilters({ ...billingFilters, user_id: value || 'all' })}
+                    placeholder="All users / type to search"
+                    style={{ minWidth: 180 }}
+                  />
+                  {billingFilters.user_id !== 'all' && <button type="button" onClick={() => setBillingFilters({ ...billingFilters, user_id: 'all' })}>All</button>}
+                </div>
+              </LabeledField>
+              <LabeledField label="From">
+                <input type="date" value={billingFilters.date_from} onChange={(e) => setBillingFilters({ ...billingFilters, date_from: e.target.value })} />
+              </LabeledField>
+              <LabeledField label="To">
+                <input type="date" value={billingFilters.date_to} onChange={(e) => setBillingFilters({ ...billingFilters, date_to: e.target.value })} />
+              </LabeledField>
+              <button type="button" onClick={() => setBillingFilters({ matter_id: 'all', client_id: 'all', client_search: '', user_id: 'all', date_from: '', date_to: '' })}>Reset filters</button>
+              <button type="button" onClick={() => downloadBillingExcel(entries, 'firm-billing-report')} disabled={!entries.length}>Excel report</button>
+              <button type="button" onClick={() => downloadBillingWord(entries, 'firm-billing-report')} disabled={!entries.length}>Word report</button>
+              <button type="button" onClick={() => downloadClioBillingCsv(entries, 'clio-activities-billing-export')} disabled={!entries.length}>Export Clio CSV</button>
+            </div>
+            {renderBillingEntryTable(entries)}
+          </>
+        )}
       </>
     )
   }
@@ -22019,14 +22795,16 @@ create index if not exists case_mio_user_state_updated_at_idx
     return (
       <>
         <h2>Supabase / Live Hosting Migration</h2>
-        <p>This panel migrates every current Mio browser-storage key into Supabase cloud state so hosted users are no longer tied to one browser. Run the SQL migration file first, then click Push backup to Supabase once.</p>
+        <p>This panel migrates every current Mio browser-storage key into Supabase cloud state and then copies the high-volume Mio features into first-class relational Supabase tables. Run the phase 2 relational SQL first, then click the relational migration button once.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           <button type="button" onClick={downloadMioSupabaseMigrationSql}>Download Supabase SQL migration</button>
+          <button type="button" onClick={downloadMioRelationalPhase2Sql}>Download phase 2 relational SQL</button>
           <button type="button" onClick={downloadMioLocalStorageBackup}>Download emergency local backup</button>
           <button type="button" onClick={pushMioLocalStorageBackupToSupabase}>Migrate local data to Supabase</button>
+          <button type="button" onClick={migrateMioPriorityDataToRelationalSupabase}>Migrate priority data to relational tables</button>
         </div>
         <div style={{ border: '1px solid #fbbf24', background: '#fffbeb', borderRadius: 8, padding: 12 }}>
-          <strong>Live hosting checklist:</strong> create the cloud-state table, migrate this browser once, then convert high-volume features into first-class relational Supabase tables as the next phase. The priority items are billing entries/rates, Discovery rows, Documents/Tags links, requested relief, workflow, service inbox settings, and Matter Timeline options.
+          <strong>Live hosting checklist:</strong> cloud-state migration is phase 1. Phase 2 creates dedicated Supabase tables for billing entries/rates, Discovery rows, Documents/Tags, requested relief, workflow, service inbox, and Matter Timeline options. After those tables are populated, the next pass can make each page read/write directly from its own relational table.
         </div>
       </>
     )
