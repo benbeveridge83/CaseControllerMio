@@ -22,6 +22,9 @@ export default async function handler(req, res) {
 
   const requestedType = String(req.query.account_type || "trust").toLowerCase();
   const accountType = requestedType === "operating" ? "asset" : "liability";
+  const defaultMinimumBalance = Number(req.query.default_minimum_balance || 2000) || 2000;
+  let minimumBalances = {};
+  try { minimumBalances = JSON.parse(String(req.query.minimum_balances || '{}')) || {}; } catch { minimumBalances = {}; }
   const from = req.query.from ? new Date(req.query.from) : null;
   const to = req.query.to ? new Date(req.query.to) : null;
 
@@ -81,6 +84,11 @@ export default async function handler(req, res) {
         "outstanding_balance",
         "balance",
         "total_balance",
+        "work_in_progress",
+        "wip",
+        "unbilled_balance",
+        "unbilled_amount",
+        "unbilled_time_balance",
       ].join(",")
     );
 
@@ -116,16 +124,40 @@ export default async function handler(req, res) {
     return all;
   }
 
-  function currentBalanceFromMatter(matter) {
-    if (!matter) return null;
-    const candidates = requestedType === "operating"
-      ? [matter.outstanding_balance, matter.account_balance, matter.balance, matter.total_balance]
-      : [matter.trust_balance, matter.trust_account_balance, matter.account_balance, matter.balance];
-    for (const value of candidates) {
+  function firstNumeric(values) {
+    for (const value of values) {
       const n = numberOrNull(value);
       if (n !== null) return n;
     }
     return null;
+  }
+
+  function trustBalanceFromMatter(matter) {
+    if (!matter) return null;
+    return firstNumeric([matter.trust_balance, matter.trust_account_balance, matter.account_balance, matter.balance]);
+  }
+
+  function operatingBalanceFromMatter(matter) {
+    if (!matter) return null;
+    return firstNumeric([matter.outstanding_balance, matter.account_balance, matter.balance, matter.total_balance]);
+  }
+
+  function wipBalanceFromMatter(matter) {
+    if (!matter) return null;
+    return firstNumeric([matter.work_in_progress, matter.wip, matter.unbilled_balance, matter.unbilled_amount, matter.unbilled_time_balance]);
+  }
+
+  function currentBalanceFromMatter(matter, matterId) {
+    const trust = trustBalanceFromMatter(matter);
+    const operating = operatingBalanceFromMatter(matter);
+    const wip = wipBalanceFromMatter(matter);
+    const matterMinimum = Number(minimumBalances[String(matterId)] ?? defaultMinimumBalance) || defaultMinimumBalance;
+
+    if (requestedType === "operating") return operating;
+    if (requestedType === "wip") return wip;
+    if (requestedType === "trust_minus_minimum") return trust === null ? null : trust - matterMinimum;
+    if (requestedType === "trust_minus_wip") return trust === null || wip === null ? null : trust - wip;
+    return trust;
   }
 
   try {
@@ -143,8 +175,9 @@ export default async function handler(req, res) {
 
       let runningBalance = 0;
       const points = [];
+      const canUseTransactionHistory = requestedType === 'trust' || requestedType === 'operating';
 
-      for (const tx of sorted) {
+      for (const tx of (canUseTransactionHistory ? sorted : [])) {
         const explicitBalance = numberOrNull(tx.current_account_balance ?? tx.currentAccountBalance);
         if (explicitBalance !== null) {
           runningBalance = explicitBalance;
@@ -162,7 +195,7 @@ export default async function handler(req, res) {
         }
       }
 
-      const currentBalance = currentBalanceFromMatter(matter);
+      const currentBalance = currentBalanceFromMatter(matter, matterId);
       const today = new Date().toISOString().slice(0, 10);
       if (currentBalance !== null && dateInRange(today)) {
         const last = points[points.length - 1];
@@ -194,6 +227,7 @@ export default async function handler(req, res) {
         description: matter?.description || "",
         client_name: matter?.client?.name || "",
         account_type: requestedType,
+        minimum_balance: Number(minimumBalances[String(matterId)] ?? defaultMinimumBalance) || defaultMinimumBalance,
         points,
       });
     }
