@@ -1110,6 +1110,8 @@ function App() {
   })
   const [clioRosettaFilter, setClioRosettaFilter] = useState('open')
   const [clioRosettaSearch, setClioRosettaSearch] = useState('')
+  const [clioGraphCaseTypeFilter, setClioGraphCaseTypeFilter] = useState('all')
+  const [clioGraphMatterLabelMode, setClioGraphMatterLabelMode] = useState('clio')
   const [settingsTab, setSettingsTab] = useState(() => {
     try {
       const hashPage = (typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : '')
@@ -1863,6 +1865,8 @@ function App() {
       caseMioMatterBillingRates: { setter: setMatterBillingRates, kind: 'object', fallback: {} },
       caseMioBillingPrivateNotes: { setter: setBillingPrivateNotes, kind: 'object', fallback: {} },
       caseMioClioMioRosetta: { setter: setClioMioRosetta, kind: 'object', fallback: {} },
+      caseMioClioGraphCaseTypeFilter: { setter: setClioGraphCaseTypeFilter, kind: 'string', fallback: 'all' },
+      caseMioClioGraphMatterLabelMode: { setter: setClioGraphMatterLabelMode, kind: 'string', fallback: 'clio' },
       caseMioOutgoingEmailSignatureHtml: { setter: setOutgoingEmailSignatureHtml, kind: 'string', fallback: '' },
       caseMioChecklistNeedToSetSortMode: { setter: setChecklistNeedToSetSortMode, kind: 'string', fallback: 'manual' },
       caseMioSettingWorkspaces: { setter: setSettingWorkspaces, kind: 'object', fallback: {} },
@@ -1970,6 +1974,13 @@ function App() {
   async function saveMioStateKeyNow(key, value) {
     const rawValue = value === undefined || value === null ? '' : String(value)
     mioCloudStateLastValuesRef.current[key] = rawValue
+
+    if (session?.user?.id && !mioCloudStateLoadedRef.current && !mioCloudStateSkipSaveRef.current) {
+      try { window.localStorage.setItem(key, rawValue) } catch {}
+      clearTimeout(mioCloudStateSaveTimersRef.current[key])
+      mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 700)
+      return
+    }
 
     if (!session?.user?.id || mioCloudStateSkipSaveRef.current) {
       try { window.localStorage.setItem(key, rawValue) } catch {}
@@ -2212,6 +2223,14 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioClioMioRosetta', JSON.stringify(clioMioRosetta)) } catch {}
   }, [clioMioRosetta])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioClioGraphCaseTypeFilter', clioGraphCaseTypeFilter || 'all') } catch {}
+  }, [clioGraphCaseTypeFilter])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioClioGraphMatterLabelMode', clioGraphMatterLabelMode || 'clio') } catch {}
+  }, [clioGraphMatterLabelMode])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioOutgoingEmailSignatureHtml', outgoingEmailSignatureHtml || '') } catch {}
@@ -22643,6 +22662,30 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return clioMioNormalizeText([matter?.display_number, matter?.description, matter?.client?.name].filter(Boolean).join(' '))
   }
 
+  function mappedMioMatterForClioId(clioMatterId) {
+    const found = Object.entries(clioMioRosetta || {}).find(([, row]) => String(row?.clio_matter_id || '') === String(clioMatterId))
+    if (!found) return null
+    return matters.find((matter) => String(matter.id) === String(found[0] || found[1]?.mio_matter_id || '')) || null
+  }
+
+  function clioGraphMatterLabel(clioMatterOrId, fallbackLabel = '') {
+    const clioMatterId = typeof clioMatterOrId === 'object' ? clioMatterOrId?.id : clioMatterOrId
+    const clioMatter = typeof clioMatterOrId === 'object' ? clioMatterOrId : clioMatters.find((matter) => String(matter.id) === String(clioMatterId))
+    const mioMatter = mappedMioMatterForClioId(clioMatterId)
+    if (clioGraphMatterLabelMode === 'mio' && mioMatter) return mioMatterDisplay(mioMatter)
+    if (clioGraphMatterLabelMode === 'both' && mioMatter) return `${mioMatterDisplay(mioMatter)} / ${clioMatterDisplay(clioMatter) || fallbackLabel}`
+    return clioMatterDisplay(clioMatter) || fallbackLabel || `Matter ${clioMatterId}`
+  }
+
+  function clioMatterMatchesGraphCaseType(clioMatter) {
+    if (!clioGraphCaseTypeFilter || clioGraphCaseTypeFilter === 'all') return true
+    const mioMatter = mappedMioMatterForClioId(clioMatter?.id)
+    const mioType = String(mioMatter?.matter_type || '').trim()
+    if (clioGraphCaseTypeFilter === '__unmapped__') return !mioMatter
+    if (clioGraphCaseTypeFilter === '__blank__') return mioMatter && !mioType
+    return mioType === clioGraphCaseTypeFilter
+  }
+
   function rosettaMatterIsOpen(matter) {
     const statusText = String(matter?.case_status || matter?.matter_status || matter?.status || '').toLowerCase()
     return !/(closed|inactive|archived|dismissed)/.test(statusText)
@@ -22762,6 +22805,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <button type="button" onClick={loadOpenClioMattersIntoState} disabled={clioBillingLoading}>{clioBillingLoading ? 'Loading Clio matters...' : 'Load open Clio matters'}</button>
           <button type="button" onClick={() => buildClioMioRosettaGuesses()} disabled={!clioMatters.length || !matters.length}>Make first guesses</button>
           <button type="button" onClick={() => setClioMioRosetta({})}>Clear Rosetta table</button>
+          <button type="button" onClick={() => saveMioStateKeyNow('caseMioClioMioRosetta', JSON.stringify(clioMioRosetta || {}))}>Save Rosetta to Supabase now</button>
           <span style={{ color: '#64748b' }}>{mappedCount} Mio matter(s) mapped. {clioMatters.length} open Clio matter(s) loaded.</span>
         </div>
         {clioBillingError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 10, marginBottom: 12 }}>{clioBillingError}</div>}
@@ -22855,6 +22899,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const clioRedirectUri = `${window.location.origin}/api/auth/callback`
     const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
+    const graphCaseTypeOptions = Array.from(new Set(matters.map((matter) => String(matter.matter_type || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+    const graphVisibleClioMatters = clioMatters.filter(clioMatterMatchesGraphCaseType)
 
     async function loadClioMatters() {
       const loadedMatters = await loadOpenClioMattersIntoState()
@@ -22901,7 +22947,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           return
         }
 
-        setClioBalanceSeries(data.series)
+        setClioBalanceSeries(data.series.map((series) => ({
+          ...series,
+          display_number: clioGraphMatterLabel(series.matter_id, series.display_number)
+        })))
         setClioBalanceLastLoaded(new Date().toLocaleString())
       } catch (error) {
         setClioBalanceError(error?.message || String(error))
@@ -22919,7 +22968,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     }
 
     function selectFirstClioMatters(count) {
-      setClioSelectedMatterIds(clioMatters.slice(0, count).map((matter) => String(matter.id)))
+      setClioSelectedMatterIds(graphVisibleClioMatters.slice(0, count).map((matter) => String(matter.id)))
+    }
+
+    function selectAllVisibleClioMatters() {
+      setClioSelectedMatterIds(graphVisibleClioMatters.map((matter) => String(matter.id)))
     }
 
     function clearSelectedClioMatters() {
@@ -22961,7 +23014,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Clio Billing Integration</h2>
         <p style={{ color: '#566', marginTop: -6 }}>
-          Connect this dashboard to Clio, preview mapped/open matters, and graph current matter balances. Trust uses the current trust balance; operating uses current outstanding bill balance when available.
+          Connect this dashboard to Clio, preview mapped/open matters, and graph matter balance history. The Rosetta table controls whether graph labels use Clio names or Mio names.
         </p>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
@@ -23039,31 +23092,50 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 style={{ width: '100%' }}
               />
             </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Case type filter</div>
+              <select value={clioGraphCaseTypeFilter} onChange={(event) => { setClioGraphCaseTypeFilter(event.target.value); setClioSelectedMatterIds([]); }} style={{ width: '100%' }}>
+                <option value="all">All mapped/unmapped Clio matters</option>
+                <option value="__unmapped__">Unmapped Clio matters only</option>
+                <option value="__blank__">Mapped Mio matters with blank case type</option>
+                {graphCaseTypeOptions.map((caseType) => <option key={caseType} value={caseType}>{caseType}</option>)}
+              </select>
+            </label>
+            <label>
+              <div style={{ fontSize: 12, color: '#64748b' }}>Matter names shown as</div>
+              <select value={clioGraphMatterLabelMode} onChange={(event) => setClioGraphMatterLabelMode(event.target.value)} style={{ width: '100%' }}>
+                <option value="clio">Clio names</option>
+                <option value="mio">Mio names from Rosetta</option>
+                <option value="both">Mio / Clio names</option>
+              </select>
+            </label>
             <button type="button" onClick={loadClioBalanceHistory} disabled={clioBalanceLoading || !clioSelectedMatterIds.length}>
               {clioBalanceLoading ? 'Loading graph...' : 'Load balance graph'}
             </button>
           </div>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-            <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!clioMatters.length}>Select first 5</button>
-            <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!clioMatters.length}>Select first 15</button>
-            <button type="button" onClick={clearSelectedClioMatters} disabled={!clioSelectedMatterIds.length}>Clear selected</button>
-            <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length} matter(s) selected</span>
+            <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!graphVisibleClioMatters.length}>Select first 5 shown</button>
+            <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!graphVisibleClioMatters.length}>Select first 15 shown</button>
+            <button type="button" onClick={selectAllVisibleClioMatters} disabled={!graphVisibleClioMatters.length}>Select all shown</button>
+            <button type="button" onClick={clearSelectedClioMatters} disabled={!clioSelectedMatterIds.length}>Clear all</button>
+            <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length} selected; {graphVisibleClioMatters.length} shown by filter</span>
           </div>
 
           {clioMatters.length > 0 && (
             <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 6 }}>
-                {clioMatters.map((matter) => (
+                {graphVisibleClioMatters.map((matter) => (
                   <label key={matter.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
                     <input
                       type="checkbox"
                       checked={clioSelectedMatterIds.includes(String(matter.id))}
                       onChange={() => toggleClioMatter(matter.id)}
                     />
-                    <span>{matter.display_number || matter.description || `Matter ${matter.id}`}</span>
+                    <span>{clioGraphMatterLabel(matter)}</span>
                   </label>
                 ))}
+                {!graphVisibleClioMatters.length && <div style={{ color: '#64748b' }}>No loaded Clio matters match this case type filter.</div>}
               </div>
             </div>
           )}
