@@ -40,6 +40,8 @@ export default async function handler(req, res) {
   }
 
   function numberOrNull(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "string" && value.trim() === "") return null;
     if (value && typeof value === "object") {
       if ("amount" in value) value = value.amount;
       else if ("cents" in value) value = Number(value.cents) / 100;
@@ -242,7 +244,8 @@ export default async function handler(req, res) {
       const day = normalizeDay(a.date || a.created_at || a.updated_at);
       const inSelectedRange = !day || inRange(day);
       const amount = firstNumber(a.total, a.price, a.amount) || 0;
-      const quantity = firstNumber(a.quantity, a.hours, a.time) || 0;
+      let quantity = firstNumber(a.quantity, a.hours, a.time) || 0;
+      if (quantity > 24) quantity = quantity / 3600; // Clio time quantities may arrive as seconds in some responses.
       const typeText = String(a.type || a.activity_type || a.activityType || "").toLowerCase();
       const isExpense = /expense/.test(typeText);
       const nonBillable = a.non_billable === true;
@@ -302,14 +305,77 @@ export default async function handler(req, res) {
     return found ? outstanding : null;
   }
 
+
+  function deepNumbers(obj, path = "", out = []) {
+    if (obj === null || obj === undefined) return out;
+    const n = numberOrNull(obj);
+    if (n !== null && typeof obj !== "object") {
+      out.push({ path, value: n });
+      return out;
+    }
+    if (Array.isArray(obj)) {
+      obj.forEach((item, index) => deepNumbers(item, `${path} ${index}`, out));
+      return out;
+    }
+    if (typeof obj === "object") {
+      const labels = [obj.name, obj.label, obj.type, obj.category, obj.key, obj.description, obj.display_number].filter(Boolean).join(" ");
+      for (const [key, value] of Object.entries(obj)) deepNumbers(value, `${path} ${key} ${labels}`, out);
+    }
+    return out;
+  }
+
+  function numberFromKeywords(obj, positive, negative = null) {
+    for (const row of deepNumbers(obj)) {
+      const path = String(row.path || "").toLowerCase();
+      if (positive.test(path) && !(negative && negative.test(path))) return row.value;
+    }
+    return null;
+  }
+
+  async function fetchReportFinancials(matterId) {
+    // Best-effort. Clio report availability varies by account and report type.
+    // If these endpoints are not exposed, this safely returns nulls and the table uses bills/activities instead.
+    const attempts = [
+      "reports/work_in_progress.json",
+      "reports/matter_balance_summary.json",
+      "reports/accounts_receivable.json"
+    ];
+    const found = { work_in_progress: null, outstanding_balance: null, source: "" };
+
+    for (const path of attempts) {
+      try {
+        const rows = await fetchPaged(path, { limit: 200, matter_id: matterId }, { maxRecords: 500 });
+        const matchingRows = rows.filter((row) => {
+          const blob = JSON.stringify(row || {});
+          return blob.includes(String(matterId));
+        });
+        const candidates = matchingRows.length ? matchingRows : rows;
+        for (const row of candidates) {
+          if (found.work_in_progress === null) {
+            found.work_in_progress = numberFromKeywords(row, /(work.?in.?progress|wip|unbilled)/i, /(paid|payment|trust|funds? in|funds? out)/i);
+          }
+          if (found.outstanding_balance === null) {
+            found.outstanding_balance = numberFromKeywords(row, /(outstanding|receivable|accounts.?receivable|balance.?due|amount.?due)/i, /(trust|funds? in|funds? out|work.?in.?progress|wip)/i);
+          }
+          if (found.work_in_progress !== null || found.outstanding_balance !== null) found.source = path;
+          if (found.work_in_progress !== null && found.outstanding_balance !== null) return found;
+        }
+      } catch {
+        // keep trying
+      }
+    }
+    return found;
+  }
+
   async function buildRow(matterId) {
     const matter = await fetchMatter(matterId);
     const contactId = matter?.client?.id || matter?.client_id || null;
-    const [trust, activity, billOutstanding, contact] = await Promise.all([
+    const [trust, activity, billOutstanding, contact, reportFinancials] = await Promise.all([
       fetchTrustTransactions(matterId),
       fetchActivities(matterId),
       fetchBillsOutstanding(matterId),
       fetchContact(contactId),
+      fetchReportFinancials(matterId),
     ]);
 
     const directWip = firstNumber(matter?.work_in_progress, matter?.work_in_progress_balance, matter?.wip, matter?.unbilled_balance);
@@ -327,8 +393,8 @@ export default async function handler(req, res) {
       clio_contact_id: contactId ? String(contactId) : "",
       clio_client_email: pickEmail(contact),
       clio_client_phone: pickPhone(contact),
-      work_in_progress: Number(directWip ?? activity.wip_from_unbilled ?? 0),
-      outstanding_balance: Number(directOutstanding ?? billOutstanding ?? 0),
+      work_in_progress: Number(directWip ?? reportFinancials.work_in_progress ?? activity.wip_from_unbilled ?? 0),
+      outstanding_balance: Number(directOutstanding ?? reportFinancials.outstanding_balance ?? billOutstanding ?? 0),
       matter_trust_funds: Number(directTrust ?? trust.trust_running_balance ?? 0),
       time_hours: Number(activity.time_hours || 0),
       time_amount: Number(activity.time_amount || 0),
@@ -357,7 +423,7 @@ export default async function handler(req, res) {
     const settled = await mapWithConcurrency(matterIds, 3, buildRow);
     const rows = settled.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
     const failed = settled.filter((r) => r.status === "rejected").length;
-    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v20", mode: "net_trust_bills_outstanding_unbilled_activity_wip" } });
+    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v23", mode: "null_safe_net_trust_bills_reports_activity_wip" } });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
   }

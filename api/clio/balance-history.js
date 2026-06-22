@@ -39,6 +39,8 @@ export default async function handler(req, res) {
   }
 
   function numberOrNull(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "string" && value.trim() === "") return null;
     if (value && typeof value === "object") {
       if ("amount" in value) value = value.amount;
       else if ("cents" in value) value = Number(value.cents) / 100;
@@ -124,7 +126,7 @@ export default async function handler(req, res) {
   }
 
   async function fetchTrustTransactions(matterId) {
-    // v21: never refetch default fields after a successful fielded request. Default rows may contain only id/etag.
+    // v23: never refetch default fields after a successful fielded request; null balance fields are not zero. Default rows may contain only id/etag.
     const attempts = [
       "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}",
       "id,date,funds_out,funds_in,matter{id,display_number}",
@@ -290,7 +292,7 @@ export default async function handler(req, res) {
     const failed = settled.filter((r) => r.status === "rejected").length;
     return res.status(200).json({
       series,
-      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v21", mode: "fielded_transactions_net_ledger_no_default_refetch" },
+      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v23", mode: "v23_net_funds_in_minus_funds_out_null_safe" },
     });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
