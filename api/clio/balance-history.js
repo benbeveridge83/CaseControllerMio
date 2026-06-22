@@ -22,12 +22,22 @@ export default async function handler(req, res) {
   let minimumBalances = {};
   try { minimumBalances = JSON.parse(String(req.query.minimum_balances || "{}")) || {}; } catch { minimumBalances = {}; }
 
+  const DAY = 24 * 60 * 60 * 1000;
+
   function asDate(day) {
     const d = new Date(day);
     return Number.isFinite(d.getTime()) ? d : null;
   }
 
-  function compareDays(a, b) { return new Date(a) - new Date(b); }
+  function compareDays(a, b) {
+    return new Date(a).getTime() - new Date(b).getTime();
+  }
+
+  function normalizeDay(value) {
+    if (!value) return null;
+    const s = String(value).slice(0, 10);
+    return asDate(s) ? s : null;
+  }
 
   function inRange(day) {
     const d = asDate(day);
@@ -49,9 +59,10 @@ export default async function handler(req, res) {
       else return null;
     }
     if (typeof value === "string") {
-      const cleaned = value.replace(/[$,\s]/g, "");
-      if (!cleaned) return null;
-      value = cleaned;
+      const cleaned = value.replace(/[$,\s]/g, "").replace(/[()]/g, "");
+      if (!cleaned || cleaned === "-") return null;
+      const negative = /\(.*\)/.test(value) || /^-/.test(cleaned);
+      value = negative && !cleaned.startsWith("-") ? `-${cleaned}` : cleaned;
     }
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
@@ -63,94 +74,6 @@ export default async function handler(req, res) {
       if (n !== null) return n;
     }
     return null;
-  }
-
-  function amountField(obj, snake, camel) {
-    return firstNumber(obj?.[snake], obj?.[camel], obj?.[snake?.replace(/_/g, "")]);
-  }
-
-  function txFundsIn(tx) {
-    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.FundsIn, tx?.funds_in_amount, tx?.credit, tx?.credit_amount);
-  }
-
-  function txFundsOut(tx) {
-    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.FundsOut, tx?.funds_out_amount, tx?.debit, tx?.debit_amount);
-  }
-
-  function txExplicitBalance(tx) {
-    return firstNumber(
-      tx?.running_balance,
-      tx?.runningBalance,
-      tx?.RunningBalance,
-      tx?.current_account_balance,
-      tx?.currentAccountBalance,
-      tx?.CurrentAccountBalance,
-      tx?.account_balance,
-      tx?.accountBalance,
-      tx?.AccountBalance,
-      tx?.balance_after,
-      tx?.balanceAfter,
-      tx?.BalanceAfter,
-      tx?.balance,
-      tx?.Balance
-    );
-  }
-
-  async function clioFetch(url) {
-    const response = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(data?.error?.message || data?.message || data?.error || `Clio request failed with ${response.status}`);
-      error.status = response.status;
-      error.payload = data;
-      throw error;
-    }
-    return data;
-  }
-
-  async function fetchPaged(path, params, fallbackPaths = []) {
-    const paths = [path, ...fallbackPaths];
-    let lastError = null;
-    for (const p of paths) {
-      try {
-        let url = new URL(`https://app.clio.com/api/v4/${p}`);
-        for (const [key, value] of Object.entries(params || {})) {
-          if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
-        }
-        const all = [];
-        while (url) {
-          const data = await clioFetch(url);
-          all.push(...(Array.isArray(data.data) ? data.data : []));
-          const next = data?.meta?.paging?.next;
-          url = next ? new URL(next) : null;
-        }
-        return all;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error(`Could not fetch ${path}`);
-  }
-
-  async function fetchMatter(matterId) {
-    const fieldSets = [
-      "id,display_number,description,status,client{id,name},account_balances",
-      "id,display_number,description,status,client{id,name},trust_balance,trust_account_balance,matter_trust_funds,funds_in_trust",
-      "id,display_number,description,status,client{id,name},work_in_progress,work_in_progress_balance,wip,unbilled_balance",
-      "id,display_number,description,status,client{id,name}",
-    ];
-    let merged = null;
-    for (const fields of fieldSets) {
-      const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-      url.searchParams.set("fields", fields);
-      try {
-        const data = await clioFetch(url);
-        merged = { ...(merged || {}), ...(data?.data || {}) };
-      } catch {}
-    }
-    return merged || { id: matterId };
   }
 
   function flattenNumbers(obj, path = "", out = []) {
@@ -171,54 +94,133 @@ export default async function handler(req, res) {
     return out;
   }
 
-  function numericByKeyword(obj, positiveRegex, negativeRegex = null) {
-    for (const row of flattenNumbers(obj)) {
-      const p = String(row.path || "").toLowerCase();
-      if (positiveRegex.test(p) && !(negativeRegex && negativeRegex.test(p))) return row.value;
+  function directFieldNumber(obj, names) {
+    for (const name of names) {
+      if (obj && Object.prototype.hasOwnProperty.call(obj, name)) {
+        const n = numberOrNull(obj[name]);
+        if (n !== null) return n;
+      }
     }
     return null;
   }
 
+  function txExplicitBalance(tx) {
+    // Only use fields that mean balance-after/running/current balance. Never use amount, total, funds_in, or funds_out.
+    const direct = directFieldNumber(tx, [
+      "running_balance",
+      "runningBalance",
+      "RunningBalance",
+      "current_account_balance",
+      "currentAccountBalance",
+      "CurrentAccountBalance",
+      "account_balance",
+      "accountBalance",
+      "AccountBalance",
+      "balance_after",
+      "balanceAfter",
+      "BalanceAfter",
+      "ending_balance",
+      "endingBalance",
+      "current_balance",
+      "currentBalance",
+    ]);
+    if (direct !== null) return direct;
+
+    // Some Clio payloads nest custom balance fields. Search cautiously and exclude global bank account balances.
+    const rows = flattenNumbers(tx);
+    for (const row of rows) {
+      const p = String(row.path || "").toLowerCase();
+      if (/bank_account|bankaccount|account\s+id|funds_in|fundsin|funds_out|fundsout|amount|total|credit|debit/.test(p)) continue;
+      if (/(running|current|ending|after).*balance|balance.*(running|current|ending|after)/.test(p)) return row.value;
+    }
+    return null;
+  }
+
+  function txFundsIn(tx) {
+    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.FundsIn, tx?.funds_in_amount, tx?.credit, tx?.credit_amount, tx?.deposit, tx?.deposits);
+  }
+
+  function txFundsOut(tx) {
+    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.FundsOut, tx?.funds_out_amount, tx?.debit, tx?.debit_amount, tx?.withdrawal, tx?.withdrawals);
+  }
+
+  async function clioFetch(url) {
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data?.error?.message || data?.message || data?.error || `Clio request failed with ${response.status}`);
+      error.status = response.status;
+      error.payload = data;
+      throw error;
+    }
+    return data;
+  }
+
+  async function fetchPaged(path, params = {}, options = {}) {
+    let url = new URL(`https://app.clio.com/api/v4/${path}`);
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
+    }
+    const all = [];
+    while (url) {
+      const data = await clioFetch(url);
+      all.push(...(Array.isArray(data.data) ? data.data : []));
+      const next = data?.meta?.paging?.next;
+      url = next ? new URL(next) : null;
+      if (options.maxRecords && all.length >= options.maxRecords) break;
+    }
+    return all;
+  }
+
+  async function fetchMatter(matterId) {
+    const attempts = [
+      "id,display_number,description,status,client{id,name},trust_balance,trust_account_balance,matter_trust_funds,funds_in_trust,work_in_progress,work_in_progress_balance,wip,unbilled_balance",
+      "id,display_number,description,status,client{id,name},account_balances",
+      "id,display_number,description,status,client{id,name}",
+    ];
+    let merged = null;
+    for (const fields of attempts) {
+      const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
+      url.searchParams.set("fields", fields);
+      try {
+        const data = await clioFetch(url);
+        merged = { ...(merged || {}), ...(data?.data || {}) };
+      } catch {
+        // Ignore rejected optional field requests.
+      }
+    }
+    return merged || { id: matterId };
+  }
+
   function matterTrust(matter) {
-    const value = firstNumber(
-      matter?.trust_balance,
-      matter?.trust_account_balance,
-      matter?.matter_trust_funds,
-      matter?.funds_in_trust,
-      numericByKeyword(matter?.account_balances, /(trust|liability|client)/i, /(work|progress|wip|unbilled|receivable|outstanding)/i)
-    );
-    // Treat a missing/blank/zero matter value as unknown so it does not override real transaction data.
-    return value && Math.abs(value) > 0.00001 ? value : null;
+    // Use only exact matter-level fields. Do not scrape account_balances because it can be the whole firm trust account.
+    return firstNumber(matter?.trust_balance, matter?.trust_account_balance, matter?.matter_trust_funds, matter?.funds_in_trust);
   }
 
   function matterWip(matter) {
-    return firstNumber(
-      matter?.work_in_progress,
-      matter?.work_in_progress_balance,
-      matter?.wip,
-      matter?.unbilled_balance,
-      numericByKeyword(matter?.account_balances, /(work|progress|wip|unbilled)/i)
-    );
+    return firstNumber(matter?.work_in_progress, matter?.work_in_progress_balance, matter?.wip, matter?.unbilled_balance);
   }
 
   async function fetchTrustTransactions(matterId) {
-    const fieldAttempts = [
-      // These are the real target fields. Do not use gross amount as a balance.
-      "id,date,funds_out,funds_in,current_account_balance,running_balance,account_balance,balance_after,balance,matter{id,display_number}",
-      "id,date,funds_out,funds_in,current_account_balance,running_balance,matter{id,display_number}",
-      "id,date,funds_out,funds_in,current_account_balance",
-      "id,date,funds_out,funds_in",
-      "id,date,amount,current_account_balance,running_balance",
-      "id,date,amount",
+    const attempts = [
+      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,account_balance,balance_after,ending_balance,current_balance,matter{id,display_number}" },
+      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" },
+      { fields: "id,date,funds_out,funds_in,matter{id,display_number}" },
+      { fields: "id,date,amount,matter{id,display_number}" },
+      { fields: null },
     ];
 
     let txs = [];
     let usedFields = "";
-    for (const fields of fieldAttempts) {
+    for (const attempt of attempts) {
       try {
-        txs = await fetchPaged("bank_transactions.json", { limit: 200, matter_id: matterId, type: "liability", fields }, ["bank_transactions"]);
-        usedFields = fields;
-        if (txs.length || fields === fieldAttempts[fieldAttempts.length - 1]) break;
+        const params = { limit: 200, matter_id: matterId, type: "liability" };
+        if (attempt.fields) params.fields = attempt.fields;
+        txs = await fetchPaged("bank_transactions.json", params, { maxRecords: 500 });
+        usedFields = attempt.fields || "default_fields";
+        if (txs.length || !attempt.fields) break;
       } catch {
         txs = [];
       }
@@ -226,50 +228,46 @@ export default async function handler(req, res) {
 
     const rows = txs
       .map((tx) => {
-        const date = tx.date ? String(tx.date).slice(0, 10) : null;
+        const date = normalizeDay(tx.date || tx.created_at || tx.updated_at);
         const explicit = txExplicitBalance(tx);
         const fundsIn = txFundsIn(tx);
         const fundsOut = txFundsOut(tx);
-        const hasDelta = fundsIn !== null || fundsOut !== null;
-        const delta = hasDelta ? (Number(fundsIn || 0) - Number(fundsOut || 0)) : null;
-        return { id: tx.id, date, explicit, fundsIn, fundsOut, delta, raw: tx };
+        const amount = firstNumber(tx?.amount);
+        let delta = null;
+        if (fundsIn !== null || fundsOut !== null) delta = Number(fundsIn || 0) - Number(fundsOut || 0);
+        else if (amount !== null) delta = Number(amount || 0);
+        return { id: tx.id, date, explicit, fundsIn, fundsOut, amount, delta, raw: tx };
       })
       .filter((row) => row.date)
       .sort((a, b) => compareDays(a.date, b.date));
 
-    return { rows, usedFields };
+    return { rows, usedFields, raw_count: txs.length };
   }
 
-  async function fetchCurrentWip(matterId, matter) {
-    const direct = matterWip(matter);
-    if (direct !== null) return direct;
-    return 0;
-  }
-
-  function buildTrustPointsFromTransactions(rows, currentTrust) {
+  function buildLedgerPoints(rows) {
     if (!rows.length) return [];
 
     const explicitRows = rows.filter((row) => row.explicit !== null);
     if (explicitRows.length) {
-      return rows.map((row) => {
-        if (row.explicit !== null) return { date: row.date, trust: Number(row.explicit), source: "clio_explicit_running_balance", transaction_id: row.id };
-        return null;
-      }).filter(Boolean);
+      let lastExplicit = null;
+      const points = [];
+      for (const row of rows) {
+        if (row.explicit !== null) lastExplicit = Number(row.explicit);
+        if (lastExplicit !== null) {
+          points.push({ date: row.date, trust: lastExplicit, source: "clio_running_or_current_balance", transaction_id: row.id });
+        }
+      }
+      return points;
     }
 
-    const deltaRows = rows.filter((row) => row.delta !== null);
-    if (!deltaRows.length) return [];
-
-    const totalDelta = deltaRows.reduce((sum, row) => sum + Number(row.delta || 0), 0);
-    // Anchor to current Clio trust when available. This avoids the old bug where deposits were
-    // graphed as cumulative gross trust. If currentTrust is unavailable, this is still a net ledger,
-    // not gross funds-in.
-    let running = currentTrust !== null ? Number(currentTrust) - totalDelta : 0;
+    // Fallback: current trust balance is simply the net of all trust movements for the matter.
+    // This is not gross cumulative funds-in; it subtracts funds out and should match the transaction page running balance.
+    let running = 0;
     const points = [];
     for (const row of rows) {
       if (row.delta === null) continue;
       running += Number(row.delta || 0);
-      points.push({ date: row.date, trust: Number(running || 0), source: currentTrust !== null ? "net_transactions_anchored_to_current_trust" : "net_transactions_unanchored", transaction_id: row.id });
+      points.push({ date: row.date, trust: running, source: "net_trust_ledger_from_funds_in_minus_out", transaction_id: row.id });
     }
     return points;
   }
@@ -277,9 +275,9 @@ export default async function handler(req, res) {
   function uniqueDateLast(points) {
     const map = new Map();
     for (const point of points || []) {
-      if (point?.date) map.set(String(point.date).slice(0, 10), { ...point, date: String(point.date).slice(0, 10) });
+      if (point?.date) map.set(normalizeDay(point.date), { ...point, date: normalizeDay(point.date) });
     }
-    return Array.from(map.values()).sort((a, b) => compareDays(a.date, b.date));
+    return Array.from(map.values()).filter((p) => p.date).sort((a, b) => compareDays(a.date, b.date));
   }
 
   function ensureRange(points, currentTrust) {
@@ -305,6 +303,10 @@ export default async function handler(req, res) {
     return uniqueDateLast(out);
   }
 
+  async function fetchCurrentWip(_matterId, matter) {
+    return matterWip(matter) ?? 0;
+  }
+
   function valueForType(type, trust, wip, minimum) {
     const t = Number(trust || 0);
     const w = Number(wip || 0);
@@ -323,13 +325,12 @@ export default async function handler(req, res) {
       fetchCurrentWip(matterId, matter),
     ]);
 
-    const explicitLast = txPayload.rows.filter((row) => row.explicit !== null).at(-1)?.explicit ?? null;
+    let trustPoints = buildLedgerPoints(txPayload.rows);
     const directTrust = matterTrust(matter);
-    let currentTrust = directTrust !== null ? directTrust : (explicitLast !== null ? Number(explicitLast) : null);
+    let currentTrust = trustPoints.length ? Number(trustPoints[trustPoints.length - 1].trust || 0) : (directTrust ?? 0);
 
-    let trustPoints = buildTrustPointsFromTransactions(txPayload.rows, currentTrust);
-    if (currentTrust === null && trustPoints.length) currentTrust = Number(trustPoints[trustPoints.length - 1].trust || 0);
-    if (currentTrust === null) currentTrust = 0;
+    // If Clio exposes the matter dashboard trust value and it differs from a net ledger only by pennies, use it at the end.
+    if (directTrust !== null && Math.abs(Number(directTrust) - currentTrust) < 0.02) currentTrust = Number(directTrust);
 
     const ranged = ensureRange(trustPoints, currentTrust);
     const minimum = Number(minimumBalances[String(matterId)] ?? 2000) || 2000;
@@ -347,7 +348,13 @@ export default async function handler(req, res) {
       current_work_in_progress: Number(wip || 0),
       minimum_balance: minimum,
       points,
-      debug: { transaction_count: txPayload.rows.length, used_fields: txPayload.usedFields },
+      debug: {
+        transaction_count: txPayload.rows.length,
+        used_fields: txPayload.usedFields,
+        raw_count: txPayload.raw_count,
+        first_point: trustPoints[0] || null,
+        last_point: trustPoints[trustPoints.length - 1] || null,
+      },
     };
   }
 
@@ -371,7 +378,7 @@ export default async function handler(req, res) {
     const failed = settled.filter((r) => r.status === "rejected").length;
     return res.status(200).json({
       series,
-      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v19", mode: "anchored_net_or_explicit_running_balance_no_gross_cumulative" },
+      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v20", mode: "net_trust_ledger_or_explicit_running_balance_no_gross_deposits" },
     });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
