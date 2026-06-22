@@ -167,24 +167,50 @@ export default async function handler(req, res) {
   }
 
   function buildLedgerPoints(rows) {
+    // Clio bank_transactions for trust transfers can return two matter rows on the same date:
+    //   funds_out = X (the actual draw from trust), and
+    //   funds_in  = X (the mirrored operating-side row for the same invoice transfer).
+    // Counting both makes current trust equal gross deposits instead of the real running balance.
+    // Pair same-date/same-amount funds_in rows with funds_out rows and ignore those mirrored funds_in rows.
+    const outBuckets = new Map();
+    for (const row of rows || []) {
+      const out = Number(row.fundsOut || 0);
+      if (!row.date || out <= 0) continue;
+      const key = `${row.date}|${out.toFixed(2)}`;
+      outBuckets.set(key, (outBuckets.get(key) || 0) + 1);
+    }
+
     let running = null;
     const points = [];
 
-    for (const row of rows) {
+    for (const row of rows || []) {
+      let effectiveFundsIn = Number(row.fundsIn || 0);
+      const fundsOut = Number(row.fundsOut || 0);
+      if (effectiveFundsIn > 0) {
+        const key = `${row.date}|${effectiveFundsIn.toFixed(2)}`;
+        const count = outBuckets.get(key) || 0;
+        if (count > 0) {
+          // This funds_in is the mirror of a trust-to-operating transfer. Do not count it as new trust.
+          effectiveFundsIn = 0;
+          outBuckets.set(key, count - 1);
+        }
+      }
+
       if (row.explicit !== null) {
         running = Number(row.explicit);
       } else {
         if (running === null) running = 0;
-        if (row.delta !== null) running += Number(row.delta || 0);
+        if (row.delta !== null || effectiveFundsIn || fundsOut) running += effectiveFundsIn - fundsOut;
         else continue;
       }
       points.push({
         date: row.date,
         trust: Number(running || 0),
-        source: row.explicit !== null ? "clio_explicit_running_balance" : "net_funds_in_minus_out",
+        source: row.explicit !== null ? "clio_explicit_running_balance" : "net_funds_in_minus_out_ignoring_mirrored_transfer_in",
         transaction_id: row.id,
-        funds_in: row.fundsIn,
-        funds_out: row.fundsOut,
+        funds_in: effectiveFundsIn,
+        funds_out: fundsOut,
+        raw_funds_in: row.fundsIn,
       });
     }
     return points;
@@ -292,7 +318,7 @@ export default async function handler(req, res) {
     const failed = settled.filter((r) => r.status === "rejected").length;
     return res.status(200).json({
       series,
-      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v23", mode: "v23_net_funds_in_minus_funds_out_null_safe" },
+      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v24", mode: "v24_net_funds_ignore_mirrored_transfer_in" },
     });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });

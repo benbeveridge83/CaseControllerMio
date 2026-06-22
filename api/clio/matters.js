@@ -59,7 +59,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       meta: {
         records: matters.length,
-        status: sourceStatus,
+        status: sourceStatus, version: "v23",
       },
       data: matters,
     });

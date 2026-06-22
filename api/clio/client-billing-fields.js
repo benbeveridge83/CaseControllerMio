@@ -176,11 +176,9 @@ export default async function handler(req, res) {
 
   async function fetchTrustTransactions(matterId) {
     const attempts = [
-      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,account_balance,balance_after,ending_balance,current_balance,matter{id,display_number}" },
       { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" },
       { fields: "id,date,funds_out,funds_in,matter{id,display_number}" },
       { fields: "id,date,amount,matter{id,display_number}" },
-      { fields: null },
     ];
     let txs = [];
     for (const attempt of attempts) {
@@ -188,34 +186,66 @@ export default async function handler(req, res) {
         const params = { limit: 200, matter_id: matterId, type: "liability" };
         if (attempt.fields) params.fields = attempt.fields;
         txs = await fetchPaged("bank_transactions.json", params, { maxRecords: 500 });
-        if (txs.length || !attempt.fields) break;
+        if (txs.length) break;
       } catch {
         txs = [];
       }
     }
 
-    let running = 0;
-    let fundsInSelected = 0;
-    let fundsOutSelected = 0;
-    const rows = txs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    const rows = txs
+      .map((tx) => ({
+        id: tx.id,
+        day: normalizeDay(tx.date || tx.created_at || tx.updated_at),
+        explicit: txExplicitBalance(tx),
+        fundsIn: Number(txFundsIn(tx) || 0),
+        fundsOut: Number(txFundsOut(tx) || 0),
+        amount: firstNumber(tx?.amount),
+      }))
+      .filter((row) => row.day)
+      .sort((a, b) => new Date(a.day) - new Date(b.day) || String(a.id).localeCompare(String(b.id)));
 
-    for (const tx of rows) {
-      const day = normalizeDay(tx.date || tx.created_at || tx.updated_at);
-      const explicit = txExplicitBalance(tx);
-      const fundsIn = txFundsIn(tx) || 0;
-      const fundsOut = txFundsOut(tx) || 0;
-      const amount = firstNumber(tx?.amount);
-      if (explicit !== null) running = Number(explicit);
-      else if (fundsIn || fundsOut) running += Number(fundsIn) - Number(fundsOut);
-      else if (amount !== null) running += Number(amount);
-
-      if (day && inRange(day)) {
-        fundsInSelected += Number(fundsIn || 0);
-        fundsOutSelected += Number(fundsOut || 0);
+    // Ignore mirrored funds_in rows that pair with same-date/same-amount funds_out rows.
+    const outBuckets = new Map();
+    for (const row of rows) {
+      if (row.fundsOut > 0) {
+        const key = `${row.day}|${row.fundsOut.toFixed(2)}`;
+        outBuckets.set(key, (outBuckets.get(key) || 0) + 1);
       }
     }
 
-    return { trust_funds_in: fundsInSelected, trust_funds_out: fundsOutSelected, trust_running_balance: Number(running || 0) };
+    let running = 0;
+    let trustFundsInSelected = 0;
+    let trustFundsOutSelected = 0;
+    let ignoredMirroredFundsIn = 0;
+
+    for (const row of rows) {
+      let effectiveFundsIn = row.fundsIn;
+      if (effectiveFundsIn > 0) {
+        const key = `${row.day}|${effectiveFundsIn.toFixed(2)}`;
+        const count = outBuckets.get(key) || 0;
+        if (count > 0) {
+          effectiveFundsIn = 0;
+          ignoredMirroredFundsIn += row.fundsIn;
+          outBuckets.set(key, count - 1);
+        }
+      }
+
+      if (row.explicit !== null) running = Number(row.explicit);
+      else if (effectiveFundsIn || row.fundsOut) running += effectiveFundsIn - row.fundsOut;
+      else if (row.amount !== null) running += Number(row.amount || 0);
+
+      if (row.day && inRange(row.day)) {
+        trustFundsInSelected += Number(effectiveFundsIn || 0);
+        trustFundsOutSelected += Number(row.fundsOut || 0);
+      }
+    }
+
+    return {
+      trust_funds_in: Number(trustFundsInSelected || 0),
+      trust_funds_out: Number(trustFundsOutSelected || 0),
+      trust_running_balance: Number(running || 0),
+      ignored_mirrored_funds_in: Number(ignoredMirroredFundsIn || 0),
+    };
   }
 
   async function fetchActivities(matterId) {
@@ -423,7 +453,7 @@ export default async function handler(req, res) {
     const settled = await mapWithConcurrency(matterIds, 3, buildRow);
     const rows = settled.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
     const failed = settled.filter((r) => r.status === "rejected").length;
-    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v23", mode: "null_safe_net_trust_bills_reports_activity_wip" } });
+    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v24", mode: "trust_totals_ignore_mirrored_transfer_in_bills_reports_activity_wip" } });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
   }

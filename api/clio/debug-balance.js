@@ -109,29 +109,54 @@ export default async function handler(req, res) {
   const txResult = await fetchTransactions(fields);
   const transactions = Array.isArray(txResult.data?.data) ? txResult.data.data : [];
 
+  const sortedTransactions = transactions
+    .slice()
+    .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0) || String(a.id).localeCompare(String(b.id)));
+
+  const outBuckets = new Map();
+  for (const tx of sortedTransactions) {
+    const date = normalizeDay(tx.date);
+    const fout = Number(fundsOut(tx) || 0);
+    if (!date || fout <= 0) continue;
+    const key = `${date}|${fout.toFixed(2)}`;
+    outBuckets.set(key, (outBuckets.get(key) || 0) + 1);
+  }
+
   let running = 0;
+  let grossFundsInRaw = 0;
   let grossFundsIn = 0;
   let grossFundsOut = 0;
-  const parsed_points = transactions
-    .slice()
-    .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0) || String(a.id).localeCompare(String(b.id)))
-    .map((tx) => {
+  let ignoredMirroredFundsIn = 0;
+  const parsed_points = sortedTransactions.map((tx) => {
       const date = normalizeDay(tx.date);
       const explicit_balance = explicit(tx);
-      const fin = fundsIn(tx) || 0;
-      const fout = fundsOut(tx) || 0;
-      grossFundsIn += Number(fin);
-      grossFundsOut += Number(fout);
+      const rawFin = Number(fundsIn(tx) || 0);
+      const fout = Number(fundsOut(tx) || 0);
+      let effectiveFin = rawFin;
+      grossFundsInRaw += rawFin;
+      grossFundsOut += fout;
+      if (effectiveFin > 0) {
+        const key = `${date}|${effectiveFin.toFixed(2)}`;
+        const count = outBuckets.get(key) || 0;
+        if (count > 0) {
+          effectiveFin = 0;
+          ignoredMirroredFundsIn += rawFin;
+          outBuckets.set(key, count - 1);
+        }
+      }
+      grossFundsIn += effectiveFin;
       if (explicit_balance !== null) running = Number(explicit_balance);
-      else running += Number(fin) - Number(fout);
+      else running += effectiveFin - fout;
       return {
         id: tx.id,
         date,
         explicit_balance,
-        funds_in: fin,
+        raw_funds_in: rawFin,
+        effective_funds_in: effectiveFin,
         funds_out: fout,
-        delta: Number(fin) - Number(fout),
+        delta: effectiveFin - fout,
         parsed_balance: running,
+        ignored_as_mirrored_transfer_in: rawFin > 0 && effectiveFin === 0,
         raw_keys: Object.keys(tx || {})
       };
     });
@@ -139,13 +164,15 @@ export default async function handler(req, res) {
   const [bill_attempts, report_attempts] = await Promise.all([fetchBills(), fetchReportAttempts()]);
 
   return res.status(200).json({
-    version: "v23",
+    version: "v24",
     matter_id: matterId,
     matter,
     successful_fields: fields,
     transaction_count: transactions.length,
-    gross_funds_in: grossFundsIn,
-    gross_funds_out: grossFundsOut,
+    raw_gross_funds_in_before_mirror_filter: grossFundsInRaw,
+    ignored_mirrored_funds_in: ignoredMirroredFundsIn,
+    trust_funds_in: grossFundsIn,
+    trust_funds_out: grossFundsOut,
     calculated_current_trust: grossFundsIn - grossFundsOut,
     parsed_points,
     last_parsed_balance: parsed_points.length ? parsed_points[parsed_points.length - 1].parsed_balance : 0,
