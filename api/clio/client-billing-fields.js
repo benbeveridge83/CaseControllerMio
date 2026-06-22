@@ -324,11 +324,14 @@ export default async function handler(req, res) {
   }
 
   async function buildRow(matterId) {
-    const [matter, trust, activity, billOutstanding] = await Promise.all([
-      fetchMatter(matterId),
+    const matter = await fetchMatter(matterId)
+    const contactId = matter?.client?.id || matter?.client_id || matter?.clientId
+    const [trust, activity, billOutstanding, contactDetails, reportFinancials] = await Promise.all([
       fetchTrustTransactions(matterId),
       fetchActivities(matterId),
       fetchBills(matterId),
+      fetchContactDetails(contactId),
+      fetchReportFinancials(matterId).catch(() => ({})),
     ]);
 
     const wip = matterWip(matter);
@@ -343,8 +346,11 @@ export default async function handler(req, res) {
       matter_label: matterLabel,
       clio_matter_number: matter?.display_number || "",
       clio_client_name: clientName,
-      work_in_progress: Number(wip ?? activity.wip_from_unbilled ?? 0),
-      outstanding_balance: Number(outstanding ?? billOutstanding ?? 0),
+      clio_contact_id: contactDetails.clio_contact_id || (contactId ? String(contactId) : ""),
+      clio_client_email: contactDetails.clio_client_email || "",
+      clio_client_phone: contactDetails.clio_client_phone || "",
+      work_in_progress: Number(wip ?? reportFinancials.work_in_progress ?? activity.wip_from_unbilled ?? 0),
+      outstanding_balance: Number(outstanding ?? reportFinancials.outstanding_balance ?? billOutstanding ?? 0),
       matter_trust_funds: Number(trustBalance ?? trust.trust_running_balance ?? 0),
       time_hours: Number(activity.time_hours || 0),
       time_amount: Number(activity.time_amount || 0),
