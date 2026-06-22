@@ -22,30 +22,19 @@ export default async function handler(req, res) {
   let minimumBalances = {};
   try { minimumBalances = JSON.parse(String(req.query.minimum_balances || "{}")) || {}; } catch { minimumBalances = {}; }
 
-  const DAY = 24 * 60 * 60 * 1000;
-
-  function asDate(day) {
-    const d = new Date(day);
-    return Number.isFinite(d.getTime()) ? d : null;
-  }
-
-  function compareDays(a, b) {
-    return new Date(a).getTime() - new Date(b).getTime();
-  }
-
   function normalizeDay(value) {
     if (!value) return null;
     const s = String(value).slice(0, 10);
-    return asDate(s) ? s : null;
+    const d = new Date(`${s}T00:00:00Z`);
+    return Number.isFinite(d.getTime()) ? s : null;
   }
 
+  function dayMs(day) { return new Date(`${day}T00:00:00Z`).getTime(); }
+  function compareDays(a, b) { return dayMs(a) - dayMs(b); }
   function inRange(day) {
-    const d = asDate(day);
-    const from = fromDay ? asDate(fromDay) : null;
-    const to = toDay ? asDate(toDay) : null;
-    if (!d) return false;
-    if (from && d < from) return false;
-    if (to && d > to) return false;
+    if (!day) return false;
+    if (fromDay && compareDays(day, fromDay) < 0) return false;
+    if (toDay && compareDays(day, toDay) > 0) return false;
     return true;
   }
 
@@ -59,9 +48,9 @@ export default async function handler(req, res) {
       else return null;
     }
     if (typeof value === "string") {
-      const cleaned = value.replace(/[$,\s]/g, "").replace(/[()]/g, "");
+      const negative = /^\s*\(.*\)\s*$/.test(value) || /^\s*-/.test(value);
+      const cleaned = value.replace(/[$,\s()]/g, "");
       if (!cleaned || cleaned === "-") return null;
-      const negative = /\(.*\)/.test(value) || /^-/.test(cleaned);
       value = negative && !cleaned.startsWith("-") ? `-${cleaned}` : cleaned;
     }
     const n = Number(value);
@@ -76,72 +65,19 @@ export default async function handler(req, res) {
     return null;
   }
 
-  function flattenNumbers(obj, path = "", out = []) {
-    if (obj === null || obj === undefined) return out;
-    const n = numberOrNull(obj);
-    if (n !== null && typeof obj !== "object") {
-      out.push({ path, value: n });
-      return out;
-    }
-    if (Array.isArray(obj)) {
-      obj.forEach((item, index) => flattenNumbers(item, `${path} ${index}`, out));
-      return out;
-    }
-    if (typeof obj === "object") {
-      const labels = [obj.name, obj.label, obj.type, obj.account_type, obj.category, obj.key, obj.description].filter(Boolean).join(" ");
-      for (const [key, value] of Object.entries(obj)) flattenNumbers(value, `${path} ${key} ${labels}`, out);
-    }
-    return out;
-  }
-
-  function directFieldNumber(obj, names) {
-    for (const name of names) {
-      if (obj && Object.prototype.hasOwnProperty.call(obj, name)) {
-        const n = numberOrNull(obj[name]);
-        if (n !== null) return n;
-      }
-    }
-    return null;
-  }
-
-  function txExplicitBalance(tx) {
-    // Only use fields that mean balance-after/running/current balance. Never use amount, total, funds_in, or funds_out.
-    const direct = directFieldNumber(tx, [
-      "running_balance",
-      "runningBalance",
-      "RunningBalance",
-      "current_account_balance",
-      "currentAccountBalance",
-      "CurrentAccountBalance",
-      "account_balance",
-      "accountBalance",
-      "AccountBalance",
-      "balance_after",
-      "balanceAfter",
-      "BalanceAfter",
-      "ending_balance",
-      "endingBalance",
-      "current_balance",
-      "currentBalance",
-    ]);
-    if (direct !== null) return direct;
-
-    // Some Clio payloads nest custom balance fields. Search cautiously and exclude global bank account balances.
-    const rows = flattenNumbers(tx);
-    for (const row of rows) {
-      const p = String(row.path || "").toLowerCase();
-      if (/bank_account|bankaccount|account\s+id|funds_in|fundsin|funds_out|fundsout|amount|total|credit|debit/.test(p)) continue;
-      if (/(running|current|ending|after).*balance|balance.*(running|current|ending|after)/.test(p)) return row.value;
-    }
-    return null;
-  }
-
   function txFundsIn(tx) {
-    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.FundsIn, tx?.funds_in_amount, tx?.credit, tx?.credit_amount, tx?.deposit, tx?.deposits);
+    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.FundsIn, tx?.credit, tx?.credit_amount, tx?.deposit, tx?.deposit_amount);
   }
-
   function txFundsOut(tx) {
-    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.FundsOut, tx?.funds_out_amount, tx?.debit, tx?.debit_amount, tx?.withdrawal, tx?.withdrawals);
+    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.FundsOut, tx?.debit, tx?.debit_amount, tx?.withdrawal, tx?.withdrawal_amount);
+  }
+  function txExplicitBalance(tx) {
+    return firstNumber(
+      tx?.running_balance,
+      tx?.runningBalance,
+      tx?.current_account_balance,
+      tx?.currentAccountBalance
+    );
   }
 
   async function clioFetch(url) {
@@ -153,12 +89,13 @@ export default async function handler(req, res) {
       const error = new Error(data?.error?.message || data?.message || data?.error || `Clio request failed with ${response.status}`);
       error.status = response.status;
       error.payload = data;
+      error.url = url.toString();
       throw error;
     }
     return data;
   }
 
-  async function fetchPaged(path, params = {}, options = {}) {
+  async function fetchPaged(path, params = {}, maxRecords = 1000) {
     let url = new URL(`https://app.clio.com/api/v4/${path}`);
     for (const [key, value] of Object.entries(params || {})) {
       if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
@@ -169,59 +106,42 @@ export default async function handler(req, res) {
       all.push(...(Array.isArray(data.data) ? data.data : []));
       const next = data?.meta?.paging?.next;
       url = next ? new URL(next) : null;
-      if (options.maxRecords && all.length >= options.maxRecords) break;
+      if (all.length >= maxRecords) break;
     }
     return all;
   }
 
-  async function fetchMatter(matterId) {
-    const attempts = [
-      "id,display_number,description,status,client{id,name},trust_balance,trust_account_balance,matter_trust_funds,funds_in_trust,work_in_progress,work_in_progress_balance,wip,unbilled_balance",
-      "id,display_number,description,status,client{id,name},account_balances",
-      "id,display_number,description,status,client{id,name}",
-    ];
-    let merged = null;
-    for (const fields of attempts) {
-      const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-      url.searchParams.set("fields", fields);
-      try {
-        const data = await clioFetch(url);
-        merged = { ...(merged || {}), ...(data?.data || {}) };
-      } catch {
-        // Ignore rejected optional field requests.
-      }
+  async function fetchMatterBasic(matterId) {
+    const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
+    // Only ask for fields the debug output proved are valid. Invalid financial fields make Clio reject the whole request.
+    url.searchParams.set("fields", "id,display_number,description,status,client{id,name}");
+    try {
+      const data = await clioFetch(url);
+      return data?.data || { id: matterId };
+    } catch {
+      return { id: matterId };
     }
-    return merged || { id: matterId };
-  }
-
-  function matterTrust(matter) {
-    // Use only exact matter-level fields. Do not scrape account_balances because it can be the whole firm trust account.
-    return firstNumber(matter?.trust_balance, matter?.trust_account_balance, matter?.matter_trust_funds, matter?.funds_in_trust);
-  }
-
-  function matterWip(matter) {
-    return firstNumber(matter?.work_in_progress, matter?.work_in_progress_balance, matter?.wip, matter?.unbilled_balance);
   }
 
   async function fetchTrustTransactions(matterId) {
+    // v21: never refetch default fields after a successful fielded request. Default rows may contain only id/etag.
     const attempts = [
-      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,account_balance,balance_after,ending_balance,current_balance,matter{id,display_number}" },
-      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" },
-      { fields: "id,date,funds_out,funds_in,matter{id,display_number}" },
-      { fields: "id,date,amount,matter{id,display_number}" },
-      { fields: null },
+      "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}",
+      "id,date,funds_out,funds_in,matter{id,display_number}",
+      "id,date,amount,matter{id,display_number}",
     ];
 
     let txs = [];
     let usedFields = "";
-    for (const attempt of attempts) {
+    let errors = [];
+
+    for (const fields of attempts) {
       try {
-        const params = { limit: 200, matter_id: matterId, type: "liability" };
-        if (attempt.fields) params.fields = attempt.fields;
-        txs = await fetchPaged("bank_transactions.json", params, { maxRecords: 500 });
-        usedFields = attempt.fields || "default_fields";
-        if (txs.length || !attempt.fields) break;
-      } catch {
+        txs = await fetchPaged("bank_transactions.json", { limit: 200, matter_id: matterId, type: "liability", fields });
+        usedFields = fields;
+        if (txs.length) break;
+      } catch (error) {
+        errors.push({ fields, status: error.status || null, message: error.message || String(error) });
         txs = [];
       }
     }
@@ -229,45 +149,41 @@ export default async function handler(req, res) {
     const rows = txs
       .map((tx) => {
         const date = normalizeDay(tx.date || tx.created_at || tx.updated_at);
-        const explicit = txExplicitBalance(tx);
         const fundsIn = txFundsIn(tx);
         const fundsOut = txFundsOut(tx);
         const amount = firstNumber(tx?.amount);
+        const explicit = txExplicitBalance(tx);
         let delta = null;
         if (fundsIn !== null || fundsOut !== null) delta = Number(fundsIn || 0) - Number(fundsOut || 0);
         else if (amount !== null) delta = Number(amount || 0);
-        return { id: tx.id, date, explicit, fundsIn, fundsOut, amount, delta, raw: tx };
+        return { id: tx.id, date, explicit, fundsIn, fundsOut, amount, delta };
       })
       .filter((row) => row.date)
-      .sort((a, b) => compareDays(a.date, b.date));
+      .sort((a, b) => compareDays(a.date, b.date) || String(a.id).localeCompare(String(b.id)));
 
-    return { rows, usedFields, raw_count: txs.length };
+    return { rows, usedFields, rawCount: txs.length, errors };
   }
 
   function buildLedgerPoints(rows) {
-    if (!rows.length) return [];
-
-    const explicitRows = rows.filter((row) => row.explicit !== null);
-    if (explicitRows.length) {
-      let lastExplicit = null;
-      const points = [];
-      for (const row of rows) {
-        if (row.explicit !== null) lastExplicit = Number(row.explicit);
-        if (lastExplicit !== null) {
-          points.push({ date: row.date, trust: lastExplicit, source: "clio_running_or_current_balance", transaction_id: row.id });
-        }
-      }
-      return points;
-    }
-
-    // Fallback: current trust balance is simply the net of all trust movements for the matter.
-    // This is not gross cumulative funds-in; it subtracts funds out and should match the transaction page running balance.
-    let running = 0;
+    let running = null;
     const points = [];
+
     for (const row of rows) {
-      if (row.delta === null) continue;
-      running += Number(row.delta || 0);
-      points.push({ date: row.date, trust: running, source: "net_trust_ledger_from_funds_in_minus_out", transaction_id: row.id });
+      if (row.explicit !== null) {
+        running = Number(row.explicit);
+      } else {
+        if (running === null) running = 0;
+        if (row.delta !== null) running += Number(row.delta || 0);
+        else continue;
+      }
+      points.push({
+        date: row.date,
+        trust: Number(running || 0),
+        source: row.explicit !== null ? "clio_explicit_running_balance" : "net_funds_in_minus_out",
+        transaction_id: row.id,
+        funds_in: row.fundsIn,
+        funds_out: row.fundsOut,
+      });
     }
     return points;
   }
@@ -275,36 +191,36 @@ export default async function handler(req, res) {
   function uniqueDateLast(points) {
     const map = new Map();
     for (const point of points || []) {
-      if (point?.date) map.set(normalizeDay(point.date), { ...point, date: normalizeDay(point.date) });
+      const date = normalizeDay(point.date);
+      if (date) map.set(date, { ...point, date });
     }
-    return Array.from(map.values()).filter((p) => p.date).sort((a, b) => compareDays(a.date, b.date));
+    return Array.from(map.values()).sort((a, b) => compareDays(a.date, b.date));
   }
 
   function ensureRange(points, currentTrust) {
     const sorted = uniqueDateLast(points);
     const start = fromDay || sorted[0]?.date || toDay;
     const end = toDay || sorted[sorted.length - 1]?.date || start;
+
     let out = [];
     let lastBefore = null;
     for (const point of sorted) {
       if (start && compareDays(point.date, start) < 0) lastBefore = point;
       if (!start || !end || inRange(point.date)) out.push(point);
     }
+
     if (!out.length) {
-      out = [{ date: start || end, trust: Number(currentTrust || 0), source: "current_value_no_history" }];
+      out = [{ date: start || end, trust: Number(currentTrust || 0), source: "current_value_no_transaction_in_range" }];
     } else if (start && !out.some((p) => p.date === start)) {
       const seed = lastBefore || out[0];
       out.unshift({ ...seed, date: start, source: `${seed.source}_carried_to_start` });
     }
+
     if (end && !out.some((p) => p.date === end)) {
       const last = out[out.length - 1];
       out.push({ ...last, date: end, source: `${last.source}_carried_to_end` });
     }
     return uniqueDateLast(out);
-  }
-
-  async function fetchCurrentWip(_matterId, matter) {
-    return matterWip(matter) ?? 0;
   }
 
   function valueForType(type, trust, wip, minimum) {
@@ -319,23 +235,18 @@ export default async function handler(req, res) {
   }
 
   async function buildSeries(matterId) {
-    const matter = await fetchMatter(matterId);
-    const [txPayload, wip] = await Promise.all([
+    const [matter, txPayload] = await Promise.all([
+      fetchMatterBasic(matterId),
       fetchTrustTransactions(matterId),
-      fetchCurrentWip(matterId, matter),
     ]);
 
-    let trustPoints = buildLedgerPoints(txPayload.rows);
-    const directTrust = matterTrust(matter);
-    let currentTrust = trustPoints.length ? Number(trustPoints[trustPoints.length - 1].trust || 0) : (directTrust ?? 0);
-
-    // If Clio exposes the matter dashboard trust value and it differs from a net ledger only by pennies, use it at the end.
-    if (directTrust !== null && Math.abs(Number(directTrust) - currentTrust) < 0.02) currentTrust = Number(directTrust);
-
-    const ranged = ensureRange(trustPoints, currentTrust);
+    const ledgerPoints = buildLedgerPoints(txPayload.rows);
+    const currentTrust = ledgerPoints.length ? Number(ledgerPoints[ledgerPoints.length - 1].trust || 0) : 0;
     const minimum = Number(minimumBalances[String(matterId)] ?? 2000) || 2000;
+    const wip = 0; // WIP requires a different source/report and is not used to compute current trust.
+    const ranged = ensureRange(ledgerPoints, currentTrust);
     const points = requestedType === "wip"
-      ? ensureRange([], currentTrust).map((p) => ({ date: p.date, balance: Number(wip || 0), source: "current_wip_flat_line" }))
+      ? ensureRange([], currentTrust).map((p) => ({ date: p.date, balance: wip, source: "wip_not_available_from_balance_history" }))
       : ranged.map((p) => ({ date: p.date, balance: valueForType(requestedType, p.trust, wip, minimum), source: p.source, transaction_id: p.transaction_id }));
 
     return {
@@ -344,16 +255,17 @@ export default async function handler(req, res) {
       description: matter?.description || "",
       client_name: matter?.client?.name || "",
       account_type: requestedType,
-      current_trust_balance: Number(currentTrust || 0),
-      current_work_in_progress: Number(wip || 0),
+      current_trust_balance: currentTrust,
+      current_work_in_progress: wip,
       minimum_balance: minimum,
       points,
       debug: {
         transaction_count: txPayload.rows.length,
+        raw_count: txPayload.rawCount,
         used_fields: txPayload.usedFields,
-        raw_count: txPayload.raw_count,
-        first_point: trustPoints[0] || null,
-        last_point: trustPoints[trustPoints.length - 1] || null,
+        first_ledger_point: ledgerPoints[0] || null,
+        last_ledger_point: ledgerPoints[ledgerPoints.length - 1] || null,
+        errors: txPayload.errors,
       },
     };
   }
@@ -378,7 +290,7 @@ export default async function handler(req, res) {
     const failed = settled.filter((r) => r.status === "rejected").length;
     return res.status(200).json({
       series,
-      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v20", mode: "net_trust_ledger_or_explicit_running_balance_no_gross_deposits" },
+      meta: { requested: matterIds.length, returned: series.length, failed, from: fromDay, to: toDay, version: "v21", mode: "fielded_transactions_net_ledger_no_default_refetch" },
     });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
