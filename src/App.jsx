@@ -1097,6 +1097,7 @@ function App() {
   const [clioBillingLastLoaded, setClioBillingLastLoaded] = useState(null)
   const [clioSelectedMatterIds, setClioSelectedMatterIds] = useState([])
   const [clioAccountType, setClioAccountType] = useState('trust')
+  const clioAllowedAccountTypes = ['trust', 'trust_minus_minimum', 'trust_minus_wip', 'trust_minus_wip_minus_minimum', 'wip']
   const [clioBalanceFrom, setClioBalanceFrom] = useState('')
   const [clioBalanceTo, setClioBalanceTo] = useState('')
   const [clioMinimumBalance, setClioMinimumBalance] = useState(2000)
@@ -23090,7 +23091,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       const filter = clioSavedGraphFilters?.[name]
       if (!filter) return
       setClioSelectedSavedGraphFilter(name)
-      setClioAccountType(filter.account_type || 'trust')
+      setClioAccountType(clioAllowedAccountTypes.includes(filter.account_type) ? filter.account_type : 'trust')
       setClioBalanceFrom(filter.from || '')
       setClioBalanceTo(filter.to || '')
       setClioMinimumBalance(filter.default_minimum_balance ?? 2000)
@@ -23137,7 +23138,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const allBalances = allGraphPoints
       .map((point) => Number(point.balance))
       .filter((value) => Number.isFinite(value))
-    const minLine = ['trust_minus_minimum', 'trust_minus_wip', 'trust_minus_wip_minus_minimum'].includes(clioAccountType) ? 0 : (Number(clioMinimumBalance) || 0)
     const graphHasData = allDates.length > 0 && allBalances.length > 0
     const graphWidth = 960
     const graphHeight = 360
@@ -23150,8 +23150,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const maxDate = graphHasData
       ? (Number.isFinite(selectedToMs) ? selectedToMs : Math.max(...allDates))
       : (Number.isFinite(selectedToMs) ? selectedToMs : Date.now())
-    const minBalance = graphHasData ? Math.min(...allBalances, minLine) : 0
-    const maxBalance = graphHasData ? Math.max(...allBalances, minLine) : 100
+    const minBalance = graphHasData ? Math.min(...allBalances) : 0
+    const maxBalance = graphHasData ? Math.max(...allBalances) : 100
     const ySpan = Math.max(1, maxBalance - minBalance)
     const xSpan = Math.max(1, maxDate - minDate)
     const plotLeft = graphPadding.left
@@ -23165,7 +23165,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const money = (value) => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     const shortDate = (value) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minBalance + ratio * ySpan)
-    const minLineY = yForBalance(minLine)
 
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
@@ -23225,9 +23224,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis account type</div>
-              <select value={clioAccountType} onChange={(event) => setClioAccountType(event.target.value)} style={{ width: '100%' }}>
+              <select value={clioAllowedAccountTypes.includes(clioAccountType) ? clioAccountType : 'trust'} onChange={(event) => setClioAccountType(event.target.value)} style={{ width: '100%' }}>
                 <option value="trust">Client trust account / liability</option>
-                <option value="operating">Operating / outstanding balance</option>
                 <option value="trust_minus_minimum">Trust minus matter minimum</option>
                 <option value="trust_minus_wip">Trust minus work in progress</option>
                 <option value="trust_minus_wip_minus_minimum">Trust minus work in progress minus minimum amount</option>
@@ -23247,17 +23245,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
               <input type="date" value={clioBalanceTo} onChange={(event) => { setClioGraphDatePreset('custom'); setClioBalanceTo(event.target.value) }} disabled={clioGraphDatePreset !== 'custom'} style={{ width: '100%' }} />
-            </label>
-            <label>
-              <div style={{ fontSize: 12, color: '#64748b' }}>Minimum balance warning line</div>
-              <input
-                type="number"
-                min="0"
-                step="50"
-                value={clioMinimumBalance}
-                onChange={(event) => setClioMinimumBalance(event.target.value)}
-                style={{ width: '100%' }}
-              />
             </label>
             <label>
               <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
@@ -23367,10 +23354,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   })}
                   <line x1={plotLeft} x2={plotRight} y1={plotBottom} y2={plotBottom} stroke="#94a3b8" />
                   <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
-                  <line x1={plotLeft} x2={plotRight} y1={minLineY} y2={minLineY} stroke="#ef4444" strokeDasharray="6 5" />
-                  <text x={plotRight - 4} y={minLineY - 6} textAnchor="end" fontSize="12" fill="#b91c1c">
-                    {['trust_minus_minimum', 'trust_minus_wip', 'trust_minus_wip_minus_minimum'].includes(clioAccountType) ? 'Threshold ' : 'Minimum '}{money(minLine)}
-                  </text>
                   <text x={plotLeft} y={graphHeight - 18} fontSize="12" fill="#64748b">{shortDate(minDate)}</text>
                   <text x={plotRight} y={graphHeight - 18} textAnchor="end" fontSize="12" fill="#64748b">{shortDate(maxDate)}</text>
                   <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>
@@ -23480,7 +23463,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       if (!filter) return
       setBillingTab('clio_billing')
       setClioSelectedSavedGraphFilter(name)
-      setClioAccountType(filter.account_type || 'trust')
+      setClioAccountType(clioAllowedAccountTypes.includes(filter.account_type) ? filter.account_type : 'trust')
       setClioBalanceFrom(filter.from || '')
       setClioBalanceTo(filter.to || '')
       setClioMinimumBalance(filter.default_minimum_balance ?? 2000)

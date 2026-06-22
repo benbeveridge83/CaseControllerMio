@@ -135,6 +135,7 @@ export default async function handler(req, res) {
     // Clio accounts differ on which financial fields are available.
     // Try small field groups. Unknown fields cause Clio to reject the request, so do not ask for all at once.
     const groups = [
+      ["account_balances"],
       ["trust_balance", "trust_account_balance", "matter_trust_funds", "funds_in_trust"],
       ["work_in_progress", "work_in_progress_balance", "wip", "unbilled_balance", "unbilled_amount", "unbilled_time_balance"],
     ];
@@ -153,7 +154,38 @@ export default async function handler(req, res) {
     return out;
   }
 
+  function numericFromAccountBalances(matter, wantedType) {
+    const accountBalances = matter?.account_balances || matter?.accountBalances || [];
+    const rows = Array.isArray(accountBalances)
+      ? accountBalances
+      : Object.entries(accountBalances || {}).map(([key, value]) => ({ key, ...(typeof value === "object" ? value : { value }) }));
+
+    for (const row of rows) {
+      const label = String(
+        row?.type ||
+        row?.account_type ||
+        row?.category ||
+        row?.name ||
+        row?.key ||
+        ""
+      ).toLowerCase();
+
+      const looksLikeTrust = /trust|liability|client/.test(label);
+      const looksLikeWip = /work|progress|wip|unbilled/.test(label);
+
+      if (wantedType === "trust" && !looksLikeTrust) continue;
+      if (wantedType === "wip" && !looksLikeWip) continue;
+
+      const n = firstNumber(row?.balance, row?.amount, row?.value, row?.total, row?.current_balance, row?.currentBalance);
+      if (n !== null) return n;
+    }
+
+    return null;
+  }
+
   function trustFromMatterFields(matter) {
+    const fromAccountBalances = numericFromAccountBalances(matter, "trust");
+    if (fromAccountBalances !== null) return fromAccountBalances;
     return firstNumber(
       matter?.trust_balance,
       matter?.trust_account_balance,
@@ -163,6 +195,8 @@ export default async function handler(req, res) {
   }
 
   function wipFromMatterFields(matter) {
+    const fromAccountBalances = numericFromAccountBalances(matter, "wip");
+    if (fromAccountBalances !== null) return fromAccountBalances;
     return firstNumber(
       matter?.work_in_progress,
       matter?.work_in_progress_balance,
@@ -181,7 +215,7 @@ export default async function handler(req, res) {
       limit: 200,
       matter_id: matterId,
       type: "liability",
-      fields: "id,date,current_account_balance,currentAccountBalance,account_balance,balance,balance_after,matter{id,display_number}",
+      fields: "id,date,current_account_balance,currentAccountBalance,account_balance,balance,balance_after,running_balance,runningBalance,matter{id,display_number}",
     }).catch(() => []);
 
     const points = [];
@@ -192,6 +226,8 @@ export default async function handler(req, res) {
       if (!day) continue;
 
       const balance = firstNumber(
+        tx.running_balance,
+        tx.runningBalance,
         tx.current_account_balance,
         tx.currentAccountBalance,
         tx.account_balance,
@@ -243,18 +279,13 @@ export default async function handler(req, res) {
       if (!day) continue;
 
       const explicitBalance = firstNumber(row.balance);
-      if (explicitBalance !== null) {
-        running = explicitBalance;
-      } else {
-        const amount = firstNumber(row.total, row.amount);
-        if (amount === null) continue;
-        running += amount;
-      }
+      if (explicitBalance === null) continue;
+      running = explicitBalance;
 
       const point = {
         date: day,
         trust: running,
-        source: explicitBalance !== null ? "clio_trust_line_item_balance" : "clio_trust_line_items_net",
+        source: "clio_trust_line_item_balance",
         transaction_id: row.id,
       };
 
@@ -433,7 +464,7 @@ export default async function handler(req, res) {
         failed: rejected.length,
         from: fromDay,
         to: toDay,
-        mode: "current_balance_fields_only_no_cumulative_deposit_fallback",
+        mode: "current_only_running_balance_no_cumulative_deposits",
       },
     });
   } catch (error) {
