@@ -1100,23 +1100,29 @@ function App() {
   const [clioBalanceFrom, setClioBalanceFrom] = useState('')
   const [clioBalanceTo, setClioBalanceTo] = useState('')
   const [clioMinimumBalance, setClioMinimumBalance] = useState(2000)
-  const [clioMinimumBalancesByMatterId, setClioMinimumBalancesByMatterId] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('caseMioClioMinimumBalancesByMatterId') || '{}') }
-    catch { return {} }
-  })
-  const [clioInitialRetainersByMatterId, setClioInitialRetainersByMatterId] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('caseMioClioInitialRetainersByMatterId') || '{}') }
-    catch { return {} }
-  })
+  const [clioBalanceSeries, setClioBalanceSeries] = useState([])
+  const [clioBalanceLoading, setClioBalanceLoading] = useState(false)
+  const [clioBalanceError, setClioBalanceError] = useState('')
+  const [clioBalanceLastLoaded, setClioBalanceLastLoaded] = useState(null)
+  const [clioMioRosetta, setClioMioRosetta] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioMioRosetta') || '{}') } catch { return {} } })
+  const [clioGraphCaseTypeFilters, setClioGraphCaseTypeFilters] = useState(() => { try { const raw = JSON.parse(localStorage.getItem('caseMioClioGraphCaseTypeFilters') || 'null'); return Array.isArray(raw) && raw.length ? raw : ['all'] } catch { return ['all'] } })
+  const [clioGraphMappingFilter, setClioGraphMappingFilter] = useState(() => localStorage.getItem('caseMioClioGraphMappingFilter') || 'all')
+  const [clioGraphDatePreset, setClioGraphDatePreset] = useState(() => localStorage.getItem('caseMioClioGraphDatePreset') || 'past_3_months')
+  const [clioGraphCaseStatusFilter, setClioGraphCaseStatusFilter] = useState(() => localStorage.getItem('caseMioClioGraphCaseStatusFilter') || 'all')
+  const [clioGraphMatterStatusFilter, setClioGraphMatterStatusFilter] = useState(() => localStorage.getItem('caseMioClioGraphMatterStatusFilter') || 'all')
+  const [clioGraphMatterLabelMode, setClioGraphMatterLabelMode] = useState(() => localStorage.getItem('caseMioClioGraphMatterLabelMode') || 'clio')
+  const [clioSavedGraphFilters, setClioSavedGraphFilters] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioSavedGraphFilters') || '{}') } catch { return {} } })
+  const [clioNewGraphFilterName, setClioNewGraphFilterName] = useState('')
+  const [clioSelectedSavedGraphFilter, setClioSelectedSavedGraphFilter] = useState('')
+  const [clioMinimumBalancesByMatterId, setClioMinimumBalancesByMatterId] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioMinimumBalancesByMatterId') || '{}') } catch { return {} } })
+  const [clioInitialRetainersByMatterId, setClioInitialRetainersByMatterId] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioInitialRetainersByMatterId') || '{}') } catch { return {} } })
   const [clioClientBillingRows, setClioClientBillingRows] = useState([])
   const [clioClientBillingLoading, setClioClientBillingLoading] = useState(false)
   const [clioClientBillingError, setClioClientBillingError] = useState('')
   const [clioClientBillingLastLoaded, setClioClientBillingLastLoaded] = useState(null)
   const [clioClientBillingGraphColumn, setClioClientBillingGraphColumn] = useState('matter_trust_funds')
-  const [clioBalanceSeries, setClioBalanceSeries] = useState([])
-  const [clioBalanceLoading, setClioBalanceLoading] = useState(false)
-  const [clioBalanceError, setClioBalanceError] = useState('')
-  const [clioBalanceLastLoaded, setClioBalanceLastLoaded] = useState(null)
+  const [clioClientBillingShowGraph, setClioClientBillingShowGraph] = useState(false)
+  const [clioClientBillingSort, setClioClientBillingSort] = useState({ field: 'matter_label', direction: 'asc' })
   const [settingsTab, setSettingsTab] = useState(() => {
     try {
       const hashPage = (typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : '')
@@ -22563,14 +22569,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
   }
 
-  useEffect(() => {
-    try { localStorage.setItem('caseMioClioMinimumBalancesByMatterId', JSON.stringify(clioMinimumBalancesByMatterId || {})) } catch {}
-  }, [clioMinimumBalancesByMatterId])
-
-  useEffect(() => {
-    try { localStorage.setItem('caseMioClioInitialRetainersByMatterId', JSON.stringify(clioInitialRetainersByMatterId || {})) } catch {}
-  }, [clioInitialRetainersByMatterId])
-
   function renderRequestedReliefPage() {
     const selectedMatterId = requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : ''
     const filteredIssues = requestedReliefIssueSets.filter((row) => requestedReliefMatterFilter === 'all' || String(row.matter_id) === String(requestedReliefMatterFilter))
@@ -22607,57 +22605,356 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
-  function clioMatterRowLabel(matter) {
-    if (!matter) return ''
-    const client = matter.client?.name || matter.client_name || ''
-    return `${matter.display_number || matter.description || `Matter ${matter.id}`}${matter.description ? ` ${matter.description}` : ''}${client ? ` (${client})` : ''}`
+  const CLIO_CLOSED_FROM_EXPORT = new Set(['00030-Firm', '00179-Janaka', '00204-Davidson', '00215-Bay', '00287-Velosa'])
+
+  function clioMioNormalizeText(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
   }
 
-  async function ensureClioMattersLoaded() {
-    if (clioBillingLoading) return clioMatters
+  function clioMatterDisplay(matter) {
+    if (!matter) return ''
+    const client = matter.client?.name || matter.client_name || ''
+    const description = matter.description || ''
+    return [matter.display_number || matter.number || `Matter ${matter.id}`, description, client ? `(${client})` : ''].filter(Boolean).join(' ')
+  }
+
+  function clioMatterNumberPrefix(matter) {
+    const match = String(matter?.display_number || '').match(/^(\d{5})-/)
+    return match ? match[1] : ''
+  }
+
+  function clioMatterLastName(matter) {
+    const display = String(matter?.display_number || '')
+    const afterDash = display.includes('-') ? display.split('-').slice(1).join('-') : display
+    return clioMioNormalizeText(afterDash).split(' ')[0] || ''
+  }
+
+  function mioMatterDisplay(matter) {
+    const client = matter?.matter_client_name || `${matter?.clients?.first_name || ''} ${matter?.clients?.last_name || ''}`.trim()
+    return `${matter?.name || matter?.matter_name || 'Unnamed Matter'}${client ? ` (${client})` : ''}`
+  }
+
+  function mappedMioMatterForClioId(clioMatterId) {
+    const found = Object.entries(clioMioRosetta || {}).find(([, row]) => String(row?.clio_matter_id || '') === String(clioMatterId))
+    if (!found) return null
+    return matters.find((matter) => String(matter.id) === String(found[0] || found[1]?.mio_matter_id || '')) || null
+  }
+
+  function storedClioLabelForId(clioMatterId) {
+    const row = Object.values(clioMioRosetta || {}).find((item) => String(item?.clio_matter_id || '') === String(clioMatterId))
+    return row?.clio_matter_label || ''
+  }
+
+  function clioGraphMatterLabel(clioMatterOrId, fallbackLabel = '') {
+    const clioMatterId = typeof clioMatterOrId === 'object' ? clioMatterOrId?.id : clioMatterOrId
+    const clioMatter = typeof clioMatterOrId === 'object' ? clioMatterOrId : clioMatters.find((matter) => String(matter.id) === String(clioMatterId))
+    const clioLabel = clioMatterDisplay(clioMatter) || storedClioLabelForId(clioMatterId) || fallbackLabel || `Matter ${clioMatterId}`
+    const mioMatter = mappedMioMatterForClioId(clioMatterId)
+    if (clioGraphMatterLabelMode === 'mio' && mioMatter) return mioMatterDisplay(mioMatter)
+    if (clioGraphMatterLabelMode === 'both' && mioMatter) return `${mioMatterDisplay(mioMatter)} / ${clioLabel}`
+    return clioLabel
+  }
+
+  function clioMatterLooksOpen(matter) {
+    const status = String(matter?.status || '').toLowerCase()
+    const prefix = clioMatterNumberPrefix(matter)
+    if (CLIO_CLOSED_FROM_EXPORT.has(prefix ? `${prefix}-${clioMatterLastName(matter)}` : '')) return false
+    if (status && status !== 'open' && status !== 'pending') return false
+    return true
+  }
+
+  function clioMatterMatchesFilters(clioMatter) {
+    const mioMatter = mappedMioMatterForClioId(clioMatter?.id)
+    if (clioGraphMappingFilter === 'mapped' && !mioMatter) return false
+    if (clioGraphMappingFilter === 'unmapped' && mioMatter) return false
+
+    const clioStatus = String(clioMatter?.status || '').toLowerCase()
+    if (clioGraphCaseStatusFilter !== 'all' && clioStatus !== clioGraphCaseStatusFilter) return false
+
+    const mioStatus = String(mioMatter?.matter_status || mioMatter?.case_status || mioMatter?.status || '').trim()
+    if (clioGraphMatterStatusFilter !== 'all' && mioStatus !== clioGraphMatterStatusFilter) return false
+
+    const filters = Array.isArray(clioGraphCaseTypeFilters) && clioGraphCaseTypeFilters.length ? clioGraphCaseTypeFilters : ['all']
+    if (filters.includes('all')) return true
+    const mioType = String(mioMatter?.matter_type || '').trim()
+    if (!mioMatter) return false
+    if (!mioType) return filters.includes('__blank__')
+    return filters.includes(mioType)
+  }
+
+  const clioFilteredMatters = clioMatters.filter(clioMatterMatchesFilters)
+
+  function toggleClioGraphCaseTypeFilter(value) {
+    setClioGraphCaseTypeFilters((current) => {
+      const list = Array.isArray(current) && current.length ? current : ['all']
+      if (value === 'all') return ['all']
+      const withoutAll = list.filter((item) => item !== 'all')
+      const next = withoutAll.includes(value) ? withoutAll.filter((item) => item !== value) : [...withoutAll, value]
+      return next.length ? next : ['all']
+    })
+    setClioSelectedMatterIds([])
+  }
+
+  function updateClioPresetDates(preset) {
+    const today = new Date()
+    const end = today.toISOString().slice(0, 10)
+    const start = new Date(today)
+    if (preset === 'past_6_months') start.setMonth(start.getMonth() - 6)
+    else if (preset === 'past_3_months') start.setMonth(start.getMonth() - 3)
+    else if (preset === 'past_month') start.setMonth(start.getMonth() - 1)
+    else if (preset === 'past_2_weeks') start.setDate(start.getDate() - 14)
+    else return
+    setClioBalanceFrom(start.toISOString().slice(0, 10))
+    setClioBalanceTo(end)
+  }
+
+  function handleClioDatePresetChange(value) {
+    setClioGraphDatePreset(value)
+    localStorage.setItem('caseMioClioGraphDatePreset', value)
+    if (value !== 'custom') updateClioPresetDates(value)
+  }
+
+  useEffect(() => {
+    if (!clioBalanceFrom && !clioBalanceTo && clioGraphDatePreset !== 'custom') updateClioPresetDates(clioGraphDatePreset)
+  }, [])
+
+  useEffect(() => {
+    try { localStorage.setItem('caseMioClioGraphCaseTypeFilters', JSON.stringify(clioGraphCaseTypeFilters)) } catch {}
+  }, [clioGraphCaseTypeFilters])
+  useEffect(() => { try { localStorage.setItem('caseMioClioGraphMappingFilter', clioGraphMappingFilter) } catch {} }, [clioGraphMappingFilter])
+  useEffect(() => { try { localStorage.setItem('caseMioClioGraphCaseStatusFilter', clioGraphCaseStatusFilter) } catch {} }, [clioGraphCaseStatusFilter])
+  useEffect(() => { try { localStorage.setItem('caseMioClioGraphMatterStatusFilter', clioGraphMatterStatusFilter) } catch {} }, [clioGraphMatterStatusFilter])
+  useEffect(() => { try { localStorage.setItem('caseMioClioGraphMatterLabelMode', clioGraphMatterLabelMode) } catch {} }, [clioGraphMatterLabelMode])
+  useEffect(() => { try { localStorage.setItem('caseMioClioMinimumBalancesByMatterId', JSON.stringify(clioMinimumBalancesByMatterId || {})) } catch {} }, [clioMinimumBalancesByMatterId])
+  useEffect(() => { try { localStorage.setItem('caseMioClioInitialRetainersByMatterId', JSON.stringify(clioInitialRetainersByMatterId || {})) } catch {} }, [clioInitialRetainersByMatterId])
+
+  const clioCaseTypeOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_type || '').trim()).filter(Boolean))).sort()
+  const clioMatterStatusOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_status || matter?.case_status || matter?.status || '').trim()).filter(Boolean))).sort()
+  const clioCaseStatusOptions = Array.from(new Set(clioMatters.map((matter) => String(matter?.status || '').trim().toLowerCase()).filter(Boolean))).sort()
+
+  function clioMatterMinimumBalance(matterId) {
+    const custom = Number(clioMinimumBalancesByMatterId?.[String(matterId)])
+    return Number.isFinite(custom) && custom >= 0 ? custom : 2000
+  }
+
+  function clioMatterInitialRetainer(matterId) {
+    const custom = Number(clioInitialRetainersByMatterId?.[String(matterId)])
+    return Number.isFinite(custom) && custom >= 0 ? custom : 3500
+  }
+
+  function updateClioMatterMinimumBalance(matterId, value) {
+    setClioMinimumBalancesByMatterId((current) => ({ ...(current || {}), [String(matterId)]: value }))
+  }
+
+  function updateClioMatterInitialRetainer(matterId, value) {
+    setClioInitialRetainersByMatterId((current) => ({ ...(current || {}), [String(matterId)]: value }))
+  }
+
+  async function loadOpenClioMattersIntoState() {
     setClioBillingLoading(true)
     setClioBillingError('')
     try {
-      const response = await fetch('/api/clio/matters', { credentials: 'include' })
+      const response = await fetch('/api/clio/matters?status=open', { credentials: 'include' })
       const data = await response.json()
       if (!response.ok) {
         setClioBillingError(data?.error || data?.message || 'Clio request failed.')
-        setClioMatters([])
         return []
       }
-      const loadedMatters = Array.isArray(data?.data) ? data.data : []
+      const loadedMatters = Array.isArray(data?.data) ? data.data.filter(clioMatterLooksOpen) : []
       setClioMatters(loadedMatters)
-      setClioSelectedMatterIds((current) => {
-        const stillValid = current.filter((id) => loadedMatters.some((matter) => String(matter.id) === String(id)))
-        if (stillValid.length) return stillValid
-        return loadedMatters.slice(0, 5).map((matter) => String(matter.id))
-      })
+      setClioSelectedMatterIds((current) => current.filter((id) => loadedMatters.some((matter) => String(matter.id) === String(id))))
       setClioBillingLastLoaded(new Date().toLocaleString())
       return loadedMatters
     } catch (error) {
       setClioBillingError(error?.message || String(error))
-      setClioMatters([])
       return []
     } finally {
       setClioBillingLoading(false)
     }
   }
 
-  function renderClioLineGraph({ series, height = 360 }) {
-    const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
-    const allGraphPoints = (series || []).flatMap((row) => row.points || [])
+  useEffect(() => {
+    if (page !== 'billing') return
+    if (clioBillingLoading) return
+    loadOpenClioMattersIntoState()
+  }, [page, billingTab])
+
+  function toggleClioMatter(matterId) {
+    const id = String(matterId)
+    setClioSelectedMatterIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]))
+  }
+
+  function selectFirstClioMatters(count) {
+    setClioSelectedMatterIds(clioFilteredMatters.slice(0, count).map((matter) => String(matter.id)))
+  }
+
+  function selectAllShownClioMatters() {
+    setClioSelectedMatterIds(clioFilteredMatters.map((matter) => String(matter.id)))
+  }
+
+  function clearSelectedClioMatters() {
+    setClioSelectedMatterIds([])
+  }
+
+  async function loadClioBalanceHistory() {
+    setClioBalanceLoading(true)
+    setClioBalanceError('')
+    try {
+      const params = new URLSearchParams()
+      params.set('matter_ids', clioSelectedMatterIds.join(','))
+      params.set('account_type', clioAccountType)
+      params.set('minimum_balances', JSON.stringify(clioMinimumBalancesByMatterId || {}))
+      if (clioBalanceFrom) params.set('from', clioBalanceFrom)
+      if (clioBalanceTo) params.set('to', clioBalanceTo)
+      const response = await fetch(`/api/clio/balance-history?${params.toString()}`, { credentials: 'include' })
+      const data = await response.json()
+      if (!response.ok) {
+        setClioBalanceError(data?.error || data?.message || 'Could not load Clio balance history.')
+        setClioBalanceSeries([])
+        return
+      }
+      setClioBalanceSeries(Array.isArray(data?.series) ? data.series : [])
+      setClioBalanceLastLoaded(new Date().toLocaleString())
+    } catch (error) {
+      setClioBalanceError(error?.message || String(error))
+      setClioBalanceSeries([])
+    } finally {
+      setClioBalanceLoading(false)
+    }
+  }
+
+  function saveClioGraphFilter() {
+    const name = clioNewGraphFilterName.trim()
+    if (!name) return alert('Name the saved graph filter first.')
+    const payload = {
+      account_type: clioAccountType,
+      date_preset: clioGraphDatePreset,
+      from: clioBalanceFrom,
+      to: clioBalanceTo,
+      case_type_filters: clioGraphCaseTypeFilters,
+      mapping_filter: clioGraphMappingFilter,
+      case_status_filter: clioGraphCaseStatusFilter,
+      matter_status_filter: clioGraphMatterStatusFilter,
+      matter_label_mode: clioGraphMatterLabelMode,
+      selected_matter_ids: clioSelectedMatterIds,
+      minimum_balances_by_matter_id: clioMinimumBalancesByMatterId,
+      initial_retainers_by_matter_id: clioInitialRetainersByMatterId,
+    }
+    setClioSavedGraphFilters((current) => {
+      const next = { ...(current || {}), [name]: payload }
+      localStorage.setItem('caseMioClioSavedGraphFilters', JSON.stringify(next))
+      return next
+    })
+    setClioSelectedSavedGraphFilter(name)
+  }
+
+  function applySavedClioGraphFilter(name) {
+    const saved = clioSavedGraphFilters?.[name]
+    setClioSelectedSavedGraphFilter(name)
+    if (!saved) return
+    setClioAccountType(saved.account_type || 'trust')
+    setClioGraphDatePreset(saved.date_preset || 'custom')
+    setClioBalanceFrom(saved.from || '')
+    setClioBalanceTo(saved.to || '')
+    setClioGraphCaseTypeFilters(Array.isArray(saved.case_type_filters) && saved.case_type_filters.length ? saved.case_type_filters : ['all'])
+    setClioGraphMappingFilter(saved.mapping_filter || 'all')
+    setClioGraphCaseStatusFilter(saved.case_status_filter || 'all')
+    setClioGraphMatterStatusFilter(saved.matter_status_filter || 'all')
+    setClioGraphMatterLabelMode(saved.matter_label_mode || 'clio')
+    setClioSelectedMatterIds(Array.isArray(saved.selected_matter_ids) ? saved.selected_matter_ids.map(String) : [])
+    if (saved.minimum_balances_by_matter_id) setClioMinimumBalancesByMatterId(saved.minimum_balances_by_matter_id)
+    if (saved.initial_retainers_by_matter_id) setClioInitialRetainersByMatterId(saved.initial_retainers_by_matter_id)
+  }
+
+  function renderClioSharedFilters({ includeGraphControls = true } = {}) {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
+        {includeGraphControls && (
+          <label>
+            <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis account type</div>
+            <select value={clioAccountType} onChange={(event) => setClioAccountType(event.target.value)} style={{ width: '100%' }}>
+              <option value="trust">Current trust balance</option>
+              <option value="trust_minus_minimum">Trust minus matter minimum</option>
+              <option value="trust_minus_wip">Trust minus work in progress</option>
+              <option value="trust_minus_wip_minus_minimum">Trust minus WIP minus minimum</option>
+              <option value="wip">Work in progress</option>
+            </select>
+          </label>
+        )}
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Date range</div>
+          <select value={clioGraphDatePreset} onChange={(event) => handleClioDatePresetChange(event.target.value)} style={{ width: '100%' }}>
+            <option value="past_6_months">Past 6 months</option>
+            <option value="past_3_months">Past 3 months</option>
+            <option value="past_month">Past month</option>
+            <option value="past_2_weeks">Past 2 weeks</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>From date</div>
+          <input type="date" value={clioBalanceFrom} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} />
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
+          <input type="date" value={clioBalanceTo} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Case status</div>
+          <select value={clioGraphCaseStatusFilter} onChange={(event) => { setClioGraphCaseStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+            <option value="all">All case statuses</option>
+            {clioCaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Matter status</div>
+          <select value={clioGraphMatterStatusFilter} onChange={(event) => { setClioGraphMatterStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+            <option value="all">All matter statuses</option>
+            {clioMatterStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
+          <select value={clioGraphMappingFilter} onChange={(event) => { setClioGraphMappingFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
+            <option value="all">All Clio matters</option>
+            <option value="mapped">Mapped Mio matters only</option>
+            <option value="unmapped">Unmapped Clio matters only</option>
+          </select>
+        </label>
+        <label>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Matter names shown as</div>
+          <select value={clioGraphMatterLabelMode} onChange={(event) => setClioGraphMatterLabelMode(event.target.value)} style={{ width: '100%' }}>
+            <option value="clio">Clio names</option>
+            <option value="mio">Mio names</option>
+            <option value="both">Mio / Clio names</option>
+          </select>
+        </label>
+        <details style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, background: '#fff' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Case types ({(clioGraphCaseTypeFilters || []).includes('all') ? 'All' : clioGraphCaseTypeFilters.length})</summary>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 6, maxHeight: 180, overflow: 'auto', marginTop: 8 }}>
+            <label><input type="checkbox" checked={(clioGraphCaseTypeFilters || ['all']).includes('all')} onChange={() => toggleClioGraphCaseTypeFilter('all')} /> All case types</label>
+            <label><input type="checkbox" checked={(clioGraphCaseTypeFilters || []).includes('__blank__')} onChange={() => toggleClioGraphCaseTypeFilter('__blank__')} /> Blank case type</label>
+            {clioCaseTypeOptions.map((type) => (
+              <label key={type}><input type="checkbox" checked={(clioGraphCaseTypeFilters || []).includes(type)} onChange={() => toggleClioGraphCaseTypeFilter(type)} /> {type}</label>
+            ))}
+          </div>
+        </details>
+      </div>
+    )
+  }
+
+  function renderClioGraph(seriesList, { small = false } = {}) {
+    const allGraphPoints = seriesList.flatMap((series) => series.points || [])
     const allDates = allGraphPoints.map((point) => new Date(point.date).getTime()).filter((value) => Number.isFinite(value))
     const allBalances = allGraphPoints.map((point) => Number(point.balance)).filter((value) => Number.isFinite(value))
-    const selectedFromMs = clioBalanceFrom ? new Date(clioBalanceFrom).getTime() : NaN
-    const selectedToMs = clioBalanceTo ? new Date(clioBalanceTo).getTime() : NaN
     const graphHasData = allDates.length > 0 && allBalances.length > 0
     const graphWidth = 960
-    const graphHeight = height
+    const graphHeight = small ? 280 : 390
     const graphPadding = { top: 24, right: 28, bottom: 52, left: 82 }
-    const minDate = graphHasData ? (Number.isFinite(selectedFromMs) ? selectedFromMs : Math.min(...allDates)) : (Number.isFinite(selectedFromMs) ? selectedFromMs : Date.now() - 86400000)
-    const maxDate = graphHasData ? (Number.isFinite(selectedToMs) ? selectedToMs : Math.max(...allDates)) : (Number.isFinite(selectedToMs) ? selectedToMs : Date.now())
-    const minBalance = graphHasData ? Math.min(...allBalances) : 0
-    const maxBalance = graphHasData ? Math.max(...allBalances) : 100
+    const minDate = graphHasData ? Math.min(...allDates) : Date.now() - 86400000
+    const maxDate = graphHasData ? Math.max(...allDates) : Date.now()
+    const minBalance = graphHasData ? Math.min(...allBalances, 0) : 0
+    const maxBalance = graphHasData ? Math.max(...allBalances, 1) : 100
     const ySpan = Math.max(1, maxBalance - minBalance)
     const xSpan = Math.max(1, maxDate - minDate)
     const plotLeft = graphPadding.left
@@ -22671,381 +22968,211 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const money = (value) => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     const shortDate = (value) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minBalance + ratio * ySpan)
-
-    if (!graphHasData) {
-      return (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>
-          No graph data loaded yet. Select matters, choose a current-financial Y-axis, then click <strong>Load balance graph</strong>.
-        </div>
-      )
-    }
-
+    const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
+    if (!graphHasData) return <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>No graph data loaded yet.</div>
     return (
       <div>
         <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
-          <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Clio matter financial graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
+          <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Clio graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
             <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
             {yTicks.map((tick, index) => {
               const y = yForBalance(tick)
-              return (
-                <g key={`y-${index}`}>
-                  <line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" />
-                  <text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text>
-                </g>
-              )
+              return <g key={`y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g>
             })}
             <line x1={plotLeft} x2={plotRight} y1={plotBottom} y2={plotBottom} stroke="#94a3b8" />
             <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
             <text x={plotLeft} y={graphHeight - 18} fontSize="12" fill="#64748b">{shortDate(minDate)}</text>
             <text x={plotRight} y={graphHeight - 18} textAnchor="end" fontSize="12" fill="#64748b">{shortDate(maxDate)}</text>
-            <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>Dollars</text>
-            {(series || []).map((row, seriesIndex) => {
-              const points = (row.points || []).filter((point) => Number.isFinite(Number(point.balance)))
+            <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>Dollar</text>
+            {seriesList.map((series, seriesIndex) => {
+              const points = (series.points || []).filter((point) => Number.isFinite(Number(point.balance)))
               if (!points.length) return null
               const path = points.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'} ${xForDate(point.date)} ${yForBalance(point.balance)}`).join(' ')
               const color = graphColors[seriesIndex % graphColors.length]
-              return (
-                <g key={row.matter_id || row.display_number || seriesIndex}>
-                  <path d={path} fill="none" stroke={color} strokeWidth="2.5" />
-                  {points.map((point, pointIndex) => (
-                    <circle key={`${row.matter_id || seriesIndex}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3" fill={color}>
-                      <title>{row.display_number}: {shortDate(point.date)} {money(point.balance)}</title>
-                    </circle>
-                  ))}
-                </g>
-              )
+              return <g key={series.matter_id || series.display_number || seriesIndex}><path d={path} fill="none" stroke={color} strokeWidth="2.5" />{points.map((point, pointIndex) => <circle key={`${series.matter_id}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3" fill={color}><title>{series.display_number}: {shortDate(point.date)} {money(point.balance)}</title></circle>)}</g>
             })}
           </svg>
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
-          {(series || []).map((row, index) => (
-            <span key={row.matter_id || row.display_number || index} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-              <span style={{ width: 12, height: 12, borderRadius: 999, background: graphColors[index % graphColors.length], display: 'inline-block' }} />
-              {row.display_number}
-            </span>
-          ))}
+          {seriesList.map((series, index) => <span key={series.matter_id || index} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}><span style={{ width: 10, height: 10, borderRadius: 999, background: graphColors[index % graphColors.length], display: 'inline-block' }} />{series.display_number}</span>)}
         </div>
       </div>
+    )
+  }
+
+  function renderMatterMinimumBalancesEditor() {
+    return (
+      <details style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Matter minimum balances and initial retainers</summary>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px', gap: 8, alignItems: 'center', marginTop: 10 }}>
+          <strong>Matter</strong><strong>Minimum balance</strong><strong>Initial retainer</strong>
+          {clioFilteredMatters.map((matter) => (
+            <React.Fragment key={matter.id}>
+              <div>{clioGraphMatterLabel(matter)}</div>
+              <input type="number" step="50" value={clioMinimumBalancesByMatterId[String(matter.id)] ?? 2000} onChange={(event) => updateClioMatterMinimumBalance(matter.id, event.target.value)} />
+              <input type="number" step="50" value={clioInitialRetainersByMatterId[String(matter.id)] ?? 3500} onChange={(event) => updateClioMatterInitialRetainer(matter.id, event.target.value)} />
+            </React.Fragment>
+          ))}
+        </div>
+      </details>
     )
   }
 
   function renderClioBillingIntegrationPanel() {
-    const clioClientId = import.meta.env.VITE_CLIO_CLIENT_ID || 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv'
-    const clioRedirectUri = `${window.location.origin}/api/auth/callback`
-    const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clioClientId)}&redirect_uri=${encodeURIComponent(clioRedirectUri)}`
-
-    async function loadClioBalanceHistory() {
-      const selectedIds = clioSelectedMatterIds.map(String)
-      if (!selectedIds.length) {
-        setClioBalanceError('Select at least one Clio matter before loading the graph.')
-        return
-      }
-
-      setClioBalanceLoading(true)
-      setClioBalanceError('')
-      try {
-        const params = new URLSearchParams({
-          matter_ids: selectedIds.join(','),
-          account_type: clioAccountType,
-          minimum_balances: JSON.stringify(clioMinimumBalancesByMatterId || {})
-        })
-        if (clioBalanceFrom) params.set('from', clioBalanceFrom)
-        if (clioBalanceTo) params.set('to', clioBalanceTo)
-
-        const response = await fetch(`/api/clio/balance-history?${params.toString()}`, { credentials: 'include' })
-        const data = await response.json()
-
-        if (!response.ok) {
-          setClioBalanceError(data?.error || data?.message || 'Could not load Clio balance history.')
-          setClioBalanceSeries([])
-          return
-        }
-
-        setClioBalanceSeries(Array.isArray(data?.series) ? data.series : [])
-        setClioBalanceLastLoaded(new Date().toLocaleString())
-      } catch (error) {
-        setClioBalanceError(error?.message || String(error))
-        setClioBalanceSeries([])
-      } finally {
-        setClioBalanceLoading(false)
-      }
-    }
-
-    function toggleClioMatter(matterId) {
-      const id = String(matterId)
-      setClioSelectedMatterIds((current) => (
-        current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
-      ))
-    }
-
-    function selectFirstClioMatters(count) {
-      setClioSelectedMatterIds(clioMatters.slice(0, count).map((matter) => String(matter.id)))
-    }
-
-    function selectAllClioMatters() {
-      setClioSelectedMatterIds(clioMatters.map((matter) => String(matter.id)))
-    }
-
-    function clearSelectedClioMatters() {
-      setClioSelectedMatterIds([])
-    }
-
-    function updateMinimum(matterId, value) {
-      setClioMinimumBalancesByMatterId((current) => ({ ...(current || {}), [String(matterId)]: value }))
-    }
-
-    function updateInitialRetainer(matterId, value) {
-      setClioInitialRetainersByMatterId((current) => ({ ...(current || {}), [String(matterId)]: value }))
-    }
-
+    const clioAuthUrl = `https://app.clio.com/oauth/authorize?response_type=code&client_id=${encodeURIComponent(import.meta.env.VITE_CLIO_CLIENT_ID || 'ZtV4JdoFsMWn9qXRGnehwJojzZU7ZUYXQbHjiLOv')}&redirect_uri=${encodeURIComponent(`${window.location.origin}/api/auth/callback`)}`
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Clio Billing Integration</h2>
-        <p style={{ color: '#566', marginTop: -6 }}>
-          Connect to Clio, load open matters, and graph current trust/WIP values. Trust uses running/current balance data, not gross cumulative deposits.
-        </p>
-
+        <p style={{ color: '#566', marginTop: -6 }}>Connect to Clio, load open matters, and graph current financial values.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-          <a href={clioAuthUrl} style={{ display: 'inline-block', padding: '10px 14px', background: '#0b5fff', color: '#fff', borderRadius: 8, textDecoration: 'none', fontWeight: 700 }}>
-            Connect to Clio
-          </a>
-          <button type="button" onClick={ensureClioMattersLoaded} disabled={clioBillingLoading}>
-            {clioBillingLoading ? 'Loading Clio data...' : 'Load Open Clio Matters'}
-          </button>
+          <a href={clioAuthUrl} style={{ display: 'inline-block', padding: '10px 14px', background: '#0b5fff', color: '#fff', borderRadius: 8, textDecoration: 'none', fontWeight: 700 }}>Connect to Clio</a>
+          <button type="button" onClick={loadOpenClioMattersIntoState} disabled={clioBillingLoading}>{clioBillingLoading ? 'Loading Clio data...' : 'Load Open Clio Matters'}</button>
           <a href="/api/clio/matters" target="_blank" rel="noreferrer">Open raw Clio matters JSON</a>
+          <span style={{ color: '#64748b' }}>Matters loaded: <strong>{clioMatters.length}</strong>{clioBillingLastLoaded ? `; last load ${clioBillingLastLoaded}` : ''}</span>
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginBottom: 14 }}>
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Connection status</div>
-            <strong>{clioMatters.length ? 'Connected' : clioBillingError ? 'Needs attention' : 'Ready to test'}</strong>
-          </div>
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Matters loaded</div>
-            <strong>{clioMatters.length}</strong>
-          </div>
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12 }}>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Last matters load</div>
-            <strong>{clioBillingLastLoaded || 'Not loaded yet'}</strong>
-          </div>
-        </div>
-
-        {clioBillingError && (
-          <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}>
-            <strong>Clio error:</strong> {clioBillingError}
-          </div>
-        )}
-
+        {clioBillingError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}><strong>Clio error:</strong> {clioBillingError}</div>}
         <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, marginBottom: 16, background: '#f8fafc' }}>
           <h3 style={{ marginTop: 0 }}>Matter Balance Graph</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
-            <label>
-              <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis account type</div>
-              <select value={clioAccountType} onChange={(event) => setClioAccountType(event.target.value)} style={{ width: '100%' }}>
-                <option value="trust">Current trust balance</option>
-                <option value="trust_minus_minimum">Trust minus matter minimum</option>
-                <option value="trust_minus_wip">Trust minus work in progress</option>
-                <option value="trust_minus_wip_minus_minimum">Trust minus work in progress minus minimum</option>
-                <option value="wip">Work in progress</option>
-              </select>
-            </label>
-            <label>
-              <div style={{ fontSize: 12, color: '#64748b' }}>From date</div>
-              <input type="date" value={clioBalanceFrom} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} />
-            </label>
-            <label>
-              <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
-              <input type="date" value={clioBalanceTo} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
-            </label>
-            <button type="button" onClick={loadClioBalanceHistory} disabled={clioBalanceLoading || !clioSelectedMatterIds.length}>
-              {clioBalanceLoading ? 'Loading graph...' : 'Load balance graph'}
-            </button>
-          </div>
-
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Matter minimum balances and initial retainers</summary>
-            <div style={{ maxHeight: 360, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, marginTop: 8 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr>
-                  <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Matter</th>
-                  <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Minimum balance</th>
-                  <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Initial retainer</th>
-                </tr></thead>
-                <tbody>
-                  {clioMatters.map((matter) => (
-                    <tr key={matter.id}>
-                      <td style={{ padding: 6, borderBottom: '1px solid #f1f5f9' }}>{clioMatterRowLabel(matter)}</td>
-                      <td style={{ padding: 6, borderBottom: '1px solid #f1f5f9' }}>
-                        <input type="number" min="0" step="50" value={clioMinimumBalancesByMatterId[String(matter.id)] ?? 2000} onChange={(event) => updateMinimum(matter.id, event.target.value)} style={{ width: 120 }} />
-                      </td>
-                      <td style={{ padding: 6, borderBottom: '1px solid #f1f5f9' }}>
-                        <input type="number" min="0" step="50" value={clioInitialRetainersByMatterId[String(matter.id)] ?? 3500} onChange={(event) => updateInitialRetainer(matter.id, event.target.value)} style={{ width: 120 }} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </details>
-
+          {renderClioSharedFilters({ includeGraphControls: true })}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-            <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!clioMatters.length}>Select first 5</button>
-            <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!clioMatters.length}>Select first 15</button>
-            <button type="button" onClick={selectAllClioMatters} disabled={!clioMatters.length}>Select all</button>
+            <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!clioFilteredMatters.length}>Select first 5 shown</button>
+            <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!clioFilteredMatters.length}>Select first 15 shown</button>
+            <button type="button" onClick={selectAllShownClioMatters} disabled={!clioFilteredMatters.length}>Select all shown</button>
             <button type="button" onClick={clearSelectedClioMatters} disabled={!clioSelectedMatterIds.length}>Clear selected</button>
-            <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length} matter(s) selected</span>
+            <button type="button" onClick={loadClioBalanceHistory} disabled={clioBalanceLoading || !clioSelectedMatterIds.length}>{clioBalanceLoading ? 'Loading graph...' : 'Load balance graph'}</button>
+            <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length} selected; {clioFilteredMatters.length} shown by filter</span>
           </div>
-
-          {clioMatters.length > 0 && (
-            <div style={{ maxHeight: 520, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2 }}>
-                {clioMatters.map((matter) => (
-                  <label key={matter.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, borderBottom: '1px solid #f1f5f9', padding: '4px 2px' }}>
-                    <input type="checkbox" checked={clioSelectedMatterIds.includes(String(matter.id))} onChange={() => toggleClioMatter(matter.id)} />
-                    <span>{clioMatterRowLabel(matter)}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {clioBalanceError && (
-            <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}>
-              <strong>Graph error:</strong> {clioBalanceError}
-            </div>
-          )}
-
-          {renderClioLineGraph({ series: clioBalanceSeries })}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+            <strong>Saved graph filters</strong>
+            <select value={clioSelectedSavedGraphFilter} onChange={(event) => applySavedClioGraphFilter(event.target.value)}><option value="">Select saved filter...</option>{Object.keys(clioSavedGraphFilters || {}).sort().map((name) => <option key={name} value={name}>{name}</option>)}</select>
+            <input placeholder="New filter name" value={clioNewGraphFilterName} onChange={(event) => setClioNewGraphFilterName(event.target.value)} />
+            <button type="button" onClick={saveClioGraphFilter}>Save filter settings</button>
+          </div>
+          {renderMatterMinimumBalancesEditor()}
+          {clioFilteredMatters.length > 0 && <div style={{ maxHeight: 540, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>{clioFilteredMatters.map((matter) => <label key={matter.id} style={{ display: 'block', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}><input type="checkbox" checked={clioSelectedMatterIds.includes(String(matter.id))} onChange={() => toggleClioMatter(matter.id)} /> {clioGraphMatterLabel(matter)}</label>)}</div>}
+          {clioBalanceError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}><strong>Graph error:</strong> {clioBalanceError}</div>}
+          {renderClioGraph(clioBalanceSeries)}
           {clioBalanceLastLoaded && <p style={{ color: '#64748b' }}>Graph last loaded {clioBalanceLastLoaded}.</p>}
         </div>
-
-        {clioMatters.length > 0 && (
-          <details style={{ marginTop: 10 }}>
-            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Loaded open Clio matters table ({clioMatters.length})</summary>
-            <div style={{ overflowX: 'auto', marginTop: 8 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Clio matter</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Client</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Clio case ID</th>
-                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8 }}>Status</th>
-                </tr></thead>
-                <tbody>
-                  {clioMatters.map((matter) => (
-                    <tr key={matter.id}>
-                      <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.display_number || '(no display number)'}{matter.description ? ` - ${matter.description}` : ''}</td>
-                      <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.client?.name || matter.client_name || ''}</td>
-                      <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{matter.id}</td>
-                      <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8, color: '#64748b' }}>{matter.status || ''}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </details>
-        )}
       </div>
     )
   }
 
-  function renderClientBillingFieldsPage() {
-    const selectedIds = clioSelectedMatterIds.map(String)
-    const columns = [
-      ['work_in_progress', 'Work in progress'],
-      ['outstanding_balance', 'Outstanding balance'],
-      ['matter_trust_funds', 'Matter trust funds'],
-      ['time_amount', 'Time amount'],
-      ['time_hours', 'Time hours'],
-      ['expenses', 'Expenses'],
-      ['trust_funds_out', 'Trust funds out'],
-      ['trust_funds_in', 'Trust funds in'],
-      ['trust_running_balance', 'Trust running balance'],
-    ]
+  const clientBillingColumns = [
+    { field: 'matter_label', label: 'Matter', type: 'text' },
+    { field: 'work_in_progress', label: 'Work in progress' },
+    { field: 'outstanding_balance', label: 'Outstanding balance' },
+    { field: 'matter_trust_funds', label: 'Matter trust funds' },
+    { field: 'time_amount', label: 'Time amount' },
+    { field: 'time_hours', label: 'Time hours', money: false },
+    { field: 'expenses', label: 'Expenses' },
+    { field: 'trust_funds_out', label: 'Trust funds out' },
+    { field: 'trust_funds_in', label: 'Trust funds in' },
+    { field: 'trust_running_balance', label: 'Trust running balance' },
+  ]
 
-    async function loadClientBillingFields() {
-      const ids = selectedIds.length ? selectedIds : clioMatters.map((matter) => String(matter.id))
-      if (!ids.length) {
-        setClioClientBillingError('Load Clio matters and select at least one matter first.')
+  function sortClientBillingRows(rows) {
+    const { field, direction } = clioClientBillingSort || { field: 'matter_label', direction: 'asc' }
+    const sign = direction === 'desc' ? -1 : 1
+    return [...rows].sort((a, b) => {
+      const av = a?.[field]
+      const bv = b?.[field]
+      if (typeof av === 'number' || typeof bv === 'number') return ((Number(av) || 0) - (Number(bv) || 0)) * sign
+      return String(av || '').localeCompare(String(bv || '')) * sign
+    })
+  }
+
+  function toggleClientBillingSort(field) {
+    setClioClientBillingSort((current) => ({ field, direction: current?.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
+  }
+
+  async function loadClientBillingFields() {
+    const ids = clioSelectedMatterIds.length ? clioSelectedMatterIds : clioFilteredMatters.map((matter) => String(matter.id))
+    if (!ids.length) return alert('Select matters or load Clio matters first.')
+    setClioClientBillingLoading(true)
+    setClioClientBillingError('')
+    try {
+      const params = new URLSearchParams()
+      params.set('matter_ids', ids.join(','))
+      if (clioBalanceFrom) params.set('from', clioBalanceFrom)
+      if (clioBalanceTo) params.set('to', clioBalanceTo)
+      const response = await fetch(`/api/clio/client-billing-fields?${params.toString()}`, { credentials: 'include' })
+      const data = await response.json()
+      if (!response.ok) {
+        setClioClientBillingError(data?.error || data?.message || 'Could not load client billing fields.')
+        setClioClientBillingRows([])
         return
       }
-      setClioClientBillingLoading(true)
-      setClioClientBillingError('')
-      try {
-        const params = new URLSearchParams({ matter_ids: ids.join(',') })
-        if (clioBalanceFrom) params.set('from', clioBalanceFrom)
-        if (clioBalanceTo) params.set('to', clioBalanceTo)
-        const response = await fetch(`/api/clio/client-billing-fields?${params.toString()}`, { credentials: 'include' })
-        const data = await response.json()
-        if (!response.ok) {
-          setClioClientBillingError(data?.error || data?.message || 'Could not load client billing fields.')
-          setClioClientBillingRows([])
-          return
-        }
-        setClioClientBillingRows(Array.isArray(data?.rows) ? data.rows : [])
-        setClioClientBillingLastLoaded(new Date().toLocaleString())
-      } catch (error) {
-        setClioClientBillingError(error?.message || String(error))
-        setClioClientBillingRows([])
-      } finally {
-        setClioClientBillingLoading(false)
-      }
+      setClioClientBillingRows(Array.isArray(data?.rows) ? data.rows : [])
+      setClioClientBillingLastLoaded(new Date().toLocaleString())
+    } catch (error) {
+      setClioClientBillingError(error?.message || String(error))
+      setClioClientBillingRows([])
+    } finally {
+      setClioClientBillingLoading(false)
     }
+  }
 
-    const chartSeries = clioClientBillingRows.map((row) => ({
-      matter_id: row.matter_id,
-      display_number: row.matter_label,
-      points: [{ date: clioBalanceTo || new Date().toISOString().slice(0, 10), balance: Number(row[clioClientBillingGraphColumn] || 0) }]
-    }))
+  function renderClientBillingFieldsGraph() {
+    const column = clientBillingColumns.find((c) => c.field === clioClientBillingGraphColumn)
+    const rows = sortClientBillingRows(clioClientBillingRows)
+    const points = rows.map((row) => ({ date: clioBalanceTo || new Date().toISOString().slice(0, 10), balance: Number(row?.[clioClientBillingGraphColumn] || 0) }))
+    const series = [{ matter_id: clioClientBillingGraphColumn, display_number: column?.label || clioClientBillingGraphColumn, points }]
+    return (
+      <div style={{ position: 'fixed', inset: 24, background: 'rgba(15,23,42,.32)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 16, width: '92vw', maxHeight: '90vh', overflow: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <h2 style={{ margin: 0 }}>Client Billing Fields Graph: {column?.label}</h2>
+            <button type="button" onClick={() => setClioClientBillingShowGraph(false)}>Close</button>
+          </div>
+          {renderClioGraph(series)}
+        </div>
+      </div>
+    )
+  }
 
+  function renderClientBillingFieldsPanel() {
+    const rows = sortClientBillingRows(clioClientBillingRows)
+    const money = (value) => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Client Billing Fields</h2>
-        <p style={{ color: '#566', marginTop: -6 }}>
-          Review Clio matter financial fields and trust transaction totals, then graph any column.
-        </p>
-
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 12 }}>
-          <label><div style={{ fontSize: 12, color: '#64748b' }}>From date</div><input type="date" value={clioBalanceFrom} onChange={(event) => setClioBalanceFrom(event.target.value)} /></label>
-          <label><div style={{ fontSize: 12, color: '#64748b' }}>To date</div><input type="date" value={clioBalanceTo} onChange={(event) => setClioBalanceTo(event.target.value)} /></label>
-          <label><div style={{ fontSize: 12, color: '#64748b' }}>Graph column</div><select value={clioClientBillingGraphColumn} onChange={(event) => setClioClientBillingGraphColumn(event.target.value)}>{columns.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-          <button type="button" onClick={ensureClioMattersLoaded} disabled={clioBillingLoading}>{clioBillingLoading ? 'Loading matters...' : 'Load Open Clio Matters'}</button>
-          <button type="button" onClick={loadClientBillingFields} disabled={clioClientBillingLoading || (!clioMatters.length && !selectedIds.length)}>{clioClientBillingLoading ? 'Loading fields...' : 'Load client billing fields'}</button>
+        <p style={{ color: '#64748b' }}>Review Clio financial fields first. Use the graph only when you want to visualize a selected column.</p>
+        {renderClioSharedFilters({ includeGraphControls: false })}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <button type="button" onClick={loadOpenClioMattersIntoState} disabled={clioBillingLoading}>{clioBillingLoading ? 'Loading matters...' : 'Load Open Clio Matters'}</button>
+          <button type="button" onClick={() => selectFirstClioMatters(5)} disabled={!clioFilteredMatters.length}>Select first 5 shown</button>
+          <button type="button" onClick={() => selectFirstClioMatters(15)} disabled={!clioFilteredMatters.length}>Select first 15 shown</button>
+          <button type="button" onClick={selectAllShownClioMatters} disabled={!clioFilteredMatters.length}>Select all shown</button>
+          <button type="button" onClick={clearSelectedClioMatters} disabled={!clioSelectedMatterIds.length}>Clear selected</button>
+          <button type="button" onClick={loadClientBillingFields} disabled={clioClientBillingLoading}>{clioClientBillingLoading ? 'Loading fields...' : 'Load client billing fields'}</button>
+          <label>Graph column <select value={clioClientBillingGraphColumn} onChange={(event) => setClioClientBillingGraphColumn(event.target.value)}>{clientBillingColumns.filter((c) => c.field !== 'matter_label').map((c) => <option key={c.field} value={c.field}>{c.label}</option>)}</select></label>
+          <button type="button" onClick={() => setClioClientBillingShowGraph(true)} disabled={!clioClientBillingRows.length}>Show graph</button>
+          <span style={{ color: '#64748b' }}>{clioSelectedMatterIds.length || clioFilteredMatters.length} selected/shown</span>
         </div>
-
+        {clioFilteredMatters.length > 0 && <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff', marginBottom: 12 }}>{clioFilteredMatters.map((matter) => <label key={matter.id} style={{ display: 'block', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}><input type="checkbox" checked={clioSelectedMatterIds.includes(String(matter.id))} onChange={() => toggleClioMatter(matter.id)} /> {clioGraphMatterLabel(matter)}</label>)}</div>}
         {clioClientBillingError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 10, padding: 12, marginBottom: 14 }}><strong>Client billing fields error:</strong> {clioClientBillingError}</div>}
-
-        {renderClioLineGraph({ series: chartSeries, height: 320 })}
-        {clioClientBillingLastLoaded && <p style={{ color: '#64748b' }}>Client billing fields last loaded {clioClientBillingLastLoaded}.</p>}
-
-        <div style={{ overflowX: 'auto', marginTop: 12, maxHeight: 620, border: '1px solid #e5e7eb', borderRadius: 10 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}>
+        {clioClientBillingShowGraph && renderClientBillingFieldsGraph()}
+        <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff' }}>
             <thead>
-              <tr>
-                <th style={{ position: 'sticky', top: 0, background: '#f8fafc', textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Matter</th>
-                {columns.map(([key, label]) => <th key={key} style={{ position: 'sticky', top: 0, background: '#f8fafc', textAlign: 'right', padding: 8, borderBottom: '1px solid #e5e7eb' }}>{label}</th>)}
-              </tr>
+              <tr>{clientBillingColumns.map((column) => <th key={column.field} onClick={() => toggleClientBillingSort(column.field)} style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 8, cursor: 'pointer', whiteSpace: 'nowrap' }}>{column.label} {clioClientBillingSort?.field === column.field ? (clioClientBillingSort.direction === 'asc' ? '▲' : '▼') : '↕'}</th>)}</tr>
             </thead>
             <tbody>
-              {clioClientBillingRows.map((row) => (
-                <tr key={row.matter_id}>
-                  <td style={{ borderBottom: '1px solid #f1f5f9', padding: 8 }}>{row.matter_label}</td>
-                  {columns.map(([key]) => (
-                    <td key={key} style={{ borderBottom: '1px solid #f1f5f9', padding: 8, textAlign: 'right' }}>
-                      {key === 'time_hours' ? Number(row[key] || 0).toFixed(2) : Number(row[key] || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })}
-                    </td>
-                  ))}
-                </tr>
+              {!rows.length ? <tr><td colSpan={clientBillingColumns.length} style={{ padding: 12, color: '#64748b' }}>No fields loaded yet. Click Load client billing fields.</td></tr> : rows.map((row) => (
+                <tr key={row.matter_id}>{clientBillingColumns.map((column) => <td key={column.field} style={{ borderBottom: '1px solid #f1f5f9', padding: 8, whiteSpace: column.field === 'matter_label' ? 'normal' : 'nowrap' }}>{column.field === 'matter_label' ? row[column.field] : column.money === false ? Number(row[column.field] || 0).toFixed(2) : money(row[column.field])}</td>)}</tr>
               ))}
-              {!clioClientBillingRows.length && (
-                <tr><td colSpan={columns.length + 1} style={{ padding: 12, color: '#64748b' }}>No client billing field data loaded yet.</td></tr>
-              )}
             </tbody>
           </table>
         </div>
+        {clioClientBillingLastLoaded && <p style={{ color: '#64748b' }}>Client billing fields last loaded {clioClientBillingLastLoaded}.</p>}
       </div>
     )
   }
 
+  function renderClioClientInvoicingPanel() {
+    return <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}><h2 style={{ marginTop: 0 }}>Client Invoicing</h2><p>Use saved graph filters and Client Billing Fields to prepare invoice review.</p></div>
+  }
 
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
@@ -23074,12 +23201,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <button type="button" style={tabButtonStyle('client_billing_fields')} onClick={() => setBillingTab('client_billing_fields')}>
             Client Billing Fields
           </button>
+          <button type="button" style={tabButtonStyle('client_invoicing')} onClick={() => setBillingTab('client_invoicing')}>
+            Client Invoicing
+          </button>
         </div>
 
         {billingTab === 'clio_billing' ? (
           renderClioBillingIntegrationPanel()
         ) : billingTab === 'client_billing_fields' ? (
-          renderClientBillingFieldsPage()
+          renderClientBillingFieldsPanel()
+        ) : billingTab === 'client_invoicing' ? (
+          renderClioClientInvoicingPanel()
         ) : (
           <>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>

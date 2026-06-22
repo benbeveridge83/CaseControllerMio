@@ -8,7 +8,11 @@ export default async function handler(req, res) {
   if (!tokenCookie) return res.status(401).json({ error: "Not authenticated" });
 
   const token = tokenCookie.split("=")[1];
-  const matterIds = String(req.query.matter_ids || "").split(",").map((id) => id.trim()).filter(Boolean);
+  const matterIds = String(req.query.matter_ids || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
   if (!matterIds.length) return res.status(400).json({ error: "No matter_ids provided" });
 
   const fromDay = req.query.from ? String(req.query.from).slice(0, 10) : null;
@@ -80,21 +84,22 @@ export default async function handler(req, res) {
   async function fetchMatter(matterId) {
     const fieldSets = [
       "id,display_number,description,status,client{id,name},account_balances",
-      "id,display_number,description,status,client{id,name},work_in_progress,outstanding_balance,trust_balance,expenses,total_expenses",
+      "id,display_number,description,status,client{id,name},work_in_progress,work_in_progress_balance,wip,unbilled_balance,outstanding_balance,accounts_receivable_balance,trust_balance,trust_account_balance,expenses,total_expenses",
       "id,display_number,description,status,client{id,name}",
     ];
 
+    let merged = null;
     for (const fields of fieldSets) {
       const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
       url.searchParams.set("fields", fields);
       try {
         const data = await clioFetch(url);
-        return data?.data || null;
+        merged = { ...(merged || {}), ...(data?.data || {}) };
       } catch {
-        // try next
+        // Some Clio accounts reject individual fields. Keep trying smaller field sets.
       }
     }
-    return null;
+    return merged;
   }
 
   function numericFromAccountBalances(matter, wantedType) {
@@ -124,18 +129,15 @@ export default async function handler(req, res) {
 
     let fundsIn = 0;
     let fundsOut = 0;
-    let running = null;
-    let computed = 0;
+    let running = 0;
 
     for (const tx of txs.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))) {
       const day = tx.date ? String(tx.date).slice(0, 10) : null;
       const txFundsIn = numberOrNull(tx.funds_in) || 0;
       const txFundsOut = numberOrNull(tx.funds_out) || 0;
       const explicit = firstNumber(tx.running_balance, tx.current_account_balance);
-      if (explicit !== null) computed = explicit;
-      else computed += txFundsIn - txFundsOut;
-      running = computed;
-
+      if (explicit !== null) running = explicit;
+      else running += txFundsIn - txFundsOut;
       if (!day || !inRange(day)) continue;
       fundsIn += txFundsIn;
       fundsOut += txFundsOut;
@@ -148,51 +150,74 @@ export default async function handler(req, res) {
     const activities = await fetchPaged("activities.json", {
       limit: 200,
       matter_id: matterId,
-      fields: "id,date,total,price,quantity,non_billable,billed,bill{id,state,status},type",
+      fields: "id,date,total,price,quantity,non_billable,billed,bill{id,state,status},type,activity_type",
     }).catch(() => []);
 
     let timeAmount = 0;
     let timeHours = 0;
     let expenses = 0;
-    let wipFromUnbilled = 0;
+    let wip = 0;
     let foundWip = false;
 
     for (const a of activities) {
       const day = a.date ? String(a.date).slice(0, 10) : null;
-      if (day && !inRange(day)) continue;
+      const inSelectedRange = !day || inRange(day);
       const amount = firstNumber(a.total, a.price) || 0;
       const quantity = firstNumber(a.quantity) || 0;
       const typeText = String(a.type || a.activity_type || "").toLowerCase();
       const isExpense = /expense/.test(typeText);
-      const isNonBillable = a.non_billable === true;
+      const nonBillable = a.non_billable === true;
+      const hasBilledFlag = Object.prototype.hasOwnProperty.call(a, "billed");
       const billState = String(a.bill?.state || a.bill?.status || "").toLowerCase();
       const clearlyBilled = a.billed === true || Boolean(a.bill?.id) || ["draft", "awaiting_payment", "paid", "approved", "sent"].includes(billState);
 
-      if (isExpense) expenses += amount;
-      else {
-        timeAmount += amount;
-        timeHours += quantity;
+      if (inSelectedRange) {
+        if (isExpense) expenses += amount;
+        else {
+          timeAmount += amount;
+          timeHours += quantity;
+        }
       }
 
-      if (!isExpense && !isNonBillable && !clearlyBilled && (Object.prototype.hasOwnProperty.call(a, "billed") || "bill" in a)) {
-        wipFromUnbilled += amount;
+      // Current WIP should be current unbilled billable work, not all historical time.
+      // If Clio supplies billed/bill fields, use them. If not, do not guess from every activity.
+      if (!isExpense && !nonBillable && !clearlyBilled && (hasBilledFlag || "bill" in a)) {
+        wip += amount;
         foundWip = true;
       }
     }
 
-    return { time_amount: timeAmount, time_hours: timeHours, expenses, wip_from_unbilled: foundWip ? wipFromUnbilled : null };
+    return { time_amount: timeAmount, time_hours: timeHours, expenses, wip_from_unbilled: foundWip ? wip : null };
+  }
+
+  async function fetchBills(matterId) {
+    const bills = await fetchPaged("bills.json", {
+      limit: 200,
+      matter_id: matterId,
+      fields: "id,state,status,total,balance,due,paid,paid_at,matters{id,display_number}",
+    }).catch(() => []);
+
+    let outstanding = 0;
+    for (const bill of bills) {
+      const state = String(bill.state || bill.status || "").toLowerCase();
+      if (["paid", "void", "deleted"].includes(state)) continue;
+      const bal = firstNumber(bill.balance, bill.due, bill.total);
+      if (bal !== null) outstanding += bal;
+    }
+    return outstanding;
   }
 
   async function buildRow(matterId) {
-    const [matter, trust, activity] = await Promise.all([
+    const [matter, trust, activity, billOutstanding] = await Promise.all([
       fetchMatter(matterId),
       fetchTrustTransactions(matterId),
       fetchActivities(matterId),
+      fetchBills(matterId),
     ]);
 
     const matterTrust = firstNumber(numericFromAccountBalances(matter, "trust"), matter?.trust_balance, matter?.trust_account_balance, matter?.matter_trust_funds);
     const matterWip = firstNumber(numericFromAccountBalances(matter, "wip"), matter?.work_in_progress, matter?.work_in_progress_balance, matter?.wip, matter?.unbilled_balance);
-    const outstanding = firstNumber(numericFromAccountBalances(matter, "outstanding"), matter?.outstanding_balance, matter?.account_balance, matter?.balance, matter?.total_balance);
+    const matterOutstanding = firstNumber(numericFromAccountBalances(matter, "outstanding"), matter?.outstanding_balance, matter?.accounts_receivable_balance, matter?.account_balance, matter?.balance, matter?.total_balance);
 
     const clientName = matter?.client?.name || "";
     const matterLabel = `${matter?.display_number || `Matter ${matterId}`}${matter?.description ? ` ${matter.description}` : ""}${clientName ? ` (${clientName})` : ""}`;
@@ -203,7 +228,7 @@ export default async function handler(req, res) {
       clio_matter_number: matter?.display_number || "",
       clio_client_name: clientName,
       work_in_progress: Number(matterWip ?? activity.wip_from_unbilled ?? 0),
-      outstanding_balance: Number(outstanding || 0),
+      outstanding_balance: Number(matterOutstanding ?? billOutstanding ?? 0),
       matter_trust_funds: Number(matterTrust ?? trust.trust_running_balance ?? 0),
       time_hours: Number(activity.time_hours || 0),
       time_amount: Number(activity.time_amount || 0),
@@ -220,11 +245,8 @@ export default async function handler(req, res) {
     async function worker() {
       while (index < items.length) {
         const currentIndex = index++;
-        try {
-          results[currentIndex] = { status: "fulfilled", value: await mapper(items[currentIndex]) };
-        } catch (error) {
-          results[currentIndex] = { status: "rejected", reason: error };
-        }
+        try { results[currentIndex] = { status: "fulfilled", value: await mapper(items[currentIndex]) }; }
+        catch (error) { results[currentIndex] = { status: "rejected", reason: error }; }
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
