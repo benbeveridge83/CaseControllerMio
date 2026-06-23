@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   const cookieHeader = req.headers.cookie || "";
   const tokenCookie = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("clio_access_token="));
-  if (!tokenCookie) return res.status(401).json({ version: "v32", error: "Not authenticated with Clio." });
+  if (!tokenCookie) return res.status(401).json({ version: "v33", error: "Not authenticated with Clio." });
   const token = tokenCookie.split("=")[1];
 
   const origin = "https://app.clio.com/api/v4";
@@ -147,7 +147,16 @@ export default async function handler(req, res) {
     const billsClientParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance,client{id,name}" };
     if (matterId) billsClientParams.matter_id = matterId;
     const billsClient = await clioFetch("/bills.json", billsClientParams, "bills fields with client");
-    const bills = billsClient.ok ? billsClient : billsBasic;
+    const billsMattersPluralParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance,client{id,name},matters{id,display_number}" };
+    if (matterId) billsMattersPluralParams.matter_id = matterId;
+    const billsMattersPlural = await clioFetch("/bills.json", billsMattersPluralParams, "bills fields with matters plural");
+    const billsMatterBalancesParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance,matter_balances" };
+    if (matterId) billsMatterBalancesParams.matter_id = matterId;
+    const billsMatterBalances = await clioFetch("/bills.json", billsMatterBalancesParams, "bills fields with matter_balances legacy test");
+    const bills = billsMattersPlural.ok ? billsMattersPlural : (billsClient.ok ? billsClient : billsBasic);
+
+    const contactsParams = { limit: 10, fields: "id,name,primary_email_address,primary_phone_number,email_addresses{name,address},phone_numbers{name,number}" };
+    const contacts = await clioFetch("/contacts.json", contactsParams, "contacts email/phone field test");
 
     const bankParams = { limit: 10, fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" };
     if (matterId) bankParams.matter_id = matterId;
@@ -166,12 +175,12 @@ export default async function handler(req, res) {
       fieldStatus("invoice_total", (bills.rows || []).some((r) => "total" in r), "Bills API total", bills.rows?.[0]),
       fieldStatus("invoice_balance", (bills.rows || []).some((r) => "balance" in r), "Bills API balance", bills.rows?.[0]),
       fieldStatus("invoice_sent_at", (bills.rows || []).some((r) => "issued_at" in r || "sent_at" in r), "Bills API issued/sent fields", bills.rows?.[0]),
-      fieldStatus("client_email", false, "Contacts API/email fields - not tested in v30 audit yet", null),
-      fieldStatus("client_phone", false, "Contacts API/phone fields - not tested in v30 audit yet", null)
+      fieldStatus("client_email", (contacts.rows || []).some((r) => r.primary_email_address || (Array.isArray(r.email_addresses) && r.email_addresses.length)), "Contacts API/email fields", contacts.rows?.[0]),
+      fieldStatus("client_phone", (contacts.rows || []).some((r) => r.primary_phone_number || (Array.isArray(r.phone_numbers) && r.phone_numbers.length)), "Contacts API/phone fields", contacts.rows?.[0])
     ];
 
     return res.status(200).json({
-      version: "v32",
+      version: "v33",
       from,
       to,
       matter_id: matterId || null,
@@ -192,6 +201,6 @@ export default async function handler(req, res) {
       attempts
     });
   } catch (error) {
-    return res.status(500).json({ version: "v32", error: error.message || String(error), attempts });
+    return res.status(500).json({ version: "v33", error: error.message || String(error), attempts });
   }
 }
