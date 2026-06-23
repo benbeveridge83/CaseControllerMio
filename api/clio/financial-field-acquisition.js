@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   const cookieHeader = req.headers.cookie || "";
   const tokenCookie = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("clio_access_token="));
-  if (!tokenCookie) return res.status(401).json({ version: "v34", error: "Not authenticated with Clio." });
+  if (!tokenCookie) return res.status(401).json({ version: "v35", error: "Not authenticated with Clio." });
   const token = tokenCookie.split("=")[1];
 
   const origin = "https://app.clio.com/api/v4";
@@ -20,6 +20,13 @@ export default async function handler(req, res) {
     });
     const record = { label, url: url.toString().replace(/access_token=[^&]+/g, "access_token=REDACTED") };
     try {
+    const action = String(req.query.action || "audit_v35");
+    if (action === "contacts_index") {
+      const result = await contactsIndex();
+      if (!result.ok) return res.status(422).json({ version: "v35", error: result.error || "Contact index failed", attempts: result.attempts || [] });
+      return res.status(200).json({ version: "v35", contacts: result.contacts, contact_count: result.contacts.length, field_set: result.field_set, attempts: result.attempts || [] });
+    }
+
       const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
       const contentType = response.headers.get("content-type") || "";
       const data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text();
@@ -107,6 +114,69 @@ export default async function handler(req, res) {
     return typeof payload === "string" ? parseCsv(payload) : { error: "No CSV payload recognized", raw: data };
   }
 
+  async function contactsIndex() {
+    const attemptsLocal = [];
+    async function contactFetch(fields, label) {
+      const rows = [];
+      let url = new URL(`${origin}/contacts.json`);
+      url.searchParams.set("limit", "200");
+      if (fields) url.searchParams.set("fields", fields);
+      while (url) {
+        const record = { label, url: url.toString() };
+        try {
+          const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+          const contentType = response.headers.get("content-type") || "";
+          const data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text();
+          record.status = response.status;
+          record.ok = response.ok;
+          if (!response.ok) {
+            record.error = data?.error?.message || data?.message || data?.error || (typeof data === "string" ? data.slice(0, 500) : `HTTP ${response.status}`);
+            record.payload_sample = data;
+            attemptsLocal.push(record);
+            return { ok: false, rows: [], attempts: attemptsLocal, error: record.error };
+          }
+          const pageRows = Array.isArray(data?.data) ? data.data : [];
+          rows.push(...pageRows);
+          record.count = pageRows.length;
+          record.sample_keys = pageRows[0] && typeof pageRows[0] === "object" ? Object.keys(pageRows[0]) : [];
+          record.sample = pageRows.slice(0, 2);
+          attemptsLocal.push(record);
+          const next = data?.meta?.paging?.next;
+          url = next ? new URL(next) : null;
+        } catch (error) {
+          record.ok = false;
+          record.error = error.message || String(error);
+          attemptsLocal.push(record);
+          return { ok: false, rows: [], attempts: attemptsLocal, error: record.error };
+        }
+      }
+      return { ok: true, rows, attempts: attemptsLocal };
+    }
+    const fieldSets = [
+      { label: "contacts primary nested", fields: "id,name,primary_email_address,primary_phone_number,email_addresses{name,address},phone_numbers{name,number}" },
+      { label: "contacts simple primary", fields: "id,name,primary_email_address,primary_phone_number" },
+      { label: "contacts id name only", fields: "id,name" },
+      { label: "contacts default", fields: "" }
+    ];
+    for (const item of fieldSets) {
+      const result = await contactFetch(item.fields, item.label);
+      if (result.ok) {
+        const contacts = result.rows.map((contact) => ({
+          id: contact.id,
+          name: contact.name || "",
+          primary_email_address: contact.primary_email_address || "",
+          primary_phone_number: contact.primary_phone_number || "",
+          email_addresses: Array.isArray(contact.email_addresses) ? contact.email_addresses : [],
+          phone_numbers: Array.isArray(contact.phone_numbers) ? contact.phone_numbers : [],
+          raw: contact
+        }));
+        return { ok: true, contacts, attempts: result.attempts, field_set: item.label };
+      }
+    }
+    return { ok: false, contacts: [], attempts: attemptsLocal, error: "No contacts field set succeeded." };
+  }
+
+
   try {
     const reportsResult = await clioFetch("/reports.json", {
       limit: 200,
@@ -180,7 +250,7 @@ export default async function handler(req, res) {
     ];
 
     return res.status(200).json({
-      version: "v34",
+      version: "v35",
       from,
       to,
       matter_id: matterId || null,
@@ -201,6 +271,6 @@ export default async function handler(req, res) {
       attempts
     });
   } catch (error) {
-    return res.status(500).json({ version: "v34", error: error.message || String(error), attempts });
+    return res.status(500).json({ version: "v35", error: error.message || String(error), attempts });
   }
 }
