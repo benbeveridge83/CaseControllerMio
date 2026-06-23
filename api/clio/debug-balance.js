@@ -164,7 +164,7 @@ export default async function handler(req, res) {
   const [bill_attempts, report_attempts] = await Promise.all([fetchBills(), fetchReportAttempts()]);
 
   return res.status(200).json({
-    version: "v24",
+    version: "v26",
     matter_id: matterId,
     matter,
     successful_fields: fields,

@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   const toDay = req.query.to ? String(req.query.to).slice(0, 10) : null;
 
   function asDate(day) {
-    const d = new Date(day);
+    const d = new Date(`${day}T00:00:00Z`);
     return Number.isFinite(d.getTime()) ? d : null;
   }
 
@@ -51,9 +51,9 @@ export default async function handler(req, res) {
       else return null;
     }
     if (typeof value === "string") {
-      const cleaned = value.replace(/[$,\s]/g, "").replace(/[()]/g, "");
+      const negative = /^\s*\(.*\)\s*$/.test(value) || /^\s*-/.test(value);
+      const cleaned = value.replace(/[$,\s()]/g, "");
       if (!cleaned || cleaned === "-") return null;
-      const negative = /\(.*\)/.test(value) || /^-/.test(cleaned);
       value = negative && !cleaned.startsWith("-") ? `-${cleaned}` : cleaned;
     }
     const n = Number(value);
@@ -68,18 +68,27 @@ export default async function handler(req, res) {
     return null;
   }
 
-  async function clioFetch(url) {
+  async function clioFetch(url, options = {}) {
     const response = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      ...options,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: options.accept || "application/json",
+        ...(options.headers || {}),
+      },
     });
-    const data = await response.json().catch(() => ({}));
+    const contentType = response.headers.get("content-type") || "";
+    let data;
+    if (contentType.includes("application/json")) data = await response.json().catch(() => ({}));
+    else data = await response.text();
     if (!response.ok) {
-      const error = new Error(data?.error?.message || data?.message || data?.error || `Clio request failed with ${response.status}`);
+      const error = new Error(data?.error?.message || data?.message || data?.error || (typeof data === "string" ? data.slice(0, 300) : `Clio request failed with ${response.status}`));
       error.status = response.status;
       error.payload = data;
+      error.url = url.toString();
       throw error;
     }
-    return data;
+    return { data, response, contentType };
   }
 
   async function fetchPaged(path, params = {}, options = {}) {
@@ -89,7 +98,7 @@ export default async function handler(req, res) {
     }
     const all = [];
     while (url) {
-      const data = await clioFetch(url);
+      const { data } = await clioFetch(url);
       all.push(...(Array.isArray(data.data) ? data.data : []));
       const next = data?.meta?.paging?.next;
       url = next ? new URL(next) : null;
@@ -99,22 +108,14 @@ export default async function handler(req, res) {
   }
 
   async function fetchMatter(matterId) {
-    const attempts = [
-      "id,display_number,description,status,client{id,name},work_in_progress,work_in_progress_balance,wip,unbilled_balance,outstanding_balance,accounts_receivable_balance,trust_balance,trust_account_balance,matter_trust_funds,funds_in_trust",
-      "id,display_number,description,status,client{id,name}",
-    ];
-    let merged = null;
-    for (const fields of attempts) {
-      const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
-      url.searchParams.set("fields", fields);
-      try {
-        const data = await clioFetch(url);
-        merged = { ...(merged || {}), ...(data?.data || {}) };
-      } catch {
-        // Optional fields vary by account/API version.
-      }
+    const url = new URL(`https://app.clio.com/api/v4/matters/${matterId}`);
+    url.searchParams.set("fields", "id,display_number,description,status,client{id,name}");
+    try {
+      const { data } = await clioFetch(url);
+      return data?.data || { id: matterId };
+    } catch {
+      return { id: matterId };
     }
-    return merged || { id: matterId };
   }
 
   async function fetchContact(contactId) {
@@ -128,11 +129,9 @@ export default async function handler(req, res) {
       const url = new URL(`https://app.clio.com/api/v4/contacts/${contactId}`);
       url.searchParams.set("fields", fields);
       try {
-        const data = await clioFetch(url);
+        const { data } = await clioFetch(url);
         return data?.data || null;
-      } catch {
-        // Try next field set.
-      }
+      } catch {}
     }
     return null;
   }
@@ -140,111 +139,73 @@ export default async function handler(req, res) {
   function pickEmail(contact) {
     const list = Array.isArray(contact?.email_addresses) ? contact.email_addresses : [];
     const row = list.find((e) => e.primary || e.default_email) || list[0];
-    return row?.address || row?.email || row?.name || "";
+    return row?.address || row?.email || "";
   }
 
   function pickPhone(contact) {
     const list = Array.isArray(contact?.phone_numbers) ? contact.phone_numbers : [];
     const row = list.find((p) => p.primary || p.default_number) || list[0];
-    return row?.number || row?.phone || row?.name || "";
-  }
-
-  function txExplicitBalance(tx) {
-    return firstNumber(
-      tx?.running_balance,
-      tx?.runningBalance,
-      tx?.current_account_balance,
-      tx?.currentAccountBalance,
-      tx?.account_balance,
-      tx?.accountBalance,
-      tx?.balance_after,
-      tx?.balanceAfter,
-      tx?.ending_balance,
-      tx?.endingBalance,
-      tx?.current_balance,
-      tx?.currentBalance
-    );
+    return row?.number || row?.phone || "";
   }
 
   function txFundsIn(tx) {
-    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.funds_in_amount, tx?.credit, tx?.credit_amount, tx?.deposit, tx?.deposits);
+    return firstNumber(tx?.funds_in, tx?.fundsIn, tx?.FundsIn, tx?.credit, tx?.credit_amount, tx?.deposit, tx?.deposit_amount);
   }
 
   function txFundsOut(tx) {
-    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.funds_out_amount, tx?.debit, tx?.debit_amount, tx?.withdrawal, tx?.withdrawals);
+    return firstNumber(tx?.funds_out, tx?.fundsOut, tx?.FundsOut, tx?.debit, tx?.debit_amount, tx?.withdrawal, tx?.withdrawal_amount);
   }
 
   async function fetchTrustTransactions(matterId) {
     const attempts = [
-      { fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" },
-      { fields: "id,date,funds_out,funds_in,matter{id,display_number}" },
-      { fields: "id,date,amount,matter{id,display_number}" },
+      "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}",
+      "id,date,funds_out,funds_in,matter{id,display_number}",
     ];
     let txs = [];
-    for (const attempt of attempts) {
+    for (const fields of attempts) {
       try {
-        const params = { limit: 200, matter_id: matterId, type: "liability" };
-        if (attempt.fields) params.fields = attempt.fields;
-        txs = await fetchPaged("bank_transactions.json", params, { maxRecords: 500 });
+        txs = await fetchPaged("bank_transactions.json", { limit: 200, matter_id: matterId, type: "liability", fields }, { maxRecords: 1000 });
         if (txs.length) break;
-      } catch {
-        txs = [];
-      }
+      } catch { txs = []; }
     }
 
     const rows = txs
       .map((tx) => ({
         id: tx.id,
         day: normalizeDay(tx.date || tx.created_at || tx.updated_at),
-        explicit: txExplicitBalance(tx),
         fundsIn: Number(txFundsIn(tx) || 0),
         fundsOut: Number(txFundsOut(tx) || 0),
-        amount: firstNumber(tx?.amount),
       }))
       .filter((row) => row.day)
-      .sort((a, b) => new Date(a.day) - new Date(b.day) || String(a.id).localeCompare(String(b.id)));
+      .sort((a, b) => new Date(`${a.day}T00:00:00Z`) - new Date(`${b.day}T00:00:00Z`) || String(a.id).localeCompare(String(b.id)));
 
-    // Ignore mirrored funds_in rows that pair with same-date/same-amount funds_out rows.
-    const outBuckets = new Map();
+    let grossFundsInAll = 0;
+    let grossFundsOutAll = 0;
+    let grossFundsInSelected = 0;
+    let grossFundsOutSelected = 0;
+
     for (const row of rows) {
-      if (row.fundsOut > 0) {
-        const key = `${row.day}|${row.fundsOut.toFixed(2)}`;
-        outBuckets.set(key, (outBuckets.get(key) || 0) + 1);
+      grossFundsInAll += row.fundsIn;
+      grossFundsOutAll += row.fundsOut;
+      if (!fromDay && !toDay || inRange(row.day)) {
+        grossFundsInSelected += row.fundsIn;
+        grossFundsOutSelected += row.fundsOut;
       }
     }
 
-    let running = 0;
-    let trustFundsInSelected = 0;
-    let trustFundsOutSelected = 0;
-    let ignoredMirroredFundsIn = 0;
-
-    for (const row of rows) {
-      let effectiveFundsIn = row.fundsIn;
-      if (effectiveFundsIn > 0) {
-        const key = `${row.day}|${effectiveFundsIn.toFixed(2)}`;
-        const count = outBuckets.get(key) || 0;
-        if (count > 0) {
-          effectiveFundsIn = 0;
-          ignoredMirroredFundsIn += row.fundsIn;
-          outBuckets.set(key, count - 1);
-        }
-      }
-
-      if (row.explicit !== null) running = Number(row.explicit);
-      else if (effectiveFundsIn || row.fundsOut) running += effectiveFundsIn - row.fundsOut;
-      else if (row.amount !== null) running += Number(row.amount || 0);
-
-      if (row.day && inRange(row.day)) {
-        trustFundsInSelected += Number(effectiveFundsIn || 0);
-        trustFundsOutSelected += Number(row.fundsOut || 0);
-      }
-    }
+    // Clio's matter-filtered trust transactions include mirrored funds_in rows for transfers from trust to operating.
+    // Actual trust deposits = gross funds in minus gross funds out. Current trust = actual deposits minus gross funds out.
+    const actualTrustFundsInAll = grossFundsInAll - grossFundsOutAll;
+    const currentTrust = actualTrustFundsInAll - grossFundsOutAll;
+    const actualTrustFundsInSelected = grossFundsInSelected - grossFundsOutSelected;
 
     return {
-      trust_funds_in: Number(trustFundsInSelected || 0),
-      trust_funds_out: Number(trustFundsOutSelected || 0),
-      trust_running_balance: Number(running || 0),
-      ignored_mirrored_funds_in: Number(ignoredMirroredFundsIn || 0),
+      trust_funds_in: Number(Math.max(0, actualTrustFundsInSelected) || 0),
+      trust_funds_out: Number(grossFundsOutSelected || 0),
+      trust_running_balance: Number(currentTrust || 0),
+      gross_funds_in: Number(grossFundsInAll || 0),
+      gross_funds_out: Number(grossFundsOutAll || 0),
+      actual_trust_funds_in_all: Number(Math.max(0, actualTrustFundsInAll) || 0),
     };
   }
 
@@ -257,31 +218,26 @@ export default async function handler(req, res) {
     let activities = [];
     for (const fields of attempts) {
       try {
-        activities = await fetchPaged("activities.json", { limit: 200, matter_id: matterId, fields }, { maxRecords: 500 });
+        activities = await fetchPaged("activities.json", { limit: 200, matter_id: matterId, fields }, { maxRecords: 1000 });
         break;
-      } catch {
-        activities = [];
-      }
+      } catch { activities = []; }
     }
-
     let timeAmountSelected = 0;
     let timeHoursSelected = 0;
     let expensesSelected = 0;
     let wip = 0;
     let foundWip = false;
-
     for (const a of activities) {
       const day = normalizeDay(a.date || a.created_at || a.updated_at);
       const inSelectedRange = !day || inRange(day);
       const amount = firstNumber(a.total, a.price, a.amount) || 0;
       let quantity = firstNumber(a.quantity, a.hours, a.time) || 0;
-      if (quantity > 24) quantity = quantity / 3600; // Clio time quantities may arrive as seconds in some responses.
+      if (quantity > 24) quantity = quantity / 3600;
       const typeText = String(a.type || a.activity_type || a.activityType || "").toLowerCase();
       const isExpense = /expense/.test(typeText);
       const nonBillable = a.non_billable === true;
       const billState = String(a.bill?.state || a.bill?.status || "").toLowerCase();
       const billed = a.billed === true || Boolean(a.bill?.id) || ["draft", "awaiting_payment", "paid", "approved", "sent"].includes(billState);
-
       if (inSelectedRange) {
         if (isExpense) expensesSelected += Number(amount || 0);
         else {
@@ -289,20 +245,12 @@ export default async function handler(req, res) {
           timeHoursSelected += Number(quantity || 0);
         }
       }
-
-      // Current WIP is all billable, not billed time/expenses. Do not limit this by the selected date range.
       if (!isExpense && !nonBillable && !billed) {
         wip += Number(amount || 0);
         foundWip = true;
       }
     }
-
-    return {
-      time_amount: timeAmountSelected,
-      time_hours: timeHoursSelected,
-      expenses: expensesSelected,
-      wip_from_unbilled: foundWip ? wip : null,
-    };
+    return { time_amount: timeAmountSelected, time_hours: timeHoursSelected, expenses: expensesSelected, wip_from_unbilled: foundWip ? wip : null };
   }
 
   async function fetchBillsOutstanding(matterId) {
@@ -314,124 +262,122 @@ export default async function handler(req, res) {
     let bills = [];
     for (const fields of attempts) {
       try {
-        bills = await fetchPaged("bills.json", { limit: 200, matter_id: matterId, fields }, { maxRecords: 500 });
+        bills = await fetchPaged("bills.json", { limit: 200, matter_id: matterId, fields }, { maxRecords: 1000 });
         break;
-      } catch {
-        bills = [];
-      }
+      } catch { bills = []; }
     }
-
     let outstanding = 0;
     let found = false;
     for (const bill of bills) {
       const state = String(bill.state || bill.status || "").toLowerCase();
       if (["paid", "void", "deleted"].includes(state)) continue;
       const bal = firstNumber(bill.balance, bill.due, bill.total);
-      if (bal !== null) {
-        outstanding += bal;
-        found = true;
-      }
+      if (bal !== null) { outstanding += bal; found = true; }
     }
     return found ? outstanding : null;
   }
 
-
-  function deepNumbers(obj, path = "", out = []) {
-    if (obj === null || obj === undefined) return out;
-    const n = numberOrNull(obj);
-    if (n !== null && typeof obj !== "object") {
-      out.push({ path, value: n });
-      return out;
-    }
-    if (Array.isArray(obj)) {
-      obj.forEach((item, index) => deepNumbers(item, `${path} ${index}`, out));
-      return out;
-    }
-    if (typeof obj === "object") {
-      const labels = [obj.name, obj.label, obj.type, obj.category, obj.key, obj.description, obj.display_number].filter(Boolean).join(" ");
-      for (const [key, value] of Object.entries(obj)) deepNumbers(value, `${path} ${key} ${labels}`, out);
-    }
-    return out;
-  }
-
-  function numberFromKeywords(obj, positive, negative = null) {
-    for (const row of deepNumbers(obj)) {
-      const path = String(row.path || "").toLowerCase();
-      if (positive.test(path) && !(negative && negative.test(path))) return row.value;
-    }
-    return null;
-  }
-
-  async function fetchReportFinancials(matterId) {
-    // Best-effort. Clio report availability varies by account and report type.
-    // If these endpoints are not exposed, this safely returns nulls and the table uses bills/activities instead.
-    const attempts = [
-      "reports/work_in_progress.json",
-      "reports/matter_balance_summary.json",
-      "reports/accounts_receivable.json"
-    ];
-    const found = { work_in_progress: null, outstanding_balance: null, source: "" };
-
-    for (const path of attempts) {
-      try {
-        const rows = await fetchPaged(path, { limit: 200, matter_id: matterId }, { maxRecords: 500 });
-        const matchingRows = rows.filter((row) => {
-          const blob = JSON.stringify(row || {});
-          return blob.includes(String(matterId));
-        });
-        const candidates = matchingRows.length ? matchingRows : rows;
-        for (const row of candidates) {
-          if (found.work_in_progress === null) {
-            found.work_in_progress = numberFromKeywords(row, /(work.?in.?progress|wip|unbilled)/i, /(paid|payment|trust|funds? in|funds? out)/i);
-          }
-          if (found.outstanding_balance === null) {
-            found.outstanding_balance = numberFromKeywords(row, /(outstanding|receivable|accounts.?receivable|balance.?due|amount.?due)/i, /(trust|funds? in|funds? out|work.?in.?progress|wip)/i);
-          }
-          if (found.work_in_progress !== null || found.outstanding_balance !== null) found.source = path;
-          if (found.work_in_progress !== null && found.outstanding_balance !== null) return found;
-        }
-      } catch {
-        // keep trying
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let quote = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (ch === '"') quote = false;
+        else cell += ch;
+      } else {
+        if (ch === '"') quote = true;
+        else if (ch === ',') { row.push(cell); cell = ""; }
+        else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ""; }
+        else if (ch !== '\r') cell += ch;
       }
     }
-    return found;
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    if (!rows.length) return [];
+    const header = rows.shift().map((h) => String(h || "").trim());
+    return rows.filter((r) => r.some((c) => String(c || "").trim())).map((r) => {
+      const obj = {};
+      header.forEach((h, i) => obj[h] = r[i] ?? "");
+      return obj;
+    });
   }
 
-  async function buildRow(matterId) {
+  async function fetchLatestTrustManagementMap() {
+    try {
+      const reports = await fetchPaged("reports.json", { limit: 200, fields: "id,name,kind,state,format,progress,category,source,created_at,updated_at" }, { maxRecords: 1000 });
+      const trustReports = reports
+        .filter((r) => String(r.kind || "").toLowerCase() === "trust_management" && String(r.state || "").toLowerCase() === "completed")
+        .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0) || Number(b.id || 0) - Number(a.id || 0));
+      const report = trustReports[0];
+      if (!report?.id) return { map: new Map(), report: null, row_count: 0 };
+      const downloadUrl = new URL(`https://app.clio.com/api/v4/reports/${report.id}/download.json`);
+      const result = await clioFetch(downloadUrl);
+      let payload = result.data?.data ?? result.data;
+      if (payload && typeof payload === "object") payload = payload.url || payload.download_url || payload.href || payload.file_url || payload.content || payload.csv || "";
+      if (!payload || typeof payload !== "string") return { map: new Map(), report, row_count: 0 };
+      if (/^https?:\/\//i.test(payload)) {
+        const response = await fetch(payload);
+        payload = await response.text();
+      }
+      const rows = parseCsv(payload);
+      const map = new Map();
+      for (const row of rows) {
+        const matterNumber = String(row.Matter || row.matter || "").trim();
+        if (!matterNumber || /not linked/i.test(matterNumber)) continue;
+        map.set(matterNumber, {
+          work_in_progress: numberOrNull(row["Unbilled amount"] ?? row.unbilled_amount ?? row.WIP),
+          amount_in_trust: numberOrNull(row["Amount in trust"] ?? row.amount_in_trust),
+          client: row.Client || row.client || "",
+          report_name: report.name || "",
+          report_updated_at: report.updated_at || report.created_at || "",
+        });
+      }
+      return { map, report, row_count: rows.length };
+    } catch (error) {
+      return { map: new Map(), report: null, row_count: 0, error: error.message || String(error) };
+    }
+  }
+
+  async function buildRow(matterId, trustReportMap) {
     const matter = await fetchMatter(matterId);
     const contactId = matter?.client?.id || matter?.client_id || null;
-    const [trust, activity, billOutstanding, contact, reportFinancials] = await Promise.all([
+    const [trust, activity, billOutstanding, contact] = await Promise.all([
       fetchTrustTransactions(matterId),
       fetchActivities(matterId),
       fetchBillsOutstanding(matterId),
       fetchContact(contactId),
-      fetchReportFinancials(matterId),
     ]);
 
-    const directWip = firstNumber(matter?.work_in_progress, matter?.work_in_progress_balance, matter?.wip, matter?.unbilled_balance);
-    const directOutstanding = firstNumber(matter?.outstanding_balance, matter?.accounts_receivable_balance);
-    const directTrust = firstNumber(matter?.trust_balance, matter?.trust_account_balance, matter?.matter_trust_funds, matter?.funds_in_trust);
-
     const clientName = matter?.client?.name || contact?.name || "";
-    const matterLabel = `${matter?.display_number || `Matter ${matterId}`}${matter?.description ? ` ${matter.description}` : ""}${clientName ? ` (${clientName})` : ""}`;
+    const matterNumber = matter?.display_number || "";
+    const reportRow = matterNumber ? trustReportMap.get(matterNumber) : null;
+    const matterLabel = `${matterNumber || `Matter ${matterId}`}${matter?.description ? ` ${matter.description}` : ""}${clientName ? ` (${clientName})` : ""}`;
+
+    const reportWip = reportRow?.work_in_progress;
+    const reportTrust = reportRow?.amount_in_trust;
 
     return {
       matter_id: String(matterId),
       matter_label: matterLabel,
-      clio_matter_number: matter?.display_number || "",
+      clio_matter_number: matterNumber,
       clio_client_name: clientName,
       clio_contact_id: contactId ? String(contactId) : "",
       clio_client_email: pickEmail(contact),
       clio_client_phone: pickPhone(contact),
-      work_in_progress: Number(directWip ?? reportFinancials.work_in_progress ?? activity.wip_from_unbilled ?? 0),
-      outstanding_balance: Number(directOutstanding ?? reportFinancials.outstanding_balance ?? billOutstanding ?? 0),
-      matter_trust_funds: Number(directTrust ?? trust.trust_running_balance ?? 0),
+      work_in_progress: Number(reportWip ?? activity.wip_from_unbilled ?? 0),
+      outstanding_balance: Number(billOutstanding ?? 0),
+      matter_trust_funds: Number(reportTrust ?? trust.trust_running_balance ?? 0),
       time_hours: Number(activity.time_hours || 0),
       time_amount: Number(activity.time_amount || 0),
       expenses: Number(activity.expenses || 0),
       trust_funds_out: Number(trust.trust_funds_out || 0),
-      trust_funds_in: Number(trust.trust_funds_in || 0),
-      trust_running_balance: Number(directTrust ?? trust.trust_running_balance ?? 0),
+      trust_funds_in: Number(trust.actual_trust_funds_in_all ?? trust.trust_funds_in ?? 0),
+      trust_running_balance: Number(reportTrust ?? trust.trust_running_balance ?? 0),
+      trust_report_name: reportRow?.report_name || "",
+      trust_report_updated_at: reportRow?.report_updated_at || "",
     };
   }
 
@@ -450,10 +396,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    const settled = await mapWithConcurrency(matterIds, 3, buildRow);
+    const trustReport = await fetchLatestTrustManagementMap();
+    const settled = await mapWithConcurrency(matterIds, 2, (matterId) => buildRow(matterId, trustReport.map));
     const rows = settled.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
     const failed = settled.filter((r) => r.status === "rejected").length;
-    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v24", mode: "trust_totals_ignore_mirrored_transfer_in_bills_reports_activity_wip" } });
+    return res.status(200).json({ rows, meta: { requested: matterIds.length, returned: rows.length, failed, from: fromDay, to: toDay, version: "v26", mode: "trust_gross_in_minus_gross_out_trust_report_wip", trust_report: { id: trustReport.report?.id || null, name: trustReport.report?.name || null, updated_at: trustReport.report?.updated_at || null, row_count: trustReport.row_count, error: trustReport.error || null } } });
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message || String(error) });
   }

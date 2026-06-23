@@ -7,35 +7,16 @@ export default async function handler(req, res) {
   async function clioFetch(url, options = {}) {
     const response = await fetch(url.toString(), {
       ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: options.accept || "application/json",
-        ...(options.headers || {}),
-      },
+      headers: { Authorization: `Bearer ${token}`, Accept: options.accept || "application/json", ...(options.headers || {}) },
     });
     const contentType = response.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const error = new Error(data?.error?.message || data?.message || data?.error || `Clio request failed with ${response.status}`);
-        error.status = response.status;
-        error.payload = data;
-        error.url = url.toString();
-        throw error;
-      }
-      return { data, response, contentType };
-    }
-    const text = await response.text();
+    let data = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text();
     if (!response.ok) {
-      const error = new Error(text || `Clio request failed with ${response.status}`);
-      error.status = response.status;
-      error.payload = { raw: text.slice(0, 2000) };
-      error.url = url.toString();
-      throw error;
+      const error = new Error(data?.error?.message || data?.message || data?.error || (typeof data === "string" ? data.slice(0,300) : `Clio request failed with ${response.status}`));
+      error.status = response.status; error.payload = data; error.url = url.toString(); throw error;
     }
-    return { data: text, response, contentType };
+    return { data, response, contentType };
   }
-
   async function fetchPagedReports() {
     let url = new URL("https://app.clio.com/api/v4/reports.json");
     url.searchParams.set("limit", "200");
@@ -49,40 +30,36 @@ export default async function handler(req, res) {
     }
     return reports;
   }
-
   try {
     const reports = await fetchPagedReports();
-    const trustReports = reports.filter((report) => {
-      const blob = [report.name, report.kind, report.category, report.source].filter(Boolean).join(" ").toLowerCase();
-      return /trust/.test(blob) && /(management|ledger|listing|account)/.test(blob);
-    });
-    const exact = trustReports.find((report) => /trust.*management|management.*trust/i.test([report.name, report.kind].join(" "))) || trustReports[0] || null;
+    const trustReports = reports
+      .filter((r) => String(r.kind || "").toLowerCase() === "trust_management" || /trust.*management|management.*trust/i.test(String(r.name || "")))
+      .filter((r) => String(r.state || "").toLowerCase() === "completed")
+      .sort((a,b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0) || Number(b.id || 0) - Number(a.id || 0));
+    const exact = trustReports[0] || null;
 
     if (String(req.query.download || "") === "1") {
-      if (!exact?.id) {
-        res.setHeader("content-type", "text/plain; charset=utf-8");
-        return res.status(404).send("No existing Trust Management/Trust report was returned by Clio reports.json. Open the JSON debug route without ?download=1 to see available report names/kinds.");
-      }
+      if (!exact?.id) return res.status(404).send("No completed Trust Management report was returned by Clio reports.json.");
       const downloadUrl = new URL(`https://app.clio.com/api/v4/reports/${exact.id}/download.json`);
       const result = await clioFetch(downloadUrl);
-      // Clio may return a signed URL or a file payload depending on report state/account.
-      const payload = result.data?.data || result.data;
-      const url = payload?.url || payload?.download_url || payload?.href || payload?.file_url;
-      if (url) return res.redirect(302, url);
-      res.setHeader("content-type", "application/json; charset=utf-8");
-      return res.status(200).json({ version: "v24", message: "Clio returned a download response but no URL field was recognized.", selected_report: exact, download_response: payload });
+      let payload = result.data?.data ?? result.data;
+      if (payload && typeof payload === "object") payload = payload.url || payload.download_url || payload.href || payload.file_url || payload.content || payload.csv || "";
+      if (typeof payload === "string" && /^https?:\/\//i.test(payload)) return res.redirect(302, payload);
+      if (typeof payload === "string") {
+        res.setHeader("content-type", "text/csv; charset=utf-8");
+        const safeName = String(exact.name || "trust-management-report.csv").replace(/[^a-zA-Z0-9_.() -]/g, "_");
+        res.setHeader("content-disposition", `attachment; filename="${safeName}"`);
+        return res.status(200).send(payload);
+      }
+      return res.status(200).json({ version: "v26", message: "Clio returned a download response but no CSV or URL field was recognized.", selected_report: exact, download_response: payload });
     }
 
-    return res.status(200).json({
-      version: "v24",
-      report_count: reports.length,
-      trust_report_count: trustReports.length,
-      selected_trust_report: exact,
-      trust_reports: trustReports.slice(0, 25),
-      all_report_summaries: reports.slice(0, 100).map((r) => ({ id: r.id, name: r.name, kind: r.kind, state: r.state, format: r.format, category: r.category, source: r.source, updated_at: r.updated_at })),
-      note: "This route discovers/downloads existing reports exposed by Clio. If no Trust Management report exists yet, generate it once in Clio or use the shown report kind/id to add a create-report step."
-    });
+    const matterBalanceReports = reports
+      .filter((r) => String(r.kind || "").toLowerCase() === "matter_balance_summary")
+      .sort((a,b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0) || Number(b.id || 0) - Number(a.id || 0));
+
+    return res.status(200).json({ version: "v26", report_count: reports.length, trust_report_count: trustReports.length, selected_trust_report: exact, trust_reports: trustReports.slice(0, 25), latest_matter_balance_summary: matterBalanceReports[0] || null, matter_balance_summaries: matterBalanceReports.slice(0,10), all_report_summaries: reports.slice(0, 100).map((r) => ({ id: r.id, name: r.name, kind: r.kind, state: r.state, format: r.format, category: r.category, source: r.source, updated_at: r.updated_at })) });
   } catch (error) {
-    return res.status(error.status || 500).json({ version: "v24", error: error.message || String(error), payload: error.payload || null, url: error.url || null });
+    return res.status(error.status || 500).json({ version: "v26", error: error.message || String(error), payload: error.payload || null, url: error.url || null });
   }
 }
