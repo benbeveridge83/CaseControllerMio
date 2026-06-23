@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   const cookieHeader = req.headers.cookie || "";
   const tokenCookie = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("clio_access_token="));
-  if (!tokenCookie) return res.status(401).json({ version: "v33", error: "Not authenticated with Clio." });
+  if (!tokenCookie) return res.status(401).json({ version: "v34", error: "Not authenticated with Clio." });
   const token = tokenCookie.split("=")[1];
 
   async function clioFetch(url, options = {}) {
@@ -101,12 +101,12 @@ export default async function handler(req, res) {
     const action = String(req.query.action || "list");
     if (action === "create_matter_balance_all_dates") {
       const result = await createMatterBalanceSummaryAllDates();
-      return res.status(result.ok ? 200 : 422).json({ version: "v33", ...result });
+      return res.status(result.ok ? 200 : 422).json({ version: "v34", ...result });
     }
 
     if (action === "download") {
       const id = String(req.query.id || "").trim();
-      if (!id) return res.status(400).json({ version: "v33", error: "Missing report id." });
+      if (!id) return res.status(400).json({ version: "v34", error: "Missing report id." });
       const url = new URL(`https://app.clio.com/api/v4/reports/${encodeURIComponent(id)}/download.json`);
       const result = await clioFetch(url);
       let payload = result.data?.data ?? result.data;
@@ -121,7 +121,7 @@ export default async function handler(req, res) {
         res.setHeader("content-type", "text/csv; charset=utf-8");
         return res.status(200).send(payload);
       }
-      return res.status(502).json({ version: "v33", error: "Clio report download returned no CSV text or URL.", payload });
+      return res.status(502).json({ version: "v34", error: "Clio report download returned no CSV text or URL.", payload });
     }
 
     const reports = (await fetchReports())
@@ -133,8 +133,8 @@ export default async function handler(req, res) {
     const trustReports = reports.filter((r) => String(r.kind || "").toLowerCase() === "trust_management" || /trust management/i.test(String(r.name || "")));
     const matterBalanceReports = reports.filter((r) => String(r.kind || "").toLowerCase() === "matter_balance_summary" || /matter balance summary/i.test(String(r.name || "")));
     const accountsReceivableReports = reports.filter((r) => String(r.kind || "").toLowerCase() === "accounts_receivable" || /accounts receivable/i.test(String(r.name || "")));
-    return res.status(200).json({ version: "v33", reports, trust_reports: trustReports, matter_balance_reports: matterBalanceReports, accounts_receivable_reports: accountsReceivableReports, report_count: reports.length });
+    return res.status(200).json({ version: "v34", reports, trust_reports: trustReports, matter_balance_reports: matterBalanceReports, accounts_receivable_reports: accountsReceivableReports, report_count: reports.length });
   } catch (error) {
-    return res.status(error.status || 500).json({ version: "v33", error: error.message || String(error), payload: error.payload || null, url: error.url || null });
+    return res.status(error.status || 500).json({ version: "v34", error: error.message || String(error), payload: error.payload || null, url: error.url || null });
   }
 }

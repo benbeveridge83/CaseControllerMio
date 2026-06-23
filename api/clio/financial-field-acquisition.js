@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   const cookieHeader = req.headers.cookie || "";
   const tokenCookie = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("clio_access_token="));
-  if (!tokenCookie) return res.status(401).json({ version: "v33", error: "Not authenticated with Clio." });
+  if (!tokenCookie) return res.status(401).json({ version: "v34", error: "Not authenticated with Clio." });
   const token = tokenCookie.split("=")[1];
 
   const origin = "https://app.clio.com/api/v4";
@@ -180,7 +180,7 @@ export default async function handler(req, res) {
     ];
 
     return res.status(200).json({
-      version: "v33",
+      version: "v34",
       from,
       to,
       matter_id: matterId || null,
@@ -201,6 +201,6 @@ export default async function handler(req, res) {
       attempts
     });
   } catch (error) {
-    return res.status(500).json({ version: "v33", error: error.message || String(error), attempts });
+    return res.status(500).json({ version: "v34", error: error.message || String(error), attempts });
   }
 }
