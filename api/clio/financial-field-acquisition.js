@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   const cookieHeader = req.headers.cookie || "";
   const tokenCookie = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("clio_access_token="));
-  if (!tokenCookie) return res.status(401).json({ version: "v30", error: "Not authenticated with Clio." });
+  if (!tokenCookie) return res.status(401).json({ version: "v32", error: "Not authenticated with Clio." });
   const token = tokenCookie.split("=")[1];
 
   const origin = "https://app.clio.com/api/v4";
@@ -119,12 +119,15 @@ export default async function handler(req, res) {
       .sort((a, b) => new Date(b.report_date || b.updated_at || 0) - new Date(a.report_date || a.updated_at || 0));
     const trustReports = allReports.filter((r) => String(r.kind || "").toLowerCase() === "trust_management" || /trust management/i.test(String(r.name || "")));
     const matterBalanceReports = allReports.filter((r) => String(r.kind || "").toLowerCase() === "matter_balance_summary" || /matter balance summary/i.test(String(r.name || "")));
+    const accountsReceivableReports = allReports.filter((r) => String(r.kind || "").toLowerCase() === "accounts_receivable" || /accounts receivable/i.test(String(r.name || "")));
     const billingReports = allReports.filter((r) => /balance|billing|receivable|invoice|trust|work in progress|wip/i.test(`${r.kind || ""} ${r.name || ""} ${r.category || ""}`));
 
     const newestTrustReport = trustReports[0] || null;
     const newestMatterBalanceReport = matterBalanceReports[0] || null;
+    const newestAccountsReceivableReport = accountsReceivableReports[0] || null;
     const trustCsv = await downloadReport(newestTrustReport);
     const matterBalanceCsv = await downloadReport(newestMatterBalanceReport);
+    const accountsReceivableCsv = await downloadReport(newestAccountsReceivableReport);
 
     const mattersParams = { limit: 5, fields: "id,display_number,description,status,client{id,name}" };
     if (matterId) mattersParams.ids = matterId;
@@ -134,9 +137,17 @@ export default async function handler(req, res) {
     if (matterId) activitiesParams.matter_id = matterId;
     const activities = await clioFetch("/activities.json", activitiesParams, "activities fields/time expenses");
 
-    const billsParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance,client{id,name},matter{id,display_number},payments{id,amount,state,paid_at}" };
-    if (matterId) billsParams.matter_id = matterId;
-    const bills = await clioFetch("/bills.json", billsParams, "bills fields/invoices");
+    const expenseActivityParams = { limit: 10, fields: "id,date,quantity,price,total,type,non_billable,matter{id,display_number},bill{id,state}", type: "ExpenseEntry" };
+    if (matterId) expenseActivityParams.matter_id = matterId;
+    const expenseActivities = await clioFetch("/activities.json", expenseActivityParams, "activities expense-type attempt");
+
+    const billsBasicParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance" };
+    if (matterId) billsBasicParams.matter_id = matterId;
+    const billsBasic = await clioFetch("/bills.json", billsBasicParams, "bills fields basic invoice values");
+    const billsClientParams = { limit: 10, fields: "id,number,state,issued_at,due_at,paid_at,total,balance,client{id,name}" };
+    if (matterId) billsClientParams.matter_id = matterId;
+    const billsClient = await clioFetch("/bills.json", billsClientParams, "bills fields with client");
+    const bills = billsClient.ok ? billsClient : billsBasic;
 
     const bankParams = { limit: 10, fields: "id,date,funds_out,funds_in,running_balance,current_account_balance,matter{id,display_number}" };
     if (matterId) bankParams.matter_id = matterId;
@@ -151,7 +162,7 @@ export default async function handler(req, res) {
       fieldStatus("trust_running_balance", (bankTransactions.rows || []).some((r) => r.running_balance != null || r.current_account_balance != null), "Bank transactions API running balance; otherwise calculated", bankTransactions.rows?.[0]),
       fieldStatus("time_amount", (activities.rows || []).some((r) => "total" in r || "price" in r), "Activities API total/price", activities.rows?.[0]),
       fieldStatus("time_hours", (activities.rows || []).some((r) => "quantity" in r), "Activities API quantity", activities.rows?.[0]),
-      fieldStatus("expenses", (activities.rows || []).some((r) => /expense/i.test(String(r.type || ""))), "Activities API expense-type rows", activities.rows?.find((r) => /expense/i.test(String(r.type || ""))) || activities.rows?.[0]),
+      fieldStatus("expenses", (expenseActivities.rows || []).length > 0 || (activities.rows || []).some((r) => /expense/i.test(String(r.type || ""))), "Matter Balance Summary Expense In Progress; Activities API expense rows fallback", (expenseActivities.rows || []).find(Boolean) || activities.rows?.find((r) => /expense/i.test(String(r.type || ""))) || matterBalanceCsv?.rows?.[0] || activities.rows?.[0]),
       fieldStatus("invoice_total", (bills.rows || []).some((r) => "total" in r), "Bills API total", bills.rows?.[0]),
       fieldStatus("invoice_balance", (bills.rows || []).some((r) => "balance" in r), "Bills API balance", bills.rows?.[0]),
       fieldStatus("invoice_sent_at", (bills.rows || []).some((r) => "issued_at" in r || "sent_at" in r), "Bills API issued/sent fields", bills.rows?.[0]),
@@ -160,7 +171,7 @@ export default async function handler(req, res) {
     ];
 
     return res.status(200).json({
-      version: "v30",
+      version: "v32",
       from,
       to,
       matter_id: matterId || null,
@@ -168,16 +179,19 @@ export default async function handler(req, res) {
         completed_reports_last_6_months: allReports.length,
         trust_management_reports: trustReports.length,
         matter_balance_summary_reports: matterBalanceReports.length,
+        accounts_receivable_reports: accountsReceivableReports.length,
         relevant_billing_reports: billingReports.slice(0, 50),
         selected_trust_report: newestTrustReport,
         selected_matter_balance_report: newestMatterBalanceReport,
+        selected_accounts_receivable_report: newestAccountsReceivableReport,
         trust_report_headers: trustCsv?.headers || [],
-        matter_balance_report_headers: matterBalanceCsv?.headers || []
+        matter_balance_report_headers: matterBalanceCsv?.headers || [],
+        accounts_receivable_report_headers: accountsReceivableCsv?.headers || []
       },
       field_matrix,
       attempts
     });
   } catch (error) {
-    return res.status(500).json({ version: "v30", error: error.message || String(error), attempts });
+    return res.status(500).json({ version: "v32", error: error.message || String(error), attempts });
   }
 }
