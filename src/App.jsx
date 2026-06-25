@@ -15985,9 +15985,9 @@ useEffect(() => {
   }
 
   function oneDriveChildrenEndpoint(itemId = oneDriveCurrent?.id, pathValue = oneDrivePath) {
-    if (itemId) return `/me/drive/items/${encodeURIComponent(itemId)}/children?$top=200&$orderby=folder desc,name asc`
+    if (itemId) return `/me/drive/items/${encodeURIComponent(itemId)}/children?$top=200`
     const encodedPath = oneDriveEncodePath(pathValue)
-    return encodedPath ? `/me/drive/root:/${encodedPath}:/children?$top=200&$orderby=folder desc,name asc` : '/me/drive/root/children?$top=200&$orderby=folder desc,name asc'
+    return encodedPath ? `/me/drive/root:/${encodedPath}:/children?$top=200` : '/me/drive/root/children?$top=200'
   }
 
   async function loadOneDriveFolder(options = {}) {
@@ -16001,12 +16001,20 @@ useEffect(() => {
         graphFetch(folderEndpoint, { allowInteractive: true }),
         graphFetch(oneDriveChildrenEndpoint(itemId, pathValue), { allowInteractive: true })
       ])
+      const sortedItems = Array.isArray(children?.value)
+        ? [...children.value].sort((a, b) => {
+          const aFolder = a?.folder ? 0 : 1
+          const bFolder = b?.folder ? 0 : 1
+          if (aFolder !== bFolder) return aFolder - bFolder
+          return String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base', numeric: true })
+        })
+        : []
       setOneDriveCurrent(folder || null)
-      setOneDriveItems(Array.isArray(children?.value) ? children.value : [])
+      setOneDriveItems(sortedItems)
       setOneDriveSelectedItemId('')
       setOneDriveRenameValue('')
       if (!keepPath && !itemId) setOneDrivePath(pathValue || '/')
-      setOneDriveNote(`Loaded ${children?.value?.length || 0} item(s) from ${folder?.name || pathValue || 'OneDrive'}.`)
+      setOneDriveNote(`Loaded ${sortedItems.length || 0} item(s) from ${folder?.name || pathValue || 'OneDrive'}.`)
       setServiceGraphConfig((config) => ({ ...config, mode: 'live' }))
     } catch (error) {
       setOneDriveNote(`OneDrive load failed: ${error.message || error}`)
