@@ -11,7 +11,7 @@ function importedDiscoRemoveFixHtml() {
 }
 
 const MIO_LOCAL_HELPER_URL = 'http://127.0.0.1:8787'
-const MIO_DEFAULT_MICROSOFT_TENANT_ID = '12d8cd52-6795-4f0f-b429-42134cb096d3'
+const MIO_DEFAULT_MICROSOFT_TENANT_ID = ''
 
 // Module-scope fallback used by the Service Inbox scanner.  Keeping this outside
 // App() prevents ReferenceError if an older inner helper is removed or hidden by
@@ -2248,8 +2248,8 @@ function App() {
       const next = { ...config }
       let changed = false
       const tenant = String(next.tenantId || '').trim().toLowerCase()
-      if (!tenant || tenant === 'common' || tenant === 'organizations') {
-        next.tenantId = MIO_DEFAULT_MICROSOFT_TENANT_ID
+      if (tenant === '12d8cd52-6795-4f0f-b429-42134cb096d3' || tenant === 'common' || tenant === 'organizations') {
+        next.tenantId = ''
         changed = true
       }
       const redirect = String(next.redirectUri || '').trim()
@@ -4323,7 +4323,17 @@ function App() {
         return String(checklistMatterLabel(a.event)).localeCompare(String(checklistMatterLabel(b.event)))
       })
     }
-    if (!checklistShowBlankDays || tab === 'need_date' || eventRows.length < 2) return eventRows
+    if (tab === 'need_date') {
+      const activeRows = []
+      const pausedRows = []
+      eventRows.forEach((row) => {
+        const rowId = checklistNeedToSetRowId(row.event)
+        if (needToSetPausedRows[rowId]) pausedRows.push(row)
+        else activeRows.push(row)
+      })
+      return [...activeRows, ...pausedRows]
+    }
+    if (!checklistShowBlankDays || eventRows.length < 2) return eventRows
     const rows = []
     for (let index = 0; index < eventRows.length; index += 1) {
       const row = eventRows[index]
@@ -15617,20 +15627,21 @@ async function updateTeamCell(memberId, field, value) {
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
     setServiceGraphConfig((config) => ({
       ...config,
-      tenantId: MIO_DEFAULT_MICROSOFT_TENANT_ID,
+      tenantId: String(config.tenantId || '').trim() === '12d8cd52-6795-4f0f-b429-42134cb096d3' ? '' : (config.tenantId || ''),
       redirectUri: origin || config.redirectUri,
       mode: 'live',
       useLocalHelper: false
     }))
-    setServiceEmailScanNote(`Applied hosted Microsoft settings. In Azure, make sure this exact Single Page Application redirect URI is registered: ${origin || '(current site origin)'}`)
+    setServiceEmailScanNote(`Applied hosted Microsoft settings. Next enter your real Azure Directory (tenant) ID, then make sure this exact Single Page Application redirect URI is registered in Azure: ${origin || '(current site origin)'}`)
   }
 
   function serviceGraphAuthority() {
     const configuredTenant = (serviceGraphConfig.tenantId || '').trim()
-    const tenant = (!configuredTenant || ['common', 'organizations'].includes(configuredTenant.toLowerCase()))
-      ? MIO_DEFAULT_MICROSOFT_TENANT_ID
-      : configuredTenant
-    return `https://login.microsoftonline.com/${tenant}`
+    const lowerTenant = configuredTenant.toLowerCase()
+    if (!configuredTenant || lowerTenant === 'common' || lowerTenant === 'organizations' || configuredTenant === '12d8cd52-6795-4f0f-b429-42134cb096d3') {
+      throw new Error('Enter your real Azure Directory (tenant) ID in Service Email Settings. The old placeholder tenant ID was not a real tenant.')
+    }
+    return `https://login.microsoftonline.com/${configuredTenant}`
   }
 
   function serviceGraphRedirectUri() {
