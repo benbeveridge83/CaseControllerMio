@@ -11,7 +11,17 @@ function importedDiscoRemoveFixHtml() {
 }
 
 const MIO_LOCAL_HELPER_URL = 'http://127.0.0.1:8787'
-const MIO_DEFAULT_MICROSOFT_TENANT_ID = ''
+const MIO_REAL_MICROSOFT_TENANT_ID = '12d8cd52-6795-4f9f-b429-42134cb096d3'
+const MIO_OLD_BAD_MICROSOFT_TENANT_ID = '12d8cd52-6795-4f0f-b429-42134cb096d3'
+const MIO_DEFAULT_MICROSOFT_TENANT_ID = MIO_REAL_MICROSOFT_TENANT_ID
+
+function normalizeMioMicrosoftTenantId(value) {
+  const tenant = String(value || '').trim()
+  const lower = tenant.toLowerCase()
+  if (!tenant || lower === 'common' || lower === 'organizations') return MIO_DEFAULT_MICROSOFT_TENANT_ID
+  if (lower === MIO_OLD_BAD_MICROSOFT_TENANT_ID) return MIO_REAL_MICROSOFT_TENANT_ID
+  return tenant
+}
 
 // Module-scope fallback used by the Service Inbox scanner.  Keeping this outside
 // App() prevents ReferenceError if an older inner helper is removed or hidden by
@@ -1246,17 +1256,19 @@ function App() {
     setMatterEfileFolderHandles((handles) => matterId ? ({ ...handles, [matterId]: handle }) : handles)
   }
   const [serviceGraphConfig, setServiceGraphConfig] = useState(() => {
+    const base = {
+      clientId: 'aa98edfe-f366-4714-8f44-3f2009b87422',
+      tenantId: MIO_DEFAULT_MICROSOFT_TENANT_ID,
+      redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
+      mode: 'live',
+      useLocalHelper: false
+    }
     try {
-      return {
-        clientId: 'aa98edfe-f366-4714-8f44-3f2009b87422',
-        tenantId: MIO_DEFAULT_MICROSOFT_TENANT_ID,
-        redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
-        mode: 'mock',
-        useLocalHelper: false,
-        ...JSON.parse(localStorage.getItem('caseMioServiceGraphConfig') || '{}')
-      }
+      const stored = JSON.parse(localStorage.getItem('caseMioServiceGraphConfig') || '{}')
+      const merged = { ...base, ...stored }
+      return { ...merged, tenantId: normalizeMioMicrosoftTenantId(merged.tenantId) }
     } catch {
-      return { clientId: 'aa98edfe-f366-4714-8f44-3f2009b87422', tenantId: MIO_DEFAULT_MICROSOFT_TENANT_ID, redirectUri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173', mode: 'mock', useLocalHelper: false }
+      return base
     }
   })
   const [serviceGraphAuth, setServiceGraphAuth] = useState(() => {
@@ -2257,9 +2269,9 @@ function App() {
     setServiceGraphConfig((config) => {
       const next = { ...config }
       let changed = false
-      const tenant = String(next.tenantId || '').trim().toLowerCase()
-      if (tenant === '12d8cd52-6795-4f0f-b429-42134cb096d3' || tenant === 'common' || tenant === 'organizations') {
-        next.tenantId = ''
+      const normalizedTenant = normalizeMioMicrosoftTenantId(next.tenantId)
+      if (normalizedTenant !== next.tenantId) {
+        next.tenantId = normalizedTenant
         changed = true
       }
       const redirect = String(next.redirectUri || '').trim()
@@ -15637,19 +15649,22 @@ async function updateTeamCell(memberId, field, value) {
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
     setServiceGraphConfig((config) => ({
       ...config,
-      tenantId: String(config.tenantId || '').trim() === '12d8cd52-6795-4f0f-b429-42134cb096d3' ? '' : (config.tenantId || ''),
+      tenantId: normalizeMioMicrosoftTenantId(config.tenantId),
       redirectUri: origin || config.redirectUri,
       mode: 'live',
       useLocalHelper: false
     }))
-    setServiceEmailScanNote(`Applied hosted Microsoft settings. Next enter your real Azure Directory (tenant) ID, then make sure this exact Single Page Application redirect URI is registered in Azure: ${origin || '(current site origin)'}`)
+    setServiceEmailScanNote(`Applied hosted Microsoft settings with the Beveridge Law Firm tenant ID. Make sure this exact Single Page Application redirect URI is registered in Azure: ${origin || '(current site origin)'}`)
   }
 
   function serviceGraphAuthority() {
-    const configuredTenant = (serviceGraphConfig.tenantId || '').trim()
+    const configuredTenant = normalizeMioMicrosoftTenantId(serviceGraphConfig.tenantId)
+    if (configuredTenant !== serviceGraphConfig.tenantId) {
+      try { setServiceGraphConfig((config) => ({ ...config, tenantId: configuredTenant })) } catch {}
+    }
     const lowerTenant = configuredTenant.toLowerCase()
-    if (!configuredTenant || lowerTenant === 'common' || lowerTenant === 'organizations' || configuredTenant === '12d8cd52-6795-4f0f-b429-42134cb096d3') {
-      throw new Error('Enter your real Azure Directory (tenant) ID in Service Email Settings. The old placeholder tenant ID was not a real tenant.')
+    if (!configuredTenant || lowerTenant === 'common' || lowerTenant === 'organizations') {
+      throw new Error('Enter your real Azure Directory (tenant) ID in Service Email Settings.')
     }
     return `https://login.microsoftonline.com/${configuredTenant}`
   }
