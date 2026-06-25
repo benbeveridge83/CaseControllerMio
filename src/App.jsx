@@ -1286,6 +1286,11 @@ function App() {
   const [oneDriveNote, setOneDriveNote] = useState('')
   const [oneDriveNewFolderName, setOneDriveNewFolderName] = useState('')
   const [oneDriveRenameValue, setOneDriveRenameValue] = useState('')
+  const [oneDriveTagToAdd, setOneDriveTagToAdd] = useState('')
+  const [oneDriveFileTags, setOneDriveFileTags] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioOneDriveFileTags') || '{}') }
+    catch { return {} }
+  })
 
   const [tags, setTags] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseControllerTags') || '[]') }
@@ -2262,6 +2267,9 @@ function App() {
   useEffect(() => {
     try { safeSetLocalStorage('caseMioOneDrivePath', oneDrivePath || '') } catch {}
   }, [oneDrivePath])
+  useEffect(() => {
+    try { safeSetLocalStorage('caseMioOneDriveFileTags', JSON.stringify(oneDriveFileTags || {})) } catch {}
+  }, [oneDriveFileTags])
 
   useEffect(() => {
     const hostedOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -16014,6 +16022,7 @@ useEffect(() => {
       setOneDriveSelectedItemId('')
       setOneDriveRenameValue('')
       if (!keepPath && !itemId) setOneDrivePath(pathValue || '/')
+      if (itemId && folder) setOneDrivePath(`${oneDriveParentPathFromItem(folder) || ''}/${folder.name || ''}`.replace(/\/+/g, '/') || '/')
       setOneDriveNote(`Loaded ${sortedItems.length || 0} item(s) from ${folder?.name || pathValue || 'OneDrive'}.`)
       setServiceGraphConfig((config) => ({ ...config, mode: 'live' }))
     } catch (error) {
@@ -16025,6 +16034,102 @@ useEffect(() => {
 
   function selectedOneDriveItem() {
     return oneDriveItems.find((item) => String(item.id) === String(oneDriveSelectedItemId)) || null
+  }
+
+  function oneDriveItemFullPath(item = oneDriveCurrent) {
+    if (!item) return oneDrivePath || '/'
+    const parentPath = oneDriveParentPathFromItem(item) || ''
+    const name = item?.name ? `/${String(item.name).replace(/^\/+|\/+$/g, '')}` : ''
+    return `${parentPath}${name}`.replace(/\/+/g, '/') || '/'
+  }
+
+  function oneDriveBreadcrumbParts() {
+    const path = oneDriveItemFullPath(oneDriveCurrent)
+    return String(path || '/').split('/').filter(Boolean)
+  }
+
+  function loadOneDriveBreadcrumb(index) {
+    const parts = oneDriveBreadcrumbParts().slice(0, index + 1)
+    const nextPath = `/${parts.join('/')}`
+    setOneDrivePath(nextPath)
+    loadOneDriveFolder({ pathValue: nextPath })
+  }
+
+  function tagNamesForOneDriveItem(item) {
+    const ids = oneDriveFileTags?.[item?.id] || []
+    return ids.map((tagId) => tagFullName(tagId) || tags.find((tag) => tag.id === tagId)?.name || '').filter(Boolean)
+  }
+
+  function addTagToSelectedOneDriveItem() {
+    const item = selectedOneDriveItem()
+    if (!item || !oneDriveTagToAdd) return
+    setOneDriveFileTags((current) => {
+      const existing = Array.isArray(current?.[item.id]) ? current[item.id] : []
+      return { ...current, [item.id]: Array.from(new Set([...existing, oneDriveTagToAdd])) }
+    })
+    setOneDriveTagToAdd('')
+  }
+
+  function removeOneDriveTag(itemId, tagId) {
+    setOneDriveFileTags((current) => ({
+      ...current,
+      [itemId]: (current?.[itemId] || []).filter((id) => id !== tagId)
+    }))
+  }
+
+  function normalizeMatterFolderName(value) {
+    return String(value || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()
+  }
+
+  function matterFolderCandidates(matter) {
+    const candidates = [matter?.name, matterLabel(matter?.id), formatMatterOption(matter), matter?.caption, matter?.client_name]
+    return candidates.map(normalizeMatterFolderName).filter(Boolean)
+  }
+
+  function matterLooksClosed(matter) {
+    const statusText = `${matter?.case_status || ''} ${matter?.matter_status || ''}`.toLowerCase()
+    return /closed|inactive|dismissed|nonsuit|non-suit|disposed|final/.test(statusText)
+  }
+
+  function matchMatterForFolderName(folderName) {
+    const folderNorm = normalizeMatterFolderName(folderName)
+    if (!folderNorm) return null
+    return matters.find((matter) => matterFolderCandidates(matter).some((candidate) => candidate && (folderNorm.includes(candidate) || candidate.includes(folderNorm)))) || null
+  }
+
+  async function syncOneDriveCaseFoldersByMatterStatus() {
+    if (!confirm('Move OneDrive matter folders between 1. Open Cases and 4. Closed Cases based on Mio case/matter status? Test on a small set first if you are unsure.')) return
+    setOneDriveBusy(true)
+    try {
+      const allMattersChildren = await graphFetch('/me/drive/root:/All Matters:/children?$top=200', { allowInteractive: true })
+      const rootItems = Array.isArray(allMattersChildren?.value) ? allMattersChildren.value : []
+      const openFolder = rootItems.find((item) => item.folder && /^1\.?\s*open cases$/i.test(String(item.name || '').trim()))
+      const closedFolder = rootItems.find((item) => item.folder && /^4\.?\s*closed cases$/i.test(String(item.name || '').trim()))
+      if (!openFolder || !closedFolder) throw new Error('Could not find both /All Matters/1. Open Cases and /All Matters/4. Closed Cases.')
+      const [openChildren, closedChildren] = await Promise.all([
+        graphFetch(`/me/drive/items/${encodeURIComponent(openFolder.id)}/children?$top=200`, { allowInteractive: true }),
+        graphFetch(`/me/drive/items/${encodeURIComponent(closedFolder.id)}/children?$top=200`, { allowInteractive: true })
+      ])
+      const moves = []
+      ;[...(openChildren?.value || []).filter((item) => item.folder).map((item) => ({ item, from: 'open' })), ...(closedChildren?.value || []).filter((item) => item.folder).map((item) => ({ item, from: 'closed' }))].forEach(({ item, from }) => {
+        const matter = matchMatterForFolderName(item.name)
+        if (!matter) return
+        const target = matterLooksClosed(matter) ? 'closed' : 'open'
+        if (target !== from) moves.push({ item, targetFolder: target === 'closed' ? closedFolder : openFolder, matter })
+      })
+      for (const move of moves) {
+        await graphFetch(`/me/drive/items/${encodeURIComponent(move.item.id)}`, {
+          method: 'PATCH',
+          allowInteractive: true,
+          body: JSON.stringify({ parentReference: { id: move.targetFolder.id } })
+        })
+      }
+      setOneDriveNote(`Case folder sync complete. Moved ${moves.length} folder(s).`)
+      await loadOneDriveFolder({ itemId: oneDriveCurrent?.id, pathValue: oneDrivePath, keepPath: true })
+    } catch (error) {
+      setOneDriveNote(`Case folder sync failed: ${error.message || error}`)
+      setOneDriveBusy(false)
+    }
   }
 
   function oneDriveParentPathFromItem(item = oneDriveCurrent) {
@@ -16164,8 +16269,20 @@ useEffect(() => {
           </div>
           <div style={{ marginTop: 8, color: serviceGraphAuth.connected ? '#166534' : '#92400e' }}>
             {serviceGraphAuth.connected ? `Connected as ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || 'Microsoft account'}` : 'Not connected'}
-            {oneDriveCurrent ? ` | Current folder: ${parentPath ? `${parentPath}/` : ''}${oneDriveCurrent.name || ''}` : ''}
+            {oneDriveCurrent ? ` | Current folder: ${oneDriveItemFullPath(oneDriveCurrent)}` : ''}
           </div>
+          {oneDriveCurrent && (
+            <div style={{ marginTop: 8, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <strong>Path:</strong>
+              <button type="button" onClick={() => { setOneDrivePath('/'); loadOneDriveFolder({ pathValue: '/' }) }} disabled={oneDriveBusy}>OneDrive</button>
+              {oneDriveBreadcrumbParts().map((part, index) => (
+                <span key={`${part}-${index}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span>/</span>
+                  <button type="button" onClick={() => loadOneDriveBreadcrumb(index)} disabled={oneDriveBusy}>{part}</button>
+                </span>
+              ))}
+            </div>
+          )}
           {oneDriveNote && <div style={{ marginTop: 8, color: '#475569' }}>{oneDriveNote}</div>}
         </section>
 
@@ -16175,6 +16292,7 @@ useEffect(() => {
             <button type="button" onClick={() => selected ? openOneDriveItem(selected) : alert('Select an item first.')} disabled={oneDriveBusy}>Open selected</button>
             <button type="button" onClick={downloadOneDriveSelected} disabled={oneDriveBusy || !selected || selected.folder}>Download selected</button>
             <button type="button" onClick={deleteOneDriveSelected} disabled={oneDriveBusy || !selected} style={{ background: '#fee2e2', borderColor: '#fecaca' }}>Delete selected</button>
+            <button type="button" onClick={syncOneDriveCaseFoldersByMatterStatus} disabled={oneDriveBusy}>Sync open/closed case folders</button>
             <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid #c8d0d8', borderRadius: 6, padding: '5px 8px', background: '#fff', cursor: 'pointer' }}>
               Upload files
               <input type="file" multiple style={{ display: 'none' }} onChange={(e) => { uploadOneDriveFiles(e.target.files, false); e.target.value = '' }} />
@@ -16189,7 +16307,10 @@ useEffect(() => {
             <button type="button" onClick={createOneDriveFolder} disabled={oneDriveBusy}>Make new folder</button>
             <LabeledField label="Rename selected"><input value={oneDriveRenameValue} onChange={(e) => setOneDriveRenameValue(e.target.value)} placeholder={selected ? selected.name : 'Select an item'} /></LabeledField>
             <button type="button" onClick={renameOneDriveSelected} disabled={oneDriveBusy || !selected}>Rename</button>
+            <LabeledField label="Tag selected file"><select value={oneDriveTagToAdd} onChange={(e) => setOneDriveTagToAdd(e.target.value)} disabled={!selected}><option value="">Select tag...</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{tag.indent}{tagFullName(tag.id) || tag.name}</option>)}</select></LabeledField>
+            <button type="button" onClick={addTagToSelectedOneDriveItem} disabled={oneDriveBusy || !selected || !oneDriveTagToAdd}>Add tag</button>
           </div>
+          <p style={{ margin: '8px 0 0', color: '#64748b', fontSize: 12 }}>OneDrive file tags are Mio tags stored in Mio/browser data; they do not change Microsoft file metadata.</p>
         </section>
 
         <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 8 }}>
@@ -16201,6 +16322,7 @@ useEffect(() => {
                 <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #d5dce3' }}>Type</th>
                 <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #d5dce3' }}>Modified</th>
                 <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #d5dce3' }}>Size</th>
+                <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #d5dce3' }}>Tags</th>
                 <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #d5dce3' }}>Action</th>
               </tr>
             </thead>
@@ -16212,10 +16334,18 @@ useEffect(() => {
                   <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{item.folder ? 'Folder' : (item.file?.mimeType || 'File')}</td>
                   <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{item.lastModifiedDateTime ? new Date(item.lastModifiedDateTime).toLocaleString() : ''}</td>
                   <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{item.folder ? '' : `${Math.round((Number(item.size || 0) / 1024) * 10) / 10} KB`}</td>
+                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {tagNamesForOneDriveItem(item).map((name, tagIndex) => {
+                        const tagId = (oneDriveFileTags?.[item.id] || [])[tagIndex]
+                        return <span key={`${item.id}-${tagId}`} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '1px 6px', background: '#f8fafc', fontSize: 12 }}>{name} <button type="button" onClick={() => removeOneDriveTag(item.id, tagId)} style={{ border: 0, background: 'transparent', color: '#64748b', cursor: 'pointer' }}>×</button></span>
+                      })}
+                    </div>
+                  </td>
                   <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}><button type="button" onClick={() => openOneDriveItem(item)}>{item.folder ? 'Open folder' : 'Open file'}</button></td>
                 </tr>
               ))}
-              {!oneDriveItems.length && <tr><td colSpan="6" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>{oneDriveBusy ? 'Loading OneDrive...' : 'No OneDrive items loaded yet.'}</td></tr>}
+              {!oneDriveItems.length && <tr><td colSpan="7" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>{oneDriveBusy ? 'Loading OneDrive...' : 'No OneDrive items loaded yet.'}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -24630,12 +24760,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('clio_matter_financial_snapshots')
         .select('*')
         .eq('user_id', session.user.id)
+      if (clioBalanceFrom) query = query.gte('snapshot_date', clioBalanceFrom)
+      if (clioBalanceTo) query = query.lte('snapshot_date', clioBalanceTo)
+      const { data, error } = await query
         .order('snapshot_date', { ascending: false })
-        .limit(250)
+        .limit(5000)
       if (error) throw error
       setClioSnapshotRows(Array.isArray(data) ? data : [])
     } catch (error) {
@@ -24759,6 +24892,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (metric === 'invoice_balance') return Number(row.invoice_balance || 0)
     if (metric === 'paid_amount') return Number(row.paid_amount || 0)
     if (metric === 'minimum_balance') return Number(row.minimum_balance || 0)
+    if (metric === 'minimum_minus_trust') return Number(row.minimum_balance || 0) - Number(row.matter_trust_funds || 0)
+    if (metric === 'minimum_minus_trust_minus_wip') return Number(row.minimum_balance || 0) - Number(row.matter_trust_funds || 0) - Number(row.work_in_progress || 0)
     if (metric === 'initial_retainer') return Number(row.initial_retainer || 0)
     return Number(row.matter_trust_funds || 0)
   }
@@ -24772,6 +24907,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       invoice_balance: 'Latest invoice balance',
       paid_amount: 'Latest invoice paid amount',
       minimum_balance: 'Minimum balance',
+      minimum_minus_trust: 'Minimum balance minus trust',
+      minimum_minus_trust_minus_wip: 'Minimum balance minus trust minus WIP',
       initial_retainer: 'Initial retainer'
     }
     return labels[metric] || metric
@@ -24864,6 +25001,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <option value="invoice_balance">Latest invoice balance</option>
               <option value="paid_amount">Latest invoice paid amount</option>
               <option value="minimum_balance">Minimum balance</option>
+              <option value="minimum_minus_trust">Minimum balance minus trust</option>
+              <option value="minimum_minus_trust_minus_wip">Minimum balance minus trust minus WIP</option>
               <option value="initial_retainer">Initial retainer</option>
             </select>
           </label>
@@ -24931,6 +25070,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers([])} disabled={!snapshotGraphSelectedMatterNumbers.length}>Clear selected</button>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={snapshotGraphShowInvoices} onChange={(event) => setSnapshotGraphShowInvoices(event.target.checked)} /> Show invoice sent markers</label>
           <strong>{snapshotGraphSelectedMatterNumbers.length} selected; {options.length} shown by filter</strong>
+          <span style={{ color: '#64748b' }}>{clioSnapshotRows.length ? `${clioSnapshotRows.length} saved snapshot row(s) loaded for ${clioBalanceFrom || 'beginning'} to ${clioBalanceTo || 'today'}.` : 'No saved snapshot rows loaded yet.'}</span>
         </div>
         <div style={{ maxHeight: 230, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
           {options.map((option) => (
