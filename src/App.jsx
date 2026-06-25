@@ -617,6 +617,16 @@ function LabeledField({ label, children }) {
   )
 }
 
+
+
+const billingImportantFieldStyle = {
+  border: '3px solid #000',
+  borderRadius: 6,
+  padding: '7px 8px',
+  boxShadow: '0 0 0 1px #000 inset',
+  background: '#fff'
+}
+
 function RichTextBox({ value = '', onChange, placeholder = '', minHeight = 110 }) {
   const editorRef = useRef(null)
 
@@ -21606,7 +21616,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <form onSubmit={saveBillingEntry}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
               <LabeledField label="Matter *">
-                <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Search open matters only" />
+                <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Search open matters only" style={billingImportantFieldStyle} />
               </LabeledField>
               <LabeledField label="User">
                 <select value={billingForm.user_id} onChange={(e) => updateBillingForm('user_id', e.target.value)}>
@@ -21615,7 +21625,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 </select>
               </LabeledField>
               <LabeledField label="Date"><input type="date" value={billingForm.date || dailyBillingDate} onChange={(e) => updateBillingForm('date', e.target.value)} /></LabeledField>
-              <LabeledField label="Billing time / hours *"><input type="text" placeholder=".1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} /></LabeledField>
+              <LabeledField label="Billing time / hours *"><input type="text" placeholder=".1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} /></LabeledField>
               <LabeledField label="Hourly rate"><input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} /></LabeledField>
               <LabeledField label="Do not bill"><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time, but charge $0</label></LabeledField>
               <LabeledField label="Linked task">
@@ -21626,7 +21636,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               </LabeledField>
               <LabeledField label="Matter status noted"><input value={billingForm.matter_status || ''} onChange={(e) => updateBillingForm('matter_status', e.target.value)} placeholder="Matter status" /></LabeledField>
               <LabeledField label="Matter step noted"><input value={billingForm.matter_step || ''} onChange={(e) => updateBillingForm('matter_step', e.target.value)} placeholder="Matter step" /></LabeledField>
-              <LabeledField label="Description"><textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ minHeight: 70 }} /></LabeledField>
+              <LabeledField label="Description"><textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ ...billingImportantFieldStyle, minHeight: 70 }} /></LabeledField>
               <LabeledField label="Private notes (internal only)"><textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 70 }} /></LabeledField>
             </div>
             <div style={{ marginTop: 12 }}><button type="submit">Save Billing Entry</button></div>
@@ -21661,7 +21671,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <form onSubmit={saveBillingEntry}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
             <LabeledField label="Matter *">
-              <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Select open matter" />
+              <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Select open matter" style={billingImportantFieldStyle} />
             </LabeledField>
             <LabeledField label="User">
               <SmartTeamMemberSelect value={billingForm.user_id || ''} onChange={(value) => updateBillingForm('user_id', value)} placeholder="Current / type to search users" style={{ width: '100%' }} />
@@ -21670,7 +21680,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <input type="date" value={billingForm.date} onChange={(e) => updateBillingForm('date', e.target.value)} />
             </LabeledField>
             <LabeledField label="Billing time / hours *">
-              <input type="text" placeholder="Examples: .1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} />
+              <input type="text" placeholder="Examples: .1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} />
             </LabeledField>
             <LabeledField label="Hourly rate">
               <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
@@ -21694,7 +21704,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <button type="button" onClick={() => openPriorBillingWindow(billingForm.matter_id)} disabled={!billingForm.matter_id}>View prior entries for this matter</button>
             </LabeledField>
             <LabeledField label="Description">
-              <textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ minHeight: 90 }} />
+              <textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ ...billingImportantFieldStyle, minHeight: 90 }} />
             </LabeledField>
             <LabeledField label="Private notes (internal only)">
               <textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 90 }} />
