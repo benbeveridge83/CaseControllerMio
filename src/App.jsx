@@ -1170,6 +1170,10 @@ function App() {
   })
   const matterTableTopScrollRef = useRef(null)
   const matterTableBodyScrollRef = useRef(null)
+  const matterPageTopScrollRef = useRef(null)
+  const matterPageBodyScrollRef = useRef(null)
+  const courtTableTopScrollRef = useRef(null)
+  const courtTableBodyScrollRef = useRef(null)
 
   const [team, setTeam] = useState([])
   const [lawFirmProfile, setLawFirmProfile] = useState(() => {
@@ -1375,6 +1379,12 @@ function App() {
   })
   const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783' })
   const [workflowFilter, setWorkflowFilter] = useState('')
+  const [workflowActiveTab, setWorkflowActiveTab] = useState(() => localStorage.getItem('caseMioWorkflowActiveTab') || 'daily')
+  const [workflowDailyDate, setWorkflowDailyDate] = useState(() => dateToInputValue(new Date()))
+  const [workflowDailyChecks, setWorkflowDailyChecks] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioWorkflowDailyChecks') || '{}') }
+    catch { return {} }
+  })
   const [collapsedWorkflowIds, setCollapsedWorkflowIds] = useState([])
   const [draggedWorkflowId, setDraggedWorkflowId] = useState(null)
   const [elements, setElements] = useState(() => {
@@ -2567,6 +2577,14 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioWorkflowItems', JSON.stringify(workflowItems))
   }, [workflowItems])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioWorkflowDailyChecks', JSON.stringify(workflowDailyChecks))
+  }, [workflowDailyChecks])
+
+  useEffect(() => {
+    saveMioStateKey('caseMioWorkflowActiveTab', workflowActiveTab)
+  }, [workflowActiveTab])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerMatterExtraInfo', JSON.stringify(matterExtraInfoById))
@@ -8173,6 +8191,29 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setCollapsedWorkflowIds((current) => current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId])
   }
 
+  function workflowDailyKey(date = workflowDailyDate) {
+    return date || dateToInputValue(new Date())
+  }
+
+  function workflowDailyCheckedMap(date = workflowDailyDate) {
+    return workflowDailyChecks[workflowDailyKey(date)] || {}
+  }
+
+  function toggleWorkflowDailyCheck(itemId) {
+    const dayKey = workflowDailyKey()
+    setWorkflowDailyChecks((current) => {
+      const day = { ...(current[dayKey] || {}) }
+      day[itemId] = !day[itemId]
+      return { ...current, [dayKey]: day }
+    })
+  }
+
+  function resetWorkflowDailyChecks() {
+    const dayKey = workflowDailyKey()
+    if (!confirm(`Clear all workflow checkboxes for ${dayKey}?`)) return
+    setWorkflowDailyChecks((current) => ({ ...current, [dayKey]: {} }))
+  }
+
   function openDocumentEditWindow(doc) {
     if (!doc) return
     setEditingDocumentId(doc.id)
@@ -12540,6 +12581,22 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
+  function syncMatterPageScroll(source) {
+    const top = matterPageTopScrollRef.current
+    const body = matterPageBodyScrollRef.current
+    if (!top || !body) return
+    if (source === 'top') body.scrollLeft = top.scrollLeft
+    else top.scrollLeft = body.scrollLeft
+  }
+
+  function syncCourtTableScroll(source) {
+    const top = courtTableTopScrollRef.current
+    const body = courtTableBodyScrollRef.current
+    if (!top || !body) return
+    if (source === 'top') body.scrollLeft = top.scrollLeft
+    else top.scrollLeft = body.scrollLeft
+  }
+
   function settingsMatterColumnWidth(index) {
     const widths = [
       160, 160, 220, 160, 220, 150, 90, 100,
@@ -14438,9 +14495,10 @@ async function updateTeamCell(memberId, field, value) {
   function matterTimelineOptionSetting(type, key, defaultColor = '#4b5563') {
     const stored = matterTimelineOptionSettingsMap(type)[key] || {}
     const hasStoredVisible = Object.prototype.hasOwnProperty.call(stored, 'visible')
-    const recoveredCourtDeadline = type === 'court_deadline' && (!stored.color || stored.color === '#111827' || stored.shape === 'circle_outline')
-    const safeColor = recoveredCourtDeadline ? (defaultColor === '#111827' ? '#dc2626' : defaultColor) : (stored.color || defaultColor)
-    const safeShape = recoveredCourtDeadline ? 'solid_circle' : (stored.shape || matterTimelineDefaultShape(type))
+    const recoveredCourtDeadlineColor = type === 'court_deadline' && (!stored.color || stored.color === '#111827')
+    const recoveredCourtDeadlineShape = type === 'court_deadline' && (!stored.shape || stored.shape === 'circle_outline')
+    const safeColor = recoveredCourtDeadlineColor ? (defaultColor === '#111827' ? '#dc2626' : defaultColor) : (stored.color || defaultColor)
+    const safeShape = recoveredCourtDeadlineShape ? 'solid_circle' : (stored.shape || matterTimelineDefaultShape(type))
     return {
       visible: hasStoredVisible ? Boolean(stored.visible) : matterTimelineDefaultVisible(type),
       shape: safeShape,
@@ -14710,7 +14768,7 @@ async function updateTeamCell(memberId, field, value) {
     const hearingExhibitDays = Number(rule.hearing_exhibit_days_before_hearing || '')
     const businessRecordsDaysRaw = rule.business_records_deadline_days_before_trial_hearing === undefined || rule.business_records_deadline_days_before_trial_hearing === null || rule.business_records_deadline_days_before_trial_hearing === '' ? '14' : rule.business_records_deadline_days_before_trial_hearing
     const businessRecordsDays = Number(businessRecordsDaysRaw || '')
-    const trialExhibitDate = trialDate && Number.isFinite(trialExhibitDays) && trialExhibitDays > 0 && rule.trial_exhibit_days_before_trial !== '' ? nextNonWeekendHolidayDate(addTimelineDays(trialDate, -trialExhibitDays)) : null
+    const trialExhibitDate = trialDate && Number.isFinite(trialExhibitDays) && trialExhibitDays > 0 && rule.trial_exhibit_days_before_trial !== '' ? addTimelineDays(trialDate, -trialExhibitDays) : null
     const discoveryEndDate = trialDate ? nextNonWeekendHolidayDate(addTimelineDays(trialDate, -30)) : null
     const discoveryPeriodDate = furthestTrialDate ? nextNonWeekendHolidayDate(addTimelineDays(furthestTrialDate, -30)) : null
     const pleadingDate = furthestTrialDate ? nextNonWeekendHolidayDate(addTimelineDays(furthestTrialDate, -7)) : null
@@ -14796,7 +14854,7 @@ async function updateTeamCell(memberId, field, value) {
       hearingEvents.forEach((hearing) => {
         const hearingDate = parseTimelineDate(hearing.start_date)
         if (!hearingDate) return
-        const hearingExhibitDate = nextNonWeekendHolidayDate(addTimelineDays(hearingDate, -hearingExhibitDays))
+        const hearingExhibitDate = addTimelineDays(hearingDate, -hearingExhibitDays)
         rawPoints.push({
           type: 'hearing_exhibit',
           sourceType: 'court_deadline',
@@ -15058,6 +15116,19 @@ async function updateTeamCell(memberId, field, value) {
     return dates
   }
 
+  function timelineDayTickDates(start, end) {
+    const dates = []
+    const current = new Date(start)
+    current.setHours(0, 0, 0, 0)
+    let guard = 0
+    while (current <= end && guard < 8000) {
+      dates.push(new Date(current))
+      current.setDate(current.getDate() + 1)
+      guard += 1
+    }
+    return dates
+  }
+
   function renderMatterTimelineRow(row, range, timelineSvgWidth) {
     const width = timelineSvgWidth || matterTimelineSvgWidthForRange(range)
     const scrollableWidth = width
@@ -15067,6 +15138,7 @@ async function updateTeamCell(memberId, field, value) {
     const totalDays = daysBetweenTimelineDates(start, end)
     const xFor = (date) => Math.max(8, Math.min(width - 8, 8 + ((date - start) / 86400000 / totalDays) * (width - 16)))
     const grid = timelineGridDates(start, end)
+    const dayTicks = timelineDayTickDates(start, end)
     const today = startOfTodayTimeline()
     const todayX = today >= start && today <= end ? xFor(today) : null
 
@@ -15128,6 +15200,12 @@ async function updateTeamCell(memberId, field, value) {
       <div style={{ width: scrollableWidth, minWidth: scrollableWidth, position: 'relative' }}>
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible', display: 'block' }}>
         <line x1="8" x2={width - 8} y1="34" y2="34" stroke="#6b7280" strokeWidth="1" />
+        {dayTicks.map((date) => {
+          const x = xFor(date)
+          const day = date.getDay()
+          const isWeekStart = day === 0
+          return <line key={`day-tick-${dateToInputValue(date)}`} x1={x} x2={x} y1={isWeekStart ? 27 : 30} y2={isWeekStart ? 41 : 38} stroke={isWeekStart ? '#9ca3af' : '#cbd5e1'} strokeWidth={isWeekStart ? '1' : '0.75'}><title>{shortTimelineDate(date)}</title></line>
+        })}
         {todayX !== null && (
           <g>
             <line x1={todayX} x2={todayX} y1="4" y2="68" stroke="#16a34a" strokeWidth="2" strokeDasharray="6 4" />
@@ -24892,8 +24970,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (metric === 'invoice_balance') return Number(row.invoice_balance || 0)
     if (metric === 'paid_amount') return Number(row.paid_amount || 0)
     if (metric === 'minimum_balance') return Number(row.minimum_balance || 0)
-    if (metric === 'minimum_minus_trust') return Number(row.minimum_balance || 0) - Number(row.matter_trust_funds || 0)
-    if (metric === 'minimum_minus_trust_minus_wip') return Number(row.minimum_balance || 0) - Number(row.matter_trust_funds || 0) - Number(row.work_in_progress || 0)
+    if (metric === 'trust_minus_minimum') return Number(row.matter_trust_funds || 0) - Number(row.minimum_balance || 0)
+    if (metric === 'trust_minus_wip') return Number(row.matter_trust_funds || 0) - Number(row.work_in_progress || 0)
+    if (metric === 'trust_minus_minimum_minus_wip') return Number(row.matter_trust_funds || 0) - Number(row.minimum_balance || 0) - Number(row.work_in_progress || 0)
     if (metric === 'initial_retainer') return Number(row.initial_retainer || 0)
     return Number(row.matter_trust_funds || 0)
   }
@@ -24907,8 +24986,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       invoice_balance: 'Latest invoice balance',
       paid_amount: 'Latest invoice paid amount',
       minimum_balance: 'Minimum balance',
-      minimum_minus_trust: 'Minimum balance minus trust',
-      minimum_minus_trust_minus_wip: 'Minimum balance minus trust minus WIP',
+      trust_minus_minimum: 'Trust minus minimum balance',
+      trust_minus_wip: 'Trust minus WIP',
+      trust_minus_minimum_minus_wip: 'Trust minus minimum balance minus WIP',
       initial_retainer: 'Initial retainer'
     }
     return labels[metric] || metric
@@ -25001,8 +25081,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <option value="invoice_balance">Latest invoice balance</option>
               <option value="paid_amount">Latest invoice paid amount</option>
               <option value="minimum_balance">Minimum balance</option>
-              <option value="minimum_minus_trust">Minimum balance minus trust</option>
-              <option value="minimum_minus_trust_minus_wip">Minimum balance minus trust minus WIP</option>
+              <option value="trust_minus_minimum">Trust minus minimum balance</option>
+              <option value="trust_minus_wip">Trust minus WIP</option>
+              <option value="trust_minus_minimum_minus_wip">Trust minus minimum balance minus WIP</option>
               <option value="initial_retainer">Initial retainer</option>
             </select>
           </label>
@@ -26213,7 +26294,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </Modal>
             )}
 
-            <div style={{ overflow: 'auto', maxHeight: '72vh', width: '100%', border: '1px solid #aaa' }}>
+            <div
+              ref={matterPageTopScrollRef}
+              onScroll={() => syncMatterPageScroll('top')}
+              style={{ overflowX: 'auto', overflowY: 'hidden', width: '100%', height: 18, border: '1px solid #aaa', borderBottom: 0 }}
+            >
+              <div style={{ width: 2600, height: 1 }} />
+            </div>
+            <div ref={matterPageBodyScrollRef} onScroll={() => syncMatterPageScroll('body')} style={{ overflow: 'auto', maxHeight: '72vh', width: '100%', border: '1px solid #aaa' }}>
               <table border="1" cellPadding="4" style={{ borderCollapse: 'collapse', minWidth: 2600, width: 'max-content' }}>
                 <tbody>
                   {matterStatusSections.map((section) => (
@@ -28246,99 +28334,140 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'workflow' && canOpenPage('workflow') && (
           <>
             <h1>Workflow</h1>
-            <p>Build the daily order of work areas so you can move through each day without missing recurring tasks. Drag an item onto another item to make it a child, or use the parent dropdown and up/down buttons to fine-tune the order.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
-              <form onSubmit={saveWorkflowItem} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, display: 'grid', gap: 10 }}>
-                <h2>Create Work Area</h2>
-                <input placeholder="Work area name, e.g. Check voicemails" value={workflowForm.name} onChange={(e) => setWorkflowForm({ ...workflowForm, name: e.target.value })} />
-                <select value={workflowForm.parent_id} onChange={(e) => setWorkflowForm({ ...workflowForm, parent_id: e.target.value })}>
-                  <option value="">Top-level work area</option>
-                  {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
-                </select>
-                <textarea placeholder="Notes or instructions for this work area" value={workflowForm.notes} onChange={(e) => setWorkflowForm({ ...workflowForm, notes: e.target.value })} rows={4} />
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  Color:{' '}
-                  <input type="color" value={workflowForm.color || '#4c6783'} onChange={(e) => setWorkflowForm({ ...workflowForm, color: e.target.value })} />
-                  <span>{workflowForm.color || '#4c6783'}</span>
-                </label>
-                <button type="submit">Add Work Area</button>
-              </form>
+            <p>The main Workflow page is now a daily checklist. The editable workflow builder is under the Settings tab on this page.</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+              <button type="button" onClick={() => setWorkflowActiveTab('daily')} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: workflowActiveTab === 'daily' ? '#2f6584' : 'white', color: workflowActiveTab === 'daily' ? 'white' : '#222', fontWeight: workflowActiveTab === 'daily' ? 'bold' : 'normal' }}>Daily Checklist</button>
+              <button type="button" onClick={() => setWorkflowActiveTab('settings')} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: workflowActiveTab === 'settings' ? '#2f6584' : 'white', color: workflowActiveTab === 'settings' ? 'white' : '#222', fontWeight: workflowActiveTab === 'settings' ? 'bold' : 'normal' }}>Settings</button>
+            </div>
 
-              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14 }}>
-                <h2>Daily Workflow</h2>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-                  <input
-                    placeholder="Filter workflow"
-                    value={workflowFilter}
-                    onChange={(e) => setWorkflowFilter(e.target.value)}
-                    style={{ minWidth: 240, flex: '1 1 260px', padding: 6 }}
-                  />
-                  <button type="button" onClick={collapseAllWorkflowFamilies}>Collapse all</button>
-                  <button type="button" onClick={expandAllWorkflowFamilies}>Expand all</button>
-                </div>
-                <div
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => { moveWorkflowItem(draggedWorkflowId, ''); setDraggedWorkflowId(null) }}
-                  style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 8, marginBottom: 10, color: '#64748b', background: '#f8fafc' }}
-                >
-                  Drop here to make an item top-level.
+            {workflowActiveTab === 'daily' && (
+              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                  <h2 style={{ margin: 0 }}>Daily Workflow Checklist</h2>
+                  <label style={{ marginLeft: 'auto' }}>Date:{' '}<input type="date" value={workflowDailyDate} onChange={(e) => setWorkflowDailyDate(e.target.value)} /></label>
+                  <button type="button" onClick={resetWorkflowDailyChecks}>Reset this day</button>
+                  <button type="button" onClick={() => setWorkflowActiveTab('settings')}>Edit workflow settings</button>
                 </div>
                 {(() => {
-                  const filterText = workflowFilter.trim().toLowerCase()
-                  const itemMatchesFilter = (item) => !filterText || (workflowItemPath(item.id) || item.name || '').toLowerCase().includes(filterText) || (item.notes || '').toLowerCase().includes(filterText)
-                  const subtreeMatchesFilter = (item) => itemMatchesFilter(item) || descendantWorkflowItemIds(item.id).some((childId) => {
-                    const child = workflowItems.find((entry) => entry.id === childId)
-                    return child && itemMatchesFilter(child)
-                  })
-                  const renderWorkflowNode = (item, level = 0) => {
-                    if (!subtreeMatchesFilter(item)) return null
-                    const children = childWorkflowItems(item.id).filter((child) => subtreeMatchesFilter(child))
-                    const hasChildren = children.length > 0
-                    const collapsed = collapsedWorkflowIds.includes(item.id)
-                    const showChildren = hasChildren && (!collapsed || Boolean(filterText))
-                    const siblingCount = childWorkflowItems(item.parent_id || '').length
-                    const siblingIndex = childWorkflowItems(item.parent_id || '').findIndex((entry) => entry.id === item.id)
-                    return (
-                      <Fragment key={item.id}>
-                        <div
-                          draggable
-                          onDragStart={() => setDraggedWorkflowId(item.id)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => { e.stopPropagation(); moveWorkflowItem(draggedWorkflowId, item.id); setDraggedWorkflowId(null) }}
-                          style={{ marginLeft: level * 24, display: 'grid', gridTemplateColumns: 'auto auto auto 1fr auto auto auto auto auto', alignItems: 'center', gap: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginBottom: 6, background: 'white' }}
-                        >
-                          <span style={{ cursor: 'grab' }}>☰</span>
-                          <button type="button" onClick={() => toggleWorkflowCollapsed(item.id)} disabled={!hasChildren} title={hasChildren ? (collapsed ? 'Expand work area' : 'Collapse work area') : 'No child work areas'} style={{ width: 26 }}>
-                            {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
-                          </button>
-                          <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', display: 'inline-block' }} />
-                          <div>
-                            <input value={item.name || ''} onChange={(e) => updateWorkflowItem(item.id, { name: e.target.value })} style={{ fontWeight: 700, width: '100%', minWidth: 180 }} />
-                            <textarea value={item.notes || ''} onChange={(e) => updateWorkflowItem(item.id, { notes: e.target.value })} placeholder="Notes" rows={2} style={{ width: '100%', marginTop: 4 }} />
-                          </div>
-                          <input type="color" value={item.color || '#4c6783'} onChange={(e) => updateWorkflowItem(item.id, { color: e.target.value })} title="Workflow color" />
-                          <select value={item.parent_id || ''} onChange={(e) => moveWorkflowItem(item.id, e.target.value)}>
-                            <option value="">Top-level</option>
-                            {allWorkflowItemsIndented().filter((entry) => entry.id !== item.id && !descendantWorkflowItemIds(item.id).includes(entry.id)).map((entry) => <option key={entry.id} value={entry.id}>{'— '.repeat(entry.level)}{entry.name}</option>)}
-                          </select>
-                          <div style={{ display: 'inline-flex', gap: 4 }}>
-                            <button type="button" onClick={() => reorderWorkflowItem(item.id, -1)} disabled={siblingIndex <= 0}>↑</button>
-                            <button type="button" onClick={() => reorderWorkflowItem(item.id, 1)} disabled={siblingIndex < 0 || siblingIndex >= siblingCount - 1}>↓</button>
-                            <button type="button" onClick={() => outdentWorkflowItem(item.id)} disabled={!item.parent_id} title="Outdent to parent level">Outdent</button>
-                            <button type="button" onClick={() => indentWorkflowItem(item.id)} disabled={siblingIndex <= 0} title="Indent under the previous row">Indent</button>
-                          </div>
-                          <button type="button" onClick={() => addChildWorkflowItem(item)}>+ Child</button>
-                          <button type="button" onClick={() => deleteWorkflowItem(item.id)}>Delete</button>
-                        </div>
-                        {showChildren && children.map((child) => renderWorkflowNode(child, level + 1))}
-                      </Fragment>
-                    )
-                  }
-                  const rootItems = childWorkflowItems('').filter((item) => subtreeMatchesFilter(item))
-                  return rootItems.length ? rootItems.map((item) => renderWorkflowNode(item, 0)) : <p>{workflowItems.length === 0 ? 'No work areas yet.' : 'No workflow items match the filter.'}</p>
+                  const rows = allWorkflowItemsIndented()
+                  const checkedMap = workflowDailyCheckedMap()
+                  const checkedCount = rows.filter((item) => checkedMap[item.id]).length
+                  return (
+                    <>
+                      <div style={{ marginBottom: 10, color: '#475569' }}>{checkedCount} of {rows.length} activities checked for {workflowDailyKey()}.</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {rows.map((item) => (
+                          <label key={item.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: checkedMap[item.id] ? '#f0fdf4' : 'white', marginLeft: item.level * 24 }}>
+                            <input type="checkbox" checked={!!checkedMap[item.id]} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
+                            <span>
+                              <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
+                              <strong style={{ textDecoration: checkedMap[item.id] ? 'line-through' : 'none' }}>{workflowItemPath(item.id) || item.name}</strong>
+                              {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
+                            </span>
+                          </label>
+                        ))}
+                        {!rows.length && <p>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
+                      </div>
+                    </>
+                  )
                 })()}
               </div>
-            </div>
+            )}
+
+            {workflowActiveTab === 'settings' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
+                <form onSubmit={saveWorkflowItem} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, display: 'grid', gap: 10, background: 'white' }}>
+                  <h2>Create Work Area</h2>
+                  <input placeholder="Work area name, e.g. Check voicemails" value={workflowForm.name} onChange={(e) => setWorkflowForm({ ...workflowForm, name: e.target.value })} />
+                  <select value={workflowForm.parent_id} onChange={(e) => setWorkflowForm({ ...workflowForm, parent_id: e.target.value })}>
+                    <option value="">Top-level work area</option>
+                    {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
+                  </select>
+                  <textarea placeholder="Notes or instructions for this work area" value={workflowForm.notes} onChange={(e) => setWorkflowForm({ ...workflowForm, notes: e.target.value })} rows={4} />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    Color:{' '}
+                    <input type="color" value={workflowForm.color || '#4c6783'} onChange={(e) => setWorkflowForm({ ...workflowForm, color: e.target.value })} />
+                    <span>{workflowForm.color || '#4c6783'}</span>
+                  </label>
+                  <button type="submit">Add Work Area</button>
+                </form>
+
+                <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
+                  <h2>Workflow Settings</h2>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                    <input
+                      placeholder="Filter workflow"
+                      value={workflowFilter}
+                      onChange={(e) => setWorkflowFilter(e.target.value)}
+                      style={{ minWidth: 240, flex: '1 1 260px', padding: 6 }}
+                    />
+                    <button type="button" onClick={collapseAllWorkflowFamilies}>Collapse all</button>
+                    <button type="button" onClick={expandAllWorkflowFamilies}>Expand all</button>
+                  </div>
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => { moveWorkflowItem(draggedWorkflowId, ''); setDraggedWorkflowId(null) }}
+                    style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 8, marginBottom: 10, color: '#64748b', background: '#f8fafc' }}
+                  >
+                    Drop here to make an item top-level.
+                  </div>
+                  {(() => {
+                    const filterText = workflowFilter.trim().toLowerCase()
+                    const itemMatchesFilter = (item) => !filterText || (workflowItemPath(item.id) || item.name || '').toLowerCase().includes(filterText) || (item.notes || '').toLowerCase().includes(filterText)
+                    const subtreeMatchesFilter = (item) => itemMatchesFilter(item) || descendantWorkflowItemIds(item.id).some((childId) => {
+                      const child = workflowItems.find((entry) => entry.id === childId)
+                      return child && itemMatchesFilter(child)
+                    })
+                    const renderWorkflowNode = (item, level = 0) => {
+                      if (!subtreeMatchesFilter(item)) return null
+                      const children = childWorkflowItems(item.id).filter((child) => subtreeMatchesFilter(child))
+                      const hasChildren = children.length > 0
+                      const collapsed = collapsedWorkflowIds.includes(item.id)
+                      const showChildren = hasChildren && (!collapsed || Boolean(filterText))
+                      const siblingCount = childWorkflowItems(item.parent_id || '').length
+                      const siblingIndex = childWorkflowItems(item.parent_id || '').findIndex((entry) => entry.id === item.id)
+                      return (
+                        <Fragment key={item.id}>
+                          <div
+                            draggable
+                            onDragStart={() => setDraggedWorkflowId(item.id)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={(e) => { e.stopPropagation(); moveWorkflowItem(draggedWorkflowId, item.id); setDraggedWorkflowId(null) }}
+                            style={{ marginLeft: level * 24, display: 'grid', gridTemplateColumns: 'auto auto auto 1fr auto auto auto auto auto', alignItems: 'center', gap: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginBottom: 6, background: 'white' }}
+                          >
+                            <span style={{ cursor: 'grab' }}>☰</span>
+                            <button type="button" onClick={() => toggleWorkflowCollapsed(item.id)} disabled={!hasChildren} title={hasChildren ? (collapsed ? 'Expand work area' : 'Collapse work area') : 'No child work areas'} style={{ width: 26 }}>
+                              {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
+                            </button>
+                            <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', display: 'inline-block' }} />
+                            <div>
+                              <input value={item.name || ''} onChange={(e) => updateWorkflowItem(item.id, { name: e.target.value })} style={{ fontWeight: 700, width: '100%', minWidth: 180 }} />
+                              <textarea value={item.notes || ''} onChange={(e) => updateWorkflowItem(item.id, { notes: e.target.value })} placeholder="Notes" rows={2} style={{ width: '100%', marginTop: 4 }} />
+                            </div>
+                            <input type="color" value={item.color || '#4c6783'} onChange={(e) => updateWorkflowItem(item.id, { color: e.target.value })} title="Workflow color" />
+                            <select value={item.parent_id || ''} onChange={(e) => moveWorkflowItem(item.id, e.target.value)}>
+                              <option value="">Top-level</option>
+                              {allWorkflowItemsIndented().filter((entry) => entry.id !== item.id && !descendantWorkflowItemIds(item.id).includes(entry.id)).map((entry) => <option key={entry.id} value={entry.id}>{'— '.repeat(entry.level)}{entry.name}</option>)}
+                            </select>
+                            <div style={{ display: 'inline-flex', gap: 4 }}>
+                              <button type="button" onClick={() => reorderWorkflowItem(item.id, -1)} disabled={siblingIndex <= 0}>↑</button>
+                              <button type="button" onClick={() => reorderWorkflowItem(item.id, 1)} disabled={siblingIndex < 0 || siblingIndex >= siblingCount - 1}>↓</button>
+                              <button type="button" onClick={() => outdentWorkflowItem(item.id)} disabled={!item.parent_id} title="Outdent to parent level">Outdent</button>
+                              <button type="button" onClick={() => indentWorkflowItem(item.id)} disabled={siblingIndex <= 0} title="Indent under the previous row">Indent</button>
+                            </div>
+                            <button type="button" onClick={() => addChildWorkflowItem(item)}>+ Child</button>
+                            <button type="button" onClick={() => deleteWorkflowItem(item.id)}>Delete</button>
+                          </div>
+                          {showChildren && children.map((child) => renderWorkflowNode(child, level + 1))}
+                        </Fragment>
+                      )
+                    }
+                    const rootItems = childWorkflowItems('').filter((item) => subtreeMatchesFilter(item))
+                    return rootItems.length ? rootItems.map((item) => renderWorkflowNode(item, 0)) : <p>{workflowItems.length === 0 ? 'No work areas yet.' : 'No workflow items match the filter.'}</p>
+                  })()}
+                </div>
+              </div>
+            )}
           </>
         )}
 
@@ -29279,18 +29408,26 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </label>
                 </div>
 
-                <div style={{ overflow: 'auto', width: '100%', maxHeight: '72vh', border: '1px solid #aaa' }}>
+                <div
+                  ref={courtTableTopScrollRef}
+                  onScroll={() => syncCourtTableScroll('top')}
+                  style={{ overflowX: 'auto', overflowY: 'hidden', width: '100%', height: 18, border: '1px solid #aaa', borderBottom: 0 }}
+                >
+                  <div style={{ width: 4600, height: 1 }} />
+                </div>
+
+                <div ref={courtTableBodyScrollRef} onScroll={() => syncCourtTableScroll('body')} style={{ overflow: 'auto', width: '100%', maxHeight: '72vh', border: '1px solid #aaa' }}>
                   <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 4600, width: 'max-content' }}>
                     <thead>
                       <tr>
-                        {courtTableHeaders().map((header) => <th key={header}>{header}</th>)}
+                        {courtTableHeaders().map((header, index) => <th key={header} style={index === 0 ? { position: 'sticky', left: 0, zIndex: 20, background: '#f8fafc', minWidth: 240, boxShadow: '2px 0 3px rgba(0,0,0,0.08)' } : undefined}>{header}</th>)}
                       </tr>
                     </thead>
 
                     <tbody>
                       {courts.map((court) => (
                         <tr key={court.id}>
-                          <td><EditableTextCell value={court.court_name} onSave={(value) => updateCourtCell(court.id, 'court_name', value)} width={220} /></td>
+                          <td style={{ position: 'sticky', left: 0, zIndex: 10, background: 'white', minWidth: 240, boxShadow: '2px 0 3px rgba(0,0,0,0.08)' }}><EditableTextCell value={court.court_name} onSave={(value) => updateCourtCell(court.id, 'court_name', value)} width={220} /></td>
                           <td><EditableTextCell value={court.county} onSave={(value) => updateCourtCell(court.id, 'county', value)} width={140} /></td>
                           <td><EditableTextCell value={court.presiding_judge} onSave={(value) => updateCourtCell(court.id, 'presiding_judge', value)} width={190} /></td>
                           <td><EditableTextCell value={court.associate_judge} onSave={(value) => updateCourtCell(court.id, 'associate_judge', value)} width={190} /></td>
