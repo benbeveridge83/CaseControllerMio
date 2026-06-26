@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V46'
+const MIO_APP_VERSION = 'Mio V47'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -24328,13 +24328,40 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return String(report?.kind || '').toLowerCase() || 'clio_report'
   }
 
+  function normalizeReportHeaderName(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  }
+
   function valueFromReportRow(row, names) {
+    const keys = Object.keys(row || {})
     for (const name of names) {
       if (Object.prototype.hasOwnProperty.call(row || {}, name)) return row[name]
-      const found = Object.keys(row || {}).find((key) => key.toLowerCase().trim() === String(name).toLowerCase().trim())
+      const wanted = String(name).toLowerCase().trim()
+      const wantedNormalized = normalizeReportHeaderName(name)
+      const found = keys.find((key) => {
+        const keyText = String(key || '').toLowerCase().trim()
+        return keyText === wanted || normalizeReportHeaderName(keyText) === wantedNormalized
+      })
+      if (found) return row[found]
+    }
+    for (const name of names) {
+      const wantedNormalized = normalizeReportHeaderName(name)
+      if (!wantedNormalized) continue
+      const found = keys.find((key) => {
+        const keyNormalized = normalizeReportHeaderName(key)
+        return keyNormalized.includes(wantedNormalized) || wantedNormalized.includes(keyNormalized)
+      })
       if (found) return row[found]
     }
     return ''
+  }
+
+  function moneyFromReportRow(row, names) {
+    for (const name of names) {
+      const value = valueFromReportRow(row, [name])
+      if (String(value ?? '').trim() !== '') return parseMoneyLike(value)
+    }
+    return 0
   }
 
   function nonZeroNumber(value) {
@@ -24378,7 +24405,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function reportRowToSnapshot(row, report, options = {}) {
     const kind = clioReportKind(report)
-    const clioMatterNumber = normalizeClioMatterNumber(valueFromReportRow(row, ['Matter', 'Matter Number', 'matter', 'matter_number']))
+    const clioMatterNumber = normalizeClioMatterNumber(valueFromReportRow(row, ['Matter', 'Matter Number', 'Matter No.', 'Matter Number/Name', 'Matter ID', 'Matter Id', 'Matter Name', 'Client Matter', 'matter', 'matter_number', 'display_number']))
     if (!clioMatterNumber) return null
     const clioPrefix = clioMatterNumberPrefix(clioMatterNumber)
     const matchingClio = clioMatters.find((m) => {
@@ -24394,8 +24421,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const matchingMio = mioMatterId ? matters.find((m) => String(m.id) === String(mioMatterId)) : null
     const reportDate = extractDateFromReportName(report?.name, report?.updated_at || report?.created_at)
     const snapshotDate = options.snapshotDate || reportDate
-    const clientName = valueFromReportRow(row, ['Client', 'client']) || matchingClio?.client?.name || matchingMio?.client_name || ''
-    const enrichment = clioSnapshotEnrichmentForMatterNumber(clioMatterNumber)
+    const clientName = valueFromReportRow(row, ['Client', 'Client Name', 'client']) || matchingClio?.client?.name || matchingMio?.client_name || ''
+    const canonicalClioMatterNumber = normalizeClioMatterNumber(matchingClio?.display_number || clioMatterNumber)
+    const enrichment = clioSnapshotEnrichmentForMatterNumber(canonicalClioMatterNumber || clioMatterNumber)
     const base = {
       user_id: session?.user?.id,
       snapshot_date: snapshotDate,
@@ -24406,7 +24434,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       source_method: `clio_${kind}_report`,
       mio_matter_id: enrichment.mio_matter_id || mioMatterId || null,
       clio_matter_id: enrichment.clio_matter_id || (matchingClio?.id ? String(matchingClio.id) : null),
-      clio_matter_number: clioMatterNumber,
+      clio_matter_number: canonicalClioMatterNumber || clioMatterNumber,
       clio_client_name: clientName,
       case_type: enrichment.case_type || (matchingClio ? clioMatterFixedCaseType(matchingClio) : (matchingMio ? clioFixedCaseTypeForMioMatter(matchingMio) : 'Other')),
       matter_status: enrichment.matter_status || matchingMio?.matter_status || matchingMio?.status || '',
@@ -24420,10 +24448,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
 
     if (kind === 'matter_balance_summary') {
-      const accountsReceivable = parseMoneyLike(valueFromReportRow(row, ['Accounts Receivable', 'A/R', 'AR', 'Outstanding Balance', 'Outstanding balance', 'Balance', 'Invoice Balance']))
-      const timeInProgress = parseMoneyLike(valueFromReportRow(row, ['Time In Progress', 'Time in Progress', 'Time in progress', 'Work In Progress Time', 'Unbilled Time']))
-      const expenseInProgress = parseMoneyLike(valueFromReportRow(row, ['Expense In Progress', 'Expense in Progress', 'Expense in progress', 'Expenses In Progress', 'Expense In-Progress', 'Unbilled Expenses']))
-      const matterTrust = parseMoneyLike(valueFromReportRow(row, ['Matter Trust Funds', 'Matter trust funds', 'Amount in trust']))
+      const accountsReceivable = moneyFromReportRow(row, ['Accounts Receivable', 'A/R', 'AR', 'Outstanding Balance', 'Outstanding balance', 'Balance', 'Invoice Balance', 'Outstanding'])
+      const timeInProgress = moneyFromReportRow(row, ['Time In Progress', 'Time in Progress', 'Time in progress', 'Work In Progress Time', 'Work in Progress', 'Unbilled Time', 'Unbilled amount', 'Unbilled Amount'])
+      const expenseInProgress = moneyFromReportRow(row, ['Expense In Progress', 'Expense in Progress', 'Expense in progress', 'Expenses In Progress', 'Expense In-Progress', 'Unbilled Expenses'])
+      const matterTrust = moneyFromReportRow(row, ['Matter Trust Funds', 'Matter trust funds', 'Amount in trust', 'Amount In Trust', 'Trust Balance', 'Matter Trust Balance', 'Trust Account Balance', 'Client Trust Balance', 'Funds in Trust', 'Trust Funds'])
       return {
         ...base,
         outstanding_balance: accountsReceivable,
@@ -24436,12 +24464,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
 
     if (kind === 'accounts_receivable') {
-      const accountsReceivable = parseMoneyLike(valueFromReportRow(row, ['Accounts Receivable', 'A/R', 'AR', 'Outstanding Balance', 'Balance', 'Amount', 'Total', 'Invoice Balance']))
+      const accountsReceivable = moneyFromReportRow(row, ['Accounts Receivable', 'A/R', 'AR', 'Outstanding Balance', 'Balance', 'Amount', 'Total', 'Invoice Balance', 'Outstanding'])
       return { ...base, outstanding_balance: accountsReceivable }
     }
 
-    const wip = parseMoneyLike(valueFromReportRow(row, ['Unbilled amount', 'Unbilled Amount', 'Unbilled', 'work_in_progress']))
-    const amountInTrust = parseMoneyLike(valueFromReportRow(row, ['Amount in trust', 'Amount In Trust', 'Matter Trust Funds', 'Matter trust funds', 'amount_in_trust']))
+    const wip = moneyFromReportRow(row, ['Unbilled amount', 'Unbilled Amount', 'Unbilled', 'Unbilled Balance', 'Work in progress', 'Work In Progress', 'WIP', 'work_in_progress'])
+    const amountInTrust = moneyFromReportRow(row, ['Amount in trust', 'Amount In Trust', 'Matter Trust Funds', 'Matter trust funds', 'amount_in_trust', 'Trust Balance', 'Matter Trust Balance', 'Trust Account Balance', 'Client Trust Balance', 'Funds in Trust', 'Trust Funds'])
     return {
       ...base,
       work_in_progress: wip,
@@ -24816,6 +24844,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return reportRows.map((row) => reportRowToSnapshot(row, report, { snapshotDate })).filter(Boolean)
   }
 
+  function currentSnapshotMergeKey(snapshot) {
+    const prefix = clioMatterNumberPrefix(snapshot?.clio_matter_number)
+    return [
+      snapshot?.user_id || '',
+      snapshot?.snapshot_date || '',
+      snapshot?.clio_matter_id ? `clio:${snapshot.clio_matter_id}` : '',
+      snapshot?.mio_matter_id ? `mio:${snapshot.mio_matter_id}` : '',
+      prefix ? `prefix:${prefix}` : '',
+      snapshot?.clio_matter_number || ''
+    ].filter(Boolean).join('|')
+  }
+
   async function importCurrentClioFinancialValuesFromReports() {
     if (!session?.user?.id) return
     setClioSnapshotLoading(true)
@@ -24841,7 +24881,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         const rows = await downloadSnapshotRowsFromReport(report, today)
         downloadedReports += 1
         rows.forEach((snapshot) => {
-          const key = `${snapshot.user_id}|${snapshot.snapshot_date}|${snapshot.clio_matter_number}`
+          const key = currentSnapshotMergeKey(snapshot)
           const next = {
             ...snapshot,
             source_method: 'current_financial_report_refresh',
@@ -24914,7 +24954,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         const reportRows = parseClioCsv(text)
         downloadedReports += 1
         reportRows.map((row) => reportRowToSnapshot(row, report)).filter(Boolean).forEach((snapshot) => {
-          const key = `${snapshot.user_id}|${snapshot.snapshot_date}|${snapshot.clio_matter_number}`
+          const key = currentSnapshotMergeKey(snapshot)
           combined.set(key, mergeSnapshotRow(combined.get(key), snapshot))
         })
       }
