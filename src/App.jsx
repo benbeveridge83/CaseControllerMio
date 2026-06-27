@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V47'
+const MIO_APP_VERSION = 'Mio V48'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1605,6 +1605,9 @@ function App() {
   })
   const [requestedReliefOptionForm, setRequestedReliefOptionForm] = useState({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })
   const [requestedReliefMatterFilter, setRequestedReliefMatterFilter] = useState('all')
+  const [requestedReliefSavedIssueSetId, setRequestedReliefSavedIssueSetId] = useState('')
+  const [requestedReliefSavedReliefId, setRequestedReliefSavedReliefId] = useState('')
+  const [requestedReliefShowComparison, setRequestedReliefShowComparison] = useState(false)
   const [requestedReliefBuilder, setRequestedReliefBuilder] = useState(null)
   const [showRequestedReliefBuilder, setShowRequestedReliefBuilder] = useState(false)
   const [showRequestedReliefRestoreWindow, setShowRequestedReliefRestoreWindow] = useState(false)
@@ -23306,32 +23309,69 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const filteredIssues = requestedReliefIssueSets.filter((row) => requestedReliefMatterFilter === 'all' || String(row.matter_id) === String(requestedReliefMatterFilter))
     const filteredReliefs = requestedReliefs.filter((relief) => requestedReliefMatterFilter === 'all' || String(relief.matter_id) === String(requestedReliefMatterFilter))
     const latestIssueSet = selectedMatterId ? latestRequestedReliefIssueSetForMatter(selectedMatterId) : null
+    const selectedSavedIssueSet = filteredIssues.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
+    const selectedSavedRelief = filteredReliefs.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || null
+    const reliefDropdownLabel = (relief) => `${matterName(relief.matter_id) || 'Unknown matter'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'}`
+    const issueDropdownLabel = (issueSet) => `${matterName(issueSet.matter_id) || 'Unknown matter'} - ${issueSet.name || 'Matter Issues'}`
+    const handleMatterFilterChange = (value) => {
+      setRequestedReliefMatterFilter(value)
+      setRequestedReliefSavedIssueSetId('')
+      setRequestedReliefSavedReliefId('')
+      setRequestedReliefShowComparison(false)
+    }
     return (
       <>
         <h1>Requested Relief</h1>
         <p style={{ color: '#475569' }}>For each matter, save the disputed issues first. Then save my client's requested relief, opposing counsel's requested relief, and any current order provisions.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
-          <LabeledField label="Matter"><select value={requestedReliefMatterFilter} onChange={(e) => setRequestedReliefMatterFilter(e.target.value)}><option value="all">All matters</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}</select></LabeledField>
+          <LabeledField label="Matter"><select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}><option value="all">All matters</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}</select></LabeledField>
           <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: selectedMatterId })}>Add Issues to Matter</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'client_relief', issueSet: latestIssueSet })}>Add My Relief</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'opposing_relief', issueSet: latestIssueSet })}>Add Opposing Relief</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'current_order', issueSet: latestIssueSet })}>Current Order Provisions</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'temporary_order', issueSet: latestIssueSet })}>Add Temporary Relief</button>
           {requestedReliefTemplates.length > 0 && (
-            <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template?.mode === 'issues') beginRequestedIssueBuilder({ matter_id: selectedMatterId, template }); else if (template) beginRequestedReliefBuilder({ matter_id: selectedMatterId, template }); e.target.value = '' }}>
-              <option value="">Start from template...</option>
-              {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-            </select>
+            <LabeledField label="Saved template">
+              <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template?.mode === 'issues') beginRequestedIssueBuilder({ matter_id: selectedMatterId, template }); else if (template) beginRequestedReliefBuilder({ matter_id: selectedMatterId, template }); e.target.value = '' }}>
+                <option value="">Start from template...</option>
+                {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </select>
+            </LabeledField>
           )}
         </div>
         {renderRequestedReliefBuilderModal()}
-        {selectedMatterId && renderRequestedReliefComparisonPanel(selectedMatterId)}
-        <h2>Saved Issues</h2>
-        {!filteredIssues.length && <p>No issues saved yet. Click Add Issues to Matter to start.</p>}
-        {filteredIssues.map(renderSavedIssueSetCard)}
-        <h2>Saved Relief / Current Order Positions</h2>
-        {!filteredReliefs.length && <p>No requested relief, opposing relief, or current order provisions saved yet.</p>}
-        {filteredReliefs.map(renderSavedReliefCard)}
+        <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
+          <h2 style={{ marginTop: 0 }}>Saved Issues / Relief</h2>
+          <p style={{ color: '#64748b', marginTop: 0 }}>Saved items are hidden until you pick one below, so this page does not load every matter's tables at once.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, alignItems: 'end' }}>
+            <LabeledField label={`Existing issue sets (${filteredIssues.length})`}>
+              <select value={selectedSavedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)}>
+                <option value="">Select an existing issue set...</option>
+                {filteredIssues.map((issueSet) => <option key={issueSet.id} value={issueSet.id}>{issueDropdownLabel(issueSet)}</option>)}
+              </select>
+            </LabeledField>
+            <LabeledField label={`Existing relief / order positions (${filteredReliefs.length})`}>
+              <select value={selectedSavedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)}>
+                <option value="">Select existing relief...</option>
+                {filteredReliefs.map((relief) => <option key={relief.id} value={relief.id}>{reliefDropdownLabel(relief)}</option>)}
+              </select>
+            </LabeledField>
+          </div>
+          {!filteredIssues.length && <p>No issues saved yet. Click Add Issues to Matter to start.</p>}
+          {!filteredReliefs.length && <p>No requested relief, opposing relief, temporary relief, or current order provisions saved yet.</p>}
+          {selectedSavedIssueSet && <div style={{ marginTop: 12 }}>{renderSavedIssueSetCard(selectedSavedIssueSet)}</div>}
+          {selectedSavedRelief && <div style={{ marginTop: 12 }}>{renderSavedReliefCard(selectedSavedRelief)}</div>}
+        </section>
+        {selectedMatterId && (
+          <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
+            <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontWeight: 600 }}>
+              <input type="checkbox" checked={requestedReliefShowComparison} onChange={(e) => setRequestedReliefShowComparison(e.target.checked)} />
+              Show comparison table for this matter
+            </label>
+            <div style={{ color: '#64748b', marginTop: 4 }}>Turn this on only when you want the side-by-side issue / relief table for the selected matter.</div>
+          </section>
+        )}
+        {selectedMatterId && requestedReliefShowComparison && renderRequestedReliefComparisonPanel(selectedMatterId)}
       </>
     )
   }
