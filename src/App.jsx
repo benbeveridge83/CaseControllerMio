@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V61'
+const MIO_APP_VERSION = 'Mio V62'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22133,34 +22133,31 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function requestedReliefBuilderPromptIdSet(builder = requestedReliefBuilder) {
-    const selectedIssueIds = new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
-    const promptIds = new Set()
-    activeRequestedReliefOptions().forEach((option) => {
-      if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return
-      const selectedIssueChildren = requestedReliefChildren(option.id).filter((child) => selectedIssueIds.has(child.id) && !isRequestedReliefOptionRow(child))
-      const directReliefOptions = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
-      // A prompt is an issue that has direct selectable options, or an empty leaf issue.
-      // Parent/container issues stay in the numbering path but do not become prompts when subissues exist.
-      if (directReliefOptions.length > 0 || selectedIssueChildren.length === 0) promptIds.add(option.id)
-    })
-    return promptIds
+    // Every saved issue row is a prompt/heading unless the user used "Hide label only",
+    // which removes that row from issue_option_ids but leaves its children selected.
+    return new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
   }
 
-  function requestedReliefBuilderIssueRows(builder = requestedReliefBuilder) {
-    const selectedIssueIds = new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
-    const promptIds = requestedReliefBuilderPromptIdSet(builder)
+  function requestedReliefOrderedIssueRowsForIds(issueIds = []) {
+    const selectedIssueIds = new Set(requestedReliefIssueRowIds(issueIds || []))
     const ordered = []
     const visit = (parentId = '') => {
       requestedReliefChildren(parentId).forEach((child) => {
         if (isRequestedReliefOptionRow(child)) return
-        const isInThisRelief = selectedIssueIds.has(child.id) || requestedReliefDescendantIds(child.id).some((id) => selectedIssueIds.has(id) && !isRequestedReliefOptionRow(id))
-        if (!isInThisRelief) return
-        if (promptIds.has(child.id)) ordered.push(child)
+        const hasSelectedDescendant = requestedReliefDescendantIds(child.id).some((id) => selectedIssueIds.has(id) && !isRequestedReliefOptionRow(id))
+        if (!selectedIssueIds.has(child.id) && !hasSelectedDescendant) return
+        // Only display the row if the label itself is selected. If it is only present
+        // because selected descendants exist, it is a hidden structural label.
+        if (selectedIssueIds.has(child.id)) ordered.push(child)
         visit(child.id)
       })
     }
     visit('')
     return ordered
+  }
+
+  function requestedReliefBuilderIssueRows(builder = requestedReliefBuilder) {
+    return requestedReliefOrderedIssueRowsForIds(builder?.issue_option_ids || [])
   }
 
   function requestedReliefOptionsForBuilderIssue(issueId, builder = requestedReliefBuilder) {
@@ -23348,7 +23345,7 @@ ${choices}`, '1'))
         number: requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder),
         optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
       }
-    }).sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true, sensitivity: 'base' }))
+    })
     const orderedIssueRows = tocRows.map((row) => row.issue)
     return (
       <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr)', gap: 12, border: '1px solid #dbeafe', borderRadius: 10, background: '#fff', padding: 10, height: '58vh', minHeight: 420, overflow: 'hidden' }}>
@@ -23695,6 +23692,27 @@ ${choices}`, '1'))
     )
   }
 
+  function renderRequestedReliefIssueOutline(issueIds = [], { maxHeight = 320 } = {}) {
+    const rows = requestedReliefOrderedIssueRowsForIds(issueIds)
+    if (!rows.length) return <div style={{ color: '#94a3b8', fontStyle: 'italic' }}>No issue rows selected.</div>
+    return (
+      <div style={{ marginTop: 10, border: '1px solid #e2e8f0', borderRadius: 8, background: '#f8fafc', maxHeight, overflow: 'auto', padding: 8 }}>
+        {rows.map((issue) => {
+          const number = requestedReliefIssueDecimalNumber(issue.id, { issue_option_ids: issueIds, selected_issue_ids: issueIds })
+          const level = Math.max(0, String(number).split('.').length - 1)
+          const options = requestedReliefOptionsForBuilderIssue(issue.id, { issue_option_ids: issueIds })
+          return (
+            <div key={issue.id} style={{ display: 'grid', gridTemplateColumns: '80px 1fr auto', gap: 8, alignItems: 'center', padding: '5px 6px', paddingLeft: 6 + Math.min(level, 5) * 16, borderBottom: '1px solid #e5e7eb' }}>
+              <span style={{ fontWeight: 900, color: '#1d4ed8' }}>{number}</span>
+              <span style={{ fontWeight: 700 }}>{issue.name}</span>
+              <span style={{ color: '#64748b', fontSize: 12 }}>{options.length ? `${options.length} option${options.length === 1 ? '' : 's'}` : ''}</span>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
   function renderSavedIssueSetCard(issueSet) {
     const selectedOptions = activeRequestedReliefOptions().filter((option) => (issueSet.selected_issue_ids || []).includes(option.id) && !isRequestedReliefOptionRow(option))
     const selectedTables = activeRequestedReliefTables().filter((table) => (issueSet.selected_table_ids || []).includes(table.id))
@@ -23705,10 +23723,8 @@ ${choices}`, '1'))
           <div><strong>{issueSet.name}</strong><div style={{ color: '#64748b' }}>{selectedOptions.length} issue row(s), {leafCount} final option(s), {selectedTables.length} table(s)</div><button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(issueSet.matter_id)} style={{ marginTop: 6 }}>Open matter requested relief</button></div>
           <div><button type="button" onClick={() => beginRequestedIssueBuilder({ issueSet })}>Edit Issues</button>{' '}<button type="button" onClick={() => deleteRequestedIssueSet(issueSet.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button></div>
         </div>
-        <ul style={{ columns: 2, marginTop: 10 }}>
-          {selectedOptions.map((option) => <li key={option.id}>{requestedReliefOptionPath(option.id)}</li>)}
-          {selectedTables.map((table) => <li key={table.id}><strong>Table:</strong> {table.title}</li>)}
-        </ul>
+        {renderRequestedReliefIssueOutline(issueSet.selected_issue_ids || [], { maxHeight: 360 })}
+        {selectedTables.length > 0 && <ul style={{ marginTop: 10 }}>{selectedTables.map((table) => <li key={table.id}><strong>Table:</strong> {table.title}</li>)}</ul>}
       </section>
     )
   }
@@ -23754,19 +23770,7 @@ ${choices}`, '1'))
 
   function requestedReliefIssueRowsForComparison(issueSet) {
     if (!issueSet) return []
-    const selectedIssueIds = new Set(requestedReliefIssueRowIds(issueSet.selected_issue_ids || []))
-    const byId = Object.fromEntries(activeRequestedReliefOptions().map((option) => [String(option.id), option]))
-    const issueRows = activeRequestedReliefOptions().filter((option) => {
-      if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return false
-      const selectedIssueChildren = requestedReliefChildren(option.id).filter((child) => selectedIssueIds.has(child.id) && !isRequestedReliefOptionRow(child))
-      const reliefOptionChildren = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
-      return reliefOptionChildren.length > 0 || selectedIssueChildren.length === 0
-    })
-    const orderMap = new Map(activeRequestedReliefOptions().map((option, index) => [String(option.id), index]))
-    return issueRows
-      .map((option) => byId[String(option.id)])
-      .filter(Boolean)
-      .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
+    return requestedReliefOrderedIssueRowsForIds(issueSet.selected_issue_ids || [])
   }
 
 
@@ -24091,6 +24095,7 @@ ${choices}`, '1'))
                       <div className="rr-md-card-actions" style={{ marginTop: 'auto' }}>
                         <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); beginRequestedIssueBuilder({ matter_id: matterId, issueSet }) }}>Edit Issues</button>
                         <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); setRequestedReliefSavedIssueSetId(issueSet.id) }}>Open</button>
+                        <button type="button" style={{ ...panelButton, color: '#b91c1c', borderColor: '#fecaca', background: '#fff7f7' }} onClick={(e) => { e.stopPropagation(); deleteRequestedIssueSet(issueSet.id) }}>Delete</button>
                       </div>
                     </button>
                   )
@@ -24301,10 +24306,15 @@ ${choices}`, '1'))
                     const stats = issueSetStats(issueSet)
                     const isSelected = selectedSavedIssueSet && String(selectedSavedIssueSet.id) === String(issueSet.id)
                     return (
-                      <button key={issueSet.id} type="button" onClick={() => setRequestedReliefSavedIssueSetId(issueSet.id)} style={{ textAlign: 'left', border: isSelected ? '2px solid #2563eb' : '1px solid #dbe3ea', borderRadius: 10, padding: 10, background: isSelected ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
+                      <div key={issueSet.id} onClick={() => setRequestedReliefSavedIssueSetId(issueSet.id)} style={{ textAlign: 'left', border: isSelected ? '2px solid #2563eb' : '1px solid #dbe3ea', borderRadius: 10, padding: 10, background: isSelected ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
                         <strong>{issueSet.name || 'Matter Issues'}</strong>
                         <div className="rr-v58-muted">{matterName(issueSet.matter_id)} • {stats.rows} issue rows • {stats.leaves} final options • {stats.tables} tables</div>
-                      </button>
+                        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                          <button type="button" style={pageButton} onClick={(e) => { e.stopPropagation(); beginRequestedIssueBuilder({ matter_id: issueSet.matter_id, issueSet }) }}>Edit Issues</button>
+                          <button type="button" style={pageButton} onClick={(e) => { e.stopPropagation(); setRequestedReliefSavedIssueSetId(issueSet.id) }}>Open</button>
+                          <button type="button" style={{ ...pageButton, color: '#b91c1c', borderColor: '#fecaca', background: '#fff7f7' }} onClick={(e) => { e.stopPropagation(); deleteRequestedIssueSet(issueSet.id) }}>Delete</button>
+                        </div>
+                      </div>
                     )
                   })}
                 </div>
