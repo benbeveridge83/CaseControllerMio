@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V58'
+const MIO_APP_VERSION = 'Mio V59'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22180,19 +22180,26 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function requestedReliefIssueDecimalNumber(issueId, builder = requestedReliefBuilder) {
-    const byId = Object.fromEntries(activeRequestedReliefOptions().map((option) => [String(option.id), option]))
+    const rows = activeRequestedReliefOptions()
+    const byId = Object.fromEntries(rows.map((option) => [String(option.id), option]))
     const structuralNames = new Set(['substantive', 'procedural', 'discovery'])
     const selected = new Set(requestedReliefIssueRowIds(builder?.selected_issue_ids || builder?.issue_option_ids || []))
+    const hasSelectedDescendant = (nodeId) => requestedReliefDescendantIds(nodeId).some((id) => selected.has(id) && !isRequestedReliefOptionRow(id))
+    const countsForNumbering = (row) => {
+      if (!row || isRequestedReliefOptionRow(row)) return false
+      if (structuralNames.has(String(row.name || '').trim().toLowerCase())) return false
+      return selected.has(row.id) || hasSelectedDescendant(row.id)
+    }
     const path = []
     let current = byId[String(issueId)]
     let guard = 0
     while (current && guard < 30) {
-      if (!isRequestedReliefOptionRow(current) && !structuralNames.has(String(current.name || '').trim().toLowerCase())) path.unshift(current)
+      if (countsForNumbering(current)) path.unshift(current)
       current = current.parent_id ? byId[String(current.parent_id)] : null
       guard += 1
     }
     const parts = path.map((node) => {
-      const siblings = requestedReliefChildren(node.parent_id || '').filter((row) => !isRequestedReliefOptionRow(row) && !structuralNames.has(String(row.name || '').trim().toLowerCase()) && (!selected.size || selected.has(row.id)))
+      const siblings = requestedReliefChildren(node.parent_id || '').filter(countsForNumbering)
       const index = siblings.findIndex((row) => String(row.id) === String(node.id))
       return index >= 0 ? index + 1 : 1
     })
