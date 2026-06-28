@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V49'
+const MIO_APP_VERSION = 'Mio V50'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1612,6 +1612,9 @@ function App() {
   const [showRequestedReliefBuilder, setShowRequestedReliefBuilder] = useState(false)
   const [showRequestedReliefRestoreWindow, setShowRequestedReliefRestoreWindow] = useState(false)
   const [requestedReliefBuilderMode, setRequestedReliefBuilderMode] = useState('relief')
+  const [requestedReliefLayout, setRequestedReliefLayout] = useState(() => localStorage.getItem('caseMioRequestedReliefLayout') || 'split')
+  const [requestedReliefActiveIssueId, setRequestedReliefActiveIssueId] = useState('')
+  const [showRequestedReliefEditMenu, setShowRequestedReliefEditMenu] = useState(false)
   const [showTemporaryRequestedRelief, setShowTemporaryRequestedRelief] = useState(true)
   const [hideUnmodifiedRequestedReliefRows, setHideUnmodifiedRequestedReliefRows] = useState(false)
   const [requestedReliefComparisonCollapsed, setRequestedReliefComparisonCollapsed] = useState({})
@@ -2424,6 +2427,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefTemplates', JSON.stringify(requestedReliefTemplates)) } catch {}
   }, [requestedReliefTemplates])
+
+  useEffect(() => {
+    try { localStorage.setItem('caseMioRequestedReliefLayout', requestedReliefLayout) } catch {}
+  }, [requestedReliefLayout])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefTables', JSON.stringify(requestedReliefTables)) } catch {}
@@ -22099,6 +22106,107 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     })
   }
 
+  function requestedReliefBuilderIssueRows(builder = requestedReliefBuilder) {
+    const selectedIssueIds = new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
+    const orderMap = new Map(activeRequestedReliefOptions().map((option, index) => [String(option.id), index]))
+    return activeRequestedReliefOptions()
+      .filter((option) => {
+        if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return false
+        const childIssueRows = requestedReliefChildren(option.id).filter((child) => selectedIssueIds.has(child.id) && !isRequestedReliefOptionRow(child))
+        const reliefOptionChildren = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
+        return reliefOptionChildren.length > 0 || childIssueRows.length === 0
+      })
+      .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
+  }
+
+  function requestedReliefOptionsForBuilderIssue(issueId, builder = requestedReliefBuilder) {
+    const allowed = new Set(requestedReliefOptionIdsForIssueRoot(issueId, builder))
+    const orderMap = new Map(activeRequestedReliefOptions().map((option, index) => [String(option.id), index]))
+    return activeRequestedReliefOptions()
+      .filter((option) => allowed.has(option.id))
+      .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
+  }
+
+  function requestedReliefChoiceLetter(index) {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    return letters[index] || String(index + 1)
+  }
+
+  function addRequestedReliefIssueWhileBuilding() {
+    if (!requestedReliefBuilder) return
+    const currentIssue = requestedReliefOptions.find((option) => String(option.id) === String(requestedReliefActiveIssueId))
+    const asChild = currentIssue ? window.confirm(`Add the new issue under "${currentIssue.name}"?
+
+OK = add under that issue. Cancel = add as a top-level issue.`) : false
+    const name = (window.prompt('Name the new issue / prompt:', '') || '').trim()
+    if (!name) return
+    const parentId = asChild && currentIssue ? currentIssue.id : ''
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
+    setRequestedReliefOptions((current) => {
+      const siblings = current.filter((item) => String(item.parent_id || '') === String(parentId || ''))
+      return resequenceRequestedReliefOptions([
+        ...current,
+        ensureRequestedReliefOptionShape({ id: newId, parent_id: parentId, name, notes: '', is_active: true, is_relief_option: false, sort_order: siblings.length + 1 }, current.length)
+      ])
+    })
+    setRequestedReliefBuilder((builder) => {
+      if (!builder) return builder
+      return { ...builder, issue_option_ids: Array.from(new Set([...(builder.issue_option_ids || []), newId])) }
+    })
+    setRequestedReliefActiveIssueId(newId)
+    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, parentId, newId].filter(Boolean))))
+  }
+
+  function addRequestedReliefOptionWhileBuilding() {
+    if (!requestedReliefBuilder) return
+    let issueId = requestedReliefActiveIssueId
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    if (!issueId || !issueRows.some((issue) => String(issue.id) === String(issueId))) issueId = issueRows[0]?.id || ''
+    const issue = requestedReliefOptions.find((option) => String(option.id) === String(issueId))
+    if (!issue) return alert('Select an issue/prompt first, then add the relief option under it.')
+    const name = (window.prompt(`Name the new relief option under "${issue.name}":`, '') || '').trim()
+    if (!name) return
+    const optionType = window.confirm('Should this be an exclusive option?\n\nOK = exclusive. Cancel = non-exclusive.') ? 'exclusive' : 'non_exclusive'
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
+    setRequestedReliefOptions((current) => {
+      const siblings = current.filter((item) => String(item.parent_id || '') === String(issue.id || ''))
+      return resequenceRequestedReliefOptions([
+        ...current,
+        ensureRequestedReliefOptionShape({ id: newId, parent_id: issue.id, name, notes: '', is_active: true, is_relief_option: true, option_type: optionType, has_text_box: false, text_box_label: '', sort_order: siblings.length + 1 }, current.length)
+      ])
+    })
+    setRequestedReliefBuilder((builder) => {
+      if (!builder) return builder
+      return { ...builder, issue_option_ids: Array.from(new Set([...(builder.issue_option_ids || []), issue.id])), selected_option_ids: Array.from(new Set([...(builder.selected_option_ids || []), newId])) }
+    })
+    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, issue.id])))
+  }
+
+  function editRequestedReliefSelectedOptionWhileBuilding() {
+    const selected = (requestedReliefBuilder?.selected_option_ids || []).filter((id) => requestedReliefOptions.some((option) => String(option.id) === String(id)))
+    const optionId = selected.length === 1 ? selected[0] : (window.prompt('Paste the exact current option text to edit:', '') || '')
+    const option = requestedReliefOptions.find((item) => String(item.id) === String(optionId) || item.name === optionId)
+    if (!option) return alert('Select one option first, or enter the exact option text when prompted.')
+    const name = (window.prompt('Edit relief option text:', option.name || '') || '').trim()
+    if (!name) return
+    setRequestedReliefOptions((current) => current.map((item) => item.id === option.id ? { ...item, name } : item))
+  }
+
+  function deleteRequestedReliefSelectedOptionsWhileBuilding() {
+    const selected = (requestedReliefBuilder?.selected_option_ids || []).filter((id) => requestedReliefOptions.some((option) => String(option.id) === String(id)))
+    if (!selected.length) return alert('Select the relief option(s) you want to delete first.')
+    if (!window.confirm(`Delete ${selected.length} selected relief option(s) from settings and remove them from saved selections?`)) return
+    const ids = new Set(selected.flatMap((id) => [id, ...requestedReliefDescendantIds(id)]))
+    setRequestedReliefOptions((current) => current.filter((option) => !ids.has(option.id)))
+    setRequestedReliefBuilder((builder) => builder ? { ...builder, selected_option_ids: (builder.selected_option_ids || []).filter((id) => !ids.has(id)) } : builder)
+    setRequestedReliefs((current) => current.map((relief) => ({ ...relief, selected_option_ids: (relief.selected_option_ids || []).filter((id) => !ids.has(id)) })))
+  }
+
+  function syncRequestedReliefBuilderToSettings() {
+    try { saveMioStateKey('caseMioRequestedReliefOptions', JSON.stringify(requestedReliefOptions)) } catch {}
+    alert('Relief settings are synced. Changes made here are saved to Settings automatically.')
+  }
+
   function openReliefSettingsInNewWindow() {
     const matterLabel = requestedReliefBuilder?.matter_id ? matterName(requestedReliefBuilder.matter_id) : 'this matter'
     try {
@@ -22179,6 +22287,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null } = {}) {
     const allIds = activeRequestedReliefOptions().filter((option) => !isRequestedReliefOptionRow(option)).map((option) => option.id)
     setRequestedReliefBuilderMode('issues')
+    setRequestedReliefActiveIssueId('')
+    setShowRequestedReliefEditMenu(false)
     setRequestedReliefBuilder({
       id: issueSet?.id || '',
       matter_id: issueSet?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : ''),
@@ -22214,6 +22324,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       issue_set_id: relief?.issue_set_id || resolvedIssueSet?.id || '',
       relief_type: relief?.relief_type || relief_type,
       name: relief?.name || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
+      source_template_id: template?.id || relief?.source_template_id || '',
       issue_option_ids: issueIds,
       selected_option_ids: selectedLeafIds,
       selected_table_ids: selectedTableIds,
@@ -22224,6 +22335,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       cases_by_option_id: relief?.cases_by_option_id || {},
       files_by_option_id: relief?.files_by_option_id || {}
     })
+    setRequestedReliefActiveIssueId((current) => issueIds.includes(current) ? current : (issueIds[0] || ''))
+    setShowRequestedReliefEditMenu(false)
     setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))
     setShowRequestedReliefBuilder(true)
   }
@@ -22558,23 +22671,50 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     setRequestedReliefBuilder(null)
   }
 
+  function requestedReliefBuilderTemplatePayload(name, id = '') {
+    return {
+      id: id || (crypto?.randomUUID ? crypto.randomUUID() : `relief-template-${Date.now()}`),
+      name,
+      mode: requestedReliefBuilderMode,
+      selected_issue_ids: requestedReliefBuilder?.selected_issue_ids || requestedReliefBuilder?.issue_option_ids || [],
+      issue_option_ids: requestedReliefBuilder?.issue_option_ids || [],
+      selected_table_ids: requestedReliefBuilder?.selected_table_ids || [],
+      selected_option_ids: requestedReliefBuilder?.selected_option_ids || [],
+      table_selections: requestedReliefBuilder?.table_selections || {},
+      option_text_by_option_id: requestedReliefBuilder?.option_text_by_option_id || {},
+      updated_at: new Date().toISOString(),
+      created_at: requestedReliefTemplates.find((template) => String(template.id) === String(id))?.created_at || new Date().toISOString()
+    }
+  }
+
   function saveRequestedReliefBuilderAsTemplate() {
     if (!requestedReliefBuilder) return
     const name = (window.prompt('Name this template:', requestedReliefBuilder.name || '') || '').trim()
     if (!name) return
-    const template = {
-      id: crypto?.randomUUID ? crypto.randomUUID() : `relief-template-${Date.now()}`,
-      name,
-      mode: requestedReliefBuilderMode,
-      selected_issue_ids: requestedReliefBuilder.selected_issue_ids || [],
-      selected_table_ids: requestedReliefBuilder.selected_table_ids || [],
-      selected_option_ids: requestedReliefBuilder.selected_option_ids || [],
-      table_selections: requestedReliefBuilder.table_selections || {},
-      option_text_by_option_id: requestedReliefBuilder.option_text_by_option_id || {},
-      created_at: new Date().toISOString()
-    }
+    const template = requestedReliefBuilderTemplatePayload(name)
     setRequestedReliefTemplates((current) => [template, ...current])
-    alert('Template saved.')
+    setRequestedReliefBuilder((builder) => builder ? { ...builder, source_template_id: template.id } : builder)
+    alert('Template saved. It includes both the issues and the selected relief/table options.')
+  }
+
+  function updateRequestedReliefBuilderTemplate() {
+    if (!requestedReliefBuilder) return
+    const existingId = requestedReliefBuilder.source_template_id || ''
+    let template = requestedReliefTemplates.find((item) => String(item.id) === String(existingId))
+    if (!template && requestedReliefTemplates.length) {
+      const choices = requestedReliefTemplates.map((item, index) => `${index + 1}. ${item.name}`).join('\n')
+      const pick = Number(window.prompt(`Which template should be updated?
+
+${choices}`, '1'))
+      template = requestedReliefTemplates[pick - 1]
+    }
+    if (!template) return saveRequestedReliefBuilderAsTemplate()
+    const name = (window.prompt('Update template name:', template.name || requestedReliefBuilder.name || '') || '').trim()
+    if (!name) return
+    const updated = requestedReliefBuilderTemplatePayload(name, template.id)
+    setRequestedReliefTemplates((current) => current.map((item) => String(item.id) === String(template.id) ? updated : item))
+    setRequestedReliefBuilder((builder) => builder ? { ...builder, source_template_id: template.id } : builder)
+    alert('Template updated. It now includes the current issues and selected options.')
   }
 
   function deleteRequestedRelief(reliefId) {
@@ -22861,6 +23001,114 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     })
   }
 
+  function renderRequestedReliefOptionAnswer(option, index, { compact = false, letterMode = false } = {}) {
+    const selected = (requestedReliefBuilder?.selected_option_ids || []).includes(option.id)
+    const letter = requestedReliefChoiceLetter(index)
+    const detail = requestedReliefBuilder?.option_text_by_option_id?.[option.id] || ''
+    const toggle = () => toggleRequestedReliefLeaf(option.id, !selected)
+    const baseStyle = {
+      display: 'grid',
+      gridTemplateColumns: letterMode ? '44px minmax(180px, 1fr)' : '74px minmax(180px, 1fr)',
+      alignItems: 'center',
+      gap: 10,
+      maxWidth: compact ? 620 : 720,
+      border: selected ? '2px solid #2563eb' : '1px solid #cbd5e1',
+      borderRadius: 10,
+      padding: letterMode ? '9px 12px' : '10px 12px',
+      background: selected ? '#eff6ff' : '#fff',
+      boxShadow: selected ? '0 1px 4px rgba(37,99,235,0.18)' : 'none',
+      cursor: 'pointer'
+    }
+    return (
+      <div key={option.id} onClick={toggle} style={baseStyle}>
+        {letterMode ? (
+          <button type="button" onClick={(e) => { e.stopPropagation(); toggle() }} title="Select this option" style={{ width: 32, height: 32, borderRadius: 999, border: selected ? '2px solid #1d4ed8' : '1px solid #93c5fd', background: selected ? '#2563eb' : '#f8fafc', color: selected ? 'white' : '#1e3a8a', fontWeight: 'bold' }}>{letter}</button>
+        ) : (
+          <button type="button" onClick={(e) => { e.stopPropagation(); toggle() }} title="Select this option" style={{ display: 'grid', justifyItems: 'center', gap: 2, border: '0', background: 'transparent', color: selected ? '#1d4ed8' : '#475569', fontSize: 12 }}>
+            <span style={{ width: 22, height: 22, borderRadius: 999, border: selected ? '6px solid #2563eb' : '2px solid #94a3b8', background: 'white', boxSizing: 'border-box' }} />
+            <span>Select</span>
+          </button>
+        )}
+        <div>
+          <div style={{ fontWeight: 700, color: '#0f172a' }}>{option.name}</div>
+          {option.notes ? <div style={{ marginTop: 3, color: '#64748b', fontSize: 12 }}>{option.notes}</div> : null}
+          {option.has_text_box && (
+            <input
+              type="text"
+              value={detail}
+              onClick={(e) => e.stopPropagation()}
+              onFocus={() => { if (!selected) toggleRequestedReliefLeaf(option.id, true) }}
+              onChange={(e) => updateRequestedReliefOptionText(option.id, e.target.value)}
+              placeholder={option.text_box_label || 'Add amount, terms, or notes'}
+              style={{ marginTop: 8, width: '100%', boxSizing: 'border-box', padding: 7, border: '1px solid #bfdbfe', borderRadius: 7 }}
+            />
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderRequestedReliefSplitSelector() {
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const activeIssue = issueRows.find((issue) => String(issue.id) === String(requestedReliefActiveIssueId)) || issueRows[0]
+    const options = activeIssue ? requestedReliefOptionsForBuilderIssue(activeIssue.id, requestedReliefBuilder) : []
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(250px, 330px) minmax(420px, 1fr)', gap: 16, border: '1px solid #dbeafe', borderRadius: 10, padding: 12, background: '#f8fafc', maxHeight: '56vh', overflow: 'auto' }}>
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff' }}>
+          <h3 style={{ margin: '0 0 4px' }}>Issues (prompts)</h3>
+          <div style={{ color: '#64748b', fontSize: 13, marginBottom: 10 }}>Select an issue to view and choose options.</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {issueRows.map((issue) => {
+              const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+              const active = String(issue.id) === String(activeIssue?.id)
+              return (
+                <button key={issue.id} type="button" onClick={() => setRequestedReliefActiveIssueId(issue.id)} style={{ textAlign: 'left', border: active ? '2px solid #2563eb' : '1px solid #cbd5e1', background: active ? '#eff6ff' : '#fff', borderRadius: 10, padding: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, color: '#0f172a', fontWeight: 700 }}>
+                  <span>{issue.name}</span>
+                  <span style={{ minWidth: 22, height: 22, borderRadius: 999, background: '#dbeafe', color: '#1d4ed8', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{count}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, background: '#fff' }}>
+          {activeIssue ? (
+            <>
+              <h3 style={{ margin: '0 0 4px' }}>Options for: <span style={{ color: '#1d4ed8' }}>{activeIssue.name}</span></h3>
+              <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>Choose one or more options for this issue.</div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {options.length ? options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true })) : <p style={{ color: '#64748b' }}>No selectable options yet. Use Edit relief &gt; Add relief option.</p>}
+              </div>
+            </>
+          ) : <p style={{ color: '#64748b' }}>No issues were added to this relief yet.</p>}
+        </div>
+      </div>
+    )
+  }
+
+  function renderRequestedReliefMultipleChoiceSelector() {
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    return (
+      <div style={{ border: '1px solid #dbeafe', borderRadius: 10, background: '#fff', maxHeight: '56vh', overflow: 'auto' }}>
+        {issueRows.map((issue, issueIndex) => {
+          const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder)
+          return (
+            <section key={issue.id} style={{ borderBottom: '1px solid #dbeafe', padding: 12, background: issueIndex % 2 ? '#fff' : '#f8fbff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <span style={{ width: 26, height: 26, borderRadius: 999, background: '#1d4ed8', color: 'white', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>{issueIndex + 1}</span>
+                <strong style={{ fontSize: 16 }}>{issue.name}</strong>
+                <span style={{ color: '#64748b', fontSize: 12 }}>Issue / prompt</span>
+              </div>
+              <div style={{ display: 'grid', gap: 8, marginLeft: 36 }}>
+                {options.length ? options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true })) : <p style={{ color: '#64748b', margin: 0 }}>No selectable options yet. Use Edit relief &gt; Add relief option.</p>}
+              </div>
+            </section>
+          )
+        })}
+        {!issueRows.length && <p style={{ padding: 14, color: '#64748b' }}>No issues were added to this relief yet.</p>}
+      </div>
+    )
+  }
+
   function renderRequestedReliefRestoreModal() {
     if (!showRequestedReliefRestoreWindow || !requestedReliefBuilder) return null
     const isIssueBuilder = requestedReliefBuilderMode === 'issues'
@@ -22933,23 +23181,56 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             </LabeledField>
           )}
           {isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>}
-          {!isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Add relief from issues</button>}
-          {!isIssueBuilder && <button type="button" onClick={openReliefSettingsInNewWindow}>Add new relief</button>}
-          {!isIssueBuilder && <button type="button" onClick={reloadRequestedReliefOptionsFromStorage}>Continue selecting relief for {requestedReliefBuilder.matter_id ? matterName(requestedReliefBuilder.matter_id) : 'this matter'}</button>}
-          <button type="button" onClick={saveRequestedReliefBuilderAsTemplate}>Save as Template</button>
-          <button type="button" onClick={isIssueBuilder ? saveRequestedIssueBuilder : saveRequestedReliefBuilder} style={{ background: '#2f6584', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>{isIssueBuilder ? 'Save Issues' : 'Save'}</button>
+          {!isIssueBuilder && (
+            <>
+              <LabeledField label="Layout">
+                <div style={{ display: 'inline-flex', border: '1px solid #93c5fd', borderRadius: 6, overflow: 'hidden' }}>
+                  <button type="button" onClick={() => setRequestedReliefLayout('split')} style={{ border: 0, borderRight: '1px solid #93c5fd', padding: '8px 14px', background: requestedReliefLayout === 'split' ? '#dbeafe' : 'white', fontWeight: requestedReliefLayout === 'split' ? 'bold' : 'normal' }}>Split view</button>
+                  <button type="button" onClick={() => setRequestedReliefLayout('multiple')} style={{ border: 0, padding: '8px 14px', background: requestedReliefLayout === 'multiple' ? '#dbeafe' : 'white', fontWeight: requestedReliefLayout === 'multiple' ? 'bold' : 'normal' }}>Multiple choice</button>
+                </div>
+              </LabeledField>
+              <button type="button" onClick={saveRequestedReliefBuilderAsTemplate}>Save as Template</button>
+              <button type="button" onClick={updateRequestedReliefBuilderTemplate} style={{ background: '#1d4ed8', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>Update Template</button>
+              <span style={{ position: 'relative', display: 'inline-block' }}>
+                <button type="button" onClick={() => setShowRequestedReliefEditMenu((show) => !show)}>Edit relief ▾</button>
+                {showRequestedReliefEditMenu && (
+                  <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, minWidth: 230, background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(15,23,42,0.18)', padding: 6, display: 'grid', gap: 4 }}>
+                    <button type="button" onClick={() => { addRequestedReliefIssueWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>＋ Add issue</button>
+                    <button type="button" onClick={() => { addRequestedReliefOptionWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>＋ Add relief option</button>
+                    <button type="button" onClick={() => { deleteRequestedReliefSelectedOptionsWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left', color: '#b91c1c' }}>🗑 Delete selected relief option</button>
+                    <hr style={{ width: '100%', border: 0, borderTop: '1px solid #e2e8f0' }} />
+                    <button type="button" onClick={() => { setShowRequestedReliefRestoreWindow(true); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>✎ Edit / add issues</button>
+                    <button type="button" onClick={() => { editRequestedReliefSelectedOptionWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>✎ Edit selected option text</button>
+                    <button type="button" onClick={() => { syncRequestedReliefBuilderToSettings(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>↻ Sync changes to settings</button>
+                    <hr style={{ width: '100%', border: 0, borderTop: '1px solid #e2e8f0' }} />
+                    <button type="button" onClick={() => { saveRequestedReliefBuilderAsTemplate(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>💾 Save as new template</button>
+                    <button type="button" onClick={() => { updateRequestedReliefBuilderTemplate(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>💾 Update existing template</button>
+                  </div>
+                )}
+              </span>
+            </>
+          )}
+          <button type="button" onClick={isIssueBuilder ? saveRequestedIssueBuilder : saveRequestedReliefBuilder} style={{ background: '#2f6584', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>{isIssueBuilder ? 'Save Issues' : 'Save Relief'}</button>
         </div>
         {isIssueBuilder ? (
-          <p style={{ color: '#475569' }}>Start with the full issues tree. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
+          <>
+            <p style={{ color: '#475569' }}>Start with the full issues tree. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
+              <div>Issues / possible court decisions</div><div>Actions</div>
+            </div>
+            <div style={{ border: '1px solid #e2e8f0', borderTop: 0, maxHeight: '56vh', overflow: 'auto' }}>
+              {renderRequestedReliefOptionTree({ mode: 'issues_builder' })}
+            </div>
+          </>
         ) : (
-          <p style={{ color: '#475569' }}>Only rows marked <strong>Relief Option</strong> can be selected. Check <strong>Add this option</strong> for each requested option. Exclusive options clear the other options for that issue; non-exclusive options can be combined.</p>
+          <>
+            <div style={{ color: '#475569', border: '1px solid #bfdbfe', background: '#eff6ff', padding: 9, borderRadius: 8, marginBottom: 10 }}>
+              {requestedReliefLayout === 'split' ? 'Left column shows issues/prompts. Right column shows answer options for the selected issue.' : 'Each issue is a prompt. The A/B/C letter is the selector bubble for each answer option.'} Templates save both the issues and the selected options.
+            </div>
+            {requestedReliefLayout === 'multiple' ? renderRequestedReliefMultipleChoiceSelector() : renderRequestedReliefSplitSelector()}
+            <div style={{ marginTop: 8, color: '#64748b', fontSize: 13 }}>Selected options: {(requestedReliefBuilder.selected_option_ids || []).length}. Non-exclusive options can be combined; exclusive options clear competing options for that issue.</div>
+          </>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
-          <div>{isIssueBuilder ? 'Issues / possible court decisions' : 'Issues and selectable options'}</div><div>Actions</div>
-        </div>
-        <div style={{ border: '1px solid #e2e8f0', borderTop: 0, maxHeight: '56vh', overflow: 'auto' }}>
-          {renderRequestedReliefOptionTree({ mode: isIssueBuilder ? 'issues_builder' : 'relief_builder' })}
-        </div>
         <div style={{ marginTop: 14 }}>
           <h3 style={{ marginBottom: 8 }}>{isIssueBuilder ? 'Requested relief tables' : 'Tables added to this matter'}</h3>
           {isIssueBuilder ? (
