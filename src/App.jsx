@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V52'
+const MIO_APP_VERSION = 'Mio V53'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22104,9 +22104,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const orderMap = new Map(activeRequestedReliefOptions().map((option, index) => [String(option.id), index]))
     return activeRequestedReliefOptions()
       .filter((option) => {
+        // Show every selected issue/prompt even when it has no selectable relief options yet.
+        // Empty prompts are useful because the user can open Edit relief > Add relief option
+        // while working on the matter and build the options directly from this screen.
         if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return false
-        const directReliefOptions = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
-        return directReliefOptions.length > 0
+        return true
       })
       .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
   }
