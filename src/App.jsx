@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V51'
+const MIO_APP_VERSION = 'Mio V52'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1623,6 +1623,7 @@ function App() {
     catch { return {} }
   })
   const [requestedReliefDetailEditor, setRequestedReliefDetailEditor] = useState(null)
+  const [requestedReliefPendingEventLink, setRequestedReliefPendingEventLink] = useState(null)
   const [requestedReliefExpandedIds, setRequestedReliefExpandedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefExpandedIds') || '[]') }
     catch { return [] }
@@ -10406,6 +10407,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setEditingEventId(null)
     setEventForm(emptyEventForm)
     setShowEventWindow(false)
+    setRequestedReliefPendingEventLink(null)
   }
 
   function editEvent(event) {
@@ -10549,6 +10551,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           const withoutOldCopy = currentEvents.filter((item) => item.id !== savedEvent.id)
           return [...withoutOldCopy, savedEvent]
         })
+        if (requestedReliefPendingEventLink && !editingEventId) {
+          setRequestedReliefBuilder((builder) => builder ? { ...builder, setting_event_id: savedEvent.id } : builder)
+          if (requestedReliefPendingEventLink.paused) {
+            setNeedToSetPausedRows((current) => ({ ...current, [checklistNeedToSetRowId(savedEvent)]: { paused_at: new Date().toISOString(), reason: 'Created from Requested Relief' } }))
+          }
+          setRequestedReliefPendingEventLink(null)
+        }
       }
 
       const savedEventIsComplete = savedEvent?.is_active === false || savedEvent?.completed === true || savedEvent?.status === 'completed'
@@ -22024,23 +22033,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       return String(optionId) === String(issueId) || ancestors.some((ancestorId) => String(ancestorId) === String(issueId))
     }
     issueIdSet.forEach((issueId) => {
-      const descendants = requestedReliefDescendantIds(issueId)
-      const explicitChoicesForIssue = activeRequestedReliefOptions()
+      activeRequestedReliefOptions()
         .filter((option) => isRequestedReliefOptionRow(option) && underIssue(option.id, issueId))
-        .map((option) => option.id)
-      if (explicitChoicesForIssue.length) {
-        explicitChoicesForIssue.forEach((id) => choices.add(id))
-        return
-      }
-      const childIssueRows = requestedReliefChildren(issueId).filter((child) => !isRequestedReliefOptionRow(child))
-      if (!childIssueRows.length) choices.add(issueId)
-      descendants.forEach((descendantId) => {
-        const descendant = requestedReliefOptions.find((option) => String(option.id) === String(descendantId))
-        if (!descendant || isRequestedReliefOptionRow(descendant)) return
-        const hasReliefOptionChildren = requestedReliefDescendantIds(descendantId).some((id) => isRequestedReliefOptionRow(id))
-        const hasIssueChildren = requestedReliefChildren(descendantId).some((child) => !isRequestedReliefOptionRow(child))
-        if (!hasReliefOptionChildren && !hasIssueChildren) choices.add(descendantId)
-      })
+        .forEach((option) => choices.add(option.id))
     })
     return Array.from(choices)
   }
@@ -22065,12 +22060,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function requestedReliefOptionIdsForIssueRoot(issueId, builder = requestedReliefBuilder) {
     if (!issueId) return []
-    const issueRow = requestedReliefOptions.find((item) => String(item.id) === String(issueId))
-    const directReliefOptions = requestedReliefChildren(issueId).filter((child) => isRequestedReliefOptionRow(child)).map((child) => child.id)
-    if (directReliefOptions.length) return directReliefOptions
-    const directIssueChildren = requestedReliefChildren(issueId).filter((child) => !isRequestedReliefOptionRow(child))
-    if (!directIssueChildren.length && issueRow && !isRequestedReliefOptionRow(issueRow)) return [issueId]
-    return []
+    return requestedReliefChildren(issueId).filter((child) => isRequestedReliefOptionRow(child)).map((child) => child.id)
   }
 
   function requestedReliefOptionGroupRoot(optionId, builder = requestedReliefBuilder) {
@@ -22115,9 +22105,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return activeRequestedReliefOptions()
       .filter((option) => {
         if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return false
-        const childIssueRows = requestedReliefChildren(option.id).filter((child) => selectedIssueIds.has(child.id) && !isRequestedReliefOptionRow(child))
-        const reliefOptionChildren = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
-        return reliefOptionChildren.length > 0 || childIssueRows.length === 0
+        const directReliefOptions = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
+        return directReliefOptions.length > 0
       })
       .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
   }
@@ -22299,6 +22288,45 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     return "My Client's Requested Relief"
   }
 
+  function requestedReliefSettingLabel(eventId) {
+    const event = events.find((item) => String(item.id) === String(eventId))
+    if (!event) return ''
+    const date = isUndatedEventDate(event.start_date) ? 'Need to set' : (event.start_date || 'No date')
+    const status = event.is_active === false ? 'completed' : (needToSetPausedRows[checklistNeedToSetRowId(event)] ? 'paused' : 'active')
+    return `${event.title || event.event_category || 'Setting'} - ${date} - ${status}`
+  }
+
+  function requestedReliefMatterSettings(matterId) {
+    if (!matterId) return []
+    return events
+      .filter((event) => String(event.matter_id || '') === String(matterId) && event.is_active !== false)
+      .sort((a, b) => String(a.start_date || '').localeCompare(String(b.start_date || '')) || String(a.title || '').localeCompare(String(b.title || '')))
+  }
+
+  function openRequestedReliefNewSettingWindow(mode = 'unknown_active') {
+    if (!requestedReliefBuilder?.matter_id) return alert('Select the matter first.')
+    const title = (window.prompt('Name the new setting/event:', 'Trial') || '').trim()
+    if (!title) return
+    let dateValue = ''
+    if (mode === 'known') {
+      dateValue = (window.prompt('Enter the setting date as YYYY-MM-DD:', '') || '').trim()
+      if (!dateValue) return
+    }
+    setRequestedReliefPendingEventLink({ paused: mode === 'unknown_paused' })
+    setEditingEventId(null)
+    setEventForm({
+      ...emptyEventForm,
+      matter_id: requestedReliefBuilder.matter_id,
+      event_category: title,
+      title,
+      description: `Created from Requested Relief: ${requestedReliefBuilder.name || requestedReliefKindLabel(requestedReliefBuilder.relief_type)}`,
+      start_date: dateValue,
+      end_date: dateValue,
+      is_active: true
+    })
+    setShowEventWindow(true)
+  }
+
   function matterName(matterId) {
     const matter = matters.find((item) => String(item.id) === String(matterId))
     if (!matter) return ''
@@ -22347,6 +22375,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       relief_type: relief?.relief_type || relief_type,
       name: relief?.name || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
       source_template_id: template?.id || relief?.source_template_id || '',
+      setting_event_id: relief?.setting_event_id || '',
       issue_option_ids: issueIds,
       selected_option_ids: selectedLeafIds,
       selected_table_ids: selectedTableIds,
@@ -23218,6 +23247,19 @@ ${choices}`, '1'))
               </select>
             </LabeledField>
           )}
+          {!isIssueBuilder && (
+            <LabeledField label="Attach to setting/event">
+              <select value={requestedReliefBuilder.setting_event_id || ''} onChange={(e) => setRequestedReliefBuilder({ ...requestedReliefBuilder, setting_event_id: e.target.value })}>
+                <option value="">Not attached to a setting</option>
+                {requestedReliefMatterSettings(requestedReliefBuilder.matter_id).map((event) => <option key={event.id} value={event.id}>{requestedReliefSettingLabel(event.id)}</option>)}
+              </select>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known')}>New setting with known date</button>
+                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
+                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
+              </div>
+            </LabeledField>
+          )}
           {isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>}
           {!isIssueBuilder && (
             <>
@@ -23232,7 +23274,7 @@ ${choices}`, '1'))
               <span style={{ position: 'relative', display: 'inline-block' }}>
                 <button type="button" onClick={() => setShowRequestedReliefEditMenu((show) => !show)}>Edit relief ▾</button>
                 {showRequestedReliefEditMenu && (
-                  <div style={{ position: 'absolute', right: 0, top: '110%', zIndex: 20, minWidth: 230, background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(15,23,42,0.18)', padding: 6, display: 'grid', gap: 4 }}>
+                  <div style={{ position: 'absolute', left: 0, top: '110%', zIndex: 10000, minWidth: 230, background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 24px rgba(15,23,42,0.18)', padding: 6, display: 'grid', gap: 4 }}>
                     <button type="button" onClick={() => { addRequestedReliefIssueWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>＋ Add issue</button>
                     <button type="button" onClick={() => { addRequestedReliefOptionWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left' }}>＋ Add relief option</button>
                     <button type="button" onClick={() => { deleteRequestedReliefSelectedOptionsWhileBuilding(); setShowRequestedReliefEditMenu(false) }} style={{ textAlign: 'left', color: '#b91c1c' }}>🗑 Delete selected relief option</button>
@@ -23655,12 +23697,18 @@ ${choices}`, '1'))
     const issueRows = requestedReliefIssueSetsForMatter(matterId)
     const reliefRows = requestedReliefs.filter((relief) => String(relief.matter_id) === String(matterId))
     const latestIssueSet = latestRequestedReliefIssueSetForMatter(matterId)
+    const selectedRelief = reliefRows.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || null
+    const selectedIssueSet = issueRows.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
+    const reliefOptionLabel = (relief) => {
+      const eventLabel = relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached to setting/event'
+      return `${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'} - ${eventLabel}`
+    }
     return (
       <div style={{ border: '1px solid #dbe3ea', borderRadius: 6, padding: 14, background: '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           <div>
             <h3 style={{ margin: 0 }}>Issues and Requested Relief</h3>
-            <div style={{ color: '#64748b' }}>Add the issues first, then add your relief, opposing counsel's relief, or current order provisions.</div>
+            <div style={{ color: '#64748b' }}>Add the issues first, then add your relief, opposing counsel's relief, or current order provisions. Saved relief rows are selected from dropdowns instead of shown as full tables.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add Issues</button>
@@ -23672,13 +23720,29 @@ ${choices}`, '1'))
           </div>
         </div>
         {renderRequestedReliefBuilderModal()}
-        {renderRequestedReliefComparisonPanel(matterId)}
-        <h4>Issues</h4>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, alignItems: 'end', marginBottom: 12 }}>
+          <LabeledField label={`Saved issue sets (${issueRows.length})`}>
+            <select value={selectedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)}>
+              <option value="">Select an issue set...</option>
+              {issueRows.map((row) => <option key={row.id} value={row.id}>{row.name || 'Matter Issues'}</option>)}
+            </select>
+          </LabeledField>
+          <LabeledField label={`Saved relief/order positions (${reliefRows.length})`}>
+            <select value={selectedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)}>
+              <option value="">Select relief to view...</option>
+              {reliefRows.map((relief) => <option key={relief.id} value={relief.id}>{reliefOptionLabel(relief)}</option>)}
+            </select>
+          </LabeledField>
+        </div>
         {!issueRows.length && <p>No issues saved to this matter yet.</p>}
-        {issueRows.map(renderSavedIssueSetCard)}
-        <h4>Relief / Order Positions</h4>
         {!reliefRows.length && <p>No relief or current order provisions saved to this matter yet.</p>}
-        {reliefRows.map(renderSavedReliefCard)}
+        {selectedIssueSet && <div style={{ marginTop: 12 }}>{renderSavedIssueSetCard(selectedIssueSet)}</div>}
+        {selectedRelief && <div style={{ marginTop: 12 }}>{renderSavedReliefCard(selectedRelief)}</div>}
+        {selectedRelief?.setting_event_id && <div style={{ marginTop: 8, color: '#475569' }}><strong>Attached setting/event:</strong> {requestedReliefSettingLabel(selectedRelief.setting_event_id)}</div>}
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Show side-by-side comparison table</summary>
+          <div style={{ marginTop: 10 }}>{renderRequestedReliefComparisonPanel(matterId)}</div>
+        </details>
       </div>
     )
   }
@@ -23690,7 +23754,7 @@ ${choices}`, '1'))
     const latestIssueSet = selectedMatterId ? latestRequestedReliefIssueSetForMatter(selectedMatterId) : null
     const selectedSavedIssueSet = filteredIssues.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
     const selectedSavedRelief = filteredReliefs.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || null
-    const reliefDropdownLabel = (relief) => `${matterName(relief.matter_id) || 'Unknown matter'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'}`
+    const reliefDropdownLabel = (relief) => `${matterName(relief.matter_id) || 'Unknown matter'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached to setting/event'}`
     const issueDropdownLabel = (issueSet) => `${matterName(issueSet.matter_id) || 'Unknown matter'} - ${issueSet.name || 'Matter Issues'}`
     const handleMatterFilterChange = (value) => {
       setRequestedReliefMatterFilter(value)
