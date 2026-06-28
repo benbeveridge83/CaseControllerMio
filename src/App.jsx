@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V54'
+const MIO_APP_VERSION = 'Mio V55'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22134,11 +22134,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const orderMap = new Map(activeRequestedReliefOptions().map((option, index) => [String(option.id), index]))
     return activeRequestedReliefOptions()
       .filter((option) => {
-        // Show every selected issue/prompt even when it has no selectable relief options yet.
-        // Empty prompts are useful because the user can open Edit relief > Add relief option
-        // while working on the matter and build the options directly from this screen.
         if (!selectedIssueIds.has(option.id) || isRequestedReliefOptionRow(option)) return false
-        return true
+        const selectedIssueChildren = requestedReliefChildren(option.id).filter((child) => selectedIssueIds.has(child.id) && !isRequestedReliefOptionRow(child))
+        const directReliefOptions = requestedReliefChildren(option.id).filter((child) => isRequestedReliefOptionRow(child))
+        // Show a row as a prompt when it has direct selectable options, or when it is an empty leaf issue.
+        // Do not show parent/container issues as prompts when their sub-issues carry the real options.
+        return directReliefOptions.length > 0 || selectedIssueChildren.length === 0
       })
       .sort((a, b) => (orderMap.get(String(a.id)) || 0) - (orderMap.get(String(b.id)) || 0))
   }
@@ -22428,8 +22429,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null } = {}) {
     const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     const resolvedIssueSet = issueSet || latestRequestedReliefIssueSetForMatter(resolvedMatterId)
-    if (!relief && !resolvedIssueSet) {
-      alert('Please add and save the matter issues before adding relief, opposing relief, or current order provisions.')
+    if (!relief && !resolvedIssueSet && !template) {
+      alert('Please add and save the matter issues before adding relief, opposing relief, or current order provisions, or start from a saved template.')
       return
     }
     const templateIssueIds = template ? requestedReliefExpandIssueIdsWithCurrentTree(template?.selected_issue_ids || template?.issue_option_ids || []) : []
@@ -22465,6 +22466,19 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefEditMenu(false)
     setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))
     setShowRequestedReliefBuilder(true)
+  }
+
+
+  function startRequestedReliefFromTemplate(template, matterId = '') {
+    if (!template) return
+    const resolvedMatterId = matterId || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
+    beginRequestedReliefBuilder({ matter_id: resolvedMatterId, relief_type: 'client_relief', template })
+  }
+
+  function loadRequestedIssueTemplate(template, matterId = '') {
+    if (!template) return
+    const resolvedMatterId = matterId || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
+    beginRequestedIssueBuilder({ matter_id: resolvedMatterId, template })
   }
 
   function toggleRequestedReliefExpanded(optionId) {
@@ -22763,7 +22777,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       id: requestedReliefBuilder.id || (crypto?.randomUUID ? crypto.randomUUID() : `issue-set-${Date.now()}`),
       matter_id: requestedReliefBuilder.matter_id,
       name,
-      selected_issue_ids: requestedReliefBuilder.selected_issue_ids || [],
+      selected_issue_ids: requestedReliefExpandIssueIdsWithCurrentTree(requestedReliefBuilder.selected_issue_ids || []),
       selected_table_ids: requestedReliefBuilder.selected_table_ids || [],
       hidden_issue_ids: activeRequestedReliefOptions().map((option) => option.id).filter((id) => !(requestedReliefBuilder.selected_issue_ids || []).includes(id)),
       updated_at: new Date().toISOString(),
@@ -22784,6 +22798,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const row = {
       ...requestedReliefBuilder,
       name,
+      issue_option_ids: requestedReliefExpandIssueIdsWithCurrentTree(requestedReliefBuilder.issue_option_ids || []),
       updated_at: new Date().toISOString(),
       created_at: requestedReliefBuilder.created_at || new Date().toISOString()
     }
@@ -22802,8 +22817,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       id: id || (crypto?.randomUUID ? crypto.randomUUID() : `relief-template-${Date.now()}`),
       name,
       mode: requestedReliefBuilderMode,
-      selected_issue_ids: requestedReliefBuilder?.selected_issue_ids || requestedReliefBuilder?.issue_option_ids || [],
-      issue_option_ids: requestedReliefBuilder?.issue_option_ids || [],
+      selected_issue_ids: requestedReliefExpandIssueIdsWithCurrentTree(requestedReliefBuilder?.selected_issue_ids || requestedReliefBuilder?.issue_option_ids || []),
+      issue_option_ids: requestedReliefExpandIssueIdsWithCurrentTree(requestedReliefBuilder?.issue_option_ids || requestedReliefBuilder?.selected_issue_ids || []),
       selected_table_ids: requestedReliefBuilder?.selected_table_ids || [],
       selected_option_ids: requestedReliefBuilder?.selected_option_ids || [],
       table_selections: requestedReliefBuilder?.table_selections || {},
@@ -23335,6 +23350,14 @@ ${choices}`, '1'))
               </div>
             </LabeledField>
           )}
+          {isIssueBuilder && requestedReliefTemplates.length > 0 && (
+            <LabeledField label="Load issue template">
+              <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, requestedReliefBuilder.matter_id); e.target.value = '' }}>
+                <option value="">Choose template...</option>
+                {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </select>
+            </LabeledField>
+          )}
           {isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>}
           {!isIssueBuilder && (
             <>
@@ -23369,7 +23392,7 @@ ${choices}`, '1'))
         </div>
         {isIssueBuilder ? (
           <>
-            <p style={{ color: '#475569' }}>Start with the full issues tree. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
+            <p style={{ color: '#475569' }}>Start with the full issues tree or load an issue template. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
               <div>Issues / possible court decisions</div><div>Actions</div>
             </div>
@@ -23787,6 +23810,18 @@ ${choices}`, '1'))
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add Issues</button>
+            {requestedReliefTemplates.length > 0 && (
+              <>
+                <select defaultValue="" title="Load issues from a template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, matterId); e.target.value = '' }}>
+                  <option value="">Load issue template...</option>
+                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
+                <select defaultValue="" title="Start a relief from a template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, matterId); e.target.value = '' }}>
+                  <option value="">Start relief template...</option>
+                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
+              </>
+            )}
             <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'client_relief', issueSet: latestIssueSet })}>Add My Relief</button>
             <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'opposing_relief', issueSet: latestIssueSet })}>Add Opposing Relief</button>
             <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'current_order', issueSet: latestIssueSet })}>Current Order Provisions</button>
@@ -23851,12 +23886,20 @@ ${choices}`, '1'))
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'current_order', issueSet: latestIssueSet })}>Current Order Provisions</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'temporary_order', issueSet: latestIssueSet })}>Add Temporary Relief</button>
           {requestedReliefTemplates.length > 0 && (
-            <LabeledField label="Saved template">
-              <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template?.mode === 'issues') beginRequestedIssueBuilder({ matter_id: selectedMatterId, template }); else if (template) beginRequestedReliefBuilder({ matter_id: selectedMatterId, template }); e.target.value = '' }}>
-                <option value="">Start from template...</option>
-                {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-              </select>
-            </LabeledField>
+            <>
+              <LabeledField label="Start relief from template">
+                <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, selectedMatterId); e.target.value = '' }}>
+                  <option value="">Choose template...</option>
+                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
+              </LabeledField>
+              <LabeledField label="Load issue template">
+                <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, selectedMatterId); e.target.value = '' }}>
+                  <option value="">Choose template...</option>
+                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                </select>
+              </LabeledField>
+            </>
           )}
         </div>
         {renderRequestedReliefBuilderModal()}
