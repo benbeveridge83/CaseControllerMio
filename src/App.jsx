@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V48'
+const MIO_APP_VERSION = 'Mio V49'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1821,7 +1821,8 @@ function App() {
   const [selectedTemplateMatterId, setSelectedTemplateMatterId] = useState(() => {
     try {
       const hashPage = typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : ''
-      return hashPage.startsWith('matter_dashboard:') ? decodeURIComponent(hashPage.slice('matter_dashboard:'.length)) : ''
+      if (!hashPage.startsWith('matter_dashboard:')) return ''
+      return decodeURIComponent(hashPage.slice('matter_dashboard:'.length).split('?')[0])
     } catch { return '' }
   })
   const [taskSubpartCompletions, setTaskSubpartCompletions] = useState(() => {
@@ -1833,7 +1834,14 @@ function App() {
   })
   const [hoveredTaskId, setHoveredTaskId] = useState(null)
   const taskHoverTimerRef = useRef(null)
-  const [clientDashboardTab, setClientDashboardTab] = useState('matter_information')
+  const [clientDashboardTab, setClientDashboardTab] = useState(() => {
+    try {
+      const hashPage = typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : ''
+      const query = hashPage.includes('?') ? hashPage.split('?').slice(1).join('?') : ''
+      const params = new URLSearchParams(query)
+      return params.get('tab') || 'matter_information'
+    } catch { return 'matter_information' }
+  })
   const [timelineRangeDays, setTimelineRangeDays] = useState(() => {
     try { return Number(localStorage.getItem('caseControllerTimelineCompression') || '60') || 60 }
     catch { return 60 }
@@ -22234,6 +22242,20 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     })
   }
 
+  function toggleRequestedIssueRowOnly(optionId, checked) {
+    setRequestedReliefBuilder((builder) => {
+      if (!builder) return builder
+      const selected = new Set(builder.selected_issue_ids || [])
+      if (checked) selected.add(optionId)
+      else selected.delete(optionId)
+      return { ...builder, selected_issue_ids: Array.from(selected) }
+    })
+  }
+
+  function requestedIssueHasSelectedDescendant(optionId, selectedIds = new Set()) {
+    return requestedReliefDescendantIds(optionId).some((id) => selectedIds.has(id) && !isRequestedReliefOptionRow(id))
+  }
+
   function toggleRequestedReliefLeaf(optionId, checked) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
@@ -22570,6 +22592,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     setPage('requested_relief')
   }
 
+  function openMatterRequestedReliefDashboardInNewTab(matterId) {
+    if (!matterId) return
+    const url = `${window.location.origin}${window.location.pathname}#matter_dashboard:${encodeURIComponent(matterId)}?tab=requested_relief`
+    window.open(url, '_blank')
+  }
+
   function saveRequestedReliefOption(e) {
     e.preventDefault()
     const name = requestedReliefOptionForm.name.trim()
@@ -22651,6 +22679,32 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     setTimeout(() => window.scrollTo(scrollX, scrollY), 0)
   }
 
+  function addRequestedReliefOptionChoice(parentOption, optionType = 'non_exclusive') {
+    const label = optionType === 'exclusive' ? 'exclusive' : 'non-exclusive'
+    const name = (window.prompt(`Name the ${label} relief option under ${parentOption.name}:`) || '').trim()
+    if (!name) return
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
+    setRequestedReliefOptions((current) => {
+      const siblings = current.filter((item) => String(item.parent_id || '') === String(parentOption.id || ''))
+      return resequenceRequestedReliefOptions([
+        ...current,
+        ensureRequestedReliefOptionShape({
+          id: newId,
+          parent_id: parentOption.id,
+          name,
+          notes: '',
+          is_active: true,
+          is_relief_option: true,
+          option_type: optionType === 'exclusive' ? 'exclusive' : 'non_exclusive',
+          has_text_box: false,
+          text_box_label: '',
+          sort_order: siblings.length + 1
+        }, current.length)
+      ])
+    })
+    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, parentOption.id])))
+  }
+
   function toggleRequestedReliefOptionTextBox(optionId) {
     const scrollX = window.scrollX
     const scrollY = window.scrollY
@@ -22727,12 +22781,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       const childCount = requestedReliefChildren(option.id).length
       const expanded = requestedReliefExpandedIds.includes(option.id)
       const isIssueSelected = issueSelected.has(option.id)
+      const hasSelectedDescendant = requestedIssueHasSelectedDescendant(option.id, issueSelected)
       const isReliefOption = isRequestedReliefOptionRow(option)
       const isWithinMatterIssues = issueAllowed.has(option.id)
       const isReliefChoice = reliefChoiceIds.has(option.id) || (mode === 'relief_builder' && isWithinMatterIssues && !childCount)
       const isLeafForRelief = mode === 'relief_builder' && isReliefChoice
       const isLeafSelected = leafSelected.has(option.id)
-      if (mode === 'issues_builder' && (isReliefOption || !isIssueSelected)) return null
+      if (mode === 'issues_builder' && (isReliefOption || (!isIssueSelected && !hasSelectedDescendant))) return null
       if (mode === 'relief_builder') {
         if (!visibleBuilderIds.has(option.id)) return null
       }
@@ -22748,8 +22803,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               {mode === 'settings' && <span title="Drag row" style={{ cursor: 'grab', color: '#64748b' }}>☰</span>}
               <button type="button" onClick={() => toggleRequestedReliefExpanded(option.id)} disabled={!childCount} style={{ width: 24 }}>{childCount ? (expanded ? '-' : '+') : '•'}</button>
-              {mode === 'issues_builder' && <input type="checkbox" checked={isIssueSelected} onChange={(e) => toggleRequestedIssueSelection(option.id, e.target.checked)} />}
-              <strong>{option.name}</strong>
+              {mode === 'issues_builder' && <input type="checkbox" checked={isIssueSelected} onChange={(e) => toggleRequestedIssueSelection(option.id, e.target.checked)} title="Check/uncheck this row and all rows below it" />}
+              <strong style={{ color: mode === 'issues_builder' && !isIssueSelected && hasSelectedDescendant ? '#94a3b8' : undefined }}>{option.name}</strong>
               {mode !== 'relief_builder' && childCount ? <span style={{ color: '#64748b', fontSize: 12 }}>({childCount})</span> : null}
               {mode === 'settings' && isReliefOption && <span style={{ color: '#1e3a8a', background: '#dbeafe', borderRadius: 999, padding: '1px 6px', fontSize: 12 }}>{option.option_type === 'exclusive' ? 'Exclusive option' : 'Non-exclusive option'}{option.has_text_box ? ' + text box' : ''}</span>}
               
@@ -22758,8 +22813,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             {mode === 'settings' ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
-                <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, true, 'exclusive')} title="Turn this row into an exclusive selectable option">Add exclusive option</button>
-                <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, true, 'non_exclusive')} title="Turn this row into a non-exclusive selectable option">Add non-exclusive option</button>
+                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
+                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
+                {isReliefOption && <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, false, option.option_type)} title="Make this row a regular issue/category again">Remove option status</button>}
                 {isReliefOption && <button type="button" onClick={() => toggleRequestedReliefOptionTextBox(option.id)}>{option.has_text_box ? 'Remove text box' : 'Add text box'}</button>}
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
                 <button type="button" onClick={() => moveRequestedReliefOption(option.id, -1)}>Up</button>
@@ -22768,6 +22824,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <button type="button" onClick={() => outdentRequestedReliefOption(option.id)}>Outdent</button>
                 <button type="button" onClick={() => editRequestedReliefOption(option)}>Edit</button>
                 <button type="button" onClick={() => deleteRequestedReliefOption(option.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button>
+              </div>
+            ) : mode === 'issues_builder' ? (
+              <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
+                <button type="button" onClick={() => toggleRequestedIssueRowOnly(option.id, !isIssueSelected)} title="Hide/show only this label while leaving its child rows in place">{isIssueSelected ? 'Hide label only' : 'Show label'}</button>
               </div>
             ) : mode === 'relief_builder' ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
@@ -22880,7 +22940,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <button type="button" onClick={isIssueBuilder ? saveRequestedIssueBuilder : saveRequestedReliefBuilder} style={{ background: '#2f6584', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>{isIssueBuilder ? 'Save Issues' : 'Save'}</button>
         </div>
         {isIssueBuilder ? (
-          <p style={{ color: '#475569' }}>Start with the full issues tree. Uncheck what is not in dispute for this matter; unchecked rows disappear. Use Edit hidden issues to bring them back.</p>
+          <p style={{ color: '#475569' }}>Start with the full issues tree. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
         ) : (
           <p style={{ color: '#475569' }}>Only rows marked <strong>Relief Option</strong> can be selected. Check <strong>Add this option</strong> for each requested option. Exclusive options clear the other options for that issue; non-exclusive options can be combined.</p>
         )}
@@ -22910,7 +22970,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <>
         <h2>Issues / Relief Options</h2>
-        <p>Build the master tree here. Mark rows as <strong>Relief Option</strong> when they are possible outcomes for the parent issue. Relief Option rows will not appear as issues; their parent row is the issue.</p>
+        <p>Build the master tree here. Issue/category rows create the structure. Use <strong>Add exclusive option</strong> or <strong>Add non-exclusive option</strong> to create selectable relief choices under a row. Relief Option rows will not appear as issues; their parent row is the issue.</p>
         <form onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
             <LabeledField label="Row name *"><input value={requestedReliefOptionForm.name} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, name: e.target.value })} /></LabeledField>
@@ -22920,8 +22980,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <label style={{ marginBottom: 7 }} title="Relief Option rows are not listed as issues. Their parent row becomes the issue; this row becomes an option when selecting relief/current order provisions."><input type="checkbox" checked={requestedReliefOptionForm.is_relief_option === true} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, is_relief_option: e.target.checked })} /> Relief Option</label>
             {requestedReliefOptionForm.is_relief_option && (
               <>
-                <label style={{ marginBottom: 7 }}><input type="radio" name="rr-option-type" checked={requestedReliefOptionForm.option_type === 'exclusive'} onChange={() => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, option_type: 'exclusive' })} /> Add exclusive option</label>
-                <label style={{ marginBottom: 7 }}><input type="radio" name="rr-option-type" checked={requestedReliefOptionForm.option_type !== 'exclusive'} onChange={() => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, option_type: 'non_exclusive' })} /> Add non-exclusive option</label>
+                <label style={{ marginBottom: 7 }}><input type="radio" name="rr-option-type" checked={requestedReliefOptionForm.option_type === 'exclusive'} onChange={() => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, option_type: 'exclusive' })} /> Exclusive option</label>
+                <label style={{ marginBottom: 7 }}><input type="radio" name="rr-option-type" checked={requestedReliefOptionForm.option_type !== 'exclusive'} onChange={() => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, option_type: 'non_exclusive' })} /> Non-exclusive option</label>
                 <label style={{ marginBottom: 7 }}><input type="checkbox" checked={requestedReliefOptionForm.has_text_box === true} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, has_text_box: e.target.checked })} /> Add text box</label>
                 {requestedReliefOptionForm.has_text_box && <LabeledField label="Text box label"><input value={requestedReliefOptionForm.text_box_label || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, text_box_label: e.target.value })} placeholder="Example: Child support amount" /></LabeledField>}
               </>
@@ -22958,7 +23018,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <section key={issueSet.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 10, background: '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><strong>{issueSet.name}</strong><div style={{ color: '#64748b' }}>{selectedOptions.length} issue row(s), {leafCount} final option(s), {selectedTables.length} table(s)</div></div>
+          <div><strong>{issueSet.name}</strong><div style={{ color: '#64748b' }}>{selectedOptions.length} issue row(s), {leafCount} final option(s), {selectedTables.length} table(s)</div><button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(issueSet.matter_id)} style={{ marginTop: 6 }}>Open matter requested relief</button></div>
           <div><button type="button" onClick={() => beginRequestedIssueBuilder({ issueSet })}>Edit Issues</button>{' '}<button type="button" onClick={() => deleteRequestedIssueSet(issueSet.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button></div>
         </div>
         <ul style={{ columns: 2, marginTop: 10 }}>
@@ -22985,7 +23045,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <section key={relief.id} style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: 'white', marginBottom: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><h3 style={{ margin: 0 }}>{relief.name}</h3><div style={{ color: '#64748b' }}>{requestedReliefKindLabel(relief.relief_type)} • {matterName(relief.matter_id)} • {selectedOptions.length} selected final option(s) • {tableChoiceCount} table X(s)</div></div>
+          <div><h3 style={{ margin: 0 }}>{relief.name}</h3><div style={{ color: '#64748b' }}>{requestedReliefKindLabel(relief.relief_type)} • {matterName(relief.matter_id)} • {selectedOptions.length} selected final option(s) • {tableChoiceCount} table X(s)</div><button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(relief.matter_id)} style={{ marginTop: 6 }}>Open matter requested relief</button></div>
           <div><button type="button" onClick={() => beginRequestedReliefBuilder({ relief })}>Edit</button>{' '}<button type="button" onClick={() => deleteRequestedRelief(relief.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button></div>
         </div>
         <ul style={{ columns: 2, marginTop: 10 }}>
@@ -23325,6 +23385,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <p style={{ color: '#475569' }}>For each matter, save the disputed issues first. Then save my client's requested relief, opposing counsel's requested relief, and any current order provisions.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
           <LabeledField label="Matter"><select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}><option value="all">All matters</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}</select></LabeledField>
+          {selectedMatterId && <button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open matter page</button>}
           <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: selectedMatterId })}>Add Issues to Matter</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'client_relief', issueSet: latestIssueSet })}>Add My Relief</button>
           <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'opposing_relief', issueSet: latestIssueSet })}>Add Opposing Relief</button>
