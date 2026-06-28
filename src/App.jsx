@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V60'
+const MIO_APP_VERSION = 'Mio V61'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -23331,35 +23331,50 @@ ${choices}`, '1'))
     const jumpToIssue = (issueId) => {
       setRequestedReliefActiveIssueId(issueId)
       window.requestAnimationFrame(() => {
+        const scroller = document.getElementById('rr-prompt-scroll-container')
         const el = document.getElementById(`rr-prompt-${issueId}`)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        if (scroller && el) {
+          scroller.scrollTo({ top: Math.max(0, el.offsetTop - scroller.offsetTop - 8), behavior: 'smooth' })
+        } else if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
       })
     }
+    const tocRows = issueRows.map((issue) => {
+      const parts = requestedReliefPromptDisplayParts(issue)
+      return {
+        issue,
+        parts,
+        number: requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder),
+        optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+      }
+    }).sort((a, b) => a.number.localeCompare(b.number, undefined, { numeric: true, sensitivity: 'base' }))
+    const orderedIssueRows = tocRows.map((row) => row.issue)
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr)', gap: 12, border: '1px solid #dbeafe', borderRadius: 10, background: '#fff', padding: 10, maxHeight: '56vh', overflow: 'hidden' }}>
-        <aside style={{ border: '1px solid #dbeafe', borderRadius: 10, background: '#f8fbff', padding: 10, overflow: 'auto' }}>
-          <div style={{ fontWeight: 800, color: '#1e3a8a', marginBottom: 8 }}>Relief outline</div>
-          <div style={{ display: 'grid', gap: 5 }}>
-            {issueRows.map((issue) => {
-              const number = requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder)
+      <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr)', gap: 12, border: '1px solid #dbeafe', borderRadius: 10, background: '#fff', padding: 10, height: '58vh', minHeight: 420, overflow: 'hidden' }}>
+        <aside style={{ border: '1px solid #dbeafe', borderRadius: 10, background: '#f8fbff', padding: 0, height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ fontWeight: 800, color: '#1e3a8a', padding: '10px 10px 8px', borderBottom: '1px solid #dbeafe', background: '#eff6ff' }}>Relief outline</div>
+          <div style={{ overflowY: 'auto', padding: 10, display: 'grid', gap: 5 }}>
+            {tocRows.map(({ issue, parts, number, optionCount }) => {
               const active = String(requestedReliefActiveIssueId) === String(issue.id)
-              const parts = requestedReliefPromptDisplayParts(issue)
+              const level = Math.max(0, String(number).split('.').length - 1)
               return (
-                <button key={issue.id} type="button" onClick={() => jumpToIssue(issue.id)} style={{ textAlign: 'left', border: active ? '2px solid #2563eb' : '1px solid #cbd5e1', background: active ? '#dbeafe' : '#fff', borderRadius: 8, padding: '7px 8px', color: '#0f172a', cursor: 'pointer' }}>
-                  <span style={{ fontWeight: 800, color: '#1d4ed8', marginRight: 6 }}>{number}</span>
+                <button key={issue.id} type="button" onClick={() => jumpToIssue(issue.id)} style={{ textAlign: 'left', border: active ? '2px solid #2563eb' : '1px solid #cbd5e1', background: active ? '#dbeafe' : '#fff', borderRadius: 8, padding: '7px 8px', paddingLeft: 8 + Math.min(level, 4) * 12, color: '#0f172a', cursor: 'pointer' }}>
+                  <span style={{ fontWeight: 900, color: '#1d4ed8', marginRight: 6 }}>{number}</span>
                   <span style={{ fontWeight: 700 }}>{issue.name}</span>
+                  <span style={{ float: 'right', color: optionCount ? '#1d4ed8' : '#94a3b8', fontSize: 11 }}>{optionCount}</span>
                   {parts.parentName && <span style={{ display: 'block', marginTop: 2, color: '#64748b', fontSize: 11 }}>under {parts.parentName}</span>}
                 </button>
               )
             })}
           </div>
         </aside>
-        <div style={{ overflow: 'auto', border: '1px solid #dbeafe', borderRadius: 10 }}>
-          {issueRows.map((issue, issueIndex) => {
+        <div id="rr-prompt-scroll-container" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', border: '1px solid #dbeafe', borderRadius: 10, scrollBehavior: 'smooth' }}>
+          {orderedIssueRows.map((issue, issueIndex) => {
             const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder)
             return (
               <section id={`rr-prompt-${issue.id}`} key={issue.id} style={{ scrollMarginTop: 8, borderBottom: '1px solid #dbeafe', padding: 12, background: issueIndex % 2 ? '#fff' : '#f8fbff' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: options.length ? 10 : 2 }}>
                   <span style={{ minWidth: 30, height: 26, padding: '0 8px', borderRadius: 999, background: '#1d4ed8', color: 'white', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>{requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder)}</span>
                   <div>
                     {requestedReliefPromptDisplayParts(issue).parentName && <div style={{ color: '#64748b', fontSize: 12, fontWeight: 600 }}>Main issue: {requestedReliefPromptDisplayParts(issue).parentName}</div>}
@@ -23367,13 +23382,15 @@ ${choices}`, '1'))
                   </div>
                   <span style={{ color: '#64748b', fontSize: 12 }}>Issue / prompt</span>
                 </div>
-                <div style={{ display: 'grid', gap: 8, marginLeft: 36 }}>
-                  {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true }))}
-                </div>
+                {options.length > 0 && (
+                  <div style={{ display: 'grid', gap: 8, marginLeft: 36, maxWidth: 760 }}>
+                    {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true }))}
+                  </div>
+                )}
               </section>
             )
           })}
-          {!issueRows.length && <p style={{ padding: 14, color: '#64748b' }}>No issues were added to this relief yet.</p>}
+          {!orderedIssueRows.length && <p style={{ padding: 14, color: '#64748b' }}>No issues were added to this relief yet.</p>}
         </div>
       </div>
     )
@@ -24002,66 +24019,171 @@ ${choices}`, '1'))
   function renderMatterRequestedReliefPanel(matterId) {
     const issueRows = requestedReliefIssueSetsForMatter(matterId)
     const reliefRows = requestedReliefs.filter((relief) => String(relief.matter_id) === String(matterId))
-    const latestIssueSet = latestRequestedReliefIssueSetForMatter(matterId)
     const selectedRelief = reliefRows.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || null
     const selectedIssueSet = issueRows.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
-    const reliefOptionLabel = (relief) => {
-      const eventLabel = relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached to setting/event'
-      return `${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'} - ${eventLabel}`
+    const reliefStats = (relief) => {
+      const selectedOptions = activeRequestedReliefOptions().filter((option) => (relief?.selected_option_ids || []).includes(option.id)).length
+      const selectedTables = activeRequestedReliefTables().filter((table) => (relief?.selected_table_ids || []).includes(table.id)).length
+      return { selectedOptions, selectedTables, tableChoices: selectedRequestedReliefTableChoiceCount(relief) }
     }
+    const issueStats = (issueSet) => {
+      const issueCount = activeRequestedReliefOptions().filter((option) => (issueSet?.selected_issue_ids || []).includes(option.id) && !isRequestedReliefOptionRow(option)).length
+      const finalCount = requestedReliefLeafIdsWithin(issueSet?.selected_issue_ids || []).length
+      const tableCount = activeRequestedReliefTables().filter((table) => (issueSet?.selected_table_ids || []).includes(table.id)).length
+      return { issueCount, finalCount, tableCount }
+    }
+    const formatReliefDate = (relief) => {
+      const raw = relief?.updated_at || relief?.created_at || ''
+      if (!raw) return '-'
+      try { return new Date(raw).toLocaleString() } catch { return raw }
+    }
+    const panelButton = { border: '1px solid #cbd5e1', background: '#fff', borderRadius: 6, padding: '7px 10px', cursor: 'pointer', fontWeight: 650 }
+    const primaryPanelButton = { ...panelButton, background: '#2563eb', borderColor: '#2563eb', color: '#fff' }
+    const cardStyle = (selected) => ({ border: selected ? '2px solid #2563eb' : '1px solid #dbe3ea', borderRadius: 12, padding: 12, background: selected ? '#eff6ff' : '#fff', cursor: 'pointer', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 130 })
+    const muted = { color: '#64748b', fontSize: 12 }
+    const pill = { display: 'inline-flex', borderRadius: 999, background: '#e0f2fe', color: '#075985', padding: '2px 8px', fontSize: 12, fontWeight: 800, alignSelf: 'flex-start' }
     return (
-      <div style={{ border: '1px solid #dbe3ea', borderRadius: 6, padding: 14, background: '#fff' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div className="rr-v58-page" style={{ border: '1px solid #dbe3ea', borderRadius: 12, padding: 14, background: '#fff', boxShadow: '0 1px 2px rgba(15,23,42,.04)' }}>
+        <style>{`
+          .rr-md-card-actions button { margin-right: 6px; margin-top: 4px; }
+          .rr-md-select { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; background: #fff; }
+        `}</style>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
           <div>
-            <h3 style={{ margin: 0 }}>Issues and Requested Relief</h3>
-            <div style={{ color: '#64748b' }}>Add the issues first, then add your relief, opposing counsel's relief, or current order provisions. Saved relief rows are selected from dropdowns instead of shown as full tables.</div>
+            <h3 style={{ margin: 0 }}>Requested Relief</h3>
+            <div style={{ color: '#64748b' }}>Choose an issue set, create or select a relief set, then work on the selected relief below.</div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add Issues</button>
-            {requestedReliefTemplates.length > 0 && (
-              <>
-                <select defaultValue="" title="Load issues from a template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, matterId); e.target.value = '' }}>
-                  <option value="">Load issue template...</option>
-                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                </select>
-                <select defaultValue="" title="Start a relief from a template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, matterId); e.target.value = '' }}>
-                  <option value="">Start relief template...</option>
-                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                </select>
-              </>
-            )}
-            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>Add My Relief</button>
-            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'opposing_relief' })}>Add Opposing Relief</button>
-            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'current_order' })}>Current Order Provisions</button>
-            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'temporary_order' })}>Add Temporary Relief</button>
-            <button type="button" onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>+ New Relief</button>
+            <button type="button" style={panelButton} onClick={beginRequestedReliefTemplateBuilder}>+ New Template</button>
+            <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add / Edit Issues</button>
+            <button type="button" style={panelButton} onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
           </div>
         </div>
-        {renderRequestedReliefSetupModal()}
-        {renderRequestedReliefBuilderModal()}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, alignItems: 'end', marginBottom: 12 }}>
-          <LabeledField label={`Saved issue sets (${issueRows.length})`}>
-            <select value={selectedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)}>
-              <option value="">Select an issue set...</option>
-              {issueRows.map((row) => <option key={row.id} value={row.id}>{row.name || 'Matter Issues'}</option>)}
-            </select>
-          </LabeledField>
-          <LabeledField label={`Saved relief/order positions (${reliefRows.length})`}>
-            <select value={selectedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)}>
-              <option value="">Select relief to view...</option>
-              {reliefRows.map((relief) => <option key={relief.id} value={relief.id}>{reliefOptionLabel(relief)}</option>)}
-            </select>
-          </LabeledField>
-        </div>
-        {!issueRows.length && <p>No issues saved to this matter yet.</p>}
-        {!reliefRows.length && <p>No relief or current order provisions saved to this matter yet.</p>}
-        {selectedIssueSet && <div style={{ marginTop: 12 }}>{renderSavedIssueSetCard(selectedIssueSet)}</div>}
-        {selectedRelief && <div style={{ marginTop: 12 }}>{renderSavedReliefCard(selectedRelief)}</div>}
-        {selectedRelief?.setting_event_id && <div style={{ marginTop: 8, color: '#475569' }}><strong>Attached setting/event:</strong> {requestedReliefSettingLabel(selectedRelief.setting_event_id)}</div>}
-        <details style={{ marginTop: 12 }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Show side-by-side comparison table</summary>
+
+        <section style={{ border: '1px solid #dbeafe', borderRadius: 12, padding: 12, marginBottom: 14, background: '#f8fbff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}><span style={{ width: 24, height: 24, borderRadius: '50%', background: '#2563eb', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900 }}>1</span><h4 style={{ margin: 0 }}>Choose or create relief for this matter</h4></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.4fr)', gap: 14 }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <strong>Issue sets ({issueRows.length})</strong>
+                {requestedReliefTemplates.length > 0 && (
+                  <select className="rr-md-select" defaultValue="" title="Load issues from a template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, matterId); e.target.value = '' }}>
+                    <option value="">Load issue template...</option>
+                    {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                )}
+              </div>
+              <select className="rr-md-select" value={selectedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)} style={{ width: '100%', marginBottom: 8 }}>
+                <option value="">Select issue set...</option>
+                {issueRows.map((row) => <option key={row.id} value={row.id}>{row.name || 'Matter Issues'}</option>)}
+              </select>
+              <div style={{ display: 'grid', gap: 8, maxHeight: 230, overflowY: 'auto', paddingRight: 4 }}>
+                {!issueRows.length && <div style={{ border: '1px dashed #bfdbfe', borderRadius: 10, padding: 16, color: '#64748b', textAlign: 'center' }}>No issue set saved yet. Add issues or load an issue template.</div>}
+                {issueRows.map((issueSet) => {
+                  const stats = issueStats(issueSet)
+                  const selected = selectedIssueSet && String(selectedIssueSet.id) === String(issueSet.id)
+                  return (
+                    <button key={issueSet.id} type="button" style={cardStyle(selected)} onClick={() => setRequestedReliefSavedIssueSetId(issueSet.id)}>
+                      <strong>{issueSet.name || 'Matter Issues'}</strong>
+                      <div style={muted}>{stats.issueCount} issue rows • {stats.finalCount} final options • {stats.tableCount} tables</div>
+                      <div style={muted}>Updated: {formatReliefDate(issueSet)}</div>
+                      <div className="rr-md-card-actions" style={{ marginTop: 'auto' }}>
+                        <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); beginRequestedIssueBuilder({ matter_id: matterId, issueSet }) }}>Edit Issues</button>
+                        <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); setRequestedReliefSavedIssueSetId(issueSet.id) }}>Open</button>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <strong>Relief sets ({reliefRows.length})</strong>
+                {requestedReliefTemplates.length > 0 && (
+                  <select className="rr-md-select" defaultValue="" title="Start relief from template" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, matterId); e.target.value = '' }}>
+                    <option value="">Start relief from template...</option>
+                    {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                )}
+              </div>
+              <select className="rr-md-select" value={selectedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)} style={{ width: '100%', marginBottom: 8 }}>
+                <option value="">Select relief to work on...</option>
+                {reliefRows.map((relief) => <option key={relief.id} value={relief.id}>{`${relief.name || 'Unnamed relief'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached'}`}</option>)}
+              </select>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 8, maxHeight: 230, overflowY: 'auto', paddingRight: 4 }}>
+                {!reliefRows.length && <div style={{ border: '1px dashed #bfdbfe', borderRadius: 10, padding: 16, color: '#64748b', textAlign: 'center' }}>No relief saved yet. Click New Relief or start from a template.</div>}
+                {reliefRows.map((relief) => {
+                  const stats = reliefStats(relief)
+                  const selected = selectedRelief && String(selectedRelief.id) === String(relief.id)
+                  return (
+                    <button key={relief.id} type="button" style={cardStyle(selected)} onClick={() => setRequestedReliefSavedReliefId(relief.id)}>
+                      <strong>{relief.name || 'Unnamed relief'}</strong>
+                      <span style={pill}>{requestedReliefKindLabel(relief.relief_type)}</span>
+                      <div style={muted}>Attached: {relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'No setting/event'}</div>
+                      <div style={muted}>Options: {stats.selectedOptions} • Tables: {stats.selectedTables} • Table Xs: {stats.tableChoices}</div>
+                      <div style={muted}>Updated: {formatReliefDate(relief)}</div>
+                      <div className="rr-md-card-actions" style={{ marginTop: 'auto' }}>
+                        <button type="button" style={primaryPanelButton} onClick={(e) => { e.stopPropagation(); setRequestedReliefSavedReliefId(relief.id) }}>Open</button>
+                        <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); beginRequestedReliefBuilder({ relief }) }}>Select Options</button>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section style={{ border: '1px solid #dbe3ea', borderRadius: 12, padding: 12, marginBottom: 14, background: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}><span style={{ width: 24, height: 24, borderRadius: '50%', background: '#2563eb', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900 }}>2</span><h4 style={{ margin: 0 }}>Work on selected relief</h4></div>
+          {selectedRelief ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 230px', gap: 14, alignItems: 'start' }}>
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+                  <div><div style={muted}>Relief name</div><strong>{selectedRelief.name || 'Unnamed relief'}</strong></div>
+                  <div><div style={muted}>Type</div><strong>{requestedReliefKindLabel(selectedRelief.relief_type)}</strong></div>
+                  <div><div style={muted}>Connected setting / event</div><strong>{selectedRelief.setting_event_id ? requestedReliefSettingLabel(selectedRelief.setting_event_id) : 'No setting/event'}</strong></div>
+                  <div><div style={muted}>Selected options</div><strong>{reliefStats(selectedRelief).selectedOptions}</strong></div>
+                  <div><div style={muted}>Tables</div><strong>{reliefStats(selectedRelief).selectedTables}</strong></div>
+                  <div><div style={muted}>Last updated</div><strong>{formatReliefDate(selectedRelief)}</strong></div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Select Relief Options</button>
+                <button type="button" style={panelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Edit Relief / Issues</button>
+                <button type="button" style={panelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedRelief.matter_id, relief_type: selectedRelief.relief_type })}>Attach / Change Setting</button>
+                <button type="button" style={panelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Save / Update Template</button>
+                <button type="button" style={{ ...panelButton, color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => deleteRequestedRelief(selectedRelief.id)}>Delete Relief</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ border: '1px dashed #bfdbfe', borderRadius: 10, padding: 18, color: '#64748b', textAlign: 'center' }}>
+              <strong>No relief selected.</strong>
+              <div>{selectedIssueSet ? `You selected issue set "${selectedIssueSet.name || 'Matter Issues'}". Click New Relief to create a relief from these issues.` : 'Select or create a relief set above to begin working.'}</div>
+              <button type="button" style={{ ...primaryPanelButton, marginTop: 10 }} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>Create Relief</button>
+            </div>
+          )}
+        </section>
+
+        {selectedIssueSet && !selectedRelief && (
+          <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show selected issue set</summary>
+            <div style={{ marginTop: 10 }}>{renderSavedIssueSetCard(selectedIssueSet)}</div>
+          </details>
+        )}
+        {selectedRelief && (
+          <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show selected relief detail</summary>
+            <div style={{ marginTop: 10 }}>{renderSavedReliefCard(selectedRelief)}</div>
+          </details>
+        )}
+        <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show side-by-side comparison table</summary>
           <div style={{ marginTop: 10 }}>{renderRequestedReliefComparisonPanel(matterId)}</div>
         </details>
+        {renderRequestedReliefSetupModal()}
+        {renderRequestedReliefBuilderModal()}
       </div>
     )
   }
