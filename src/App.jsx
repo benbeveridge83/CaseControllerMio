@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V55'
+const MIO_APP_VERSION = 'Mio V56'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22426,20 +22426,90 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefBuilder(true)
   }
 
-  function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null } = {}) {
-    const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
-    const resolvedIssueSet = issueSet || latestRequestedReliefIssueSetForMatter(resolvedMatterId)
-    if (!relief && !resolvedIssueSet && !template) {
-      alert('Please add and save the matter issues before adding relief, opposing relief, or current order provisions, or start from a saved template.')
+  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief' } = {}) {
+    const resolvedMatterId = matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
+    if (!resolvedMatterId) {
+      alert('Select a matter first, then add the relief.')
       return
     }
+    const name = (window.prompt('Name this new relief:', requestedReliefKindLabel(relief_type)) || '').trim()
+    if (!name) return
+
+    const settings = requestedReliefMatterSettings(resolvedMatterId)
+    const settingLines = settings.map((event, index) => `${index + 1}. ${requestedReliefSettingLabel(event.id)}`).join('\n')
+    const settingPrompt = [
+      'Attach this relief to a setting/event?',
+      '',
+      settingLines || '(No pending settings found.)',
+      '',
+      'Enter a number to attach to an existing setting.',
+      'Enter K to create a new setting with a known date.',
+      'Enter A to create a new setting with an unknown date and begin setting.',
+      'Enter P to create a new setting with an unknown date and keep it paused.',
+      'Leave blank for no setting/event attachment.'
+    ].join('\n')
+    const settingChoice = (window.prompt(settingPrompt, '') || '').trim()
+    let settingEventId = ''
+    let newSettingMode = ''
+    if (/^\d+$/.test(settingChoice)) {
+      const picked = settings[Number(settingChoice) - 1]
+      if (picked) settingEventId = picked.id
+    } else if (/^k$/i.test(settingChoice)) {
+      newSettingMode = 'known'
+    } else if (/^a$/i.test(settingChoice)) {
+      newSettingMode = 'unknown_active'
+    } else if (/^p$/i.test(settingChoice)) {
+      newSettingMode = 'unknown_paused'
+    }
+
+    const templates = requestedReliefTemplates || []
+    const templateLines = templates.map((template, index) => `${index + 1}. ${template.name}`).join('\n')
+    const sourcePrompt = [
+      'How do you want to create the issues/prompts for this relief?',
+      '',
+      '1. Use the saved matter issues for this matter',
+      '2. Import issues from a template',
+      '3. Start from the full current settings tree',
+      '',
+      templateLines ? `Available templates:\n${templateLines}` : 'No templates are currently saved.'
+    ].join('\n')
+    const sourceChoice = (window.prompt(sourcePrompt, templates.length ? '2' : '1') || '').trim()
+    let template = null
+    let useFullTree = false
+    let issueSet = latestRequestedReliefIssueSetForMatter(resolvedMatterId)
+    if (sourceChoice === '2' && templates.length) {
+      const pick = (window.prompt(`Which template number?\n${templateLines}`, '1') || '').trim()
+      template = templates[Number(pick) - 1] || null
+      issueSet = null
+    } else if (sourceChoice === '3') {
+      useFullTree = true
+      issueSet = null
+    }
+
+    beginRequestedReliefBuilder({ matter_id: resolvedMatterId, relief_type, issueSet, template, useFullTree, initialName: name, settingEventId })
+    if (newSettingMode) {
+      setTimeout(() => openRequestedReliefNewSettingWindow(newSettingMode), 0)
+    }
+  }
+
+  function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null, useFullTree = false, initialName = '', settingEventId = '' } = {}) {
+    const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
+    const resolvedIssueSet = issueSet || latestRequestedReliefIssueSetForMatter(resolvedMatterId)
+    if (!relief && !resolvedIssueSet && !template && !useFullTree) {
+      beginRequestedReliefSetupFlow({ matter_id: resolvedMatterId, relief_type })
+      return
+    }
+    const allCurrentIssueIds = activeRequestedReliefOptions().filter((option) => !isRequestedReliefOptionRow(option)).map((option) => option.id)
+    const issueSetIssueIds = resolvedIssueSet ? requestedReliefExpandIssueIdsWithCurrentTree(resolvedIssueSet?.selected_issue_ids || []) : []
+    const reliefIssueIds = relief ? requestedReliefExpandIssueIdsWithCurrentTree(relief?.issue_option_ids || []) : []
     const templateIssueIds = template ? requestedReliefExpandIssueIdsWithCurrentTree(template?.selected_issue_ids || template?.issue_option_ids || []) : []
     const issueSourceIds = Array.from(new Set([
-      ...requestedReliefIssueRowIds(resolvedIssueSet?.selected_issue_ids || []),
-      ...requestedReliefIssueRowIds(relief?.issue_option_ids || []),
+      ...(useFullTree ? allCurrentIssueIds : []),
+      ...issueSetIssueIds,
+      ...reliefIssueIds,
       ...templateIssueIds
     ]))
-    const issueIds = issueSourceIds.length ? issueSourceIds : requestedReliefIssueRowIds(resolvedIssueSet?.selected_issue_ids || [])
+    const issueIds = issueSourceIds.length ? issueSourceIds : (useFullTree ? allCurrentIssueIds : issueSetIssueIds)
     const allowedLeafIds = requestedReliefLeafIdsWithin(issueIds)
     const selectedLeafIds = (relief?.selected_option_ids || template?.selected_option_ids || []).filter((id) => allowedLeafIds.includes(id))
     const selectedTableIds = (relief?.selected_table_ids || resolvedIssueSet?.selected_table_ids || template?.selected_table_ids || []).filter((id) => requestedReliefTables.some((table) => table.id === id))
@@ -22449,9 +22519,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       matter_id: resolvedMatterId,
       issue_set_id: relief?.issue_set_id || resolvedIssueSet?.id || '',
       relief_type: relief?.relief_type || relief_type,
-      name: relief?.name || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
+      name: relief?.name || initialName || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
       source_template_id: template?.id || relief?.source_template_id || '',
-      setting_event_id: relief?.setting_event_id || '',
+      setting_event_id: relief?.setting_event_id || settingEventId || '',
       issue_option_ids: issueIds,
       selected_option_ids: selectedLeafIds,
       selected_table_ids: selectedTableIds,
@@ -23361,6 +23431,27 @@ ${choices}`, '1'))
           {isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>}
           {!isIssueBuilder && (
             <>
+              <LabeledField label="Issue/template source">
+                <select defaultValue="" onChange={(e) => {
+                  const value = e.target.value
+                  if (value === 'matter') {
+                    const issueSet = latestRequestedReliefIssueSetForMatter(requestedReliefBuilder.matter_id)
+                    if (issueSet) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, issueSet, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                    else alert('No saved matter issues found for this matter yet.')
+                  } else if (value === 'full') {
+                    beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, useFullTree: true, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                  } else if (value.startsWith('template:')) {
+                    const template = requestedReliefTemplates.find((item) => item.id === value.slice(9))
+                    if (template) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, template, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                  }
+                  e.target.value = ''
+                }}>
+                  <option value="">Create/load issues for this relief...</option>
+                  <option value="matter">Use saved matter issues</option>
+                  <option value="full">Use full current settings tree</option>
+                  {requestedReliefTemplates.map((template) => <option key={template.id} value={`template:${template.id}`}>Template: {template.name}</option>)}
+                </select>
+              </LabeledField>
               <LabeledField label="Layout">
                 <div style={{ display: 'inline-flex', border: '1px solid #93c5fd', borderRadius: 6, overflow: 'hidden' }}>
                   <button type="button" onClick={() => setRequestedReliefLayout('split')} style={{ border: 0, borderRight: '1px solid #93c5fd', padding: '8px 14px', background: requestedReliefLayout === 'split' ? '#dbeafe' : 'white', fontWeight: requestedReliefLayout === 'split' ? 'bold' : 'normal' }}>Split view</button>
@@ -23822,10 +23913,10 @@ ${choices}`, '1'))
                 </select>
               </>
             )}
-            <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'client_relief', issueSet: latestIssueSet })}>Add My Relief</button>
-            <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'opposing_relief', issueSet: latestIssueSet })}>Add Opposing Relief</button>
-            <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'current_order', issueSet: latestIssueSet })}>Current Order Provisions</button>
-            <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: matterId, relief_type: 'temporary_order', issueSet: latestIssueSet })}>Add Temporary Relief</button>
+            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>Add My Relief</button>
+            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'opposing_relief' })}>Add Opposing Relief</button>
+            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'current_order' })}>Current Order Provisions</button>
+            <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'temporary_order' })}>Add Temporary Relief</button>
             <button type="button" onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
           </div>
         </div>
@@ -23881,10 +23972,10 @@ ${choices}`, '1'))
           {selectedMatterId && <button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open matter page</button>}
           <button type="button" onClick={beginRequestedReliefTemplateBuilder}>New Template</button>
           <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: selectedMatterId })}>Add Issues to Matter</button>
-          <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'client_relief', issueSet: latestIssueSet })}>Add My Relief</button>
-          <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'opposing_relief', issueSet: latestIssueSet })}>Add Opposing Relief</button>
-          <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'current_order', issueSet: latestIssueSet })}>Current Order Provisions</button>
-          <button type="button" onClick={() => beginRequestedReliefBuilder({ matter_id: selectedMatterId, relief_type: 'temporary_order', issueSet: latestIssueSet })}>Add Temporary Relief</button>
+          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'client_relief' })}>Add My Relief</button>
+          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'opposing_relief' })}>Add Opposing Relief</button>
+          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'current_order' })}>Current Order Provisions</button>
+          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'temporary_order' })}>Add Temporary Relief</button>
           {requestedReliefTemplates.length > 0 && (
             <>
               <LabeledField label="Start relief from template">
