@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V63'
+const MIO_APP_VERSION = 'Mio V64'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -797,6 +797,15 @@ function ensureRequestedReliefTableShape(table, index = 0) {
     is_active: table?.is_active !== false,
     sort_order: Number(table?.sort_order || index + 1)
   }
+}
+
+
+function ensureRequestedReliefMatrixShape(table) {
+  const columns = Array.isArray(table?.columns) && table.columns.length
+    ? table.columns.map((column, index) => ({ id: column?.id || `rr-matrix-col-${index + 1}`, name: column?.name || `Column ${index + 1}` }))
+    : []
+  const cells = table?.cells && typeof table.cells === 'object' ? table.cells : {}
+  return { columns, cells }
 }
 
 function ensureRequestedReliefOptionShape(option, index = 0) {
@@ -1599,6 +1608,13 @@ function App() {
       return Array.isArray(parsed) && parsed.length ? parsed.map(ensureRequestedReliefTableShape) : defaultRequestedReliefTables.map(ensureRequestedReliefTableShape)
     } catch { return defaultRequestedReliefTables.map(ensureRequestedReliefTableShape) }
   })
+  const [requestedReliefMatrixTable, setRequestedReliefMatrixTable] = useState(() => {
+    try { return ensureRequestedReliefMatrixShape(JSON.parse(localStorage.getItem('caseMioRequestedReliefMatrixTable') || 'null')) }
+    catch { return ensureRequestedReliefMatrixShape(null) }
+  })
+  const [requestedReliefMatrixHideOptions, setRequestedReliefMatrixHideOptions] = useState(false)
+  const [requestedReliefSettingsView, setRequestedReliefSettingsView] = useState('tree')
+
   const [requestedReliefTableExpandedIds, setRequestedReliefTableExpandedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefTableExpandedIds') || '[]') }
     catch { return [] }
@@ -2443,6 +2459,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefTables', JSON.stringify(requestedReliefTables)) } catch {}
   }, [requestedReliefTables])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioRequestedReliefMatrixTable', JSON.stringify(requestedReliefMatrixTable)) } catch {}
+  }, [requestedReliefMatrixTable])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefTableExpandedIds', JSON.stringify(requestedReliefTableExpandedIds)) } catch {}
@@ -23773,10 +23793,174 @@ ${choices}`, '1'))
     )
   }
 
+
+  function requestedReliefMatrixRows({ hideOptions = requestedReliefMatrixHideOptions } = {}) {
+    const rows = []
+    const visit = (parentId = '', depth = 0, path = []) => {
+      requestedReliefChildren(parentId).forEach((row, index) => {
+        const isOption = isRequestedReliefOptionRow(row)
+        if (!(hideOptions && isOption)) {
+          const number = [...path, index + 1].join('.')
+          rows.push({ row, depth, number, isOption })
+        }
+        visit(row.id, depth + 1, [...path, index + 1])
+      })
+    }
+    visit('', 0, [])
+    return rows
+  }
+
+  function requestedReliefMatrixCellKey(rowId, columnId) {
+    return `${rowId}::${columnId}`
+  }
+
+  function requestedReliefMatrixOwnCell(rowId, columnId) {
+    const key = requestedReliefMatrixCellKey(rowId, columnId)
+    return Object.prototype.hasOwnProperty.call(requestedReliefMatrixTable.cells || {}, key) ? requestedReliefMatrixTable.cells[key] : undefined
+  }
+
+  function requestedReliefMatrixInheritedCell(rowId, columnId) {
+    const ancestors = requestedReliefAncestorIds(rowId)
+    for (const ancestorId of ancestors) {
+      const ancestor = requestedReliefOptions.find((option) => String(option.id) === String(ancestorId))
+      if (!ancestor || isRequestedReliefOptionRow(ancestor)) continue
+      const own = requestedReliefMatrixOwnCell(ancestorId, columnId)
+      if (own !== undefined && own !== '') return own
+    }
+    return ''
+  }
+
+  function requestedReliefMatrixDisplayCell(rowId, columnId) {
+    const own = requestedReliefMatrixOwnCell(rowId, columnId)
+    if (own !== undefined) return own
+    const row = requestedReliefOptions.find((option) => String(option.id) === String(rowId))
+    if (row && isRequestedReliefOptionRow(row)) return requestedReliefMatrixInheritedCell(rowId, columnId)
+    return ''
+  }
+
+  function updateRequestedReliefMatrixCell(rowId, columnId, value) {
+    const key = requestedReliefMatrixCellKey(rowId, columnId)
+    setRequestedReliefMatrixTable((current) => ({
+      ...ensureRequestedReliefMatrixShape(current),
+      cells: { ...(current?.cells || {}), [key]: value }
+    }))
+  }
+
+  function addRequestedReliefMatrixColumn() {
+    const name = (window.prompt('Name the new requested relief table column:', 'New Column') || '').trim()
+    if (!name) return
+    const id = crypto?.randomUUID ? crypto.randomUUID() : `rr-matrix-col-${Date.now()}`
+    setRequestedReliefMatrixTable((current) => {
+      const shaped = ensureRequestedReliefMatrixShape(current)
+      return { ...shaped, columns: [...shaped.columns, { id, name }] }
+    })
+  }
+
+  function renameRequestedReliefMatrixColumn(columnId, name) {
+    setRequestedReliefMatrixTable((current) => {
+      const shaped = ensureRequestedReliefMatrixShape(current)
+      return { ...shaped, columns: shaped.columns.map((column) => column.id === columnId ? { ...column, name } : column) }
+    })
+  }
+
+  function deleteRequestedReliefMatrixColumn(columnId) {
+    if (!window.confirm('Delete this requested relief table column?')) return
+    setRequestedReliefMatrixTable((current) => {
+      const shaped = ensureRequestedReliefMatrixShape(current)
+      const cells = { ...(shaped.cells || {}) }
+      Object.keys(cells).forEach((key) => { if (key.endsWith(`::${columnId}`)) delete cells[key] })
+      return { columns: shaped.columns.filter((column) => column.id !== columnId), cells }
+    })
+  }
+
+  function renderRequestedReliefMatrixTable({ title = 'Requested Relief Table', maxHeight = 620, compact = false } = {}) {
+    const shaped = ensureRequestedReliefMatrixShape(requestedReliefMatrixTable)
+    const columns = shaped.columns
+    const rows = requestedReliefMatrixRows()
+    return (
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff', marginTop: 12, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, background: '#f8fafc', borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>{title}</h3>
+            <div style={{ color: '#64748b', fontSize: 12 }}>First column follows the Requested Relief issue tree. Add columns for reusable language. Option rows inherit text from the nearest issue row unless edited.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => setRequestedReliefMatrixHideOptions((current) => !current)}>{requestedReliefMatrixHideOptions ? 'Show options' : 'Hide options'}</button>
+            <button type="button" onClick={addRequestedReliefMatrixColumn}>+ Add Column</button>
+          </div>
+        </div>
+        <div style={{ overflow: 'auto', maxHeight }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: Math.max(760, 420 + columns.length * 240) }}>
+            <thead>
+              <tr>
+                <th style={{ position: 'sticky', top: 0, left: 0, zIndex: 3, background: '#eaf2ff', border: '1px solid #cbd5e1', padding: 8, minWidth: 420, textAlign: 'left' }}>Issue / sub-issue / option</th>
+                {columns.map((column) => (
+                  <th key={column.id} style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eaf2ff', border: '1px solid #cbd5e1', padding: 8, minWidth: 220 }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input value={column.name} onChange={(e) => renameRequestedReliefMatrixColumn(column.id, e.target.value)} style={{ width: '100%', fontWeight: 800 }} />
+                      <button type="button" onClick={() => deleteRequestedReliefMatrixColumn(column.id)} style={{ color: '#b91c1c', border: '1px solid #fecaca', background: '#fff7f7' }}>Delete</button>
+                    </div>
+                  </th>
+                ))}
+                {!columns.length && <th style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eaf2ff', border: '1px solid #cbd5e1', padding: 8 }}>No columns yet</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ row, depth, number, isOption }) => {
+                const rowBg = isOption ? '#f8fbff' : (depth === 0 ? '#f1f5f9' : '#fff')
+                const weight = isOption ? 600 : 800
+                return (
+                  <tr key={row.id}>
+                    <td style={{ position: 'sticky', left: 0, zIndex: 1, background: rowBg, border: '1px solid #e2e8f0', padding: 8, minWidth: 420 }}>
+                      <div style={{ paddingLeft: Math.min(depth, 8) * 18, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ color: '#1d4ed8', fontWeight: 900, minWidth: 46 }}>{number}</span>
+                        {isOption && <span style={{ border: '1px solid #93c5fd', color: '#1d4ed8', borderRadius: 999, padding: '1px 6px', fontSize: 11, fontWeight: 900 }}>OPTION</span>}
+                        <span style={{ fontWeight: weight }}>{row.name}</span>
+                      </div>
+                    </td>
+                    {columns.map((column) => {
+                      const own = requestedReliefMatrixOwnCell(row.id, column.id)
+                      const inherited = requestedReliefMatrixInheritedCell(row.id, column.id)
+                      const value = requestedReliefMatrixDisplayCell(row.id, column.id)
+                      const inheritedOnly = own === undefined && isOption && inherited
+                      return (
+                        <td key={`${row.id}-${column.id}`} style={{ border: '1px solid #e2e8f0', padding: 6, verticalAlign: 'top', background: inheritedOnly ? '#f8fafc' : '#fff' }}>
+                          <textarea
+                            value={value}
+                            onChange={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.target.value)}
+                            placeholder={isOption ? 'Inherits from parent issue unless edited' : 'Add text for this issue'}
+                            style={{ width: '100%', minHeight: compact ? 42 : 62, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6, fontSize: 12, background: inheritedOnly ? '#f8fafc' : '#fff' }}
+                          />
+                          {inheritedOnly && <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>Inherited from parent issue. Edit to override.</div>}
+                        </td>
+                      )
+                    })}
+                    {!columns.length && <td style={{ border: '1px solid #e2e8f0', padding: 8, color: '#64748b' }}>Click + Add Column to begin.</td>}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
   function renderRequestedReliefSettings() {
     const parentChoices = activeRequestedReliefOptions().filter((option) => option.id !== requestedReliefOptionForm.id)
+    const settingsTabButton = (value, label) => (
+      <button type="button" onClick={() => setRequestedReliefSettingsView(value)} style={{ marginRight: 8, marginBottom: 10, fontWeight: requestedReliefSettingsView === value ? 900 : 600, background: requestedReliefSettingsView === value ? '#dbeafe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '7px 10px' }}>{label}</button>
+    )
+    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    if (requestedReliefSettingsView === 'matrix') {
+      return <>{settingsTabs}{renderRequestedReliefMatrixTable({ title: 'Requested Relief Table', maxHeight: 720 })}</>
+    }
+    if (requestedReliefSettingsView === 'tables') {
+      return <>{settingsTabs}<h2>Requested Relief Tables</h2><p style={{ color: '#475569' }}>Edit these separate rights/duties tables here. On Add Issues to Matter, select a table title to add the whole table to that matter; then, when adding relief, click a square to place an X in that choice.</p><div style={{ marginBottom: 8 }}><button type="button" onClick={addRequestedReliefTable}>+ Add Table</button></div>{activeRequestedReliefTables().map((table) => renderRequestedReliefTable(table, { mode: 'settings' }))}</>
+    }
     return (
       <>
+        {settingsTabs}
         <h2>Issues / Relief Options</h2>
         <p>Build the master tree here. Issue/category rows create the structure. Use <strong>Add exclusive option</strong> or <strong>Add non-exclusive option</strong> to create selectable relief choices under a row. Relief Option rows will not appear as issues; their parent row is the issue. Use <strong>Hide options</strong> when you want to focus only on the issue structure.</p>
         <form onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
@@ -24329,6 +24513,10 @@ ${choices}`, '1'))
             <div style={{ marginTop: 10 }}>{renderSavedReliefCard(selectedRelief)}</div>
           </details>
         )}
+        <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 12 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Requested Relief Table</summary>
+          <div style={{ marginTop: 10 }}>{renderRequestedReliefMatrixTable({ title: 'Requested Relief Table', maxHeight: 520, compact: true })}</div>
+        </details>
         <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show side-by-side comparison table</summary>
           <div style={{ marginTop: 10 }}>{renderRequestedReliefComparisonPanel(matterId)}</div>
@@ -24558,6 +24746,13 @@ ${choices}`, '1'))
             <section style={sectionStyle}>
               <h2 style={{ marginTop: 0 }}>Selected Issue Set</h2>
               {renderSavedIssueSetCard(selectedSavedIssueSet)}
+            </section>
+          )}
+
+          {workspaceMatterId && (
+            <section style={{ ...sectionStyle, background: '#fff' }}>
+              <h2 style={{ marginTop: 0 }}>Requested Relief Table</h2>
+              {renderRequestedReliefMatrixTable({ title: 'Requested Relief Table', maxHeight: 520, compact: true })}
             </section>
           )}
 
