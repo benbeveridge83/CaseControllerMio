@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V57'
+const MIO_APP_VERSION = 'Mio V58'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -24021,81 +24021,233 @@ ${choices}`, '1'))
     const selectedMatterId = requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : ''
     const filteredIssues = requestedReliefIssueSets.filter((row) => requestedReliefMatterFilter === 'all' || String(row.matter_id) === String(requestedReliefMatterFilter))
     const filteredReliefs = requestedReliefs.filter((relief) => requestedReliefMatterFilter === 'all' || String(relief.matter_id) === String(requestedReliefMatterFilter))
-    const latestIssueSet = selectedMatterId ? latestRequestedReliefIssueSetForMatter(selectedMatterId) : null
     const selectedSavedIssueSet = filteredIssues.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
     const selectedSavedRelief = filteredReliefs.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || null
-    const reliefDropdownLabel = (relief) => `${matterName(relief.matter_id) || 'Unknown matter'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.name || 'Unnamed relief'} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached to setting/event'}`
     const issueDropdownLabel = (issueSet) => `${matterName(issueSet.matter_id) || 'Unknown matter'} - ${issueSet.name || 'Matter Issues'}`
+    const reliefCardStats = (relief) => {
+      const selectedOptions = activeRequestedReliefOptions().filter((option) => (relief.selected_option_ids || []).includes(option.id))
+      const selectedTables = activeRequestedReliefTables().filter((table) => (relief.selected_table_ids || []).includes(table.id))
+      return { selectedOptions: selectedOptions.length, selectedTables: selectedTables.length, tableChoices: selectedRequestedReliefTableChoiceCount(relief) }
+    }
+    const issueSetStats = (issueSet) => {
+      const selectedOptions = activeRequestedReliefOptions().filter((option) => (issueSet.selected_issue_ids || []).includes(option.id) && !isRequestedReliefOptionRow(option))
+      const selectedTables = activeRequestedReliefTables().filter((table) => (issueSet.selected_table_ids || []).includes(table.id))
+      const leafCount = requestedReliefLeafIdsWithin(issueSet.selected_issue_ids || []).length
+      return { rows: selectedOptions.length, leaves: leafCount, tables: selectedTables.length }
+    }
+    const formatReliefDate = (relief) => {
+      const raw = relief?.updated_at || relief?.created_at || ''
+      if (!raw) return '-'
+      try { return new Date(raw).toLocaleString() } catch { return raw }
+    }
     const handleMatterFilterChange = (value) => {
       setRequestedReliefMatterFilter(value)
       setRequestedReliefSavedIssueSetId('')
       setRequestedReliefSavedReliefId('')
       setRequestedReliefShowComparison(false)
     }
+    const workspaceMatterId = selectedSavedRelief?.matter_id || selectedMatterId
+    const pageButton = {
+      border: '1px solid #cbd5e1',
+      background: '#fff',
+      borderRadius: 6,
+      padding: '8px 12px',
+      cursor: 'pointer',
+      fontWeight: 600
+    }
+    const primaryButton = {
+      ...pageButton,
+      background: '#2563eb',
+      borderColor: '#2563eb',
+      color: '#fff'
+    }
+    const disabledButton = {
+      ...pageButton,
+      color: '#94a3b8',
+      background: '#f1f5f9',
+      cursor: 'not-allowed'
+    }
+    const sectionStyle = { border: '1px solid #dbe3ea', borderRadius: 12, padding: 16, background: '#fff', marginBottom: 16, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.04)' }
+    const stepBadge = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: '50%', background: '#2563eb', color: '#fff', fontWeight: 800, marginRight: 10 }
+    const reliefRowsForCards = filteredReliefs.slice().sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+    const issueRowsForCards = filteredIssues.slice().sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))
+    const reliefTypeDefault = selectedSavedRelief?.relief_type || 'client_relief'
     return (
       <>
-        <h1>Requested Relief</h1>
-        <p style={{ color: '#475569' }}>For each matter, save the disputed issues first. Then save my client's requested relief, opposing counsel's requested relief, and any current order provisions.</p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
-          <LabeledField label="Matter"><select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}><option value="all">All matters</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}</select></LabeledField>
-          {selectedMatterId && <button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open matter page</button>}
-          <button type="button" onClick={beginRequestedReliefTemplateBuilder}>New Template</button>
-          <button type="button" onClick={() => beginRequestedIssueBuilder({ matter_id: selectedMatterId })}>Add Issues to Matter</button>
-          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'client_relief' })}>Add My Relief</button>
-          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'opposing_relief' })}>Add Opposing Relief</button>
-          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'current_order' })}>Current Order Provisions</button>
-          <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'temporary_order' })}>Add Temporary Relief</button>
-          {requestedReliefTemplates.length > 0 && (
-            <>
-              <LabeledField label="Start relief from template">
-                <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, selectedMatterId); e.target.value = '' }}>
-                  <option value="">Choose template...</option>
-                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+        <style>{`
+          .rr-v58-page select, .rr-v58-page input { border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 9px; background: #fff; }
+          .rr-v58-card { border: 1px solid #dbe3ea; border-radius: 12px; background: #fff; padding: 12px; min-height: 138px; display: flex; flex-direction: column; gap: 8px; transition: border-color .15s ease, box-shadow .15s ease; }
+          .rr-v58-card:hover { border-color: #93c5fd; box-shadow: 0 4px 14px rgba(37,99,235,.10); }
+          .rr-v58-card.rr-selected { border: 2px solid #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.10); }
+          .rr-v58-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1; }
+          .rr-v58-muted { color: #64748b; }
+          .rr-v58-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 8px 12px; cursor: default; color: #475569; font-weight: 700; }
+          .rr-v58-tabs button.active { border-bottom-color: #2563eb; color: #1d4ed8; }
+          .rr-v58-empty { border: 1px dashed #cbd5e1; border-radius: 10px; background: #f8fafc; padding: 22px; text-align: center; color: #64748b; }
+        `}</style>
+        <div className="rr-v58-page">
+          <h1 style={{ marginBottom: 6 }}>Requested Relief</h1>
+          <p style={{ color: '#475569', marginTop: 0 }}>Select a matter, choose or create the relief set you want to work on, then manage that selected relief in the workspace below.</p>
+
+          <section style={sectionStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', color: '#0f172a' }}><span style={stepBadge}>1</span>Choose or create relief</h2>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" style={primaryButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedMatterId, relief_type: 'client_relief' })}>+ New Relief</button>
+                <button type="button" style={pageButton} onClick={beginRequestedReliefTemplateBuilder}>+ New Template</button>
+                <button type="button" style={pageButton} onClick={() => beginRequestedIssueBuilder({ matter_id: selectedMatterId })}>Add / Edit Issues</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) auto', gap: 12, alignItems: 'end', marginBottom: 14 }}>
+              <LabeledField label="Matter">
+                <select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}>
+                  <option value="all">All matters</option>
+                  {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
                 </select>
               </LabeledField>
-              <LabeledField label="Load issue template">
-                <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, selectedMatterId); e.target.value = '' }}>
-                  <option value="">Choose template...</option>
-                  {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              {selectedMatterId ? <button type="button" style={pageButton} onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open Matter Page</button> : <button type="button" style={disabledButton} disabled>Open Matter Page</button>}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) minmax(320px, 1.35fr)', gap: 16 }}>
+              <div style={{ borderRight: '1px solid #e2e8f0', paddingRight: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <h3 style={{ margin: 0 }}>Issue sets</h3>
+                  {requestedReliefTemplates.length > 0 && (
+                    <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) loadRequestedIssueTemplate(template, selectedMatterId); e.target.value = '' }}>
+                      <option value="">Load issue template...</option>
+                      {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    </select>
+                  )}
+                </div>
+                <select value={selectedSavedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)} style={{ width: '100%', marginBottom: 8 }}>
+                  <option value="">Select existing issue set...</option>
+                  {issueRowsForCards.map((issueSet) => <option key={issueSet.id} value={issueSet.id}>{issueDropdownLabel(issueSet)}</option>)}
                 </select>
-              </LabeledField>
-            </>
-          )}
-        </div>
-        {renderRequestedReliefSetupModal()}
-        {renderRequestedReliefBuilderModal()}
-        <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
-          <h2 style={{ marginTop: 0 }}>Saved Issues / Relief</h2>
-          <p style={{ color: '#64748b', marginTop: 0 }}>Saved items are hidden until you pick one below, so this page does not load every matter's tables at once.</p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12, alignItems: 'end' }}>
-            <LabeledField label={`Existing issue sets (${filteredIssues.length})`}>
-              <select value={selectedSavedIssueSet ? requestedReliefSavedIssueSetId : ''} onChange={(e) => setRequestedReliefSavedIssueSetId(e.target.value)}>
-                <option value="">Select an existing issue set...</option>
-                {filteredIssues.map((issueSet) => <option key={issueSet.id} value={issueSet.id}>{issueDropdownLabel(issueSet)}</option>)}
-              </select>
-            </LabeledField>
-            <LabeledField label={`Existing relief / order positions (${filteredReliefs.length})`}>
-              <select value={selectedSavedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)}>
-                <option value="">Select existing relief...</option>
-                {filteredReliefs.map((relief) => <option key={relief.id} value={relief.id}>{reliefDropdownLabel(relief)}</option>)}
-              </select>
-            </LabeledField>
-          </div>
-          {!filteredIssues.length && <p>No issues saved yet. Click Add Issues to Matter to start.</p>}
-          {!filteredReliefs.length && <p>No requested relief, opposing relief, temporary relief, or current order provisions saved yet.</p>}
-          {selectedSavedIssueSet && <div style={{ marginTop: 12 }}>{renderSavedIssueSetCard(selectedSavedIssueSet)}</div>}
-          {selectedSavedRelief && <div style={{ marginTop: 12 }}>{renderSavedReliefCard(selectedSavedRelief)}</div>}
-        </section>
-        {selectedMatterId && (
-          <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
-            <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontWeight: 600 }}>
-              <input type="checkbox" checked={requestedReliefShowComparison} onChange={(e) => setRequestedReliefShowComparison(e.target.checked)} />
-              Show comparison table for this matter
-            </label>
-            <div style={{ color: '#64748b', marginTop: 4 }}>Turn this on only when you want the side-by-side issue / relief table for the selected matter.</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 250, overflow: 'auto', paddingRight: 4 }}>
+                  {!issueRowsForCards.length && <div className="rr-v58-empty">No issue sets saved yet. Use Add / Edit Issues or load an issue template.</div>}
+                  {issueRowsForCards.slice(0, 8).map((issueSet) => {
+                    const stats = issueSetStats(issueSet)
+                    const isSelected = selectedSavedIssueSet && String(selectedSavedIssueSet.id) === String(issueSet.id)
+                    return (
+                      <button key={issueSet.id} type="button" onClick={() => setRequestedReliefSavedIssueSetId(issueSet.id)} style={{ textAlign: 'left', border: isSelected ? '2px solid #2563eb' : '1px solid #dbe3ea', borderRadius: 10, padding: 10, background: isSelected ? '#eff6ff' : '#fff', cursor: 'pointer' }}>
+                        <strong>{issueSet.name || 'Matter Issues'}</strong>
+                        <div className="rr-v58-muted">{matterName(issueSet.matter_id)} • {stats.rows} issue rows • {stats.leaves} final options • {stats.tables} tables</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <h3 style={{ margin: 0 }}>Relief sets</h3>
+                  {requestedReliefTemplates.length > 0 && (
+                    <select defaultValue="" onChange={(e) => { const template = requestedReliefTemplates.find((item) => item.id === e.target.value); if (template) startRequestedReliefFromTemplate(template, selectedMatterId); e.target.value = '' }}>
+                      <option value="">Start relief from template...</option>
+                      {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    </select>
+                  )}
+                </div>
+                <select value={selectedSavedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)} style={{ width: '100%', marginBottom: 10 }}>
+                  <option value="">Select existing relief...</option>
+                  {reliefRowsForCards.map((relief) => <option key={relief.id} value={relief.id}>{`${relief.name || 'Unnamed relief'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached'}`}</option>)}
+                </select>
+                {!reliefRowsForCards.length && <div className="rr-v58-empty">No relief sets saved yet. Click New Relief or start from a template.</div>}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, maxHeight: 290, overflow: 'auto', paddingRight: 4 }}>
+                  {reliefRowsForCards.map((relief) => {
+                    const stats = reliefCardStats(relief)
+                    const isSelected = selectedSavedRelief && String(selectedSavedRelief.id) === String(relief.id)
+                    return (
+                      <div key={relief.id} className={`rr-v58-card ${isSelected ? 'rr-selected' : ''}`}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <strong>{relief.name || 'Unnamed relief'}</strong>
+                          {isSelected && <span style={{ color: '#2563eb', fontWeight: 900 }}>●</span>}
+                        </div>
+                        <div><span className="rr-v58-pill">{requestedReliefKindLabel(relief.relief_type)}</span></div>
+                        <div className="rr-v58-muted">Matter: {matterName(relief.matter_id)}</div>
+                        <div className="rr-v58-muted">Attached: {relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'No setting/event'}</div>
+                        <div className="rr-v58-muted">Options: {stats.selectedOptions} • Tables: {stats.selectedTables} • Table Xs: {stats.tableChoices}</div>
+                        <div className="rr-v58-muted">Updated: {formatReliefDate(relief)}</div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 'auto' }}>
+                          <button type="button" style={primaryButton} onClick={() => setRequestedReliefSavedReliefId(relief.id)}>Open</button>
+                          <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief })}>Select Options</button>
+                          <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief })}>Edit</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
           </section>
-        )}
-        {selectedMatterId && requestedReliefShowComparison && renderRequestedReliefComparisonPanel(selectedMatterId)}
+
+          <section style={sectionStyle}>
+            <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', color: '#0f172a' }}><span style={stepBadge}>2</span>Work on selected relief</h2>
+            {selectedSavedRelief ? (
+              <>
+                <div className="rr-v58-tabs" style={{ display: 'flex', gap: 8, borderBottom: '1px solid #e2e8f0', marginTop: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+                  <button type="button" className="active">Summary</button>
+                  <button type="button">Issues</button>
+                  <button type="button">Select Relief Options</button>
+                  <button type="button">Tables</button>
+                  <button type="button">Settings / Event</button>
+                  <button type="button">Templates</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) 230px', gap: 18, alignItems: 'start' }}>
+                  <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, background: '#f8fafc' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
+                      <div><div className="rr-v58-muted">Relief name</div><strong>{selectedSavedRelief.name || 'Unnamed relief'}</strong></div>
+                      <div><div className="rr-v58-muted">Type</div><strong>{requestedReliefKindLabel(selectedSavedRelief.relief_type)}</strong></div>
+                      <div><div className="rr-v58-muted">Matter</div><strong>{matterName(selectedSavedRelief.matter_id)}</strong></div>
+                      <div><div className="rr-v58-muted">Connected setting / event</div><strong>{selectedSavedRelief.setting_event_id ? requestedReliefSettingLabel(selectedSavedRelief.setting_event_id) : 'No setting/event'}</strong></div>
+                      <div><div className="rr-v58-muted">Selected options</div><strong>{reliefCardStats(selectedSavedRelief).selectedOptions}</strong></div>
+                      <div><div className="rr-v58-muted">Tables</div><strong>{reliefCardStats(selectedSavedRelief).selectedTables}</strong></div>
+                      <div><div className="rr-v58-muted">Last updated</div><strong>{formatReliefDate(selectedSavedRelief)}</strong></div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <button type="button" style={primaryButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Select Relief Options</button>
+                    <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Edit Relief / Issues</button>
+                    <button type="button" style={pageButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedSavedRelief.matter_id, relief_type: reliefTypeDefault, relief: selectedSavedRelief })}>Attach / Change Setting</button>
+                    <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Save or Update Template</button>
+                    <button type="button" style={{ ...pageButton, color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => deleteRequestedRelief(selectedSavedRelief.id)}>Delete Relief</button>
+                  </div>
+                </div>
+                <details style={{ marginTop: 14 }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show selected relief detail</summary>
+                  <div style={{ marginTop: 10 }}>{renderSavedReliefCard(selectedSavedRelief)}</div>
+                </details>
+              </>
+            ) : (
+              <div className="rr-v58-empty" style={{ marginTop: 14 }}>
+                <strong>No relief selected.</strong>
+                <div>Choose a relief card above, select an existing relief from the dropdown, or create a new relief.</div>
+              </div>
+            )}
+          </section>
+
+          {selectedSavedIssueSet && !selectedSavedRelief && (
+            <section style={sectionStyle}>
+              <h2 style={{ marginTop: 0 }}>Selected Issue Set</h2>
+              {renderSavedIssueSetCard(selectedSavedIssueSet)}
+            </section>
+          )}
+
+          {workspaceMatterId && (
+            <section style={{ ...sectionStyle, background: '#f8fafc' }}>
+              <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontWeight: 700 }}>
+                <input type="checkbox" checked={requestedReliefShowComparison} onChange={(e) => setRequestedReliefShowComparison(e.target.checked)} />
+                Show comparison table {selectedSavedRelief ? 'for this relief/matter' : 'for this matter'}
+              </label>
+              <div style={{ color: '#64748b', marginTop: 4 }}>Turn this on only when you want the side-by-side issue / relief table.</div>
+              {requestedReliefShowComparison && <div style={{ marginTop: 12 }}>{renderRequestedReliefComparisonPanel(workspaceMatterId)}</div>}
+            </section>
+          )}
+
+          {renderRequestedReliefSetupModal()}
+          {renderRequestedReliefBuilderModal()}
+        </div>
       </>
     )
   }
