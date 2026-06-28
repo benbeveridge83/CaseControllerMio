@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V50'
+const MIO_APP_VERSION = 'Mio V51'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -22065,9 +22065,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function requestedReliefOptionIdsForIssueRoot(issueId, builder = requestedReliefBuilder) {
     if (!issueId) return []
-    const descendants = requestedReliefDescendantIds(issueId)
-    const allowed = new Set(requestedReliefSelectableReliefOptionIds([issueId, ...descendants]))
-    return Array.from(allowed)
+    const issueRow = requestedReliefOptions.find((item) => String(item.id) === String(issueId))
+    const directReliefOptions = requestedReliefChildren(issueId).filter((child) => isRequestedReliefOptionRow(child)).map((child) => child.id)
+    if (directReliefOptions.length) return directReliefOptions
+    const directIssueChildren = requestedReliefChildren(issueId).filter((child) => !isRequestedReliefOptionRow(child))
+    if (!directIssueChildren.length && issueRow && !isRequestedReliefOptionRow(issueRow)) return [issueId]
+    return []
   }
 
   function requestedReliefOptionGroupRoot(optionId, builder = requestedReliefBuilder) {
@@ -22130,6 +22133,25 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function requestedReliefChoiceLetter(index) {
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     return letters[index] || String(index + 1)
+  }
+
+  function requestedReliefParentIssueForDisplay(issueId) {
+    const issue = requestedReliefOptions.find((item) => String(item.id) === String(issueId))
+    if (!issue?.parent_id) return null
+    const parent = requestedReliefOptions.find((item) => String(item.id) === String(issue.parent_id))
+    if (!parent || isRequestedReliefOptionRow(parent)) return null
+    const structuralNames = new Set(['substantive', 'sapcr', 'procedural', 'discovery'])
+    if (structuralNames.has(String(parent.name || '').trim().toLowerCase())) return null
+    return parent
+  }
+
+  function requestedReliefPromptDisplayParts(issue) {
+    const parent = requestedReliefParentIssueForDisplay(issue?.id)
+    return {
+      parentName: parent?.name || '',
+      issueName: issue?.name || '',
+      fullName: parent ? `${parent.name} > ${issue?.name || ''}` : (issue?.name || '')
+    }
   }
 
   function addRequestedReliefIssueWhileBuilding() {
@@ -22933,10 +22955,11 @@ ${choices}`, '1'))
       }
       const groupSelectedForOption = mode === 'relief_builder' && isLeafForRelief && requestedReliefOptionIdsForGroup(option.id, builder).some((id) => leafSelected.has(id))
       const isFadedBySelection = groupSelectedForOption && !isLeafSelected
-      const rowBackground = isLeafSelected ? '#dbeafe' : (isLeafForRelief ? '#eaf4ff' : (depth % 2 ? '#fcfcfd' : 'white'))
+      const settingsOptionRow = mode === 'settings' && isReliefOption
+      const rowBackground = settingsOptionRow ? '#f0f9ff' : (isLeafSelected ? '#dbeafe' : (isLeafForRelief ? '#eaf4ff' : (depth % 2 ? '#fcfcfd' : 'white')))
       const rowOpacity = 1
       const rowColor = mode === 'relief_builder' && isLeafForRelief && isFadedBySelection ? '#cbd5e1' : '#334155'
-      const rowBorder = isLeafSelected ? '2px solid #1e40af' : (isLeafForRelief ? '1px solid #bfdbfe' : '1px solid transparent')
+      const rowBorder = settingsOptionRow ? '1px dashed #60a5fa' : (isLeafSelected ? '2px solid #1e40af' : (isLeafForRelief ? '1px solid #bfdbfe' : '1px solid transparent'))
       return (
         <Fragment key={option.id}>
           <div className="rr-tree-row" style={{ display: 'grid', gridTemplateColumns: mode === 'settings' ? '1fr minmax(520px, auto)' : 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, alignItems: 'center', padding: '6px 8px', marginLeft: depth * 22, borderBottom: '1px solid #edf2f7', background: rowBackground, opacity: rowOpacity, color: rowColor, border: rowBorder, borderRadius: isLeafSelected ? 6 : 0 }} draggable={mode === 'settings'} onDragStart={(e) => e.dataTransfer.setData('text/plain', option.id)} onDragOver={(e) => { if (mode === 'settings') e.preventDefault() }} onDrop={(e) => { if (mode !== 'settings') return; e.preventDefault(); const draggedId = e.dataTransfer.getData('text/plain'); if (draggedId && draggedId !== option.id) moveRequestedReliefOption(draggedId, requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === option.id) - requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === draggedId)) }}>
@@ -22944,7 +22967,15 @@ ${choices}`, '1'))
               {mode === 'settings' && <span title="Drag row" style={{ cursor: 'grab', color: '#64748b' }}>☰</span>}
               <button type="button" onClick={() => toggleRequestedReliefExpanded(option.id)} disabled={!childCount} style={{ width: 24 }}>{childCount ? (expanded ? '-' : '+') : '•'}</button>
               {mode === 'issues_builder' && <input type="checkbox" checked={isIssueSelected} onChange={(e) => toggleRequestedIssueSelection(option.id, e.target.checked)} title="Check/uncheck this row and all rows below it" />}
-              <strong style={{ color: mode === 'issues_builder' && !isIssueSelected && hasSelectedDescendant ? '#94a3b8' : undefined }}>{option.name}</strong>
+              {mode === 'settings' && isReliefOption ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ color: '#0369a1', background: '#e0f2fe', border: '1px solid #7dd3fc', borderRadius: 999, padding: '2px 8px', fontSize: 11, fontWeight: 800 }}>OPTION</span>
+                  <strong style={{ color: '#0f172a' }}>{option.name}</strong>
+                  <span style={{ color: '#64748b', fontSize: 11 }}>for issue: {requestedReliefOptions.find((item) => String(item.id) === String(option.parent_id))?.name || 'Unassigned'}</span>
+                </span>
+              ) : (
+                <strong style={{ color: mode === 'issues_builder' && !isIssueSelected && hasSelectedDescendant ? '#94a3b8' : undefined }}>{option.name}</strong>
+              )}
               {mode !== 'relief_builder' && childCount ? <span style={{ color: '#64748b', fontSize: 12 }}>({childCount})</span> : null}
               {mode === 'settings' && isReliefOption && <span style={{ color: '#1e3a8a', background: '#dbeafe', borderRadius: 999, padding: '1px 6px', fontSize: 12 }}>{option.option_type === 'exclusive' ? 'Exclusive option' : 'Non-exclusive option'}{option.has_text_box ? ' + text box' : ''}</span>}
               
@@ -23063,7 +23094,10 @@ ${choices}`, '1'))
               const active = String(issue.id) === String(activeIssue?.id)
               return (
                 <button key={issue.id} type="button" onClick={() => setRequestedReliefActiveIssueId(issue.id)} style={{ textAlign: 'left', border: active ? '2px solid #2563eb' : '1px solid #cbd5e1', background: active ? '#eff6ff' : '#fff', borderRadius: 10, padding: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, color: '#0f172a', fontWeight: 700 }}>
-                  <span>{issue.name}</span>
+                  <span>
+                    {requestedReliefPromptDisplayParts(issue).parentName && <span style={{ display: 'block', color: '#64748b', fontSize: 11, fontWeight: 600 }}>{requestedReliefPromptDisplayParts(issue).parentName}</span>}
+                    <span>{issue.name}</span>
+                  </span>
                   <span style={{ minWidth: 22, height: 22, borderRadius: 999, background: '#dbeafe', color: '#1d4ed8', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{count}</span>
                 </button>
               )
@@ -23073,8 +23107,9 @@ ${choices}`, '1'))
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, background: '#fff' }}>
           {activeIssue ? (
             <>
-              <h3 style={{ margin: '0 0 4px' }}>Options for: <span style={{ color: '#1d4ed8' }}>{activeIssue.name}</span></h3>
-              <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>Choose one or more options for this issue.</div>
+              <h3 style={{ margin: '0 0 4px' }}>Options for: <span style={{ color: '#1d4ed8' }}>{requestedReliefPromptDisplayParts(activeIssue).fullName}</span></h3>
+              {requestedReliefPromptDisplayParts(activeIssue).parentName && <div style={{ color: '#64748b', fontSize: 12, marginBottom: 3 }}>Main issue: {requestedReliefPromptDisplayParts(activeIssue).parentName}</div>}
+              <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>Choose one or more options for this issue/prompt only.</div>
               <div style={{ display: 'grid', gap: 10 }}>
                 {options.length ? options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true })) : <p style={{ color: '#64748b' }}>No selectable options yet. Use Edit relief &gt; Add relief option.</p>}
               </div>
@@ -23095,7 +23130,10 @@ ${choices}`, '1'))
             <section key={issue.id} style={{ borderBottom: '1px solid #dbeafe', padding: 12, background: issueIndex % 2 ? '#fff' : '#f8fbff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
                 <span style={{ width: 26, height: 26, borderRadius: 999, background: '#1d4ed8', color: 'white', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>{issueIndex + 1}</span>
-                <strong style={{ fontSize: 16 }}>{issue.name}</strong>
+                <div>
+                  {requestedReliefPromptDisplayParts(issue).parentName && <div style={{ color: '#64748b', fontSize: 12, fontWeight: 600 }}>Main issue: {requestedReliefPromptDisplayParts(issue).parentName}</div>}
+                  <strong style={{ fontSize: 16 }}>{issue.name}</strong>
+                </div>
                 <span style={{ color: '#64748b', fontSize: 12 }}>Issue / prompt</span>
               </div>
               <div style={{ display: 'grid', gap: 8, marginLeft: 36 }}>
