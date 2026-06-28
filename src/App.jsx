@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V56'
+const MIO_APP_VERSION = 'Mio V57'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1624,6 +1624,8 @@ function App() {
   })
   const [requestedReliefDetailEditor, setRequestedReliefDetailEditor] = useState(null)
   const [requestedReliefPendingEventLink, setRequestedReliefPendingEventLink] = useState(null)
+  const [requestedReliefSetupDraft, setRequestedReliefSetupDraft] = useState(null)
+  const [showRequestedReliefSetupWindow, setShowRequestedReliefSetupWindow] = useState(false)
   const [requestedReliefExpandedIds, setRequestedReliefExpandedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefExpandedIds') || '[]') }
     catch { return [] }
@@ -10572,6 +10574,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         })
         if (requestedReliefPendingEventLink && !editingEventId) {
           setRequestedReliefBuilder((builder) => builder ? { ...builder, setting_event_id: savedEvent.id } : builder)
+          setRequestedReliefSetupDraft((draft) => draft ? { ...draft, setting_event_id: savedEvent.id } : draft)
           if (requestedReliefPendingEventLink.paused) {
             setNeedToSetPausedRows((current) => ({ ...current, [checklistNeedToSetRowId(savedEvent)]: { paused_at: new Date().toISOString(), reason: 'Created from Requested Relief' } }))
           }
@@ -22357,7 +22360,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function openRequestedReliefNewSettingWindow(mode = 'unknown_active') {
-    if (!requestedReliefBuilder?.matter_id) return alert('Select the matter first.')
+    const matterId = requestedReliefBuilder?.matter_id || requestedReliefSetupDraft?.matter_id || ''
+    if (!matterId) return alert('Select the matter first.')
     const title = (window.prompt('Name the new setting/event:', 'Trial') || '').trim()
     if (!title) return
     let dateValue = ''
@@ -22365,14 +22369,15 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       dateValue = (window.prompt('Enter the setting date as YYYY-MM-DD:', '') || '').trim()
       if (!dateValue) return
     }
+    const reliefName = requestedReliefBuilder?.name || requestedReliefSetupDraft?.name || requestedReliefKindLabel(requestedReliefBuilder?.relief_type || requestedReliefSetupDraft?.relief_type || 'client_relief')
     setRequestedReliefPendingEventLink({ paused: mode === 'unknown_paused' })
     setEditingEventId(null)
     setEventForm({
       ...emptyEventForm,
-      matter_id: requestedReliefBuilder.matter_id,
+      matter_id: matterId,
       event_category: title,
       title,
-      description: `Created from Requested Relief: ${requestedReliefBuilder.name || requestedReliefKindLabel(requestedReliefBuilder.relief_type)}`,
+      description: `Created from Requested Relief: ${reliefName}`,
       start_date: dateValue,
       end_date: dateValue,
       is_active: true
@@ -22426,70 +22431,59 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefBuilder(true)
   }
 
-  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief' } = {}) {
+  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief', template = null } = {}) {
     const resolvedMatterId = matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     if (!resolvedMatterId) {
       alert('Select a matter first, then add the relief.')
       return
     }
-    const name = (window.prompt('Name this new relief:', requestedReliefKindLabel(relief_type)) || '').trim()
-    if (!name) return
+    const matterIssueSet = latestRequestedReliefIssueSetForMatter(resolvedMatterId)
+    setRequestedReliefSetupDraft({
+      matter_id: resolvedMatterId,
+      relief_type,
+      name: template?.name || requestedReliefKindLabel(relief_type),
+      setting_event_id: '',
+      issue_source: template ? 'template' : (matterIssueSet ? 'matter' : 'full'),
+      template_id: template?.id || (template ? template.id : ''),
+      use_full_tree: !template && !matterIssueSet
+    })
+    setShowRequestedReliefSetupWindow(true)
+  }
 
-    const settings = requestedReliefMatterSettings(resolvedMatterId)
-    const settingLines = settings.map((event, index) => `${index + 1}. ${requestedReliefSettingLabel(event.id)}`).join('\n')
-    const settingPrompt = [
-      'Attach this relief to a setting/event?',
-      '',
-      settingLines || '(No pending settings found.)',
-      '',
-      'Enter a number to attach to an existing setting.',
-      'Enter K to create a new setting with a known date.',
-      'Enter A to create a new setting with an unknown date and begin setting.',
-      'Enter P to create a new setting with an unknown date and keep it paused.',
-      'Leave blank for no setting/event attachment.'
-    ].join('\n')
-    const settingChoice = (window.prompt(settingPrompt, '') || '').trim()
-    let settingEventId = ''
-    let newSettingMode = ''
-    if (/^\d+$/.test(settingChoice)) {
-      const picked = settings[Number(settingChoice) - 1]
-      if (picked) settingEventId = picked.id
-    } else if (/^k$/i.test(settingChoice)) {
-      newSettingMode = 'known'
-    } else if (/^a$/i.test(settingChoice)) {
-      newSettingMode = 'unknown_active'
-    } else if (/^p$/i.test(settingChoice)) {
-      newSettingMode = 'unknown_paused'
-    }
-
-    const templates = requestedReliefTemplates || []
-    const templateLines = templates.map((template, index) => `${index + 1}. ${template.name}`).join('\n')
-    const sourcePrompt = [
-      'How do you want to create the issues/prompts for this relief?',
-      '',
-      '1. Use the saved matter issues for this matter',
-      '2. Import issues from a template',
-      '3. Start from the full current settings tree',
-      '',
-      templateLines ? `Available templates:\n${templateLines}` : 'No templates are currently saved.'
-    ].join('\n')
-    const sourceChoice = (window.prompt(sourcePrompt, templates.length ? '2' : '1') || '').trim()
+  function continueRequestedReliefSetupFlow() {
+    const draft = requestedReliefSetupDraft
+    if (!draft?.matter_id) return alert('Select the matter first.')
+    const name = (draft.name || '').trim()
+    if (!name) return alert('Name the relief before continuing.')
+    let issueSet = null
     let template = null
     let useFullTree = false
-    let issueSet = latestRequestedReliefIssueSetForMatter(resolvedMatterId)
-    if (sourceChoice === '2' && templates.length) {
-      const pick = (window.prompt(`Which template number?\n${templateLines}`, '1') || '').trim()
-      template = templates[Number(pick) - 1] || null
-      issueSet = null
-    } else if (sourceChoice === '3') {
+    if (draft.issue_source === 'matter') {
+      issueSet = latestRequestedReliefIssueSetForMatter(draft.matter_id)
+      if (!issueSet) {
+        alert('No saved matter issues found for this matter yet. Choose a template or full settings tree instead.')
+        return
+      }
+    } else if (draft.issue_source === 'template') {
+      template = requestedReliefTemplates.find((item) => String(item.id) === String(draft.template_id)) || null
+      if (!template) {
+        alert('Choose a template first.')
+        return
+      }
+    } else {
       useFullTree = true
-      issueSet = null
     }
-
-    beginRequestedReliefBuilder({ matter_id: resolvedMatterId, relief_type, issueSet, template, useFullTree, initialName: name, settingEventId })
-    if (newSettingMode) {
-      setTimeout(() => openRequestedReliefNewSettingWindow(newSettingMode), 0)
-    }
+    setShowRequestedReliefSetupWindow(false)
+    setRequestedReliefSetupDraft(null)
+    beginRequestedReliefBuilder({
+      matter_id: draft.matter_id,
+      relief_type: draft.relief_type,
+      issueSet,
+      template,
+      useFullTree,
+      initialName: name,
+      settingEventId: draft.setting_event_id || ''
+    })
   }
 
   function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null, useFullTree = false, initialName = '', settingEventId = '' } = {}) {
@@ -22542,7 +22536,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function startRequestedReliefFromTemplate(template, matterId = '') {
     if (!template) return
     const resolvedMatterId = matterId || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
-    beginRequestedReliefBuilder({ matter_id: resolvedMatterId, relief_type: 'client_relief', template })
+    beginRequestedReliefSetupFlow({ matter_id: resolvedMatterId, relief_type: 'client_relief', template })
   }
 
   function loadRequestedIssueTemplate(template, matterId = '') {
@@ -23381,6 +23375,80 @@ ${choices}`, '1'))
     )
   }
 
+  function renderRequestedReliefSetupModal() {
+    if (!showRequestedReliefSetupWindow || !requestedReliefSetupDraft) return null
+    const draft = requestedReliefSetupDraft
+    const settings = requestedReliefMatterSettings(draft.matter_id)
+    const matterIssueSet = latestRequestedReliefIssueSetForMatter(draft.matter_id)
+    return (
+      <Modal title="New Requested Relief" onClose={() => { setShowRequestedReliefSetupWindow(false); setRequestedReliefSetupDraft(null) }}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+            <LabeledField label="Matter">
+              <select value={draft.matter_id || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, matter_id: e.target.value, setting_event_id: '', issue_source: latestRequestedReliefIssueSetForMatter(e.target.value) ? 'matter' : draft.issue_source })}>
+                <option value="">Select matter</option>
+                {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
+              </select>
+            </LabeledField>
+            <LabeledField label="Relief name">
+              <input value={draft.name || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, name: e.target.value })} placeholder="Example: Trial requested relief" />
+            </LabeledField>
+            <LabeledField label="Relief type">
+              <select value={draft.relief_type || 'client_relief'} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, relief_type: e.target.value, name: draft.name || requestedReliefKindLabel(e.target.value) })}>
+                <option value="client_relief">My client requested relief</option>
+                <option value="opposing_relief">Opposing counsel requested relief</option>
+                <option value="current_order">Current order provisions</option>
+                <option value="temporary_order">Temporary relief granted</option>
+              </select>
+            </LabeledField>
+          </div>
+
+          <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+            <h3 style={{ marginTop: 0 }}>Attach to a setting/event</h3>
+            <p style={{ color: '#64748b', marginTop: 0 }}>Choose an existing setting connected to this matter, create a new setting, or leave this relief unattached.</p>
+            <label style={{ display: 'block', padding: '8px 10px', border: !draft.setting_event_id ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 6, marginBottom: 8, background: !draft.setting_event_id ? '#eff6ff' : 'white' }}>
+              <input type="radio" checked={!draft.setting_event_id} onChange={() => setRequestedReliefSetupDraft({ ...draft, setting_event_id: '' })} /> Not attached to a setting/event
+            </label>
+            {settings.length ? settings.map((event) => (
+              <label key={event.id} style={{ display: 'block', padding: '8px 10px', border: String(draft.setting_event_id) === String(event.id) ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 6, marginBottom: 8, background: String(draft.setting_event_id) === String(event.id) ? '#eff6ff' : 'white' }}>
+                <input type="radio" checked={String(draft.setting_event_id) === String(event.id)} onChange={() => setRequestedReliefSetupDraft({ ...draft, setting_event_id: event.id })} /> {requestedReliefSettingLabel(event.id)}
+              </label>
+            )) : <p style={{ color: '#64748b' }}>No existing pending settings were found for this matter.</p>}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known')}>New setting with known date</button>
+              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
+              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
+            </div>
+          </section>
+
+          <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: 'white' }}>
+            <h3 style={{ marginTop: 0 }}>Create the relief from issues</h3>
+            <label style={{ display: 'block', marginBottom: 8 }}>
+              <input type="radio" checked={draft.issue_source === 'matter'} disabled={!matterIssueSet} onChange={() => setRequestedReliefSetupDraft({ ...draft, issue_source: 'matter' })} /> Use saved matter issues {matterIssueSet ? `(${matterIssueSet.name || 'Matter Issues'})` : '(none saved yet)'}
+            </label>
+            <label style={{ display: 'block', marginBottom: 8 }}>
+              <input type="radio" checked={draft.issue_source === 'template'} disabled={!requestedReliefTemplates.length} onChange={() => setRequestedReliefSetupDraft({ ...draft, issue_source: 'template', template_id: draft.template_id || requestedReliefTemplates[0]?.id || '' })} /> Import issues from template
+            </label>
+            {draft.issue_source === 'template' && (
+              <select value={draft.template_id || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, template_id: e.target.value })} style={{ margin: '0 0 8px 24px', minWidth: 280 }}>
+                <option value="">Choose template...</option>
+                {requestedReliefTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+              </select>
+            )}
+            <label style={{ display: 'block', marginBottom: 8 }}>
+              <input type="radio" checked={draft.issue_source === 'full'} onChange={() => setRequestedReliefSetupDraft({ ...draft, issue_source: 'full' })} /> Start from the full current settings tree
+            </label>
+          </section>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" onClick={() => { setShowRequestedReliefSetupWindow(false); setRequestedReliefSetupDraft(null) }}>Cancel</button>
+            <button type="button" onClick={continueRequestedReliefSetupFlow} style={{ background: '#1d4ed8', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>Continue to relief builder</button>
+          </div>
+        </div>
+      </Modal>
+    )
+  }
+
   function renderRequestedReliefBuilderModal() {
     if (!showRequestedReliefBuilder || !requestedReliefBuilder) return null
     const isIssueBuilder = requestedReliefBuilderMode === 'issues'
@@ -23920,6 +23988,7 @@ ${choices}`, '1'))
             <button type="button" onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
           </div>
         </div>
+        {renderRequestedReliefSetupModal()}
         {renderRequestedReliefBuilderModal()}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, alignItems: 'end', marginBottom: 12 }}>
           <LabeledField label={`Saved issue sets (${issueRows.length})`}>
@@ -23993,6 +24062,7 @@ ${choices}`, '1'))
             </>
           )}
         </div>
+        {renderRequestedReliefSetupModal()}
         {renderRequestedReliefBuilderModal()}
         <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
           <h2 style={{ marginTop: 0 }}>Saved Issues / Relief</h2>
