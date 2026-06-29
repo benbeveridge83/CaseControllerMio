@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V69'
+const MIO_APP_VERSION = 'Mio V70'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1980,7 +1980,26 @@ function App() {
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
-      caseControllerTags: { setter: setTags, kind: 'array', fallback: [] },
+      caseControllerTags: { setter: (value) => {
+        const cloudTags = Array.isArray(value) ? value : []
+        let browserTags = []
+        try { browserTags = JSON.parse(window.localStorage.getItem('caseControllerTags') || '[]') } catch {}
+        const merged = []
+        const seen = new Set()
+        ;[...cloudTags, ...(Array.isArray(browserTags) ? browserTags : [])].forEach((tag) => {
+          const id = String(tag?.id || '').trim()
+          const name = String(tag?.name || '').trim()
+          const key = id || `name:${name.toLowerCase()}:${String(tag?.parent_id || tag?.parentId || '')}`
+          if (!name && !id) return
+          if (seen.has(key)) return
+          seen.add(key)
+          merged.push(tag)
+        })
+        setTags(merged)
+        if (merged.length && merged.length !== cloudTags.length) {
+          window.setTimeout(() => saveMioStateKey('caseControllerTags', JSON.stringify(merged)), 250)
+        }
+      }, kind: 'array', fallback: [] },
       caseMioAiTagRuleDetails: { setter: setAiTagRuleDetails, kind: 'object', fallback: {} },
       caseMioDocumentEventRules: { setter: setDocumentEventRules, kind: 'array', fallback: [] },
       caseMioTagMetadataRules: { setter: setTagMetadataRules, kind: 'object', fallback: {} },
@@ -2665,6 +2684,7 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
+    try { saveMioStateKey('caseControllerTags', JSON.stringify(tags)) } catch {}
   }, [tags])
 
   useEffect(() => {
@@ -3552,8 +3572,11 @@ function App() {
         file_size: Number(file.size || 0) || 0
       }
     } catch (error) {
+      const storageErrorMessage = error?.message || error?.error_description || error?.statusCode || JSON.stringify(error) || String(error)
+      window.__lastMioUploadError = storageErrorMessage
       console.warn('Supabase document file upload failed. Keeping in-memory file data for this session only.', error)
-      alert('The document row was created, but the file could not be saved to Supabase Storage. Check that the case-documents bucket exists and that storage policies allow uploads. The file will not survive refresh until storage upload works.')
+      const uploadErrorText = storageErrorMessage ? `\n\nStorage error: ${storageErrorMessage}` : ''
+      alert(`The document row was created, but the file could not be saved to Supabase Storage. Check that the case-documents bucket exists and that storage policies allow uploads. The file will not survive refresh until storage upload works.${uploadErrorText}`)
       return {}
     }
   }
@@ -6964,10 +6987,74 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return discoveryTypeColumnKey(type) === 'production'
   }
 
+  function normalizeDiscoveryExtractionText(rawText = '') {
+    return String(rawText || '')
+      .replace(/\r/g, '\n')
+      .replace(/Electronically\s+Served\s+\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?/gi, '\n')
+      .replace(/\bPage\s+\d+\s+of\s+\d+\b/gi, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+
+  function extractNumberedDisclosureRequests(rawText = '') {
+    const clean = normalizeDiscoveryExtractionText(rawText)
+    if (!clean) return []
+    const startPatterns = [
+      /Requests?\s+for\s+Disclosures?\s+Disclose\s+the\s+following\s*:?/i,
+      /Disclose\s+the\s+following\s*:?/i
+    ]
+    let body = clean
+    for (const pattern of startPatterns) {
+      const match = pattern.exec(clean)
+      if (match) {
+        body = clean.slice(match.index + match[0].length).trim()
+        break
+      }
+    }
+    body = body.replace(/Certificate\s+of\s+Service[\s\S]*?Requests?\s+for\s+Disclosures?\s+Disclose\s+the\s+following\s*:?/i, '').trim()
+    const numberMatches = []
+    const re = /(?:^|\n|\s{2,})\s*(\d{1,2})\.\s+(?=[A-Z(])/g
+    let m
+    while ((m = re.exec(body))) {
+      const number = Number(m[1])
+      if (!Number.isFinite(number) || number < 1 || number > 99) continue
+      numberMatches.push({ index: m.index, end: re.lastIndex, number: String(number) })
+    }
+    const sequential = []
+    let expected = 1
+    for (const match of numberMatches.sort((a, b) => a.index - b.index)) {
+      const n = Number(match.number)
+      if (n === expected) {
+        sequential.push(match)
+        expected += 1
+      } else if (n === 1 && sequential.length === 0) {
+        sequential.push(match)
+        expected = 2
+      } else if (sequential.length && n === expected + 1) {
+        // Allow a single gap, but keep normal disclosures together.
+        sequential.push(match)
+        expected = n + 1
+      }
+    }
+    const source = sequential.length >= 2 ? sequential : numberMatches
+    return source.map((match, index) => {
+      const end = index + 1 < source.length ? source[index + 1].index : body.length
+      let requestText = body.slice(match.end, end).trim()
+      requestText = requestText.replace(/^[:.)\-\s]+/, '').trim()
+      return { request_number: match.number, request_text: requestText, confidence: 0.82 }
+    }).filter((item) => item.request_text.length > 8)
+  }
+
   function localExtractRespondingDiscoveryRequests(rawText = '', type = '') {
     const original = String(rawText || '').replace(/\r/g, '\n')
-    const clean = original.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+    const clean = normalizeDiscoveryExtractionText(original)
     if (!clean) return []
+
+    if (discoveryTypeColumnKey(type) === 'disclosures') {
+      const disclosureRequests = extractNumberedDisclosureRequests(clean)
+      if (disclosureRequests.length >= 2) return disclosureRequests
+    }
 
     const matches = []
     const addMatches = (re) => {
@@ -7046,9 +7133,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         }))
         .filter((item) => item.request_text)
       const localItems = localExtractRespondingDiscoveryRequests(rawText, type)
-      // If the API only returns one combined item, prefer the browser parser when it found
-      // multiple numbered requests. This prevents an RFP with 8 requests from becoming 1 row.
-      if (localItems.length >= 2 && localItems.length > apiItems.length) return localItems
+      // Prefer the browser parser when it found a fuller sequential list. This is especially
+      // important for Requests for Disclosure, where the API may mistake the caption/rule
+      // citations for request text instead of the numbered 1-11 disclosure requests.
+      if (localItems.length >= 2 && (localItems.length > apiItems.length || discoveryTypeColumnKey(type) === 'disclosures')) return localItems
       return apiItems
     } catch (error) {
       console.warn('Discovery extraction API unavailable; using browser fallback.', error)
