@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V66'
+const MIO_APP_VERSION = 'Mio V67'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -1337,6 +1337,7 @@ function App() {
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([])
   const [documentSearchText, setDocumentSearchText] = useState('')
   const [documentFilters, setDocumentFilters] = useState({ matter_id: 'all', name: '', date: '', description: '', status: 'all', tagId: 'all' })
+  const [documentSort, setDocumentSort] = useState({ key: 'upload_date', direction: 'desc' })
   const [bulkSelectedTagIds, setBulkSelectedTagIds] = useState([])
   const [bulkAiProgress, setBulkAiProgress] = useState({ running: false, total: 0, done: 0, current: '' })
   const [tagForm, setTagForm] = useState({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
@@ -6887,19 +6888,57 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function localExtractRespondingDiscoveryRequests(rawText = '', type = '') {
-    const clean = String(rawText || '').replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim()
+    const original = String(rawText || '').replace(/\r/g, '\n')
+    const clean = original.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
     if (!clean) return []
+
     const matches = []
-    const re = /(?:^|\n)\s*(?:(?:request\s*(?:for\s*(?:production|admission|disclosure|disclosures))?)|interrogatory|rog|rfa|rfp|rfd)\s*(?:no\.?|number|#)?\s*(\d{1,3})\s*[\).:-]\s*/gi
-    let m
-    while ((m = re.exec(clean))) matches.push({ index: m.index, number: m[1], end: re.lastIndex })
+    const addMatches = (re) => {
+      let m
+      while ((m = re.exec(clean))) {
+        const number = m[1] || m[2] || m[3] || ''
+        if (!number) continue
+        const before = clean.slice(Math.max(0, m.index - 24), m.index).toLowerCase()
+        if (/\b(page|p\.|section|rule|exhibit|date)\s*$/.test(before)) continue
+        matches.push({ index: m.index, number: String(number), end: re.lastIndex })
+      }
+    }
+
+    // Handles common Texas discovery captions after PDF text extraction, including:
+    // "REQUEST FOR PRODUCTION NO. 1:", "Request for Production 1", "RFP No 1",
+    // "INTERROGATORY NO. 3", and variants without punctuation after the number.
+    addMatches(/(?:^|\n|\s{2,})\s*(?:request\s+(?:for\s+)?(?:production|admission|admissions|disclosure|disclosures)|interrogatory|interrogatories|rog(?:g)?s?|rfa|rfp|rfd)\s*(?:no\.?|number|#)?\s*(\d{1,3})\b\s*[\).:\-]?/gi)
+
+    // Some forms use generic "Request No. 1" headings after the type appears in the title.
+    if (!matches.length || matches.length === 1) {
+      addMatches(/(?:^|\n|\s{2,})\s*request\s*(?:no\.?|number|#)\s*(\d{1,3})\b\s*[\).:\-]?/gi)
+    }
+
+    // Last-resort numbered paragraph parser. Keep this conservative so dates/page numbers do not become requests.
+    if (!matches.length) {
+      addMatches(/(?:^|\n)\s*(\d{1,3})\s*[\).]\s+(?=[A-Z][\s\S]{20,})/g)
+    }
+
+    const uniqueMatches = []
+    const seen = new Set()
+    matches
+      .sort((a, b) => a.index - b.index || Number(a.number) - Number(b.number))
+      .forEach((match) => {
+        const key = `${match.index}-${match.number}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          uniqueMatches.push(match)
+        }
+      })
+
     const requests = []
-    for (let index = 0; index < matches.length; index += 1) {
-      const start = matches[index].end
-      const end = index + 1 < matches.length ? matches[index + 1].index : clean.length
-      const requestText = clean.slice(start, end).trim()
+    for (let index = 0; index < uniqueMatches.length; index += 1) {
+      const start = uniqueMatches[index].end
+      const end = index + 1 < uniqueMatches.length ? uniqueMatches[index + 1].index : clean.length
+      let requestText = clean.slice(start, end).trim()
+      requestText = requestText.replace(/^[:.)\-\s]+/, '').trim()
       if (requestText.length < 10) continue
-      requests.push({ request_number: String(matches[index].number || requests.length + 1), request_text: requestText, confidence: 0.55 })
+      requests.push({ request_number: String(uniqueMatches[index].number || requests.length + 1), request_text: requestText, confidence: 0.6 })
     }
     if (requests.length) return requests
     return clean
@@ -6922,13 +6961,18 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (error) throw error
       const list = Array.isArray(data?.requests) ? data.requests : (Array.isArray(data?.items) ? data.items : [])
       if (!list.length) throw new Error('Extraction endpoint did not return requests.')
-      return list
+      const apiItems = list
         .map((item, index) => ({
           request_number: String(item.request_number || item.number || index + 1),
           request_text: String(item.request_text || item.text || item.request || '').trim(),
           confidence: Number(item.confidence || 0) || null
         }))
         .filter((item) => item.request_text)
+      const localItems = localExtractRespondingDiscoveryRequests(rawText, type)
+      // If the API only returns one combined item, prefer the browser parser when it found
+      // multiple numbered requests. This prevents an RFP with 8 requests from becoming 1 row.
+      if (localItems.length >= 2 && localItems.length > apiItems.length) return localItems
+      return apiItems
     } catch (error) {
       console.warn('Discovery extraction API unavailable; using browser fallback.', error)
       return localExtractRespondingDiscoveryRequests(rawText, type)
@@ -8733,6 +8777,46 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setDocuments(documents.map((doc) => doc.id === docId ? { ...doc, [field]: value } : doc))
   }
 
+  function documentSortValue(doc, key) {
+    if (key === 'matter') return matterLabel(doc.matter_id)
+    if (key === 'document') return doc.name || doc.file_name || ''
+    if (key === 'upload_date') return doc.upload_date || doc.date || doc.doc_date || doc.created_at || ''
+    if (key === 'description') return doc.description || ''
+    if (key === 'tags') return (doc.tag_ids || []).map(tagFullName).join(' ')
+    if (key === 'ai') return aiStatusLabel(doc.ai_status)
+    if (key === 'file') return doc.file_name || doc.original_file_name || ''
+    return doc[key] || ''
+  }
+
+  function sortDocumentsForDisplay(rows = []) {
+    const key = documentSort?.key || 'upload_date'
+    const direction = documentSort?.direction === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      const av = documentSortValue(a, key)
+      const bv = documentSortValue(b, key)
+      const ad = key.includes('date') ? new Date(av || 0).getTime() : NaN
+      const bd = key.includes('date') ? new Date(bv || 0).getTime() : NaN
+      if (!Number.isNaN(ad) || !Number.isNaN(bd)) return ((ad || 0) - (bd || 0)) * direction
+      return String(av || '').localeCompare(String(bv || ''), undefined, { numeric: true, sensitivity: 'base' }) * direction
+    })
+  }
+
+  function toggleDocumentSort(key) {
+    setDocumentSort((current) => ({
+      key,
+      direction: current?.key === key && current?.direction === 'asc' ? 'desc' : 'asc'
+    }))
+  }
+
+  function renderDocumentSortHeader(label, key) {
+    const active = documentSort?.key === key
+    return (
+      <button type="button" onClick={() => toggleDocumentSort(key)} style={{ border: 0, background: 'transparent', padding: 0, fontWeight: 'bold', cursor: 'pointer' }}>
+        {label}{active ? (documentSort.direction === 'asc' ? ' ▲' : ' ▼') : ' ↕'}
+      </button>
+    )
+  }
+
   function filteredDocuments(matterId = '') {
     const search = documentSearchText.toLowerCase()
     return documents.filter((doc) => {
@@ -10072,7 +10156,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
 
   function renderDocumentRepository({ matterId = '', showBulkReview = false } = {}) {
-    const shownDocuments = filteredDocuments(matterId)
+    const shownDocuments = sortDocumentsForDisplay(filteredDocuments(matterId))
     const shownDocumentIds = shownDocuments.map((doc) => doc.id)
     const allShownDocumentsSelected = shownDocumentIds.length > 0 && shownDocumentIds.every((id) => selectedDocumentIds.includes(id))
     const selectAllShownDocuments = () => setSelectedDocumentIds(Array.from(new Set([...selectedDocumentIds, ...shownDocumentIds])))
@@ -10130,10 +10214,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <summary><strong>Filters</strong></summary>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
             {!matterId && (
-              <select value={documentFilters.matter_id} onChange={(e) => setDocumentFilters({ ...documentFilters, matter_id: e.target.value })}>
-                <option value="all">All matters</option>
-                {matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
-              </select>
+              <div style={{ minWidth: 320 }}>
+                <SmartMatterSelect
+                  value={documentFilters.matter_id === 'all' ? '' : documentFilters.matter_id}
+                  onChange={(value) => setDocumentFilters({ ...documentFilters, matter_id: value || 'all' })}
+                  placeholder="Type to filter matters"
+                  style={{ width: '100%' }}
+                />
+                <button type="button" onClick={() => setDocumentFilters({ ...documentFilters, matter_id: 'all' })} style={{ marginTop: 4, padding: '4px 8px', fontSize: 12 }}>All matters</button>
+              </div>
             )}
             <input placeholder="Name" value={documentFilters.name} onChange={(e) => setDocumentFilters({ ...documentFilters, name: e.target.value })} />
             <input placeholder="Description" value={documentFilters.description} onChange={(e) => setDocumentFilters({ ...documentFilters, description: e.target.value })} />
@@ -10219,7 +10308,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
         <div style={{ overflow: 'auto', marginTop: 16, border: '1px solid #d5dce3' }}>
           <table cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse', minWidth: matterId ? 1050 : 1250 }}>
-            <thead><tr><th><label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={allShownDocumentsSelected} onChange={toggleAllShownDocuments} /> Pick</label></th>{!matterId && <th>Matter</th>}<th>Document</th><th>Upload Date</th><th>Description</th><th>Tags</th><th>AI</th><th>File</th></tr></thead>
+            <thead><tr><th><label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={allShownDocumentsSelected} onChange={toggleAllShownDocuments} /> Pick</label></th>{!matterId && <th>{renderDocumentSortHeader('Matter', 'matter')}</th>}<th>{renderDocumentSortHeader('Document', 'document')}</th><th>{renderDocumentSortHeader('Upload Date', 'upload_date')}</th><th>{renderDocumentSortHeader('Description', 'description')}</th><th>{renderDocumentSortHeader('Tags', 'tags')}</th><th>{renderDocumentSortHeader('AI', 'ai')}</th><th>{renderDocumentSortHeader('File', 'file')}</th></tr></thead>
             <tbody>
               {shownDocuments.map((doc) => (
                 <Fragment key={doc.id}>
@@ -10422,10 +10511,17 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const normalizedSelectedIds = tagAndParentIds(selectedIds || [])
     const [open, setOpen] = useState(false)
     const [expandedTagIds, setExpandedTagIds] = useState([])
+    const [tagSearch, setTagSearch] = useState('')
     const hoverTimersRef = useRef({})
     const pickerRef = useRef(null)
 
-    const availableTagIds = new Set(allTagsIndented().filter((tag) => isTagAvailableForMatter(tag.id, matterId)).map((tag) => tag.id))
+    const indentedPickerTags = allTagsIndented()
+    const pickerBaseTags = indentedPickerTags.length ? indentedPickerTags : tags.map((tag) => ({ ...tag, level: 0 }))
+    const matterFilteredPickerTags = pickerBaseTags.filter((tag) => isTagAvailableForMatter(tag.id, matterId))
+    const visiblePickerTags = matterFilteredPickerTags.length ? matterFilteredPickerTags : pickerBaseTags
+    const tagSearchText = String(tagSearch || '').toLowerCase().trim()
+    const searchedTagIds = new Set(!tagSearchText ? visiblePickerTags.map((tag) => tag.id) : visiblePickerTags.filter((tag) => `${tag.name || ''} ${tagFullName(tag.id)}`.toLowerCase().includes(tagSearchText)).flatMap((tag) => tagAndParentIds([tag.id])))
+    const availableTagIds = new Set(visiblePickerTags.filter((tag) => searchedTagIds.has(tag.id)).map((tag) => tag.id))
 
     useEffect(() => {
       const ancestorIds = new Set()
@@ -10460,7 +10556,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const directChildren = childTags(parentId).filter((tag) => availableTagIds.has(tag.id))
       if (parentId) return directChildren
       const directIds = new Set(directChildren.map((tag) => tag.id))
-      const orphanedVisibleTags = allTagsIndented()
+      const orphanedVisibleTags = pickerBaseTags
         .filter((tag) => availableTagIds.has(tag.id) && (tag.parent_id || '') && !availableTagIds.has(tag.parent_id) && !directIds.has(tag.id))
         .sort((a, b) => String(tagFullName(a.id) || a.name || '').localeCompare(String(tagFullName(b.id) || b.name || '')))
       return [...directChildren, ...orphanedVisibleTags]
@@ -10548,8 +10644,9 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
         {open && (
           <div style={{ position: 'absolute', zIndex: 50, top: 'calc(100% + 4px)', left: 0, width: 340, maxHeight: 360, overflow: 'auto', padding: 8, border: '1px solid #cbd5e1', borderRadius: 10, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)' }}>
+            <input value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} placeholder="Predictive search tags" style={{ width: '100%', marginBottom: 8, padding: '6px 8px' }} />
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Hover over a parent tag for 0.5 seconds, or click ▸, to show child tags.</div>
-            {childrenForPicker('').length ? renderTagBranch('') : <div style={{ color: '#666' }}>No tags available.</div>}
+            {childrenForPicker('').length ? renderTagBranch('') : <div style={{ color: '#666' }}>{tags.length ? 'No matching tags for this search.' : 'No tags available.'}</div>}
             <div style={{ marginTop: 8, borderTop: '1px solid #e5e7eb', paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
               <button type="button" onClick={() => setOpen(false)}>Done</button>
               {normalizedSelectedIds.length > 0 && <button type="button" onClick={() => selectedTerminalTagIds(normalizedSelectedIds).forEach((tagId) => onToggle(tagId))}>Clear</button>}
