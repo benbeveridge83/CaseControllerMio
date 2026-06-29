@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V67'
+const MIO_APP_VERSION = 'Mio V68'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
@@ -3481,6 +3481,38 @@ function App() {
     })
   }
 
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result || '')
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  async function loadDocumentFileDataUrl(row = {}) {
+    if (row.file_data) return row.file_data
+    const filePath = row.file_path || row.filePath || row.storage_path || row.path || ''
+    if (!filePath) return ''
+    try {
+      const { data, error } = await supabase.storage.from(DOCUMENT_BUCKET).download(filePath)
+      if (!error && data) return await blobToDataUrl(data)
+      if (error) console.warn('Supabase storage download failed; trying public URL.', error)
+    } catch (error) {
+      console.warn('Supabase storage download threw; trying public URL.', error)
+    }
+    try {
+      const publicUrl = getDocumentPublicUrl(filePath)
+      if (!publicUrl) return ''
+      const res = await fetch(publicUrl)
+      if (!res.ok) throw new Error(`File fetch failed: ${res.status}`)
+      return await blobToDataUrl(await res.blob())
+    } catch (error) {
+      console.warn('Could not load stored document file for extraction.', error)
+      return ''
+    }
+  }
+
 
   function dataUrlToUint8Array(dataUrl = '') {
     const base64 = String(dataUrl || '').split(',')[1] || ''
@@ -3600,17 +3632,17 @@ function App() {
   }
 
   async function extractDocumentTextForAi(row = {}) {
-    const fileType = String(row.file_type || '').toLowerCase()
-    const fileName = String(row.file_name || row.name || '').toLowerCase()
-    const fileData = row.file_data || ''
+    const fileType = String(row.file_type || row.mime_type || '').toLowerCase()
+    const fileName = String(row.file_name || row.original_file_name || row.name || '').toLowerCase()
+    const fileData = row.file_data || await loadDocumentFileDataUrl(row)
 
     if (!fileData) {
       return {
         extracted_text: '',
-        extraction_method: 'no_file_data',
+        extraction_method: 'no_file_data_or_storage_path',
         text_quality: 'none',
         needs_ocr: false,
-        warnings: ['No file data was available for AI analysis.']
+        warnings: ['No file data or stored file path was available. Re-upload the document or open the document from Documents to confirm the file is attached.']
       }
     }
 
@@ -7066,6 +7098,92 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return lines.join('\n')
   }
 
+  function respondingDiscoveryRequestsPlainText(set) {
+    const lines = []
+    lines.push(set.title || discoveryTypeShortLabel(set.discovery_type))
+    lines.push(`Matter: ${matterLabelById(set.matter_id)}`)
+    lines.push(`Received: ${discoveryDateDisplay(set.date_received)} | Client due: ${discoveryDateDisplay(set.client_response_due)}`)
+    lines.push('')
+    ;(set.requests || []).forEach((request, index) => {
+      lines.push(`${discoveryTypeShortLabel(set.discovery_type)} ${request.request_number || index + 1}`)
+      lines.push(request.request_text || '')
+      lines.push('')
+    })
+    return lines.join('\n')
+  }
+
+  function downloadRespondingDiscoveryRequests(set) {
+    if (!set) return
+    const blob = new Blob([respondingDiscoveryRequestsPlainText(set)], { type: 'text/plain;charset=utf-8' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${(set.title || 'discovery-requests').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '')}-requests.txt`
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
+
+  function ordinalWord(number) {
+    const value = Number(number || 1)
+    if (value === 1) return 'First'
+    if (value === 2) return 'Second'
+    if (value === 3) return 'Third'
+    return `${value}th`
+  }
+
+  function responsePhaseLabel(phase = 'original') {
+    const text = String(phase || 'original')
+    if (text === 'original') return 'Original Response'
+    const supplemental = text.match(/^supplemental-(\d+)$/)
+    if (supplemental) return `${ordinalWord(supplemental[1])} Supplemental Response`
+    const amended = text.match(/^amended-(\d+)$/)
+    if (amended) return `${ordinalWord(amended[1])} Amended Response`
+    return text
+  }
+
+  function responsePhaseList(set) {
+    const phases = Array.isArray(set?.response_phases) && set.response_phases.length ? set.response_phases : [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: set?.created_at || new Date().toISOString() }]
+    return phases.some((phase) => phase.key === 'original') ? phases : [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: set?.created_at || new Date().toISOString() }, ...phases]
+  }
+
+  function nextResponsePhase(set, kind = 'supplemental') {
+    const phases = responsePhaseList(set).filter((phase) => phase.kind === kind)
+    const number = phases.length + 1
+    const key = `${kind}-${number}`
+    return { key, label: kind === 'amended' ? `${ordinalWord(number)} Amended Response` : `${ordinalWord(number)} Supplemental Response`, kind, number, created_at: new Date().toISOString() }
+  }
+
+  function addRespondingDiscoveryResponsePhase(setId, kind = 'supplemental') {
+    let created = null
+    setRespondingDiscoverySets((current) => (current || []).map((set) => {
+      if (String(set.id) !== String(setId)) return set
+      const phase = nextResponsePhase(set, kind)
+      created = phase
+      return { ...set, response_phases: [...responsePhaseList(set), phase], active_response_phase: phase.key }
+    }))
+    return created
+  }
+
+  function updateRespondingDiscoveryResponseVersion(setId, requestId, phaseKey, patch) {
+    setRespondingDiscoverySets((current) => (current || []).map((set) => {
+      if (String(set.id) !== String(setId)) return set
+      return {
+        ...set,
+        requests: (set.requests || []).map((request) => {
+          if (String(request.id) !== String(requestId)) return request
+          if (phaseKey === 'original') return { ...request, ...patch }
+          const versions = { ...(request.response_versions || {}) }
+          versions[phaseKey] = { ...(versions[phaseKey] || {}), ...patch }
+          return { ...request, response_versions: versions }
+        })
+      }
+    }))
+  }
+
+  function requestResponseForPhase(request = {}, phaseKey = 'original') {
+    if (phaseKey === 'original') return request
+    return { ...request, ...(request.response_versions?.[phaseKey] || {}) }
+  }
+
   function downloadRespondingDiscoveryText(set, includeAttorneyNotes = true) {
     const blob = new Blob([respondingDiscoveryPlainText(set, { includeAttorneyNotes })], { type: 'text/plain;charset=utf-8' })
     const link = document.createElement('a')
@@ -7080,17 +7198,24 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const set = (respondingDiscoverySets || []).find((item) => String(item.id) === String(setId))
       if (set) downloadRespondingDiscoveryText(set, includeAttorneyNotes)
     }
+    window.downloadRespondingDiscoveryRequests = (setId) => {
+      const set = (respondingDiscoverySets || []).find((item) => String(item.id) === String(setId))
+      if (set) downloadRespondingDiscoveryRequests(set)
+    }
+    window.updateRespondingDiscoveryResponseVersion = updateRespondingDiscoveryResponseVersion
+    window.addRespondingDiscoveryResponsePhase = addRespondingDiscoveryResponsePhase
   }
 
   function openRespondingDiscoveryResponsesWindow(set) {
     if (!set) return
-    const win = window.open('', '_blank', 'width=620,height=620,scrollbars=yes,resizable=yes')
+    const win = window.open('', '_blank', 'width=760,height=720,scrollbars=yes,resizable=yes')
     if (!win) { alert('Please allow popups to open response downloads.'); return }
     const safeSetId = String(set.id).replace(/'/g, "\\'")
     const filesHtml = (set.requests || []).flatMap((request) => (request.uploaded_files || []).map((file) => `<div class="file"><strong>${escapeHtmlForRulesReport(file.file_name || 'Uploaded file')}</strong><br><span class="hint">${escapeHtmlForRulesReport(request.request_number || '')}: ${escapeHtmlForRulesReport(String(request.request_text || '').slice(0, 120))}</span></div>`)).join('') || '<p class="hint">No uploaded documents yet.</p>'
     const logPreview = JSON.stringify(respondingDiscoveryPlainText(set, { includeAttorneyNotes: true }).slice(0, 4000))
+    const phaseButtons = responsePhaseList(set).map((phase) => `<button class="tab" onclick="showPhase('${escapeHtmlForRulesReport(phase.key)}')" id="tab_${escapeHtmlForRulesReport(phase.key)}">${escapeHtmlForRulesReport(phase.label)}</button>`).join('')
     win.document.open()
-    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}button{display:block;width:100%;text-align:left;border:1px solid #d8e2ef;border-radius:10px;background:white;padding:12px;margin:10px 0;font-weight:700;cursor:pointer}.hint{color:#64748b}.file{border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin:6px 0}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(set.title || '')}</p><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></body></html>`)
+    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(set.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0"></div><div id="requestHost"></div><script>const set=${JSON.stringify(set).replace(/</g,'\\u003c')};let phases=${JSON.stringify(responsePhaseList(set)).replace(/</g,'\\u003c')};let active='original';const rfpOptions=${JSON.stringify(DISCOVERY_RFP_RESPONSE_OPTIONS).replace(/</g,'\\u003c')};function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function labelFor(p){return (phases.find(x=>x.key===p)||{}).label||p}function phaseData(req){return active==='original'?req:Object.assign({},req,(req.response_versions&&req.response_versions[active])||{})}function save(reqId,patch){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion)window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',reqId,active,patch)}function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=labelFor(p);render()}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){phases.push(phase);const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key)}}}function render(){const host=document.getElementById('requestHost');host.innerHTML=(set.requests||[]).map((req,i)=>{const data=phaseData(req);const title='${escapeHtmlForRulesReport(discoveryTypeShortLabel(set.discovery_type))} '+(req.request_number||i+1);const body=esc(req.request_text||'').replace(/\n/g,'<br>');const notes=esc(req.attorney_comments||'None').replace(/\n/g,'<br>');let answer='';if(${isProductionDiscoveryType(set.discovery_type)?'true':'false'}){answer='<label>Response option<select onchange="save(\\''+req.id+'\\',{rfp_status:this.value})"><option value="">Choose response...</option>'+rfpOptions.map(o=>'<option '+(data.rfp_status===o?'selected':'')+' value="'+esc(o)+'">'+esc(o)+'</option>').join('')+'</select></label><label>Comment/questions<textarea oninput="save(\\''+req.id+'\\',{client_comments:this.value})">'+esc(data.client_comments||'')+'</textarea></label>'}else{answer='<label>Answer<textarea oninput="save(\\''+req.id+'\\',{client_answer:this.value})">'+esc(data.client_answer||'')+'</textarea></label><label>Comment/questions<textarea oninput="save(\\''+req.id+'\\',{client_comments:this.value})">'+esc(data.client_comments||'')+'</textarea></label>'}return '<div class="req"><h3>'+esc(title)+'</h3><p>'+body+'</p><p><b>Attorney comments:</b><br>'+notes+'</p>'+(req.client_must_respond===false?'<p class="hint"><b>No response required.</b></p>':answer)+'</div>'}).join('')}showPhase('original');</script></body></html>`)
     win.document.close()
   }
 
@@ -7122,6 +7247,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         document_id: respondingDiscoveryForm.document_id || '',
         client_instructions: respondingDiscoveryForm.client_instructions || defaultDiscoveryInstructionsForType(setType),
         created_at: new Date().toISOString(),
+        response_phases: [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: new Date().toISOString() }],
+        active_response_phase: 'original',
         requests
       }
       setRespondingDiscoverySets((current) => [nextSet, ...(current || [])])
@@ -7191,16 +7318,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const visibleMatterDocs = documents.filter((doc) => !effectiveMatterId || String(doc.matter_id) === String(effectiveMatterId))
     const summary = respondingDiscoverySummary(effectiveMatterId)
     const columnCell = (sets) => sets.length ? (
-      <div style={{ display: 'grid', gap: 4 }}>
+      <div style={{ display: 'grid', gap: 6 }}>
         {sets.slice(0, 4).map((set) => (
-          <button
-            key={set.id}
-            type="button"
-            onClick={() => { setRespondingDiscoverySelectedSetId(set.id); setRespondingDiscoveryMatterId(set.matter_id || '') }}
-            style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer' }}
-          >
-            {set.title || discoveryTypeShortLabel(set.discovery_type)}
-          </button>
+          <div key={set.id} style={{ display: 'grid', gap: 3, justifyItems: 'center' }}>
+            <button
+              type="button"
+              onClick={() => { setRespondingDiscoverySelectedSetId(set.id); setRespondingDiscoveryMatterId(set.matter_id || '') }}
+              style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              {set.title || discoveryTypeShortLabel(set.discovery_type)}
+            </button>
+            <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(set)} style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Respond to Discovery</button>
+            <button type="button" onClick={() => downloadRespondingDiscoveryRequests(set)} style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Download discovery requests</button>
+            <button type="button" onClick={() => deleteRespondingDiscoverySet(set.id)} style={{ border: '0', background: 'transparent', color: '#991b1b', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Delete</button>
+          </div>
         ))}
       </div>
     ) : <span style={{ color: '#94a3b8' }}>—</span>
@@ -7329,7 +7460,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                     <textarea value={activeSet.client_instructions || ''} onChange={(e) => updateRespondingDiscoverySet(activeSet.id, { client_instructions: e.target.value })} style={{ width: '100%', minHeight: 54 }} />
                   </LabeledField>
                   <button type="button" onClick={() => addRespondingDiscoveryRequest(activeSet.id)}>+ Add request</button>
-                  <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(activeSet)} style={{ marginLeft: 8 }}>Responses / Downloads</button>
+                  <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(activeSet)} style={{ marginLeft: 8 }}>Respond / Downloads</button>
+                  <button type="button" onClick={() => downloadRespondingDiscoveryRequests(activeSet)} style={{ marginLeft: 8 }}>Download discovery requests</button>
                   <button type="button" onClick={() => downloadRespondingDiscoveryText(activeSet, true)} style={{ marginLeft: 8 }}>Download with notes</button>
                   <button type="button" onClick={() => downloadRespondingDiscoveryText(activeSet, false)} style={{ marginLeft: 8 }}>Download no notes</button>
                   <button type="button" onClick={() => deleteRespondingDiscoverySet(activeSet.id)} style={{ marginLeft: 8, color: '#991b1b' }}>Delete set</button>
@@ -30828,6 +30960,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 Requested Relief
               </button>
 
+              <button onClick={() => setSettingsTab('discovery_instructions')} style={{ marginRight: 10, fontWeight: settingsTab === 'discovery_instructions' ? 'bold' : 'normal' }}>
+                Discovery Instructions
+              </button>
+
               <button onClick={() => setSettingsTab('ai_documents')} style={{ marginRight: 10, fontWeight: settingsTab === 'ai_documents' ? 'bold' : 'normal' }}>
                 AI Documents
               </button>
@@ -30864,6 +31000,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'email_signature' && renderEmailSignatureSettings()}
             {settingsTab === 'need_to_set_colors' && renderNeedToSetColorSettings()}
             {settingsTab === 'requested_relief' && renderRequestedReliefSettings()}
+            {settingsTab === 'discovery_instructions' && (
+              <div style={{ border: '1px solid #d8e2ef', borderRadius: 12, padding: 16, background: '#fff' }}>
+                <h2>Discovery Instructions</h2>
+                <p style={{ color: '#64748b' }}>These are global default instructions for all matters. When you create a discovery set, Mio copies the matching instructions into that matter-level set. You can still revise the copied instructions on the individual matter discovery page.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                  <LabeledField label="Requests for Disclosure instructions"><textarea value={discoveryInstructionSettings.disclosures || ''} onChange={(e) => updateDiscoveryInstructionSetting('disclosures', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
+                  <LabeledField label="Requests for Production instructions"><textarea value={discoveryInstructionSettings.production || ''} onChange={(e) => updateDiscoveryInstructionSetting('production', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
+                  <LabeledField label="Interrogatories instructions"><textarea value={discoveryInstructionSettings.interrogatories || ''} onChange={(e) => updateDiscoveryInstructionSetting('interrogatories', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
+                  <LabeledField label="Requests for Admissions instructions"><textarea value={discoveryInstructionSettings.admissions || ''} onChange={(e) => updateDiscoveryInstructionSetting('admissions', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
+                </div>
+              </div>
+            )}
 
             {settingsTab === 'options' && (
               <>
