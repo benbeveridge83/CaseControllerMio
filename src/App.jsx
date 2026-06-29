@@ -21925,7 +21925,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <h3 style={{ margin: '0 0 10px 0' }}>Add billing time</h3>
           <form onSubmit={saveBillingEntry}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
-              <LabeledField label={isIssueBuilder ? 'Matter (optional for templates)' : 'Matter *'}>
+              <LabeledField label="Matter *">
                 <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Search open matters only" style={billingImportantFieldStyle} />
               </LabeledField>
               <LabeledField label="User">
