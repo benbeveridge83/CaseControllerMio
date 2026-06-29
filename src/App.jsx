@@ -2,8 +2,9 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V68'
+const MIO_APP_VERSION = 'Mio V69'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
+const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
 const DISCOVERY_RFP_RESPONSE_OPTIONS = [
@@ -2022,6 +2023,7 @@ function App() {
       caseMioRequestedReliefIssueSets: { setter: setRequestedReliefIssueSets, kind: 'array', fallback: [] },
       caseMioRequestedReliefTemplates: { setter: setRequestedReliefTemplates, kind: 'array', fallback: [] },
       caseMioRequestedReliefTables: { setter: setRequestedReliefTables, kind: 'array', fallback: defaultRequestedReliefTables },
+      caseMioRequestedReliefMatrixTable: { setter: (value) => setRequestedReliefMatrixTable(ensureRequestedReliefMatrixShape(value)), kind: 'object', fallback: defaultRequestedReliefMatrixTable },
       caseMioRequestedReliefTableExpandedIds: { setter: setRequestedReliefTableExpandedIds, kind: 'array', fallback: [] },
       caseMioRequestedReliefComparisonOrder: { setter: setRequestedReliefComparisonOrder, kind: 'object', fallback: {} },
       caseMioRequestedReliefExpandedIds: { setter: setRequestedReliefExpandedIds, kind: 'array', fallback: [] },
@@ -3510,6 +3512,49 @@ function App() {
     } catch (error) {
       console.warn('Could not load stored document file for extraction.', error)
       return ''
+    }
+  }
+
+
+  function sanitizeStorageFileName(name) {
+    return String(name || 'file')
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'file'
+  }
+
+  function getDocumentPublicUrl(filePath) {
+    if (!filePath) return ''
+    try {
+      const { data } = supabase.storage.from(DOCUMENT_BUCKET).getPublicUrl(filePath)
+      return data?.publicUrl || ''
+    } catch (error) {
+      console.warn('Could not create Supabase public URL for document.', error)
+      return ''
+    }
+  }
+
+  async function uploadMioDocumentFile(file, docId, matterId = '') {
+    if (!file) return {}
+    const safeName = sanitizeStorageFileName(file.name || 'document')
+    const userPart = session?.user?.id || 'user'
+    const matterPart = matterId || 'unassigned'
+    const path = `${userPart}/${matterPart}/${docId}/${Date.now()}_${safeName}`
+    try {
+      const { error } = await supabase.storage
+        .from(DOCUMENT_BUCKET)
+        .upload(path, file, { upsert: true, contentType: file.type || 'application/octet-stream' })
+      if (error) throw error
+      return {
+        file_path: path,
+        file_name: file.name || safeName,
+        file_type: file.type || '',
+        file_size: Number(file.size || 0) || 0
+      }
+    } catch (error) {
+      console.warn('Supabase document file upload failed. Keeping in-memory file data for this session only.', error)
+      alert('The document row was created, but the file could not be saved to Supabase Storage. Check that the case-documents bucket exists and that storage policies allow uploads. The file will not survive refresh until storage upload works.')
+      return {}
     }
   }
 
@@ -8773,29 +8818,31 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setSelectedDocumentIds([])
   }
 
-  function downloadDocument(doc) {
-    if (!doc.file_data) {
-      alert('No file is attached to this document.')
+  async function downloadDocument(doc) {
+    const dataUrl = await loadDocumentFileDataUrl(doc)
+    if (!dataUrl) {
+      alert('No file is attached to this document. Re-upload it once so Mio can save the file to Supabase Storage.')
       return
     }
     const link = document.createElement('a')
-    link.href = doc.file_data
-    link.download = doc.file_name || doc.name || 'document'
+    link.href = dataUrl
+    link.download = doc.file_name || doc.original_file_name || doc.name || 'document'
     link.click()
   }
 
-  function viewDocument(doc) {
-    if (!doc.file_data) {
-      alert('No file is attached to this document.')
+  async function viewDocument(doc) {
+    const dataUrl = await loadDocumentFileDataUrl(doc)
+    if (!dataUrl) {
+      alert('No file is attached to this document. Re-upload it once so Mio can save the file to Supabase Storage.')
       return
     }
     const docWindow = window.open('', '_blank')
     if (!docWindow) {
-      window.open(doc.file_data, '_blank')
+      window.open(dataUrl, '_blank')
       return
     }
     const safeTitle = String(doc.name || doc.file_name || 'Document').replace(/[<>]/g, '')
-    docWindow.document.write(`<!doctype html><html><head><title>${safeTitle}</title></head><body style="margin:0"><iframe src="${doc.file_data}" title="${safeTitle}" style="border:0;width:100vw;height:100vh"></iframe></body></html>`)
+    docWindow.document.write(`<!doctype html><html><head><title>${safeTitle}</title></head><body style="margin:0"><iframe src="${dataUrl}" title="${safeTitle}" style="border:0;width:100vw;height:100vh"></iframe></body></html>`)
     docWindow.document.close()
   }
 
@@ -8814,11 +8861,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert('Select the matter the document is being added to.')
       return
     }
-    const filePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
+    const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const tempFilePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
+    const storedFilePayload = documentForm.file ? await uploadMioDocumentFile(documentForm.file, docId, matterIdForDocument) : {}
     setDocuments([
       ...documents,
       {
-        id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: docId,
         matter_id: matterIdForDocument,
         name: documentForm.name.trim(),
         date: documentForm.date || '',
@@ -8828,7 +8877,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         document_field_values: documentForm.document_field_values || {},
         upload_date: dateToInputValue(new Date()),
         ...emptyDocumentAiReview,
-        ...filePayload
+        ...tempFilePayload,
+        ...storedFilePayload
       }
     ])
     setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
@@ -8848,6 +8898,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       tag_ids: tagAndParentIds(defaultTagIds),
       document_field_values: {},
       ...emptyDocumentAiReview,
+      file,
       ...(await readFileAsDataUrl(file))
     })))
     setBulkDocumentRows([...bulkDocumentRows, ...prepared])
@@ -8873,21 +8924,27 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setBulkDocumentRows(bulkDocumentRows.filter((row) => !row.selected))
   }
 
-  function commitBulkRows(rowsToCommit = []) {
+  async function commitBulkRows(rowsToCommit = []) {
     const rows = rowsToCommit.filter((row) => row.name.trim() && row.matter_id)
     if (rows.length === 0) {
       alert('Choose at least one bulk document row with a matter and a name.')
       return false
     }
     const committedIds = new Set(rows.map((row) => row.id))
-    setDocuments([
-      ...documents,
-      ...rows.map((row, index) => withEmptyDocumentAiReview({
-        ...row,
-        id: `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+    const savedRows = []
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]
+      const docId = `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
+      const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, row.matter_id) : {}
+      const { file, ...rowWithoutFile } = row
+      savedRows.push(withEmptyDocumentAiReview({
+        ...rowWithoutFile,
+        ...storedFilePayload,
+        id: docId,
         upload_date: dateToInputValue(new Date())
       }))
-    ])
+    }
+    setDocuments([...documents, ...savedRows])
     setBulkDocumentRows(bulkDocumentRows.filter((row) => !committedIds.has(row.id)))
     return true
   }
@@ -24352,6 +24409,31 @@ ${choices}`, '1'))
     })
   }
 
+  function runRequestedReliefRichTextCommand(command, value = null) {
+    try {
+      document.execCommand(command, false, value)
+    } catch (error) {
+      console.warn('Requested relief rich text command failed:', command, error)
+    }
+  }
+
+  function renderRequestedReliefRichTextToolbar() {
+    const buttons = [
+      ['bold', 'B'],
+      ['italic', 'I'],
+      ['underline', 'U'],
+      ['insertOrderedList', '1.'],
+      ['insertUnorderedList', '•']
+    ]
+    return (
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+        {buttons.map(([command, label]) => (
+          <button key={command} type="button" onMouseDown={(e) => { e.preventDefault(); runRequestedReliefRichTextCommand(command) }} style={{ padding: '3px 7px', borderRadius: 6, fontSize: 12, fontWeight: 800 }}>{label}</button>
+        ))}
+      </div>
+    )
+  }
+
   function renderRequestedReliefMatrixTable({ title = 'Requested Relief Table', maxHeight = 620, compact = false } = {}) {
     const shaped = ensureRequestedReliefMatrixShape(requestedReliefMatrixTable)
     const columns = shaped.columns
@@ -24404,11 +24486,15 @@ ${choices}`, '1'))
                       const inheritedOnly = own === undefined && isOption && inherited
                       return (
                         <td key={`${row.id}-${column.id}`} style={{ border: '1px solid #e2e8f0', padding: 6, verticalAlign: 'top', background: inheritedOnly ? '#f8fafc' : '#fff' }}>
-                          <textarea
-                            value={value}
-                            onChange={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.target.value)}
-                            placeholder={isOption ? 'Inherits from parent issue unless edited' : 'Add text for this issue'}
-                            style={{ width: '100%', minHeight: compact ? 42 : 62, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6, fontSize: 12, background: inheritedOnly ? '#f8fafc' : '#fff' }}
+                          {renderRequestedReliefRichTextToolbar()}
+                          <div
+                            contentEditable
+                            suppressContentEditableWarning
+                            onBlur={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.currentTarget.innerHTML)}
+                            onInput={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.currentTarget.innerHTML)}
+                            data-placeholder={isOption ? 'Inherits from parent issue unless edited' : 'Add text for this issue'}
+                            style={{ width: '100%', minHeight: compact ? 42 : 62, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6, fontSize: 12, background: inheritedOnly ? '#f8fafc' : '#fff', outline: 'none', whiteSpace: 'normal' }}
+                            dangerouslySetInnerHTML={{ __html: value || '' }}
                           />
                           {inheritedOnly && <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>Inherited from parent issue. Edit to override.</div>}
                         </td>
