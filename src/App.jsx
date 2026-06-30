@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V72'
+const MIO_APP_VERSION = 'Mio V73'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1837,6 +1837,7 @@ function App() {
   const [matterPageFilterCaseStatus, setMatterPageFilterCaseStatus] = useState(() => localStorage.getItem('matterPageFilterCaseStatus') || 'all')
   const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => localStorage.getItem('matterPageFilterMatterStatus') || 'all')
   const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => localStorage.getItem('matterPageFilterCaseType') || 'all')
+  const [matterExternalEfileUrl, setMatterExternalEfileUrl] = useState(() => localStorage.getItem('matterExternalEfileUrl') || 'https://efile.txcourts.gov/')
   const [matterColumnWidths, setMatterColumnWidths] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('matterColumnWidths') || '{}')
@@ -1978,6 +1979,7 @@ function App() {
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
+      matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
       caseControllerTags: { setter: (value) => {
@@ -4761,9 +4763,144 @@ function App() {
     )
   }
 
+  function normalizeExternalUrl(url) {
+    const clean = String(url || '').trim()
+    if (!clean) return ''
+    if (/^https?:\/\//i.test(clean)) return clean
+    return `https://${clean}`
+  }
+
+  function openMatterEmailAddress(email) {
+    const clean = String(email || '').trim()
+    if (!clean) {
+      alert('No email address is saved for this contact yet.')
+      return
+    }
+    window.location.href = `mailto:${encodeURIComponent(clean)}`
+  }
+
+  function openMatterExternalLink(url) {
+    const clean = normalizeExternalUrl(url)
+    if (!clean) {
+      alert('No link is saved for this option yet.')
+      return
+    }
+    window.open(clean, '_blank', 'noopener,noreferrer')
+  }
+
+  function matterClientEmail(matter) {
+    return matter?.clients?.email || matter?.client_email || ''
+  }
+
+  function matterOpposingPartyEmail(matter) {
+    return matterPartyOne(matter?.id).email || ''
+  }
+
+  function matterOpposingCounselEmail(matter) {
+    return matterPartyOneCounsel(matter?.id).email || ''
+  }
+
+  function matterCourtCoordinatorEmail(matter) {
+    return matter?.courts?.court_coordinator_email || ''
+  }
+
+  function matterAssociateCoordinatorEmail(matter) {
+    return matter?.courts?.associate_coordinator_email || matter?.courts?.associate_court_coordinator_email || ''
+  }
+
+  function matterEmailOptions(matter) {
+    return [
+      { key: 'client', label: 'Email client', email: matterClientEmail(matter) },
+      { key: 'opposing_counsel', label: 'Email opposing counsel', email: matterOpposingCounselEmail(matter) },
+      { key: 'opposing_party', label: 'Email opposing party', email: matterOpposingPartyEmail(matter) },
+      { key: 'court_coordinator', label: 'Email court coordinator', email: matterCourtCoordinatorEmail(matter) },
+      { key: 'associate_coordinator', label: 'Email associate judge coordinator', email: matterAssociateCoordinatorEmail(matter) }
+    ]
+  }
+
+  function matterLinkOptions(matter) {
+    return [
+      { key: 'court_docket', label: 'Open court docket', url: matter?.courts?.court_docket || '' },
+      { key: 'efile', label: 'Open eFile website', url: matterExternalEfileUrl },
+      { key: 'court_website', label: 'Open court website', url: matter?.courts?.court_website || '' }
+    ]
+  }
+
+  function MatterHoverMenu({ icon, title, options, optionType = 'email' }) {
+    const hasAny = (options || []).some((option) => String(option.email || option.url || '').trim())
+    return (
+      <span className="matter-hover-menu" style={{ position: 'relative', display: 'inline-block' }}>
+        <style>{`.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}`}</style>
+        <button
+          type="button"
+          title={title}
+          style={{ border: '1px solid #cbd5e1', background: hasAny ? '#fff' : '#f8fafc', borderRadius: 999, cursor: 'pointer', padding: '2px 6px', lineHeight: '16px' }}
+        >
+          {icon}
+        </button>
+        <span
+          className="matter-hover-menu-panel"
+          style={{ display: 'none', position: 'absolute', left: 0, top: '100%', zIndex: 2000, minWidth: 220, padding: 6, border: '1px solid #94a3b8', borderRadius: 8, background: 'white', boxShadow: '0 8px 20px rgba(15,23,42,0.18)' }}
+        >
+          {(options || []).map((option) => {
+            const value = option.email || option.url || ''
+            return (
+              <button
+                key={option.key}
+                type="button"
+                disabled={!String(value).trim()}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  optionType === 'link' ? openMatterExternalLink(value) : openMatterEmailAddress(value)
+                }}
+                title={String(value).trim() || 'Not saved yet'}
+                style={{ display: 'block', width: '100%', textAlign: 'left', margin: '2px 0', padding: '5px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: String(value).trim() ? '#fff' : '#f1f5f9', color: String(value).trim() ? '#0f172a' : '#94a3b8', cursor: String(value).trim() ? 'pointer' : 'not-allowed' }}
+              >
+                {option.label}
+              </button>
+            )
+          })}
+        </span>
+      </span>
+    )
+  }
+
+  function MatterQuickLinkIcons({ matter }) {
+    return (
+      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
+        <MatterHoverMenu icon="✉️" title="Email links" options={matterEmailOptions(matter)} />
+        <MatterHoverMenu icon="🔗" title="Court / filing links" options={matterLinkOptions(matter)} optionType="link" />
+      </span>
+    )
+  }
+
+  function MatterEmailTextButton({ email, children, title }) {
+    return (
+      <button
+        type="button"
+        onClick={() => openMatterEmailAddress(email)}
+        title={email ? (title || `Email ${email}`) : 'No email saved yet'}
+        style={{ border: 'none', background: 'transparent', padding: 0, margin: 0, color: email ? '#1d4ed8' : 'inherit', textDecoration: email ? 'underline' : 'none', cursor: email ? 'pointer' : 'default', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {children || ''}
+      </button>
+    )
+  }
+
+  function MatterLinkTextHover({ matter, children, option = 'links' }) {
+    const options = option === 'court_email' ? matterEmailOptions(matter).filter((item) => ['court_coordinator', 'associate_coordinator'].includes(item.key)) : matterLinkOptions(matter)
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children || ''}</span>
+        <MatterHoverMenu icon={option === 'court_email' ? '✉️' : '🔗'} title={option === 'court_email' ? 'Court coordinator email options' : 'Court / filing links'} options={options} optionType={option === 'court_email' ? 'email' : 'link'} />
+      </span>
+    )
+  }
+
   function MatterEditableClientCell({ matter, columnKey, displayValue }) {
     if (!matterPageFieldsEditable) {
-      return <MatterTextDisplay>{displayValue}</MatterTextDisplay>
+      return <MatterEmailTextButton email={matterClientEmail(matter)} title="Email client">{displayValue}</MatterEmailTextButton>
     }
 
     return (
@@ -7501,7 +7638,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return `<div class="req" data-req-card="${escapeHtmlForRulesReport(req.id)}"><h3>${escapeHtmlForRulesReport(title)}</h3><p>${requestBody}</p><p><b>Attorney comments:</b><br>${notes}</p>${responseControls}</div>`
     }).join('') || '<p class="hint">No requests were found in this discovery set. Delete this set and re-extract the document.</p>'
     win.document.open()
-    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}label{display:block;font-weight:700;margin:8px 0}h3{margin-bottom:6px}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(latestSet.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0">Original Response</div><div id="requestHost">${requestCardsHtml}</div><script>let active='original';function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=tab?tab.textContent:p;document.querySelectorAll('[data-field]').forEach(el=>{el.value='';});}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key);}}}function saveField(el){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion){const patch={};patch[el.dataset.field]=el.value;window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',el.dataset.requestId,active,patch);}}document.querySelectorAll('[data-field]').forEach(el=>{el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>saveField(el));});showPhase('original');</script></body></html>`)
+    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}label{display:block;font-weight:700;margin:8px 0}h3{margin-bottom:6px}.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}
+  </style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(latestSet.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0">Original Response</div><div id="requestHost">${requestCardsHtml}</div><script>let active='original';function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=tab?tab.textContent:p;document.querySelectorAll('[data-field]').forEach(el=>{el.value='';});}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key);}}}function saveField(el){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion){const patch={};patch[el.dataset.field]=el.value;window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',el.dataset.requestId,active,patch);}}document.querySelectorAll('[data-field]').forEach(el=>{el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>saveField(el));});showPhase('original');</script></body></html>`)
     win.document.close()
   }
 
@@ -13116,7 +13254,7 @@ async function updateTeamCell(memberId, field, value) {
   function MatterPageHeaderRow() {
     return (
       <tr>
-        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 92 }}>Time</th>
+        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Link</th>
         {shownMatterColumns().map((column) => (
           <th
             key={column.key}
@@ -13194,7 +13332,8 @@ async function updateTeamCell(memberId, field, value) {
     return (
       <>
         <td style={{ ...matterDataCellStyle('action'), textAlign: 'center', minWidth: 116 }}>
-          <MatterBillingButtons matter={matter} />
+          <MatterQuickLinkIcons matter={matter} />
+          <div style={{ marginTop: 4 }}><MatterBillingButtons matter={matter} /></div>
           <div style={{ marginTop: 5 }}>
             <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} disabled={!showMatterStepsOnMatterPage || matterStepsForMatter(matter).length === 0}>
               {matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Show steps'}
@@ -13215,7 +13354,11 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.cause_number && (
           <td style={matterDataCellStyle('cause_number')}>
-            <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
+            {matterPageFieldsEditable ? (
+              <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
+            ) : (
+              <MatterLinkTextHover matter={matter}>{matter.cause_number}</MatterLinkTextHover>
+            )}
           </td>
         )}
 
@@ -13308,14 +13451,20 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.court && (
           <td style={matterDataCellStyle('court')}>
-            <MatterEditableSelectCell matter={matter} field="court_id" columnKey="court" displayValue={matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}>
-              <option value="">No court</option>
-              {courts.map((court) => (
-                <option key={court.id} value={court.id}>
-                  {court.court_name} {court.county ? `- ${court.county}` : ''}
-                </option>
-              ))}
-            </MatterEditableSelectCell>
+            {matterPageFieldsEditable ? (
+              <MatterEditableSelectCell matter={matter} field="court_id" columnKey="court" displayValue={matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}>
+                <option value="">No court</option>
+                {courts.map((court) => (
+                  <option key={court.id} value={court.id}>
+                    {court.court_name} {court.county ? `- ${court.county}` : ''}
+                  </option>
+                ))}
+              </MatterEditableSelectCell>
+            ) : (
+              <MatterLinkTextHover matter={matter} option="court_email">
+                {matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}
+              </MatterLinkTextHover>
+            )}
           </td>
         )}
 
@@ -13338,23 +13487,31 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.opposing_party_1 && (
           <td style={matterDataCellStyle('opposing_party_1')}>
-            <MatterExtraEditableTextCell
-              matter={matter}
-              columnKey="opposing_party_1"
-              value={matterPartyOne(matter.id).name}
-              onSave={(value) => updateMatterPartyOneField(matter.id, 'name', value)}
-            />
+            {matterPageFieldsEditable ? (
+              <MatterExtraEditableTextCell
+                matter={matter}
+                columnKey="opposing_party_1"
+                value={matterPartyOne(matter.id).name}
+                onSave={(value) => updateMatterPartyOneField(matter.id, 'name', value)}
+              />
+            ) : (
+              <MatterEmailTextButton email={matterOpposingPartyEmail(matter)} title="Email opposing party">{matterPartyOne(matter.id).name}</MatterEmailTextButton>
+            )}
           </td>
         )}
 
         {visibleMatterColumns.opposing_party_1_counsel && (
           <td style={matterDataCellStyle('opposing_party_1_counsel')}>
-            <MatterExtraEditableTextCell
-              matter={matter}
-              columnKey="opposing_party_1_counsel"
-              value={matterPartyOneCounsel(matter.id).name}
-              onSave={(value) => updateMatterPartyOneCounselField(matter.id, 'name', value)}
-            />
+            {matterPageFieldsEditable ? (
+              <MatterExtraEditableTextCell
+                matter={matter}
+                columnKey="opposing_party_1_counsel"
+                value={matterPartyOneCounsel(matter.id).name}
+                onSave={(value) => updateMatterPartyOneCounselField(matter.id, 'name', value)}
+              />
+            ) : (
+              <MatterEmailTextButton email={matterOpposingCounselEmail(matter)} title="Email opposing counsel">{matterPartyOneCounsel(matter.id).name}</MatterEmailTextButton>
+            )}
           </td>
         )}
 
@@ -13604,7 +13761,10 @@ async function updateTeamCell(memberId, field, value) {
                   <div style={{ marginTop: 8, fontWeight: 'normal', color: completed ? '#94a3b8' : '#334155' }}>
                     <div><strong>For:</strong> {step.parent_name} / {step.default_pages?.client_status || 'Any party type'}</div>
                     {completion?.completed_at && <div><strong>Completed:</strong> {new Date(completion.completed_at).toLocaleString()}</div>}
-                    <div style={{ marginTop: 6 }}><MatterBillingButtons matter={matter} stepName={step.name} /></div>
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <MatterQuickLinkIcons matter={matter} />
+                      <MatterBillingButtons matter={matter} stepName={step.name} />
+                    </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
                       <button type="button" onClick={() => openStepDetail({ type: 'matter', matter, matterId: matter.id, step, stepName: step.name, billingStepName: step.name, taskId: `matter-step-${matter.id}-${step.id}` })}>Open step</button>
                       <button type="button" onClick={() => openSettingWorkspace({ type: 'matter', matter, matterId: matter.id, step, stepName: step.name, billingStepName: step.name, taskId: `matter-step-${matter.id}-${step.id}` })}>Open task</button>
@@ -13712,7 +13872,8 @@ async function updateTeamCell(memberId, field, value) {
                   <div style={{ marginTop: 8, fontWeight: 'normal', color: completed ? '#94a3b8' : '#334155' }}>
                     <div><strong>For:</strong> {step.parent_name}</div>
                     {completion?.completed_at && <div><strong>Completed:</strong> {new Date(completion.completed_at).toLocaleString()}</div>}
-                    <div style={{ marginTop: 6 }}>
+                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {stepContext.matter && <MatterQuickLinkIcons matter={stepContext.matter} />}
                       <button type="button" onClick={() => openChecklistStepBilling(event, step.name)} title={`Add time for ${step.name}`} style={{ border: '1px solid #86efac', borderRadius: 999, padding: '3px 8px', background: '#f0fdf4' }}>◴ Time</button>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
@@ -31230,6 +31391,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
 
               <button
+                onClick={() => setSettingsTab('external_links')}
+                style={{ marginRight: 10, fontWeight: settingsTab === 'external_links' ? 'bold' : 'normal' }}
+              >
+                External Links
+              </button>
+
+              <button
                 onClick={() => {
                   setSettingsTab('team_members')
                   setEditingSettingId(null)
@@ -31337,6 +31505,26 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <LabeledField label="Interrogatories instructions"><textarea value={discoveryInstructionSettings.interrogatories || ''} onChange={(e) => updateDiscoveryInstructionSetting('interrogatories', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
                   <LabeledField label="Requests for Admissions instructions"><textarea value={discoveryInstructionSettings.admissions || ''} onChange={(e) => updateDiscoveryInstructionSetting('admissions', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
                 </div>
+              </div>
+            )}
+
+            {settingsTab === 'external_links' && (
+              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, marginBottom: 20, background: '#fff' }}>
+                <h2>Matter Page External Links</h2>
+                <p style={{ color: '#64748b', marginTop: 0 }}>
+                  These links power the link icon on the Matters page and on checklist steps. Court docket and court website links come from the Court table. The eFile link below is global.
+                </p>
+                <LabeledField label="eFile website URL">
+                  <input
+                    value={matterExternalEfileUrl}
+                    onChange={(e) => {
+                      setMatterExternalEfileUrl(e.target.value)
+                      saveMioStateKey('matterExternalEfileUrl', e.target.value)
+                    }}
+                    placeholder="https://efile.txcourts.gov/"
+                    style={{ maxWidth: 720 }}
+                  />
+                </LabeledField>
               </div>
             )}
 
