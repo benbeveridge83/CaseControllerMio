@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V73'
+const MIO_APP_VERSION = 'Mio V74'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -4828,8 +4828,32 @@ function App() {
 
   function MatterHoverMenu({ icon, title, options, optionType = 'email' }) {
     const hasAny = (options || []).some((option) => String(option.email || option.url || '').trim())
+    const anchorRef = useRef(null)
+    const [panelPosition, setPanelPosition] = useState({ left: 8, top: 8 })
+
+    function updateMatterHoverPanelPosition() {
+      const rect = anchorRef.current?.getBoundingClientRect?.()
+      if (!rect) return
+      const panelWidth = 260
+      const estimatedPanelHeight = Math.min(320, Math.max(96, ((options || []).length * 34) + 18))
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768
+      const margin = 8
+      const left = Math.max(margin, Math.min(rect.left, viewportWidth - panelWidth - margin))
+      const hasRoomBelow = (viewportHeight - rect.bottom) >= (estimatedPanelHeight + margin)
+      const topCandidate = hasRoomBelow ? rect.bottom + 6 : rect.top - estimatedPanelHeight - 6
+      const top = Math.max(margin, Math.min(topCandidate, viewportHeight - estimatedPanelHeight - margin))
+      setPanelPosition({ left, top })
+    }
+
     return (
-      <span className="matter-hover-menu" style={{ position: 'relative', display: 'inline-block' }}>
+      <span
+        ref={anchorRef}
+        className="matter-hover-menu"
+        onMouseEnter={updateMatterHoverPanelPosition}
+        onFocus={updateMatterHoverPanelPosition}
+        style={{ position: 'relative', display: 'inline-block' }}
+      >
         <style>{`.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}`}</style>
         <button
           type="button"
@@ -4840,7 +4864,7 @@ function App() {
         </button>
         <span
           className="matter-hover-menu-panel"
-          style={{ display: 'none', position: 'absolute', left: 0, top: '100%', zIndex: 2000, minWidth: 220, padding: 6, border: '1px solid #94a3b8', borderRadius: 8, background: 'white', boxShadow: '0 8px 20px rgba(15,23,42,0.18)' }}
+          style={{ display: 'none', position: 'fixed', left: panelPosition.left, top: panelPosition.top, zIndex: 999999, minWidth: 220, width: 260, maxWidth: 'calc(100vw - 16px)', maxHeight: 'min(320px, calc(100vh - 16px))', overflowY: 'auto', padding: 6, border: '1px solid #94a3b8', borderRadius: 8, background: 'white', boxShadow: '0 8px 20px rgba(15,23,42,0.18)' }}
         >
           {(options || []).map((option) => {
             const value = option.email || option.url || ''
