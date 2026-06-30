@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V76'
+const MIO_APP_VERSION = 'Mio V77'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -3006,7 +3006,7 @@ function App() {
     if (member.is_active === false) return []
 
     if (Array.isArray(member.page_access) && member.page_access.length > 0) {
-      return Array.from(new Set([...member.page_access, 'matter_timelines', 'inventory', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
+      return Array.from(new Set([...member.page_access, 'withdrawals', 'inventory', 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
     }
 
     return appPages.map((p) => p.value)
@@ -3016,7 +3016,7 @@ function App() {
     // Service Inbox is a newly added core page. Existing team-member page_access
     // records may not contain it yet, so keep it visible instead of letting the
     // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox' || pageName === 'inventory') return true
+    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory') return true
     return getAllowedPages().includes(pageName)
   }
 
@@ -28786,6 +28786,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {canOpenPage('matters') && (
           <a href="#matters" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('matters') }} style={{ display: 'block', marginBottom: 10 }}>
             Matters
+          </a>
+        )}
+
+        {canOpenPage('withdrawals') && (
+          <a href="#withdrawals" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('withdrawals') }} style={{ display: 'block', marginBottom: 10 }}>
+            Withdrawals
+          </a>
+        )}
+
+        {canOpenPage('inventory') && (
+          <a href="#inventory" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('inventory') }} style={{ display: 'block', marginBottom: 10 }}>
+            Inventory
           </a>
         )}
 
