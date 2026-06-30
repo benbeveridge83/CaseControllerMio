@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V70'
+const MIO_APP_VERSION = 'Mio V71'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1984,21 +1984,27 @@ function App() {
         const cloudTags = Array.isArray(value) ? value : []
         let browserTags = []
         try { browserTags = JSON.parse(window.localStorage.getItem('caseControllerTags') || '[]') } catch {}
-        const merged = []
-        const seen = new Set()
-        ;[...cloudTags, ...(Array.isArray(browserTags) ? browserTags : [])].forEach((tag) => {
-          const id = String(tag?.id || '').trim()
-          const name = String(tag?.name || '').trim()
-          const key = id || `name:${name.toLowerCase()}:${String(tag?.parent_id || tag?.parentId || '')}`
-          if (!name && !id) return
-          if (seen.has(key)) return
-          seen.add(key)
-          merged.push(tag)
+        setTags((prevTags) => {
+          const priorTags = Array.isArray(prevTags) ? prevTags : []
+          const merged = []
+          const seen = new Set()
+          ;[...cloudTags, ...(Array.isArray(browserTags) ? browserTags : []), ...priorTags].forEach((tag) => {
+            const id = String(tag?.id || '').trim()
+            const name = String(tag?.name || '').trim()
+            const parent = String(tag?.parent_id || tag?.parentId || '')
+            const key = id || `name:${name.toLowerCase()}:${parent}`
+            if (!name && !id) return
+            if (seen.has(key)) return
+            seen.add(key)
+            merged.push(tag)
+          })
+          // Never let an empty cloud record wipe out a browser/session tag library.
+          const nextTags = merged.length ? merged : priorTags
+          if (nextTags.length && nextTags.length !== cloudTags.length) {
+            window.setTimeout(() => saveMioStateKey('caseControllerTags', JSON.stringify(nextTags)), 250)
+          }
+          return nextTags
         })
-        setTags(merged)
-        if (merged.length && merged.length !== cloudTags.length) {
-          window.setTimeout(() => saveMioStateKey('caseControllerTags', JSON.stringify(merged)), 250)
-        }
       }, kind: 'array', fallback: [] },
       caseMioAiTagRuleDetails: { setter: setAiTagRuleDetails, kind: 'object', fallback: {} },
       caseMioDocumentEventRules: { setter: setDocumentEventRules, kind: 'array', fallback: [] },
@@ -2009,7 +2015,31 @@ function App() {
       caseMioAiFeedbackRecords: { setter: setAiFeedbackRecords, kind: 'array', fallback: [] },
       caseMioCalculatedUserFields: { setter: setCalculatedUserFields, kind: 'array', fallback: [] },
       caseMioUserFieldDefaultInstructions: { setter: setUserFieldDefaultInstructions, kind: 'object', fallback: {} },
-      caseMioWorkflowItems: { setter: setWorkflowItems, kind: 'array', fallback: [] },
+      caseMioWorkflowItems: { setter: (value) => {
+        const cloudItems = Array.isArray(value) ? value : []
+        let browserItems = []
+        try { browserItems = JSON.parse(window.localStorage.getItem('caseMioWorkflowItems') || '[]') } catch {}
+        setWorkflowItems((prevItems) => {
+          const priorItems = Array.isArray(prevItems) ? prevItems : []
+          const merged = []
+          const seen = new Set()
+          ;[...cloudItems, ...(Array.isArray(browserItems) ? browserItems : []), ...priorItems].forEach((item) => {
+            const id = String(item?.id || '').trim()
+            const name = String(item?.name || '').trim()
+            const key = id || `workflow:${name.toLowerCase()}:${String(item?.parent_id || '')}`
+            if (!id && !name) return
+            if (seen.has(key)) return
+            seen.add(key)
+            merged.push(item)
+          })
+          const nextItems = merged.length ? merged : priorItems
+          if (nextItems.length && nextItems.length !== cloudItems.length) {
+            window.setTimeout(() => saveMioStateKey('caseMioWorkflowItems', JSON.stringify(nextItems)), 250)
+          }
+          return nextItems
+        })
+      }, kind: 'array', fallback: [] },
+      caseMioWorkflowDailyChecks: { setter: (value) => setWorkflowDailyChecks(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseControllerElements: { setter: setElements, kind: 'array', fallback: [] },
       caseControllerPeople: { setter: setMatterPeople, kind: 'array', fallback: [] },
       caseControllerDiscoveryRequests: { setter: setDiscoveryRequests, kind: 'array', fallback: [] },
@@ -2689,10 +2719,12 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseMioWorkflowItems', JSON.stringify(workflowItems))
+    try { saveMioStateKey('caseMioWorkflowItems', JSON.stringify(workflowItems)) } catch {}
   }, [workflowItems])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioWorkflowDailyChecks', JSON.stringify(workflowDailyChecks))
+    try { saveMioStateKey('caseMioWorkflowDailyChecks', JSON.stringify(workflowDailyChecks)) } catch {}
   }, [workflowDailyChecks])
 
   useEffect(() => {
@@ -7000,49 +7032,72 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function extractNumberedDisclosureRequests(rawText = '') {
     const clean = normalizeDiscoveryExtractionText(rawText)
     if (!clean) return []
+
+    // Requests for Disclosure are often preceded by captions, Rule 194a/Family Code intro
+    // language, certificates of service, and notices. Start at the LAST real disclosure-list
+    // heading and then parse the sequential numbered list. Do not use party names or this
+    // case's exact request text; this is structure-based.
     const startPatterns = [
-      /Requests?\s+for\s+Disclosures?\s+Disclose\s+the\s+following\s*:?/i,
-      /Disclose\s+the\s+following\s*:?/i
+      /Requests?\s+for\s+Disclosures?\s*\n?\s*Disclose\s+the\s+following\s*:?/gi,
+      /Disclose\s+the\s+following\s*:?/gi,
+      /Requests?\s+for\s+Disclosures?\s*:?/gi
     ]
-    let body = clean
+    let bestStart = -1
+    let bestEnd = 0
     for (const pattern of startPatterns) {
-      const match = pattern.exec(clean)
-      if (match) {
-        body = clean.slice(match.index + match[0].length).trim()
-        break
+      let match
+      while ((match = pattern.exec(clean))) {
+        if (match.index >= bestStart) {
+          bestStart = match.index
+          bestEnd = match.index + match[0].length
+        }
       }
     }
-    body = body.replace(/Certificate\s+of\s+Service[\s\S]*?Requests?\s+for\s+Disclosures?\s+Disclose\s+the\s+following\s*:?/i, '').trim()
-    const numberMatches = []
-    const re = /(?:^|\n|\s{2,})\s*(\d{1,2})\.\s+(?=[A-Z(])/g
+    let body = bestStart >= 0 ? clean.slice(bestEnd).trim() : clean
+
+    // If the PDF extractor flattened the heading, cut away everything before the first
+    // consecutive numbered request sequence beginning with 1.
+    const firstOne = /(?:^|[\n\s])1\.\s+(?=[A-Z(])/g.exec(body)
+    if (firstOne && bestStart < 0) body = body.slice(firstOne.index).trim()
+
+    const rawMatches = []
+    const re = /(?:^|[\n\s])([1-9]|[1-4][0-9]|50)\.\s+(?=[A-Z(])/g
     let m
     while ((m = re.exec(body))) {
-      const number = Number(m[1])
-      if (!Number.isFinite(number) || number < 1 || number > 99) continue
-      numberMatches.push({ index: m.index, end: re.lastIndex, number: String(number) })
+      const n = Number(m[1])
+      if (!Number.isFinite(n)) continue
+      rawMatches.push({ index: m.index + (body[m.index] && /\s/.test(body[m.index]) ? 1 : 0), end: re.lastIndex, number: String(n), n })
     }
-    const sequential = []
-    let expected = 1
-    for (const match of numberMatches.sort((a, b) => a.index - b.index)) {
-      const n = Number(match.number)
-      if (n === expected) {
-        sequential.push(match)
-        expected += 1
-      } else if (n === 1 && sequential.length === 0) {
-        sequential.push(match)
-        expected = 2
-      } else if (sequential.length && n === expected + 1) {
-        // Allow a single gap, but keep normal disclosures together.
-        sequential.push(match)
-        expected = n + 1
+    if (!rawMatches.length) return []
+
+    // Find the best consecutive sequence 1,2,3... This avoids treating Rule 194a/301.052
+    // citations, dates, page numbers, or certificate numbers as discovery requests.
+    let bestSequence = []
+    for (let i = 0; i < rawMatches.length; i += 1) {
+      if (rawMatches[i].n !== 1) continue
+      const seq = [rawMatches[i]]
+      let expected = 2
+      for (let j = i + 1; j < rawMatches.length; j += 1) {
+        if (rawMatches[j].n === expected) {
+          seq.push(rawMatches[j])
+          expected += 1
+          continue
+        }
+        if (rawMatches[j].n > expected) break
       }
+      if (seq.length > bestSequence.length) bestSequence = seq
     }
-    const source = sequential.length >= 2 ? sequential : numberMatches
+    const source = bestSequence.length >= 2 ? bestSequence : rawMatches
+
     return source.map((match, index) => {
+      const start = match.end
       const end = index + 1 < source.length ? source[index + 1].index : body.length
-      let requestText = body.slice(match.end, end).trim()
-      requestText = requestText.replace(/^[:.)\-\s]+/, '').trim()
-      return { request_number: match.number, request_text: requestText, confidence: 0.82 }
+      let requestText = body.slice(start, end).trim()
+      requestText = requestText
+        .replace(/^[:.)\-\s]+/, '')
+        .replace(/\s*Electronically\s+Served\s+.*$/i, '')
+        .trim()
+      return { request_number: match.number, request_text: requestText, confidence: 0.92 }
     }).filter((item) => item.request_text.length > 8)
   }
 
