@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V75'
+const MIO_APP_VERSION = 'Mio V76'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -164,6 +164,7 @@ const appPages = [
   { value: 'clients', label: 'Clients' },
   { value: 'matters', label: 'Matters' },
   { value: 'withdrawals', label: 'Withdrawals' },
+  { value: 'inventory', label: 'Inventory' },
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
@@ -188,6 +189,7 @@ const screenSaverBasePages = [
   { value: 'clients', label: 'Clients', page: 'clients' },
   { value: 'matters', label: 'Matters', page: 'matters' },
   { value: 'withdrawals', label: 'Withdrawals', page: 'withdrawals' },
+  { value: 'inventory', label: 'Inventory', page: 'inventory' },
   { value: 'matter_timelines', label: 'Matter Timelines', page: 'matter_timelines' },
   { value: 'tasks', label: 'Tasks', page: 'tasks' },
   { value: 'billing', label: 'Billing', page: 'billing' },
@@ -205,6 +207,36 @@ const screenSaverBasePages = [
   { value: 'workflow', label: 'Workflow', page: 'workflow' },
   { value: 'settings', label: 'Settings', page: 'settings' }
 ]
+
+
+const DEFAULT_INVENTORY_SETTINGS = {
+  assetCategories: [
+    { id: 'real_estate', name: 'Real Estate', subcategories: ['Homestead', 'Rental Property', 'Land', 'Commercial Property', 'Mineral Interest'] },
+    { id: 'vehicles', name: 'Vehicles', subcategories: ['Car', 'Truck', 'Motorcycle', 'Boat', 'Trailer', 'RV', 'ATV'] },
+    { id: 'financial_accounts', name: 'Financial Accounts', subcategories: ['Checking', 'Savings', 'Brokerage', 'Cash App', 'PayPal', 'Venmo'] },
+    { id: 'retirement', name: 'Retirement', subcategories: ['401(k)', 'IRA', 'Pension', 'TRS', 'TCDRS', 'Deferred Compensation'] },
+    { id: 'business_interests', name: 'Business Interests', subcategories: ['LLC', 'Corporation', 'Partnership', 'Sole Proprietorship'] },
+    { id: 'personal_property', name: 'Personal Property', subcategories: ['Household Goods', 'Jewelry', 'Firearms', 'Tools / Equipment', 'Electronics', 'Livestock / Animals', 'Other'] },
+    { id: 'claims', name: 'Claims / Lawsuits', subcategories: ['Personal Injury Claim', 'Contract Claim', 'Tax Refund', 'Other'] },
+    { id: 'other', name: 'Other', subcategories: ['Other'] }
+  ],
+  liabilityCategories: [
+    { id: 'secured_debt', name: 'Secured Debt', subcategories: ['Mortgage', 'Vehicle Loan', 'Equipment Loan', 'Business Secured Debt', 'HELOC', 'Tax Lien', 'Judgment Lien', 'Other Secured Debt'] },
+    { id: 'unsecured_debt', name: 'Unsecured Debt', subcategories: ['Credit Card', 'Medical Debt', 'Personal Loan', 'Student Loan', 'IRS Debt', 'Business Debt', 'Attorney Fees', 'Family Loan', 'Other Unsecured Debt'] }
+  ]
+}
+
+const INVENTORY_ESTATE_BUCKETS = [
+  { id: 'community', label: 'Community Estate' },
+  { id: 'husband_separate', label: "Husband's Separate Estate" },
+  { id: 'wife_separate', label: "Wife's Separate Estate" }
+]
+
+const INVENTORY_CHARACTERIZATIONS = ['Community', 'Separate', 'Mixed Property', 'Unknown / Needs Review']
+const INVENTORY_ACQUISITION_MANNERS = ['Gift', 'Devise', 'Inheritance', 'Purchase', 'Exchange', 'Other']
+const INVENTORY_PARTY_OPTIONS = ['Client', 'Opposing Party', 'Husband', 'Wife', 'Joint', 'Third Party', 'Unknown']
+const INVENTORY_AWARD_OPTIONS = ['Client', 'Opposing Party', 'Husband', 'Wife', 'Sell and Divide', 'Confirm Separate Property', 'Reimburse Estate', 'Needs Decision']
+const INVENTORY_AGREEMENT_STATUSES = ['Unknown', 'Agreed', 'Opposed', 'Countered', 'Needs Follow-Up']
 
 const defaultScreenSaverSeconds = 150
 
@@ -1877,6 +1909,28 @@ function App() {
       return decodeURIComponent(hashPage.slice('matter_dashboard:'.length).split('?')[0])
     } catch { return '' }
   })
+
+  const [inventorySettings, setInventorySettings] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioInventorySettings') || 'null')
+      if (stored && typeof stored === 'object') {
+        return {
+          assetCategories: Array.isArray(stored.assetCategories) && stored.assetCategories.length ? stored.assetCategories : DEFAULT_INVENTORY_SETTINGS.assetCategories,
+          liabilityCategories: Array.isArray(stored.liabilityCategories) && stored.liabilityCategories.length ? stored.liabilityCategories : DEFAULT_INVENTORY_SETTINGS.liabilityCategories
+        }
+      }
+    } catch {}
+    return DEFAULT_INVENTORY_SETTINGS
+  })
+  const [matterInventories, setMatterInventories] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioMatterInventories') || '{}') }
+    catch { return {} }
+  })
+  const [inventoryMasterFilter, setInventoryMasterFilter] = useState('')
+  const [inventoryScenarioByMatter, setInventoryScenarioByMatter] = useState({})
+  const [inventoryCompareScenarioByMatter, setInventoryCompareScenarioByMatter] = useState({})
+  const [inventoryViewModeByMatter, setInventoryViewModeByMatter] = useState({})
+
   const [taskSubpartCompletions, setTaskSubpartCompletions] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('taskSubpartCompletions') || '{}')
@@ -1974,6 +2028,8 @@ function App() {
   function getMioCloudStateBindings() {
     return {
       caseMioPreferredSettingsTab: { setter: setSettingsTab, kind: 'string', fallback: 'options' },
+      caseMioInventorySettings: { setter: (value) => setInventorySettings({ ...DEFAULT_INVENTORY_SETTINGS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_INVENTORY_SETTINGS },
+      caseMioMatterInventories: { setter: setMatterInventories, kind: 'object', fallback: {} },
       caseMioLawFirmProfile: { setter: (value) => setLawFirmProfile({ firm_name: '', address: '', email: '', phone: '', ...(value || {}) }), kind: 'object', fallback: {} },
       caseMioWebsiteIdeas: { setter: setWebsiteIdeas, kind: 'array', fallback: [] },
       caseControllerDocuments: { setter: setDocuments, kind: 'array', fallback: [] },
@@ -2371,6 +2427,14 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioPreferredSettingsTab', settingsTab) } catch {}
   }, [settingsTab])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioInventorySettings', JSON.stringify(inventorySettings)) } catch {}
+  }, [inventorySettings])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioMatterInventories', JSON.stringify(matterInventories)) } catch {}
+  }, [matterInventories])
 
 
   useEffect(() => {
@@ -2942,7 +3006,7 @@ function App() {
     if (member.is_active === false) return []
 
     if (Array.isArray(member.page_access) && member.page_access.length > 0) {
-      return Array.from(new Set([...member.page_access, 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
+      return Array.from(new Set([...member.page_access, 'matter_timelines', 'inventory', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
     }
 
     return appPages.map((p) => p.value)
@@ -2952,7 +3016,7 @@ function App() {
     // Service Inbox is a newly added core page. Existing team-member page_access
     // records may not contain it yet, so keep it visible instead of letting the
     // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox') return true
+    if (pageName === 'service_inbox' || pageName === 'inventory') return true
     return getAllowedPages().includes(pageName)
   }
 
@@ -21684,6 +21748,383 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (event) => setter(event.currentTarget.innerHTML)
   }
 
+
+  function money(value) {
+    const number = Number(value || 0)
+    if (!Number.isFinite(number)) return '$0'
+    return number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+  }
+
+  function inventoryNumber(value) {
+    const cleaned = String(value ?? '').replace(/[^0-9.-]/g, '')
+    const number = Number(cleaned)
+    return Number.isFinite(number) ? number : 0
+  }
+
+  function inventoryScenario(matterId, scenarioId = '') {
+    const record = matterInventories[String(matterId)] || {}
+    const scenarios = Array.isArray(record.scenarios) ? record.scenarios : []
+    if (!scenarios.length) return null
+    return scenarios.find((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId)) || scenarios[0]
+  }
+
+  function inventoryScenariosForMatter(matterId) {
+    const record = matterInventories[String(matterId)] || {}
+    return Array.isArray(record.scenarios) ? record.scenarios : []
+  }
+
+  function defaultInventoryScenario(matter = {}) {
+    const now = new Date().toISOString()
+    return { id: `scenario-${Date.now()}`, name: 'Working Inventory', status: 'Attorney Review', items: [], clientItems: [], created_at: now, updated_at: now }
+  }
+
+  function ensureInventoryForMatter(matter) {
+    if (!matter?.id) return
+    setMatterInventories((current) => {
+      const key = String(matter.id)
+      const existing = current[key]
+      if (existing?.scenarios?.length) return current
+      const scenario = defaultInventoryScenario(matter)
+      return { ...current, [key]: { activeScenarioId: scenario.id, scenarios: [scenario] } }
+    })
+  }
+
+  function setMatterInventoryRecord(matterId, updater) {
+    const key = String(matterId)
+    setMatterInventories((current) => {
+      const existing = current[key] || { activeScenarioId: '', scenarios: [] }
+      const next = updater(existing)
+      return { ...current, [key]: next }
+    })
+  }
+
+  function addInventoryScenario(matter) {
+    if (!matter?.id) return
+    const now = new Date().toISOString()
+    const scenario = { id: `scenario-${Date.now()}`, name: `Scenario ${inventoryScenariosForMatter(matter.id).length + 1}`, status: 'Attorney Review', items: [], clientItems: [], created_at: now, updated_at: now }
+    setMatterInventoryRecord(matter.id, (record) => ({ ...record, activeScenarioId: scenario.id, scenarios: [...(record.scenarios || []), scenario] }))
+    setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: scenario.id }))
+  }
+
+  function duplicateInventoryScenario(matterId, sourceScenarioId) {
+    const source = inventoryScenario(matterId, sourceScenarioId)
+    if (!source) return
+    const now = new Date().toISOString()
+    const copy = { ...source, id: `scenario-${Date.now()}`, name: `${source.name || 'Scenario'} Copy`, items: (source.items || []).map((item) => ({ ...item, id: `item-${Date.now()}-${Math.random().toString(16).slice(2)}` })), created_at: now, updated_at: now }
+    setMatterInventoryRecord(matterId, (record) => ({ ...record, activeScenarioId: copy.id, scenarios: [...(record.scenarios || []), copy] }))
+    setInventoryScenarioByMatter((current) => ({ ...current, [matterId]: copy.id }))
+  }
+
+  function updateInventoryScenario(matterId, scenarioId, patch) {
+    setMatterInventoryRecord(matterId, (record) => ({
+      ...record,
+      activeScenarioId: scenarioId || record.activeScenarioId,
+      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId) ? { ...scenario, ...patch, updated_at: new Date().toISOString() } : scenario)
+    }))
+  }
+
+  function addInventoryItem(matterId, scenarioId, type = 'asset') {
+    const now = new Date().toISOString()
+    const item = {
+      id: `inv-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type,
+      category: type === 'asset' ? 'Real Estate' : 'Secured Debt',
+      subcategory: '',
+      item_name: type === 'asset' ? 'New Asset' : 'New Debt',
+      description: '',
+      estate: 'community',
+      characterization: type === 'asset' ? 'Community' : 'Community',
+      date_acquired: '',
+      manner_acquired: '',
+      location: '',
+      value: '',
+      valuation_date: '',
+      valuation_source: '',
+      paid_off_status: type === 'asset' ? 'Unknown' : '',
+      has_secured_debt: false,
+      linked_debt_id: '',
+      debt_type: type === 'liability' ? 'secured' : '',
+      creditor: '',
+      balance_date: '',
+      liable_party: '',
+      possession: '',
+      proposed_award: '',
+      proposed_payor: '',
+      agreement_status: 'Unknown',
+      opposing_value: '',
+      opposing_award: '',
+      opposing_notes: '',
+      attorney_notes: '',
+      client_notes: '',
+      year: '',
+      make: '',
+      model: '',
+      vin: '',
+      mileage: '',
+      address: '',
+      created_at: now,
+      updated_at: now
+    }
+    setMatterInventoryRecord(matterId, (record) => ({
+      ...record,
+      activeScenarioId: scenarioId || record.activeScenarioId,
+      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? { ...scenario, items: [...(scenario.items || []), item], updated_at: now } : scenario)
+    }))
+  }
+
+  function updateInventoryItem(matterId, scenarioId, itemId, field, value) {
+    setMatterInventoryRecord(matterId, (record) => ({
+      ...record,
+      activeScenarioId: scenarioId || record.activeScenarioId,
+      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? {
+        ...scenario,
+        items: (scenario.items || []).map((item) => String(item.id) === String(itemId) ? { ...item, [field]: value, updated_at: new Date().toISOString() } : item),
+        updated_at: new Date().toISOString()
+      } : scenario)
+    }))
+  }
+
+  function deleteInventoryItem(matterId, scenarioId, itemId) {
+    if (!window.confirm('Delete this inventory item?')) return
+    setMatterInventoryRecord(matterId, (record) => ({
+      ...record,
+      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? { ...scenario, items: (scenario.items || []).filter((item) => String(item.id) !== String(itemId)), updated_at: new Date().toISOString() } : scenario)
+    }))
+  }
+
+  function inventoryTotalsForItems(items = []) {
+    const base = {}
+    INVENTORY_ESTATE_BUCKETS.forEach((bucket) => { base[bucket.id] = { total_assets: 0, total_secured_debt: 0, total_unsecured_debt: 0, total_net: 0 } })
+    ;(items || []).forEach((item) => {
+      const estate = base[item.estate] ? item.estate : 'community'
+      const amount = Math.abs(inventoryNumber(item.value))
+      if (item.type === 'asset') base[estate].total_assets += amount
+      if (item.type === 'liability') {
+        if (item.debt_type === 'unsecured' || /unsecured/i.test(item.category || '')) base[estate].total_unsecured_debt += amount
+        else base[estate].total_secured_debt += amount
+      }
+    })
+    Object.keys(base).forEach((key) => {
+      base[key].total_net = base[key].total_assets - base[key].total_secured_debt - base[key].total_unsecured_debt
+    })
+    return base
+  }
+
+  function inventoryMatterSummary(matterId) {
+    const scenario = inventoryScenario(matterId, inventoryScenarioByMatter[matterId])
+    const totals = inventoryTotalsForItems(scenario?.items || [])
+    const all = Object.values(totals).reduce((sum, row) => ({
+      total_assets: sum.total_assets + row.total_assets,
+      total_secured_debt: sum.total_secured_debt + row.total_secured_debt,
+      total_unsecured_debt: sum.total_unsecured_debt + row.total_unsecured_debt,
+      total_net: sum.total_net + row.total_net
+    }), { total_assets: 0, total_secured_debt: 0, total_unsecured_debt: 0, total_net: 0 })
+    return { scenario, totals, all }
+  }
+
+  function inventoryCategoryOptions(type) {
+    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
+    return (groups || []).map((group) => group.name)
+  }
+
+  function inventorySubcategoryOptions(type, categoryName) {
+    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
+    const group = (groups || []).find((entry) => entry.name === categoryName)
+    return Array.isArray(group?.subcategories) ? group.subcategories : []
+  }
+
+  function renderInventoryTotalsGrid(totals) {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))', gap: 12, margin: '12px 0' }}>
+        {INVENTORY_ESTATE_BUCKETS.map((bucket) => {
+          const row = totals[bucket.id] || {}
+          return (
+            <div key={bucket.id} style={{ border: '1px solid #d5dce3', borderRadius: 8, background: 'white', padding: 12 }}>
+              <div style={{ fontWeight: 'bold', marginBottom: 8 }}>{bucket.label}</div>
+              <div>Total Assets: <strong style={{ color: '#166534' }}>{money(row.total_assets)}</strong></div>
+              <div>Secured Debt: <strong style={{ color: '#991b1b' }}>{money(row.total_secured_debt)}</strong></div>
+              <div>Unsecured Debt: <strong style={{ color: '#991b1b' }}>{money(row.total_unsecured_debt)}</strong></div>
+              <div>Net: <strong style={{ color: '#1d4ed8' }}>{money(row.total_net)}</strong></div>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  function renderInventorySettings() {
+    const renderGroupEditor = (kind, title) => {
+      const key = kind === 'asset' ? 'assetCategories' : 'liabilityCategories'
+      const groups = inventorySettings[key] || []
+      return (
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <h3 style={{ margin: 0 }}>{title}</h3>
+            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, [key]: [...(current[key] || []), { id: `inv-cat-${Date.now()}`, name: 'New Category', subcategories: ['Other'] }] }))}>Add Category</button>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
+            <thead><tr><th style={{ textAlign: 'left' }}>Category</th><th style={{ textAlign: 'left' }}>Subcategories comma-separated</th><th></th></tr></thead>
+            <tbody>
+              {groups.map((group, index) => (
+                <tr key={group.id || index}>
+                  <td><input value={group.name || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).map((row, i) => i === index ? { ...row, name: e.target.value } : row) }))} /></td>
+                  <td><input style={{ width: '100%' }} value={(group.subcategories || []).join(', ')} onChange={(e) => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).map((row, i) => i === index ? { ...row, subcategories: e.target.value.split(',').map((part) => part.trim()).filter(Boolean) } : row) }))} /></td>
+                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).filter((_, i) => i !== index) }))}>Delete</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+    return (
+      <div>
+        <h2>Inventory Settings</h2>
+        <p style={{ color: '#64748b' }}>Set the asset, liability, category, and subcategory lists used by all matter inventories.</p>
+        {renderGroupEditor('asset', 'Asset Categories')}
+        {renderGroupEditor('liability', 'Liability Categories')}
+      </div>
+    )
+  }
+
+  function renderMatterInventoryPanel(matter) {
+    if (!matter?.id) return null
+    const scenarios = inventoryScenariosForMatter(matter.id)
+    const selectedScenarioId = inventoryScenarioByMatter[matter.id] || (matterInventories[matter.id]?.activeScenarioId) || scenarios[0]?.id || ''
+    const scenario = inventoryScenario(matter.id, selectedScenarioId)
+    const compareScenarioId = inventoryCompareScenarioByMatter[matter.id] || scenarios.find((row) => row.id !== selectedScenarioId)?.id || ''
+    const compareScenario = inventoryScenario(matter.id, compareScenarioId)
+    const viewMode = inventoryViewModeByMatter[matter.id] || 'working'
+    const totals = inventoryTotalsForItems(scenario?.items || [])
+    const items = scenario?.items || []
+    if (!scenario) {
+      return <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 16, background: 'white' }}><button type="button" onClick={() => ensureInventoryForMatter(matter)}>Create Inventory for this Matter</button></div>
+    }
+    const filteredItems = items
+    return (
+      <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fafc' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Inventory</h3>
+            <div style={{ color: '#64748b' }}>Attorney working inventory, client intake, scenarios, and opposing counsel comparison.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => addInventoryScenario(matter)}>New Scenario</button>
+            <button type="button" onClick={() => duplicateInventoryScenario(matter.id, selectedScenarioId)}>Duplicate Scenario</button>
+            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')}>Add Asset</button>
+            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')}>Add Liability</button>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+          <label>Scenario: <select value={selectedScenarioId} onChange={(e) => setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: e.target.value }))}>{scenarios.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+          <label>Name: <input value={scenario.name || ''} onChange={(e) => updateInventoryScenario(matter.id, selectedScenarioId, { name: e.target.value })} /></label>
+          <label>Status: <input value={scenario.status || ''} onChange={(e) => updateInventoryScenario(matter.id, selectedScenarioId, { status: e.target.value })} /></label>
+          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'working' }))} style={{ fontWeight: viewMode === 'working' ? 'bold' : 'normal' }}>Working Table</button>
+          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'client' }))} style={{ fontWeight: viewMode === 'client' ? 'bold' : 'normal' }}>Client Intake Preview</button>
+          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'compare' }))} style={{ fontWeight: viewMode === 'compare' ? 'bold' : 'normal' }}>Side-by-Side</button>
+        </div>
+
+        {renderInventoryTotalsGrid(totals)}
+
+        {viewMode === 'client' && (
+          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 14 }}>
+            <h3>Client Intake Version</h3>
+            <p style={{ color: '#64748b' }}>This is the version to send to the client. Client answers can be accepted into the attorney working inventory; attorney notes and scenario strategy remain hidden.</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(180px, 1fr))', gap: 12 }}>
+              {(inventorySettings.assetCategories || []).map((cat) => <button key={cat.id || cat.name} type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')} style={{ padding: 14, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc', textAlign: 'left' }}><strong>{cat.name}</strong><br /><span style={{ color: '#64748b' }}>Add property, value, date acquired, possession, and documents.</span></button>)}
+              <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')} style={{ padding: 14, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff7ed', textAlign: 'left' }}><strong>Debts</strong><br /><span style={{ color: '#64748b' }}>Add secured or unsecured liabilities and who is responsible.</span></button>
+            </div>
+          </div>
+        )}
+
+        {viewMode === 'compare' && (
+          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 14 }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0 }}>Side-by-Side Differences</h3>
+              <label>Compare scenario: <select value={compareScenarioId} onChange={(e) => setInventoryCompareScenarioByMatter((current) => ({ ...current, [matter.id]: e.target.value }))}><option value="">Opposing Counsel Position Fields</option>{scenarios.filter((row) => row.id !== selectedScenarioId).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12, fontSize: 13 }}>
+              <thead><tr><th style={{ textAlign: 'left' }}>Item</th><th>Our Value</th><th>Opposing / Compared Value</th><th>Our Proposed Award</th><th>Opposing / Compared Award</th><th>Status</th><th>Notes</th></tr></thead>
+              <tbody>
+                {items.map((item) => {
+                  const matched = compareScenario?.items?.find((other) => (other.item_name || '').toLowerCase() === (item.item_name || '').toLowerCase())
+                  return <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0', background: item.agreement_status === 'Opposed' ? '#fff7ed' : 'white' }}>
+                    <td>{item.item_name}</td><td style={{ textAlign: 'right' }}>{money(item.value)}</td><td style={{ textAlign: 'right' }}>{money(matched ? matched.value : item.opposing_value)}</td><td>{item.proposed_award || item.proposed_payor}</td><td>{matched ? (matched.proposed_award || matched.proposed_payor) : item.opposing_award}</td><td>{item.agreement_status}</td><td>{item.opposing_notes}</td>
+                  </tr>
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {viewMode === 'working' && (
+          <div style={{ overflowX: 'auto', background: 'white', border: '1px solid #d5dce3', borderRadius: 8 }}>
+            <table style={{ width: '1900px', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: '#eef2f7' }}>{['Type','Estate','Category','Subcategory','Item','Characterization','Date Acq.','Manner','Location / Address','Value','Valuation Date','Possession','Proposed Award / Payor','Debt Type','Liable Party','Agreement','Opp. Value','Opp. Award','VIN / Year / Mileage','Notes',''].map((h) => <th key={h} style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {filteredItems.map((item) => (
+                  <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                    <td><select value={item.type || 'asset'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'type', e.target.value)}><option value="asset">Asset</option><option value="liability">Liability</option></select></td>
+                    <td><select value={item.estate || 'community'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'estate', e.target.value)}>{INVENTORY_ESTATE_BUCKETS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select></td>
+                    <td><select value={item.category || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'category', e.target.value)}>{inventoryCategoryOptions(item.type).map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><select value={item.subcategory || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'subcategory', e.target.value)}><option value="">--</option>{inventorySubcategoryOptions(item.type, item.category).map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><input value={item.item_name || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'item_name', e.target.value)} /></td>
+                    <td><select value={item.characterization || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'characterization', e.target.value)}>{INVENTORY_CHARACTERIZATIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><input type="date" value={item.date_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'date_acquired', e.target.value)} /></td>
+                    <td><select value={item.manner_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'manner_acquired', e.target.value)}><option value="">--</option>{INVENTORY_ACQUISITION_MANNERS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><input value={item.address || item.location || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'location', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value) }} /></td>
+                    <td><input style={{ width: 90 }} value={item.value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'value', e.target.value)} /></td>
+                    <td><input type="date" value={item.valuation_date || item.balance_date || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_date', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'balance_date', e.target.value) }} /></td>
+                    <td><select value={item.possession || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'possession', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><select value={item.type === 'liability' ? (item.proposed_payor || '') : (item.proposed_award || '')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, item.type === 'liability' ? 'proposed_payor' : 'proposed_award', e.target.value)}><option value="">--</option>{INVENTORY_AWARD_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><select value={item.debt_type || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'debt_type', e.target.value)}><option value="">--</option><option value="secured">Secured</option><option value="unsecured">Unsecured</option></select></td>
+                    <td><select value={item.liable_party || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'liable_party', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><select value={item.agreement_status || 'Unknown'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'agreement_status', e.target.value)}>{INVENTORY_AGREEMENT_STATUSES.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
+                    <td><input style={{ width: 90 }} value={item.opposing_value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_value', e.target.value)} /></td>
+                    <td><input value={item.opposing_award || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_award', e.target.value)} /></td>
+                    <td><input placeholder="VIN / year / mileage" value={[item.vin, item.year, item.mileage].filter(Boolean).join(' / ')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /></td>
+                    <td><textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /></td>
+                    <td><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                {!filteredItems.length && <tr><td colSpan={21} style={{ padding: 16, color: '#64748b' }}>No inventory items yet. Add an asset or liability.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  function renderInventoryPage() {
+    const rows = matters.filter((matter) => {
+      const text = `${matter.name || ''} ${matter.cause_number || ''} ${matterClientName(matter) || ''}`.toLowerCase()
+      return !inventoryMasterFilter || text.includes(inventoryMasterFilter.toLowerCase())
+    })
+    return (
+      <>
+        <h1>Inventory</h1>
+        <p style={{ color: '#64748b' }}>Master list of matter inventories. Each matter can have multiple scenarios and a private attorney working version separate from the client intake version.</p>
+        <input placeholder="Search matters..." value={inventoryMasterFilter} onChange={(e) => setInventoryMasterFilter(e.target.value)} style={{ marginBottom: 12, width: 320 }} />
+        <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
+          <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8 }}>Matter</th><th>Scenario</th><th>Total Assets</th><th>Secured Debt</th><th>Unsecured Debt</th><th>Net</th><th>Status</th><th>Last Updated</th><th></th></tr></thead>
+          <tbody>
+            {rows.map((matter) => {
+              const summary = inventoryMatterSummary(matter.id)
+              const scenario = summary.scenario
+              return <tr key={matter.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                <td style={{ padding: 8 }}><strong>{matter.name}</strong><div style={{ color: '#64748b' }}>{matterClientName(matter)} {matter.cause_number ? `| ${matter.cause_number}` : ''}</div></td>
+                <td>{scenario?.name || 'No inventory yet'}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_assets)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_secured_debt)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_unsecured_debt)}</td><td style={{ textAlign: 'right' }}><strong>{money(summary.all.total_net)}</strong></td><td>{scenario?.status || '--'}</td><td>{scenario?.updated_at ? new Date(scenario.updated_at).toLocaleDateString() : '--'}</td>
+                <td><button type="button" onClick={() => { ensureInventoryForMatter(matter); setSelectedTemplateMatterId(matter.id); setClientDashboardTab('inventory'); setPageState('tasks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matter.id)}?tab=inventory`) }}>Open</button></td>
+              </tr>
+            })}
+          </tbody>
+        </table>
+      </>
+    )
+  }
+
   function matterDashboardUrl(matter) {
     return matter?.id ? `#matter_dashboard:${encodeURIComponent(matter.id)}` : ''
   }
@@ -29198,6 +29639,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'withdrawals' && canOpenPage('withdrawals') && renderWithdrawalsPage()}
 
+        {page === 'inventory' && canOpenPage('inventory') && renderInventoryPage()}
+
         {page === 'matter_timelines' && canOpenPage('matter_timelines') && renderMatterTimelinesPage()}
 
         {page === 'tasks' && canOpenPage('tasks') && (
@@ -29260,6 +29703,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => { ensureInventoryForMatter(selectedTemplateMatter()); setClientDashboardTab('inventory') }}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'inventory' ? '#2f6584' : 'white', color: clientDashboardTab === 'inventory' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'inventory' ? 'bold' : 'normal' }}
+                  >
+                    Inventory
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('settings')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'settings' ? '#2f6584' : 'white', color: clientDashboardTab === 'settings' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'settings' ? 'bold' : 'normal' }}
                   >
@@ -29306,6 +29756,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
                 {clientDashboardTab === 'discovery' && renderRespondingDiscoveryDashboard({ matterId: selectedTemplateMatter().id })}
+
+                {clientDashboardTab === 'inventory' && renderMatterInventoryPanel(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'settings' && (
                   <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff' }}>
@@ -31575,6 +32027,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
 
 
+              <button onClick={() => setSettingsTab('inventory')} style={{ marginRight: 10, fontWeight: settingsTab === 'inventory' ? 'bold' : 'normal', marginRight: 10 }}>
+                Inventory
+              </button>
               <button onClick={() => setSettingsTab('requested_relief')} style={{ marginRight: 10, fontWeight: settingsTab === 'requested_relief' ? 'bold' : 'normal' }}>
                 Requested Relief
               </button>
@@ -31619,6 +32074,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'email_signature' && renderEmailSignatureSettings()}
             {settingsTab === 'need_to_set_colors' && renderNeedToSetColorSettings()}
             {settingsTab === 'requested_relief' && renderRequestedReliefSettings()}
+            {settingsTab === 'inventory' && renderInventorySettings()}
             {settingsTab === 'discovery_instructions' && (
               <div style={{ border: '1px solid #d8e2ef', borderRadius: 12, padding: 16, background: '#fff' }}>
                 <h2>Discovery Instructions</h2>
