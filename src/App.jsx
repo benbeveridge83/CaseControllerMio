@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V77'
+const MIO_APP_VERSION = 'Mio V79'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1639,6 +1639,37 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetPausedRows') || '{}') }
     catch { return {} }
   })
+  const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioWithdrawalSteps') || 'null')
+      return Array.isArray(parsed) && parsed.length ? parsed : [
+        { id: 'withdraw-step-review', name: 'Review balance / reason for withdrawal' },
+        { id: 'withdraw-step-notice', name: 'Send client notice and request cure' },
+        { id: 'withdraw-step-motion', name: 'Draft motion to withdraw' },
+        { id: 'withdraw-step-order', name: 'Draft proposed order' },
+        { id: 'withdraw-step-file', name: 'File motion / set hearing if required' },
+        { id: 'withdraw-step-serve', name: 'Serve client and parties' },
+        { id: 'withdraw-step-hearing', name: 'Attend hearing / obtain order' },
+        { id: 'withdraw-step-close', name: 'Close file and update matter status' }
+      ]
+    } catch {
+      return [
+        { id: 'withdraw-step-review', name: 'Review balance / reason for withdrawal' },
+        { id: 'withdraw-step-notice', name: 'Send client notice and request cure' },
+        { id: 'withdraw-step-motion', name: 'Draft motion to withdraw' },
+        { id: 'withdraw-step-order', name: 'Draft proposed order' },
+        { id: 'withdraw-step-file', name: 'File motion / set hearing if required' },
+        { id: 'withdraw-step-serve', name: 'Serve client and parties' },
+        { id: 'withdraw-step-hearing', name: 'Attend hearing / obtain order' },
+        { id: 'withdraw-step-close', name: 'Close file and update matter status' }
+      ]
+    }
+  })
+  const [withdrawalStepChecks, setWithdrawalStepChecks] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioWithdrawalStepChecks') || '{}') }
+    catch { return {} }
+  })
+  const [withdrawalStepDraft, setWithdrawalStepDraft] = useState('')
 
   const [requestedReliefOptions, setRequestedReliefOptions] = useState(() => {
     try {
@@ -1800,9 +1831,10 @@ function App() {
       const nextColumns = {
         ...defaults,
         ...savedColumns,
-        // Keep these new trial columns visible even when an older saved column layout exists.
+        // Keep these core columns visible even when an older saved column layout exists.
         trial_date: true,
-        days_until_trial: true
+        days_until_trial: true,
+        action: true
       }
       saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
       return nextColumns
@@ -2557,6 +2589,14 @@ function App() {
   }, [needToSetPausedRows])
 
   useEffect(() => {
+    try { saveMioStateKey('caseMioWithdrawalSteps', JSON.stringify(withdrawalSteps)) } catch {}
+  }, [withdrawalSteps])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioWithdrawalStepChecks', JSON.stringify(withdrawalStepChecks)) } catch {}
+  }, [withdrawalStepChecks])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetFirstSeenDates', JSON.stringify(needToSetFirstSeenDates)) } catch {}
   }, [needToSetFirstSeenDates])
 
@@ -2752,11 +2792,12 @@ function App() {
 
 
   useEffect(() => {
-    if (!visibleMatterColumns.trial_date || !visibleMatterColumns.days_until_trial) {
+    if (!visibleMatterColumns.trial_date || !visibleMatterColumns.days_until_trial || !visibleMatterColumns.action) {
       const nextColumns = {
         ...visibleMatterColumns,
         trial_date: true,
-        days_until_trial: true
+        days_until_trial: true,
+        action: true
       }
       setVisibleMatterColumns(nextColumns)
       saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
@@ -9218,6 +9259,22 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setWorkflowDailyChecks((current) => ({ ...current, [dayKey]: {} }))
   }
 
+  function openMioPageInNewTab(pageName) {
+    const base = `${window.location.origin}${window.location.pathname}`
+    window.open(`${base}#${pageName}`, '_blank', 'noopener,noreferrer')
+  }
+
+  function workflowLinkForItem(item = {}) {
+    const text = `${workflowItemPath(item.id) || ''} ${item.name || ''}`.toLowerCase()
+    if (text.includes('matter timeline')) return { label: 'Open Matter Timelines', page: 'matter_timelines' }
+    if (text.includes('email')) return { label: 'Open Email Tab', page: 'service_inbox' }
+    if (text.includes('tomorrow')) return { label: 'Open Calendar', page: 'calendar' }
+    if (text.includes('folder')) return { label: 'Open Calendar', page: 'calendar' }
+    if (text.includes('served')) return { label: 'Open Matters', page: 'matters' }
+    if (text.includes('need to set')) return { label: 'Open Need to Set', page: 'checklist' }
+    return null
+  }
+
   function openDocumentEditWindow(doc) {
     if (!doc) return
     setEditingDocumentId(doc.id)
@@ -13137,13 +13194,20 @@ async function updateTeamCell(memberId, field, value) {
   ]
 
   function shownMatterColumns() {
-    return matterPageColumns.filter((column) => visibleMatterColumns[column.key])
+    return matterPageColumns.filter((column) => column.key === 'action' || visibleMatterColumns[column.key])
   }
 
   function toggleMatterColumn(columnKey) {
+    if (columnKey === 'action') {
+      const next = { ...visibleMatterColumns, action: true }
+      setVisibleMatterColumns(next)
+      saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
+      return
+    }
     const next = {
       ...visibleMatterColumns,
-      [columnKey]: !visibleMatterColumns[columnKey]
+      [columnKey]: !visibleMatterColumns[columnKey],
+      action: true
     }
     setVisibleMatterColumns(next)
     saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
@@ -13622,14 +13686,12 @@ async function updateTeamCell(memberId, field, value) {
           </td>
         )}
 
-        {visibleMatterColumns.action && (
-          <td style={matterDataCellStyle('action')}>
-            <button onClick={() => openMatterTaskTemplates(matter)}>Matter Dashboard</button>
-            <button onClick={() => openRequestedReliefForMatter(matter.id)} style={{ marginLeft: 8 }}>Requested Relief</button>
-            <button onClick={() => editMatter(matter)} style={{ marginLeft: 8 }}>Edit Matter</button>
-            <button onClick={() => deleteRow('matters', matter.id, fetchMatters, 'matter')} style={{ marginLeft: 8 }}>Delete</button>
-          </td>
-        )}
+        <td style={matterDataCellStyle('action')}>
+          <button onClick={() => openMatterTaskTemplates(matter)}>Matter Dashboard</button>
+          <button onClick={() => openRequestedReliefForMatter(matter.id)} style={{ marginLeft: 8 }}>Requested Relief</button>
+          <button onClick={() => editMatter(matter)} style={{ marginLeft: 8 }}>Edit Matter</button>
+          <button onClick={() => deleteRow('matters', matter.id, fetchMatters, 'matter')} style={{ marginLeft: 8 }}>Delete</button>
+        </td>
       </>
     )
   }
@@ -14093,6 +14155,43 @@ async function updateTeamCell(memberId, field, value) {
     updateMatterCell(matterId, 'case_status', 'Open- Withdrawing')
   }
 
+  function addWithdrawalStep() {
+    const name = withdrawalStepDraft.trim()
+    if (!name) return
+    setWithdrawalSteps((current) => [...current, { id: `withdraw-step-${Date.now()}-${Math.random().toString(36).slice(2)}`, name }])
+    setWithdrawalStepDraft('')
+  }
+
+  function updateWithdrawalStep(stepId, patch) {
+    setWithdrawalSteps((current) => current.map((step) => step.id === stepId ? { ...step, ...patch } : step))
+  }
+
+  function deleteWithdrawalStep(stepId) {
+    if (!confirm('Delete this withdrawal step from the checklist?')) return
+    setWithdrawalSteps((current) => current.filter((step) => step.id !== stepId))
+    setWithdrawalStepChecks((current) => {
+      const next = { ...current }
+      Object.keys(next).forEach((matterId) => {
+        if (next[matterId]?.[stepId]) next[matterId] = { ...next[matterId], [stepId]: false }
+      })
+      return next
+    })
+  }
+
+  function toggleWithdrawalStep(matterId, stepId) {
+    setWithdrawalStepChecks((current) => {
+      const matterMap = current[matterId] || {}
+      return { ...current, [matterId]: { ...matterMap, [stepId]: !matterMap[stepId] } }
+    })
+  }
+
+  function withdrawalProgress(matterId) {
+    const checks = withdrawalStepChecks[matterId] || {}
+    const total = withdrawalSteps.length
+    const done = withdrawalSteps.filter((step) => checks[step.id]).length
+    return { done, total, pct: total ? Math.round((done / total) * 100) : 0 }
+  }
+
   function renderWithdrawalsPage() {
     const maxWithdrawalCount = Math.max(1, ...Object.values(withdrawalStatusCounts))
     return (
@@ -14119,6 +14218,24 @@ async function updateTeamCell(memberId, field, value) {
           )}
         </div>
 
+        <details open style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: 'white', marginBottom: 14 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Withdrawal Step Settings</summary>
+          <p style={{ color: '#64748b', marginBottom: 8 }}>These steps appear on every withdrawing matter. Completed steps turn grey on the matter row.</p>
+          <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+            {withdrawalSteps.map((step, index) => (
+              <div key={step.id} style={{ display: 'grid', gridTemplateColumns: '32px 1fr auto', gap: 8, alignItems: 'center' }}>
+                <strong>{index + 1}.</strong>
+                <input value={step.name || ''} onChange={(e) => updateWithdrawalStep(step.id, { name: e.target.value })} />
+                <button type="button" onClick={() => deleteWithdrawalStep(step.id)}>Delete</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input value={withdrawalStepDraft} onChange={(e) => setWithdrawalStepDraft(e.target.value)} placeholder="Add withdrawal step" style={{ minWidth: 280 }} />
+            <button type="button" onClick={addWithdrawalStep}>Add Step</button>
+          </div>
+        </details>
+
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
           <button type="button" onClick={() => setPage('matters')}>Back to Matters</button>
           <span style={{ color: '#64748b' }}>{withdrawalMatters.length} matter{withdrawalMatters.length === 1 ? '' : 's'} marked for withdrawal</span>
@@ -14131,8 +14248,8 @@ async function updateTeamCell(memberId, field, value) {
               <th>Matter</th>
               <th>Client</th>
               <th>Cause #</th>
-              <th>Case Status</th>
-              <th>Matter Status</th>
+              <th>Status</th>
+              <th>Withdrawal Steps</th>
               <th>Court</th>
               <th>Opposing Counsel</th>
               <th>Action</th>
@@ -14147,14 +14264,34 @@ async function updateTeamCell(memberId, field, value) {
             {withdrawalMatters.map((matter) => {
               const clientName = `${matter.clients?.first_name || ''} ${matter.clients?.last_name || ''}`.trim()
               const counsel = matterPartyOneCounsel(matter.id)
+              const progress = withdrawalProgress(matter.id)
+              const checks = withdrawalStepChecks[matter.id] || {}
               return (
                 <tr key={matter.id}>
                   <td style={{ textAlign: 'center' }}><MatterQuickLinkIcons matter={matter} /></td>
                   <td>{matter.name || ''}</td>
                   <td>{clientName}</td>
                   <td>{matter.cause_number || ''}</td>
-                  <td>{matter.case_status || ''}</td>
-                  <td>{matter.matter_status || ''}</td>
+                  <td><div>{matter.case_status || ''}</div><div style={{ color: '#64748b', fontSize: 12 }}>{matter.matter_status || ''}</div></td>
+                  <td style={{ minWidth: 360 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <strong>{progress.done}/{progress.total}</strong>
+                      <div style={{ flex: 1, background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden' }}>
+                        <div style={{ width: `${progress.pct}%`, background: '#64748b', height: '100%' }} />
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      {withdrawalSteps.map((step, index) => {
+                        const done = !!checks[step.id]
+                        return (
+                          <label key={step.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 6, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 6, padding: '5px 7px', background: done ? '#e5e7eb' : '#fff', color: done ? '#64748b' : '#0f172a', textDecoration: done ? 'line-through' : 'none' }}>
+                            <input type="checkbox" checked={done} onChange={() => toggleWithdrawalStep(matter.id, step.id)} />
+                            <span>{index + 1}. {step.name}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </td>
                   <td>{matter.courts?.court_name || ''}{matter.courts?.county ? ` - ${matter.courts.county}` : ''}</td>
                   <td>{counsel?.name || ''}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
@@ -26141,7 +26278,22 @@ ${choices}`, '1'))
 
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) auto', gap: 12, alignItems: 'end', marginBottom: 14 }}>
               <LabeledField label="Matter">
-                <select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}>
+                <input
+                  placeholder="Predictive search matters..."
+                  list="requested-relief-matter-suggestions"
+                  value={requestedReliefMatterFilter === 'all' ? '' : (matterName(requestedReliefMatterFilter) || '')}
+                  onChange={(e) => {
+                    const typed = e.target.value
+                    if (!typed) { handleMatterFilterChange('all'); return }
+                    const match = matters.find((matter) => matterName(matter.id) === typed) || matters.find((matter) => (matterName(matter.id) || '').toLowerCase().includes(typed.toLowerCase()))
+                    if (match) handleMatterFilterChange(match.id)
+                  }}
+                  style={{ width: '100%' }}
+                />
+                <datalist id="requested-relief-matter-suggestions">
+                  {matters.map((matter) => <option key={matter.id} value={matterName(matter.id)} />)}
+                </datalist>
+                <select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)} style={{ marginTop: 6 }}>
                   <option value="all">All matters</option>
                   {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
                 </select>
@@ -29575,7 +29727,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <label key={column.key}>
                       <input
                         type="checkbox"
-                        checked={!!visibleMatterColumns[column.key]}
+                        checked={column.key === 'action' ? true : !!visibleMatterColumns[column.key]}
+                        disabled={column.key === 'action'}
+                        title={column.key === 'action' ? 'Action buttons stay visible so Matter Dashboard and Edit Matter are always available.' : ''}
                         onChange={() => toggleMatterColumn(column.key)}
                       />
                       {' '}
@@ -31665,16 +31819,24 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <>
                       <div style={{ marginBottom: 10, color: '#475569' }}>{checkedCount} of {rows.length} activities checked for {workflowDailyKey()}.</div>
                       <div style={{ display: 'grid', gap: 6 }}>
-                        {rows.map((item) => (
-                          <label key={item.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: checkedMap[item.id] ? '#f0fdf4' : 'white', marginLeft: item.level * 24 }}>
-                            <input type="checkbox" checked={!!checkedMap[item.id]} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
-                            <span>
-                              <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
-                              <strong style={{ textDecoration: checkedMap[item.id] ? 'line-through' : 'none' }}>{workflowItemPath(item.id) || item.name}</strong>
-                              {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
-                            </span>
-                          </label>
-                        ))}
+                        {rows.map((item) => {
+                          const link = workflowLinkForItem(item)
+                          const isChecked = !!checkedMap[item.id]
+                          const hasParent = !!item.parent_id
+                          return (
+                            <div key={item.id} style={{ marginLeft: item.level * 28, maxWidth: hasParent ? `calc(100% - ${item.level * 28}px)` : '100%' }}>
+                              <label style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderLeft: hasParent ? '4px solid #94a3b8' : '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: isChecked ? '#e5e7eb' : (hasParent ? '#f8fafc' : 'white'), color: isChecked ? '#64748b' : '#0f172a', width: hasParent ? 'fit-content' : '100%', minWidth: hasParent ? 420 : 'auto' }}>
+                                <input type="checkbox" checked={isChecked} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
+                                <span>
+                                  <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
+                                  <strong style={{ textDecoration: isChecked ? 'line-through' : 'none' }}>{workflowItemPath(item.id) || item.name}</strong>
+                                  {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
+                                </span>
+                                {link && <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openMioPageInNewTab(link.page) }} style={{ whiteSpace: 'nowrap' }}>{link.label}</button>}
+                              </label>
+                            </div>
+                          )
+                        })}
                         {!rows.length && <p>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
                       </div>
                     </>
@@ -31708,8 +31870,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       placeholder="Filter workflow"
                       value={workflowFilter}
                       onChange={(e) => setWorkflowFilter(e.target.value)}
+                      list="workflow-filter-suggestions"
                       style={{ minWidth: 240, flex: '1 1 260px', padding: 6 }}
                     />
+                    <datalist id="workflow-filter-suggestions">
+                      {workflowItems.map((item) => <option key={item.id} value={workflowItemPath(item.id) || item.name || ''} />)}
+                    </datalist>
                     <button type="button" onClick={collapseAllWorkflowFamilies}>Collapse all</button>
                     <button type="button" onClick={expandAllWorkflowFamilies}>Expand all</button>
                   </div>
