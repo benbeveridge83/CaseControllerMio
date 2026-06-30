@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V71'
+const MIO_APP_VERSION = 'Mio V72'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -7029,6 +7029,84 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       .trim()
   }
 
+
+  function extractExhibitANumberedRequests(rawText = '', type = '') {
+    const clean = normalizeDiscoveryExtractionText(rawText)
+    if (!clean) return []
+    const typeKey = discoveryTypeColumnKey(type)
+
+    // RFPs and interrogatories frequently contain numbered General Instructions before the
+    // actual questions. The actual requests normally start at the last Exhibit A / Please
+    // produce / Please answer section. This parser starts there and then extracts the best
+    // consecutive 1,2,3... request sequence, preserving subparts inside each request.
+    const startPatterns = []
+    if (typeKey === 'production') {
+      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Please\s+produce\s+the\s+following\s*:?)?/gi)
+      startPatterns.push(/Please\s+produce\s+the\s+following\s*:?/gi)
+    } else if (typeKey === 'interrogatories') {
+      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Interrogator(?:y|ies)\s*:?)?/gi)
+      startPatterns.push(/Interrogator(?:y|ies)\s*(?:to\s+be\s+answered\s*)?:?/gi)
+    } else if (typeKey === 'admissions') {
+      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Requests?\s+for\s+Admissions?\s*:?)?/gi)
+      startPatterns.push(/(?:Please\s+admit|Requests?\s+for\s+Admissions?)\s*:?/gi)
+    } else {
+      return []
+    }
+
+    let bestEnd = -1
+    for (const pattern of startPatterns) {
+      let match
+      while ((match = pattern.exec(clean))) {
+        if (match.index + match[0].length > bestEnd) bestEnd = match.index + match[0].length
+      }
+    }
+    let body = bestEnd >= 0 ? clean.slice(bestEnd).trim() : clean
+
+    // If the heading was flattened oddly, prefer the text after the last literal Exhibit A.
+    if (bestEnd < 0) {
+      const exhibitMatches = [...clean.matchAll(/Exhibit\s+A\b/gi)]
+      if (exhibitMatches.length) body = clean.slice(exhibitMatches[exhibitMatches.length - 1].index + exhibitMatches[exhibitMatches.length - 1][0].length).trim()
+    }
+
+    const rawMatches = []
+    const re = /(?:^|\n|\s)([1-9]|[1-9][0-9])\.\s+(?=[A-Z(])/g
+    let m
+    while ((m = re.exec(body))) {
+      const n = Number(m[1])
+      if (!Number.isFinite(n)) continue
+      rawMatches.push({ index: m.index + (body[m.index] && /\s/.test(body[m.index]) ? 1 : 0), end: re.lastIndex, number: String(n), n })
+    }
+    if (!rawMatches.length) return []
+
+    let bestSequence = []
+    for (let i = 0; i < rawMatches.length; i += 1) {
+      if (rawMatches[i].n !== 1) continue
+      const seq = [rawMatches[i]]
+      let expected = 2
+      for (let j = i + 1; j < rawMatches.length; j += 1) {
+        if (rawMatches[j].n === expected) {
+          seq.push(rawMatches[j])
+          expected += 1
+          continue
+        }
+        if (rawMatches[j].n > expected) break
+      }
+      if (seq.length > bestSequence.length) bestSequence = seq
+    }
+    const source = bestSequence.length >= 2 ? bestSequence : rawMatches
+
+    return source.map((match, index) => {
+      const start = match.end
+      const end = index + 1 < source.length ? source[index + 1].index : body.length
+      let requestText = body.slice(start, end).trim()
+      requestText = requestText
+        .replace(/^[:.)\-\s]+/, '')
+        .replace(/\s*Electronically\s+Served\s+.*$/i, '')
+        .trim()
+      return { request_number: match.number, request_text: requestText, confidence: 0.93 }
+    }).filter((item) => item.request_text.length > 8)
+  }
+
   function extractNumberedDisclosureRequests(rawText = '') {
     const clean = normalizeDiscoveryExtractionText(rawText)
     if (!clean) return []
@@ -7106,9 +7184,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const clean = normalizeDiscoveryExtractionText(original)
     if (!clean) return []
 
-    if (discoveryTypeColumnKey(type) === 'disclosures') {
+    const typeKey = discoveryTypeColumnKey(type)
+    if (typeKey === 'disclosures') {
       const disclosureRequests = extractNumberedDisclosureRequests(clean)
       if (disclosureRequests.length >= 2) return disclosureRequests
+    }
+    if (typeKey === 'production' || typeKey === 'interrogatories' || typeKey === 'admissions') {
+      const exhibitRequests = extractExhibitANumberedRequests(clean, type)
+      if (exhibitRequests.length >= 2) return exhibitRequests
     }
 
     const matches = []
@@ -7188,10 +7271,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         }))
         .filter((item) => item.request_text)
       const localItems = localExtractRespondingDiscoveryRequests(rawText, type)
-      // Prefer the browser parser when it found a fuller sequential list. This is especially
-      // important for Requests for Disclosure, where the API may mistake the caption/rule
-      // citations for request text instead of the numbered 1-11 disclosure requests.
-      if (localItems.length >= 2 && (localItems.length > apiItems.length || discoveryTypeColumnKey(type) === 'disclosures')) return localItems
+      // Prefer the browser parser when it found the actual numbered list. For Texas RFD,
+      // RFP, Roggs, and RFA documents, the API can mistake instructions/definitions for
+      // requests. The local parser starts at the true list heading, such as Exhibit A.
+      const key = discoveryTypeColumnKey(type)
+      if (localItems.length >= 2 && (localItems.length >= apiItems.length || ['disclosures', 'production', 'interrogatories', 'admissions'].includes(key))) return localItems
       return apiItems
     } catch (error) {
       console.warn('Discovery extraction API unavailable; using browser fallback.', error)
@@ -7396,14 +7480,28 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   function openRespondingDiscoveryResponsesWindow(set) {
     if (!set) return
-    const win = window.open('', '_blank', 'width=760,height=720,scrollbars=yes,resizable=yes')
+    const latestSet = (respondingDiscoverySets || []).find((item) => String(item.id) === String(set.id)) || set
+    const win = window.open('', '_blank', 'width=900,height=760,scrollbars=yes,resizable=yes')
     if (!win) { alert('Please allow popups to open response downloads.'); return }
-    const safeSetId = String(set.id).replace(/'/g, "\\'")
-    const filesHtml = (set.requests || []).flatMap((request) => (request.uploaded_files || []).map((file) => `<div class="file"><strong>${escapeHtmlForRulesReport(file.file_name || 'Uploaded file')}</strong><br><span class="hint">${escapeHtmlForRulesReport(request.request_number || '')}: ${escapeHtmlForRulesReport(String(request.request_text || '').slice(0, 120))}</span></div>`)).join('') || '<p class="hint">No uploaded documents yet.</p>'
-    const logPreview = JSON.stringify(respondingDiscoveryPlainText(set, { includeAttorneyNotes: true }).slice(0, 4000))
-    const phaseButtons = responsePhaseList(set).map((phase) => `<button class="tab" onclick="showPhase('${escapeHtmlForRulesReport(phase.key)}')" id="tab_${escapeHtmlForRulesReport(phase.key)}">${escapeHtmlForRulesReport(phase.label)}</button>`).join('')
+    const safeSetId = String(latestSet.id).replace(/'/g, "\\'")
+    const rfpMode = isProductionDiscoveryType(latestSet.discovery_type)
+    const filesHtml = (latestSet.requests || []).flatMap((request) => (request.uploaded_files || []).map((file) => `<div class="file"><strong>${escapeHtmlForRulesReport(file.file_name || 'Uploaded file')}</strong><br><span class="hint">${escapeHtmlForRulesReport(request.request_number || '')}: ${escapeHtmlForRulesReport(String(request.request_text || '').slice(0, 120))}</span></div>`)).join('') || '<p class="hint">No uploaded documents yet.</p>'
+    const logPreview = JSON.stringify(respondingDiscoveryPlainText(latestSet, { includeAttorneyNotes: true }).slice(0, 4000))
+    const phaseButtons = responsePhaseList(latestSet).map((phase) => `<button class="tab" onclick="showPhase('${escapeHtmlForRulesReport(phase.key)}')" id="tab_${escapeHtmlForRulesReport(phase.key)}">${escapeHtmlForRulesReport(phase.label)}</button>`).join('')
+    const responseOptionsHtml = DISCOVERY_RFP_RESPONSE_OPTIONS.map((option) => `<option value="${escapeHtmlForRulesReport(option)}">${escapeHtmlForRulesReport(option)}</option>`).join('')
+    const requestCardsHtml = (latestSet.requests || []).map((req, index) => {
+      const title = `${discoveryTypeShortLabel(latestSet.discovery_type)} ${req.request_number || index + 1}`
+      const requestBody = escapeHtmlForRulesReport(req.request_text || '').replace(/\n/g, '<br>')
+      const notes = escapeHtmlForRulesReport(req.attorney_comments || 'None').replace(/\n/g, '<br>')
+      const responseControls = req.client_must_respond === false
+        ? '<p class="hint"><b>No response required.</b></p>'
+        : (rfpMode
+          ? `<label>Response option<select data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="rfp_status"><option value="">Choose response...</option>${responseOptionsHtml}</select></label><label>Comment/questions<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_comments">${escapeHtmlForRulesReport(req.client_comments || '')}</textarea></label>`
+          : `<label>Answer<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_answer">${escapeHtmlForRulesReport(req.client_answer || '')}</textarea></label><label>Comment/questions<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_comments">${escapeHtmlForRulesReport(req.client_comments || '')}</textarea></label>`)
+      return `<div class="req" data-req-card="${escapeHtmlForRulesReport(req.id)}"><h3>${escapeHtmlForRulesReport(title)}</h3><p>${requestBody}</p><p><b>Attorney comments:</b><br>${notes}</p>${responseControls}</div>`
+    }).join('') || '<p class="hint">No requests were found in this discovery set. Delete this set and re-extract the document.</p>'
     win.document.open()
-    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(set.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0"></div><div id="requestHost"></div><script>const set=${JSON.stringify(set).replace(/</g,'\\u003c')};let phases=${JSON.stringify(responsePhaseList(set)).replace(/</g,'\\u003c')};let active='original';const rfpOptions=${JSON.stringify(DISCOVERY_RFP_RESPONSE_OPTIONS).replace(/</g,'\\u003c')};function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function labelFor(p){return (phases.find(x=>x.key===p)||{}).label||p}function phaseData(req){return active==='original'?req:Object.assign({},req,(req.response_versions&&req.response_versions[active])||{})}function save(reqId,patch){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion)window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',reqId,active,patch)}function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=labelFor(p);render()}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){phases.push(phase);const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key)}}}function render(){const host=document.getElementById('requestHost');host.innerHTML=(set.requests||[]).map((req,i)=>{const data=phaseData(req);const title='${escapeHtmlForRulesReport(discoveryTypeShortLabel(set.discovery_type))} '+(req.request_number||i+1);const body=esc(req.request_text||'').replace(/\n/g,'<br>');const notes=esc(req.attorney_comments||'None').replace(/\n/g,'<br>');let answer='';if(${isProductionDiscoveryType(set.discovery_type)?'true':'false'}){answer='<label>Response option<select onchange="save(\\''+req.id+'\\',{rfp_status:this.value})"><option value="">Choose response...</option>'+rfpOptions.map(o=>'<option '+(data.rfp_status===o?'selected':'')+' value="'+esc(o)+'">'+esc(o)+'</option>').join('')+'</select></label><label>Comment/questions<textarea oninput="save(\\''+req.id+'\\',{client_comments:this.value})">'+esc(data.client_comments||'')+'</textarea></label>'}else{answer='<label>Answer<textarea oninput="save(\\''+req.id+'\\',{client_answer:this.value})">'+esc(data.client_answer||'')+'</textarea></label><label>Comment/questions<textarea oninput="save(\\''+req.id+'\\',{client_comments:this.value})">'+esc(data.client_comments||'')+'</textarea></label>'}return '<div class="req"><h3>'+esc(title)+'</h3><p>'+body+'</p><p><b>Attorney comments:</b><br>'+notes+'</p>'+(req.client_must_respond===false?'<p class="hint"><b>No response required.</b></p>':answer)+'</div>'}).join('')}showPhase('original');</script></body></html>`)
+    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}label{display:block;font-weight:700;margin:8px 0}h3{margin-bottom:6px}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(latestSet.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0">Original Response</div><div id="requestHost">${requestCardsHtml}</div><script>let active='original';function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=tab?tab.textContent:p;document.querySelectorAll('[data-field]').forEach(el=>{el.value='';});}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key);}}}function saveField(el){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion){const patch={};patch[el.dataset.field]=el.value;window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',el.dataset.requestId,active,patch);}}document.querySelectorAll('[data-field]').forEach(el=>{el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>saveField(el));});showPhase('original');</script></body></html>`)
     win.document.close()
   }
 
