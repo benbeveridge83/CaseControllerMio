@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V74'
+const MIO_APP_VERSION = 'Mio V75'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -163,6 +163,7 @@ const appPages = [
   { value: 'team', label: 'Team' },
   { value: 'clients', label: 'Clients' },
   { value: 'matters', label: 'Matters' },
+  { value: 'withdrawals', label: 'Withdrawals' },
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
@@ -186,6 +187,7 @@ const screenSaverBasePages = [
   { value: 'team', label: 'Team', page: 'team' },
   { value: 'clients', label: 'Clients', page: 'clients' },
   { value: 'matters', label: 'Matters', page: 'matters' },
+  { value: 'withdrawals', label: 'Withdrawals', page: 'withdrawals' },
   { value: 'matter_timelines', label: 'Matter Timelines', page: 'matter_timelines' },
   { value: 'tasks', label: 'Tasks', page: 'tasks' },
   { value: 'billing', label: 'Billing', page: 'billing' },
@@ -14007,6 +14009,102 @@ async function updateTeamCell(memberId, field, value) {
   const matterStatusSections = showUnpopulatedMatterStatuses
     ? allMatterStatusSections
     : allMatterStatusSections.filter((section) => section.matters.length > 0)
+
+
+  const withdrawalMatters = sortRows(
+    matters.filter((matter) => {
+      const statusText = [matter.case_status, matter.matter_status, matter.notes].filter(Boolean).join(' ').toLowerCase()
+      return statusText.includes('withdraw') || statusText.includes('withdrawing')
+    }),
+    mattersSort
+  )
+
+  const withdrawalStatusCounts = withdrawalMatters.reduce((acc, matter) => {
+    const key = matter.matter_status || matter.case_status || 'No status'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+
+  function markMatterForWithdrawal(matterId) {
+    updateMatterCell(matterId, 'case_status', 'Open- Withdrawing')
+  }
+
+  function renderWithdrawalsPage() {
+    const maxWithdrawalCount = Math.max(1, ...Object.values(withdrawalStatusCounts))
+    return (
+      <>
+        <h1>Withdrawals</h1>
+        <p style={{ marginTop: -8, color: '#64748b' }}>Cases marked for withdrawal. A matter appears here when its case status, matter status, or notes include “withdraw” or “withdrawing”.</p>
+
+        <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
+          <h2 style={{ marginTop: 0 }}>Withdrawal Graph</h2>
+          {Object.keys(withdrawalStatusCounts).length === 0 ? (
+            <div style={{ color: '#64748b' }}>No matters are currently marked for withdrawal.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {Object.entries(withdrawalStatusCounts).map(([status, count]) => (
+                <div key={status} style={{ display: 'grid', gridTemplateColumns: '220px 1fr 40px', alignItems: 'center', gap: 8 }}>
+                  <div style={{ fontWeight: 700 }}>{status}</div>
+                  <div style={{ background: '#e2e8f0', borderRadius: 999, height: 18, overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.max(8, (count / maxWithdrawalCount) * 100)}%`, height: '100%', background: '#94a3b8' }} />
+                  </div>
+                  <div>{count}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <button type="button" onClick={() => setPage('matters')}>Back to Matters</button>
+          <span style={{ color: '#64748b' }}>{withdrawalMatters.length} matter{withdrawalMatters.length === 1 ? '' : 's'} marked for withdrawal</span>
+        </div>
+
+        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', width: '100%', background: 'white' }}>
+          <thead>
+            <tr style={{ background: '#f1f5f9' }}>
+              <th>Link</th>
+              <th>Matter</th>
+              <th>Client</th>
+              <th>Cause #</th>
+              <th>Case Status</th>
+              <th>Matter Status</th>
+              <th>Court</th>
+              <th>Opposing Counsel</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {withdrawalMatters.length === 0 && (
+              <tr>
+                <td colSpan="9" style={{ textAlign: 'center', color: '#64748b', padding: 14 }}>No withdrawal matters yet.</td>
+              </tr>
+            )}
+            {withdrawalMatters.map((matter) => {
+              const clientName = `${matter.clients?.first_name || ''} ${matter.clients?.last_name || ''}`.trim()
+              const counsel = matterPartyOneCounsel(matter.id)
+              return (
+                <tr key={matter.id}>
+                  <td style={{ textAlign: 'center' }}><MatterQuickLinkIcons matter={matter} /></td>
+                  <td>{matter.name || ''}</td>
+                  <td>{clientName}</td>
+                  <td>{matter.cause_number || ''}</td>
+                  <td>{matter.case_status || ''}</td>
+                  <td>{matter.matter_status || ''}</td>
+                  <td>{matter.courts?.court_name || ''}{matter.courts?.county ? ` - ${matter.courts.county}` : ''}</td>
+                  <td>{counsel?.name || ''}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button type="button" onClick={() => markMatterForWithdrawal(matter.id)}>Mark Open- Withdrawing</button>
+                    <button type="button" onClick={() => { setSelectedTemplateMatterId(matter.id); setPage('tasks') }} style={{ marginLeft: 6 }}>Open dashboard</button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </>
+    )
+  }
 
   const settingsMatterTableRows = sortRows(
     matters.filter((matter) => {
@@ -29097,6 +29195,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             </div>
           </>
         )}
+
+        {page === 'withdrawals' && canOpenPage('withdrawals') && renderWithdrawalsPage()}
 
         {page === 'matter_timelines' && canOpenPage('matter_timelines') && renderMatterTimelinesPage()}
 
