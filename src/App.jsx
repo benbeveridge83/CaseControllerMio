@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V85'
+const MIO_APP_VERSION = 'Mio V86'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1205,15 +1205,34 @@ function App() {
   const [loginBlockedMessage, setLoginBlockedMessage] = useState('')
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
+  function currentHashParts() {
+    const rawHash = typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : ''
+    const [rawPage, ...queryParts] = rawHash.split('?')
+    return { rawHash, pageName: rawPage || '', query: queryParts.join('?') }
+  }
+
+  function currentHashParams() {
+    try { return new URLSearchParams(currentHashParts().query || '') } catch { return new URLSearchParams() }
+  }
+
+  function hashParamValue(name, fallback = '') {
+    try {
+      const value = currentHashParams().get(name)
+      return value === null || value === undefined || value === '' ? fallback : value
+    } catch { return fallback }
+  }
+
   const [page, setPageState] = useState(() => {
-    const hashPage = (typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : '')
+    const hashPage = currentHashParts().pageName
     if (hashPage === 'settings:matter_timeline_options') return 'settings'
     if (hashPage.startsWith('matter_dashboard:')) return 'tasks'
     return hashPage || 'team'
   })
   function setPage(nextPage) {
-    setPageState(nextPage)
-    if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${nextPage}`)
+    const cleanTarget = String(nextPage || '').replace(/^#\/?/, '') || 'team'
+    const pageOnly = cleanTarget.split('?')[0]
+    setPageState(pageOnly)
+    if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${cleanTarget}`)
   }
 
   const [billingTab, setBillingTab] = useState('firm_billing')
@@ -1324,14 +1343,14 @@ function App() {
     } catch { return defaultServiceEmailIntakeRows }
   })
   const [selectedServiceEmailId, setSelectedServiceEmailId] = useState('sei-service-001')
-  const [serviceInboxFilter, setServiceInboxFilter] = useState('needs_review')
-  const [serviceInboxMailboxFilter, setServiceInboxMailboxFilter] = useState('all')
-  const [serviceInboxPhase, setServiceInboxPhase] = useState('no_response')
-  const [serviceInboxViewMode, setServiceInboxViewMode] = useState('grouped')
-  const [serviceInboxFolderFilter, setServiceInboxFolderFilter] = useState('all')
-  const [serviceInboxSortMode, setServiceInboxSortMode] = useState('folder_date')
-  const [serviceInboxRowDensity, setServiceInboxRowDensity] = useState('normal')
-  const [serviceInboxPreviewMode, setServiceInboxPreviewMode] = useState('bottom')
+  const [serviceInboxFilter, setServiceInboxFilter] = useState(() => hashParamValue('status', localStorage.getItem('serviceInboxFilter') || 'needs_review'))
+  const [serviceInboxMailboxFilter, setServiceInboxMailboxFilter] = useState(() => hashParamValue('mailbox', localStorage.getItem('serviceInboxMailboxFilter') || 'all'))
+  const [serviceInboxPhase, setServiceInboxPhase] = useState(() => hashParamValue('phase', localStorage.getItem('serviceInboxPhase') || 'no_response'))
+  const [serviceInboxViewMode, setServiceInboxViewMode] = useState(() => hashParamValue('view', localStorage.getItem('serviceInboxViewMode') || 'grouped'))
+  const [serviceInboxFolderFilter, setServiceInboxFolderFilter] = useState(() => hashParamValue('folder', localStorage.getItem('serviceInboxFolderFilter') || 'all'))
+  const [serviceInboxSortMode, setServiceInboxSortMode] = useState(() => hashParamValue('sort', localStorage.getItem('serviceInboxSortMode') || 'folder_date'))
+  const [serviceInboxRowDensity, setServiceInboxRowDensity] = useState(() => hashParamValue('density', localStorage.getItem('serviceInboxRowDensity') || 'normal'))
+  const [serviceInboxPreviewMode, setServiceInboxPreviewMode] = useState(() => hashParamValue('preview', localStorage.getItem('serviceInboxPreviewMode') || 'bottom'))
   const [showAcceptedExtractionWindow, setShowAcceptedExtractionWindow] = useState(false)
   const [selectedPdfPreviewName, setSelectedPdfPreviewName] = useState('')
   const [selectedPdfPreviewUrl, setSelectedPdfPreviewUrl] = useState('')
@@ -1947,7 +1966,7 @@ function App() {
   const matterTimelineBaseSvgWidth = 1800
   const [matterTimelineViewportWidth, setMatterTimelineViewportWidth] = useState(1400)
 
-  const [matterPageSearch, setMatterPageSearch] = useState('')
+  const [matterPageSearch, setMatterPageSearch] = useState(() => localStorage.getItem('matterPageSearch') || '')
   const [matterPageFilterCaseStatus, setMatterPageFilterCaseStatus] = useState(() => localStorage.getItem('matterPageFilterCaseStatus') || 'all')
   const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => localStorage.getItem('matterPageFilterMatterStatus') || 'all')
   const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => localStorage.getItem('matterPageFilterCaseType') || 'all')
@@ -2110,6 +2129,43 @@ function App() {
     return value === null || value === undefined ? fallback : String(value)
   }
 
+  function mergeMioArraysById(...arrays) {
+    const out = []
+    const seen = new Set()
+    arrays.forEach((array) => {
+      if (!Array.isArray(array)) return
+      array.forEach((item, index) => {
+        const key = String(item?.id || item?.uuid || item?.key || item?.name || item?.title || `index-${index}`)
+        if (!key || seen.has(key)) return
+        seen.add(key)
+        out.push(item)
+      })
+    })
+    return out
+  }
+
+  function browserJsonArray(key) {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(key) || '[]')
+      return Array.isArray(parsed) ? parsed : []
+    } catch { return [] }
+  }
+
+  function recoverSafeRequestedReliefOptions(value) {
+    const incoming = Array.isArray(value) ? value.map(ensureRequestedReliefOptionShape) : []
+    const browser = browserJsonArray('caseMioRequestedReliefOptions').map(ensureRequestedReliefOptionShape)
+    const current = Array.isArray(requestedReliefOptions) ? requestedReliefOptions.map(ensureRequestedReliefOptionShape) : []
+    const merged = mergeMioArraysById(browser, current, incoming)
+    return merged.length ? merged : defaultRequestedReliefOptions.map(ensureRequestedReliefOptionShape)
+  }
+
+  function recoverSafeRequestedReliefArray(value, localKey, currentValue = []) {
+    const incoming = Array.isArray(value) ? value : []
+    const browser = browserJsonArray(localKey)
+    const current = Array.isArray(currentValue) ? currentValue : []
+    return mergeMioArraysById(browser, current, incoming)
+  }
+
   function getMioCloudStateBindings() {
     return {
       caseMioPreferredSettingsTab: { setter: setSettingsTab, kind: 'string', fallback: 'options' },
@@ -2212,10 +2268,10 @@ function App() {
       caseMioNeedToSetFirstSeenDates: { setter: setNeedToSetFirstSeenDates, kind: 'object', fallback: {} },
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
-      caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(Array.isArray(value) ? value.map(ensureRequestedReliefOptionShape) : defaultRequestedReliefOptions.map(ensureRequestedReliefOptionShape)), kind: 'array', fallback: defaultRequestedReliefOptions },
+      caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
-      caseMioRequestedReliefIssueSets: { setter: setRequestedReliefIssueSets, kind: 'array', fallback: [] },
-      caseMioRequestedReliefTemplates: { setter: setRequestedReliefTemplates, kind: 'array', fallback: [] },
+      caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
+      caseMioRequestedReliefTemplates: { setter: (value) => setRequestedReliefTemplates(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefTemplates', requestedReliefTemplates)), kind: 'array', fallback: [] },
       caseMioRequestedReliefTables: { setter: (value) => setRequestedReliefTables(Array.isArray(value) && value.length ? value.map(ensureRequestedReliefTableShape) : defaultRequestedReliefTables.map(ensureRequestedReliefTableShape)), kind: 'array', fallback: defaultRequestedReliefTables },
       caseMioRequestedReliefMatrixTable: { setter: (value) => setRequestedReliefMatrixTable(ensureRequestedReliefMatrixShape(value)), kind: 'object', fallback: defaultRequestedReliefMatrixTable },
       caseMioRequestedReliefTableExpandedIds: { setter: setRequestedReliefTableExpandedIds, kind: 'array', fallback: [] },
@@ -2241,6 +2297,7 @@ function App() {
       caseMioShowNeedToSetSteps: { setter: setShowNeedToSetSteps, kind: 'boolean', fallback: true },
       caseMioChecklistStepCompletions: { setter: setChecklistStepCompletions, kind: 'object', fallback: {} },
       caseMioChecklistCompletionDefaultTagId: { setter: setChecklistCompletionDefaultTagId, kind: 'string', fallback: '' },
+      matterPageSearch: { setter: setMatterPageSearch, kind: 'string', fallback: '' },
       matterPageFilterCaseStatus: { setter: setMatterPageFilterCaseStatus, kind: 'string', fallback: 'all' },
       matterPageFilterMatterStatus: { setter: setMatterPageFilterMatterStatus, kind: 'string', fallback: 'all' },
       matterPageFilterCaseType: { setter: setMatterPageFilterCaseType, kind: 'string', fallback: 'all' },
@@ -2686,6 +2743,12 @@ function App() {
   }, [requestedReliefOptions])
 
   useEffect(() => {
+    if ((requestedReliefOptions || []).length > defaultRequestedReliefOptions.length) {
+      try { saveMioStateKey('caseMioRequestedReliefOptionsBackup', JSON.stringify(requestedReliefOptions)) } catch {}
+    }
+  }, [requestedReliefOptions])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefs', JSON.stringify(requestedReliefs)) } catch {}
   }, [requestedReliefs])
 
@@ -2694,7 +2757,19 @@ function App() {
   }, [requestedReliefIssueSets])
 
   useEffect(() => {
+    if ((requestedReliefIssueSets || []).length) {
+      try { saveMioStateKey('caseMioRequestedReliefIssueSetsBackup', JSON.stringify(requestedReliefIssueSets)) } catch {}
+    }
+  }, [requestedReliefIssueSets])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefTemplates', JSON.stringify(requestedReliefTemplates)) } catch {}
+  }, [requestedReliefTemplates])
+
+  useEffect(() => {
+    if ((requestedReliefTemplates || []).length) {
+      try { saveMioStateKey('caseMioRequestedReliefTemplatesBackup', JSON.stringify(requestedReliefTemplates)) } catch {}
+    }
   }, [requestedReliefTemplates])
 
   useEffect(() => {
@@ -2807,6 +2882,38 @@ function App() {
   useEffect(() => {
     saveMioStateKey('caseMioMatterTimelineWindowDays', String(matterTimelineWindowDays))
   }, [matterTimelineWindowDays])
+
+  useEffect(() => {
+    try { localStorage.setItem('matterPageSearch', matterPageSearch || '') } catch {}
+    saveMioStateKey('matterPageSearch', matterPageSearch || '')
+  }, [matterPageSearch])
+
+  useEffect(() => {
+    const serviceState = {
+      status: serviceInboxFilter || 'needs_review',
+      mailbox: serviceInboxMailboxFilter || 'all',
+      phase: serviceInboxPhase || 'no_response',
+      view: serviceInboxViewMode || 'grouped',
+      folder: serviceInboxFolderFilter || 'all',
+      sort: serviceInboxSortMode || 'folder_date',
+      density: serviceInboxRowDensity || 'normal',
+      preview: serviceInboxPreviewMode || 'bottom'
+    }
+    try {
+      localStorage.setItem('serviceInboxFilter', serviceState.status)
+      localStorage.setItem('serviceInboxMailboxFilter', serviceState.mailbox)
+      localStorage.setItem('serviceInboxPhase', serviceState.phase)
+      localStorage.setItem('serviceInboxViewMode', serviceState.view)
+      localStorage.setItem('serviceInboxFolderFilter', serviceState.folder)
+      localStorage.setItem('serviceInboxSortMode', serviceState.sort)
+      localStorage.setItem('serviceInboxRowDensity', serviceState.density)
+      localStorage.setItem('serviceInboxPreviewMode', serviceState.preview)
+    } catch {}
+    if (page === 'service_inbox' && typeof window !== 'undefined') {
+      const params = new URLSearchParams(serviceState)
+      window.history.replaceState(null, '', `#service_inbox?${params.toString()}`)
+    }
+  }, [page, serviceInboxFilter, serviceInboxMailboxFilter, serviceInboxPhase, serviceInboxViewMode, serviceInboxFolderFilter, serviceInboxSortMode, serviceInboxRowDensity, serviceInboxPreviewMode])
 
 
   useEffect(() => {
@@ -12363,6 +12470,9 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return [
       'Court Name',
       'County',
+      'Trial Exhibit Due Days Before Trial',
+      'Hearing Exhibit Due Days Before Hearing',
+      'Business Records Deadline Days Before Trial/Hearing',
       'Presiding Judge',
       'Associate Judge',
       'Address',
@@ -12382,10 +12492,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       'Assc. Court Reporter Email',
       'Assc. Court Reporter Phone',
       'Court Website',
-      'Court Docket',
-      'Trial Exhibit Due Days Before Trial',
-      'Hearing Exhibit Due Days Before Hearing',
-      'Business Records Deadline Days Before Trial/Hearing'
+      'Court Docket'
     ]
   }
 
@@ -33387,6 +33494,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </label>
                 </div>
 
+                <div style={{ border: '1px solid #fecaca', borderRadius: 8, padding: 10, marginBottom: 12, background: '#fff7ed' }}>
+                  <strong>Exhibit exchange deadline columns are on this Court Table.</strong>{' '}
+                  Set <strong>Trial Exhibit Due Days Before Trial</strong> and <strong>Hearing Exhibit Due Days Before Hearing</strong> for each court. These values are saved to Supabase and used by Matter Timelines to calculate Trial exhibits and Hearing exhibits deadlines.
+                </div>
+
                 <div
                   ref={courtTableTopScrollRef}
                   onScroll={() => syncCourtTableScroll('top')}
@@ -33408,6 +33520,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         <tr key={court.id}>
                           <td style={{ position: 'sticky', left: 0, zIndex: 10, background: 'white', minWidth: 240, boxShadow: '2px 0 3px rgba(0,0,0,0.08)' }}><EditableTextCell value={court.court_name} onSave={(value) => updateCourtCell(court.id, 'court_name', value)} width={220} /></td>
                           <td><EditableTextCell value={court.county} onSave={(value) => updateCourtCell(court.id, 'county', value)} width={140} /></td>
+                          <td><input type="number" value={courtTimelineRules[court.id]?.trial_exhibit_days_before_trial || ''} onChange={(e) => updateCourtTimelineRule(court.id, 'trial_exhibit_days_before_trial', e.target.value)} placeholder="e.g. 10" style={{ width: 150 }} /></td>
+                          <td><input type="number" value={courtTimelineRules[court.id]?.hearing_exhibit_days_before_hearing || ''} onChange={(e) => updateCourtTimelineRule(court.id, 'hearing_exhibit_days_before_hearing', e.target.value)} placeholder="e.g. 3" style={{ width: 170 }} /></td>
+                          <td><input type="number" value={courtTimelineRules[court.id]?.business_records_deadline_days_before_trial_hearing ?? '14'} onChange={(e) => updateCourtTimelineRule(court.id, 'business_records_deadline_days_before_trial_hearing', e.target.value)} placeholder="14" style={{ width: 210 }} /></td>
                           <td><EditableTextCell value={court.presiding_judge} onSave={(value) => updateCourtCell(court.id, 'presiding_judge', value)} width={190} /></td>
                           <td><EditableTextCell value={court.associate_judge} onSave={(value) => updateCourtCell(court.id, 'associate_judge', value)} width={190} /></td>
                           <td><EditableTextCell value={court.court_address} onSave={(value) => updateCourtCell(court.id, 'court_address', value)} width={260} /></td>
@@ -33428,9 +33543,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <td><EditableTextCell value={court.associate_court_reporter_phone} onSave={(value) => updateCourtCell(court.id, 'associate_court_reporter_phone', value)} width={210} /></td>
                           <td><EditableTextCell value={court.court_website} onSave={(value) => updateCourtCell(court.id, 'court_website', value)} width={240} /></td>
                           <td><EditableTextCell value={court.court_docket} onSave={(value) => updateCourtCell(court.id, 'court_docket', value)} width={240} /></td>
-                          <td><input type="number" value={courtTimelineRules[court.id]?.trial_exhibit_days_before_trial || ''} onChange={(e) => updateCourtTimelineRule(court.id, 'trial_exhibit_days_before_trial', e.target.value)} placeholder="e.g. 10" style={{ width: 150 }} /></td>
-                          <td><input type="number" value={courtTimelineRules[court.id]?.hearing_exhibit_days_before_hearing || ''} onChange={(e) => updateCourtTimelineRule(court.id, 'hearing_exhibit_days_before_hearing', e.target.value)} placeholder="e.g. 3" style={{ width: 170 }} /></td>
-                          <td><input type="number" value={courtTimelineRules[court.id]?.business_records_deadline_days_before_trial_hearing ?? '14'} onChange={(e) => updateCourtTimelineRule(court.id, 'business_records_deadline_days_before_trial_hearing', e.target.value)} placeholder="14" style={{ width: 210 }} /></td>
                         </tr>
                       ))}
                     </tbody>
