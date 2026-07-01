@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V80'
+const MIO_APP_VERSION = 'Mio V81'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1890,6 +1890,11 @@ function App() {
   })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
   const [checklistViewMode, setChecklistViewMode] = useState(() => localStorage.getItem('caseMioChecklistViewMode') || 'table')
+  const [checklistDayGridShowEmptyDays, setChecklistDayGridShowEmptyDays] = useState(() => localStorage.getItem('caseMioChecklistDayGridShowEmptyDays') === 'true')
+  const [checklistDayGridRowHeight, setChecklistDayGridRowHeight] = useState(() => {
+    const saved = Number(localStorage.getItem('caseMioChecklistDayGridRowHeight') || 96)
+    return Number.isFinite(saved) ? Math.min(260, Math.max(44, saved)) : 96
+  })
   const [showNeedToSetSteps, setShowNeedToSetSteps] = useState(() => localStorage.getItem('caseMioShowNeedToSetSteps') !== 'false')
   const [checklistStepCompletions, setChecklistStepCompletions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioChecklistStepCompletions') || '{}') }
@@ -2975,6 +2980,14 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistViewMode', checklistViewMode || 'table')
   }, [checklistViewMode])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioChecklistDayGridShowEmptyDays', checklistDayGridShowEmptyDays ? 'true' : 'false')
+  }, [checklistDayGridShowEmptyDays])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioChecklistDayGridRowHeight', String(checklistDayGridRowHeight || 96))
+  }, [checklistDayGridRowHeight])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioShowNeedToSetSteps', showNeedToSetSteps ? 'true' : 'false')
@@ -4827,18 +4840,24 @@ function App() {
       byDay.get(key).push(event)
     })
     let dayKeys = Array.from(byDay.keys()).sort()
-    if (checklistShowBlankDays && dayKeys.length > 1) {
-      const filled = []
-      const cursor = new Date(`${dayKeys[0]}T00:00:00`)
+    const fillEmptyDays = checklistShowBlankDays || checklistDayGridShowEmptyDays
+    if (fillEmptyDays && dayKeys.length > 0) {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const firstEventDate = new Date(`${dayKeys[0]}T00:00:00`)
+      const startDate = checklistDayGridShowEmptyDays && checklistTab === 'future' && today < firstEventDate ? today : firstEventDate
       const end = new Date(`${dayKeys[dayKeys.length - 1]}T00:00:00`)
+      const filled = []
+      const cursor = new Date(startDate)
       let guard = 0
-      while (cursor <= end && guard < 366) {
+      while (cursor <= end && guard < 730) {
         filled.push(dateToInputValue(cursor))
         cursor.setDate(cursor.getDate() + 1)
         guard += 1
       }
       dayKeys = filled
     }
+    const emptyDayHint = checklistDayGridShowEmptyDays ? 'No events set.' : ''
     return (
       <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 8, background: '#fff' }}>
         <table style={{ width: '100%', minWidth: Math.max(900, 180 + labels.length * 240), borderCollapse: 'collapse' }}>
@@ -4847,10 +4866,16 @@ function App() {
             {dayKeys.map((dayKey) => {
               const dayEvents = byDay.get(dayKey) || []
               const byLabel = new Map(labels.map((label) => [label, dayEvents.filter((event) => (checklistEventCategoryLabel(event) || 'Other') === label)]))
+              const isEmptyDay = dayEvents.length === 0
               return (
-                <tr key={dayKey} style={{ borderTop: '1px solid #e2e8f0', background: dayEvents.length ? '#fff' : '#f8fafc' }}>
-                  <td style={{ padding: 8, verticalAlign: 'top', fontWeight: 800 }}>{formatChecklistBlankDay(new Date(`${dayKey}T00:00:00`))}</td>
-                  {labels.map((label) => <td key={label} style={{ padding: 8, verticalAlign: 'top' }}>{(byLabel.get(label) || []).map(renderChecklistEventMiniCard)}</td>)}
+                <tr key={dayKey} style={{ borderTop: '1px solid #e2e8f0', background: isEmptyDay ? '#f8fafc' : '#fff', height: checklistDayGridRowHeight }}>
+                  <td style={{ padding: 8, verticalAlign: 'top', fontWeight: 800, height: checklistDayGridRowHeight }}>{formatChecklistBlankDay(new Date(`${dayKey}T00:00:00`))}</td>
+                  {labels.map((label) => (
+                    <td key={label} style={{ padding: 8, verticalAlign: 'top', height: checklistDayGridRowHeight }}>
+                      {(byLabel.get(label) || []).map(renderChecklistEventMiniCard)}
+                      {isEmptyDay && label === labels[0] && emptyDayHint && <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic' }}>{emptyDayHint}</div>}
+                    </td>
+                  ))}
                 </tr>
               )
             })}
@@ -31277,6 +31302,19 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <button type="button" onClick={() => setChecklistViewMode('table')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'table' ? '#2f6584' : '#fff', color: checklistViewMode === 'table' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'table' ? 'bold' : 'normal' }}>Table</button>
               <button type="button" onClick={() => setChecklistViewMode('columns')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'columns' ? '#2f6584' : '#fff', color: checklistViewMode === 'columns' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'columns' ? 'bold' : 'normal' }}>Category columns</button>
               <button type="button" onClick={() => setChecklistViewMode('day_grid')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'day_grid' ? '#2f6584' : '#fff', color: checklistViewMode === 'day_grid' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'day_grid' ? 'bold' : 'normal' }}>Day grid</button>
+              {checklistViewMode === 'day_grid' && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}>
+                  <input type="checkbox" checked={checklistDayGridShowEmptyDays} onChange={(e) => setChecklistDayGridShowEmptyDays(e.target.checked)} />
+                  Show empty days from today
+                </label>
+              )}
+              {checklistViewMode === 'day_grid' && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}>
+                  Row height
+                  <input type="range" min="44" max="260" step="4" value={checklistDayGridRowHeight} onChange={(e) => setChecklistDayGridRowHeight(Number(e.target.value))} style={{ width: 140 }} />
+                  <span style={{ color: '#64748b', fontSize: 12, minWidth: 42 }}>{checklistDayGridRowHeight}px</span>
+                </label>
+              )}
               {checklistTab !== 'future' && checklistViewMode !== 'table' && <span style={{ color: '#64748b', fontSize: 12 }}>Alternative views work for the selected tab, but are most useful under Upcoming.</span>}
             </div>
 
