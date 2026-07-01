@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V83'
+const MIO_APP_VERSION = 'Mio V85'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1482,7 +1482,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioWorkflowItems') || '[]') }
     catch { return [] }
   })
-  const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783' })
+  const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783', link_label: '', link_url: '' })
   const [workflowFilter, setWorkflowFilter] = useState('')
   const [workflowActiveTab, setWorkflowActiveTab] = useState(() => localStorage.getItem('caseMioWorkflowActiveTab') || 'daily')
   const [workflowDailyDate, setWorkflowDailyDate] = useState(() => dateToInputValue(new Date()))
@@ -1490,6 +1490,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioWorkflowDailyChecks') || '{}') }
     catch { return {} }
   })
+  const [workflowQuickLinkTargetId, setWorkflowQuickLinkTargetId] = useState('')
   const [collapsedWorkflowIds, setCollapsedWorkflowIds] = useState([])
   const [draggedWorkflowId, setDraggedWorkflowId] = useState(null)
   const [elements, setElements] = useState(() => {
@@ -9324,11 +9325,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         parent_id: parentId,
         notes: workflowForm.notes || '',
         color: workflowForm.color || '#4c6783',
+        link_label: (workflowForm.link_label || '').trim(),
+        link_url: (workflowForm.link_url || '').trim(),
         sort_order: current.filter((item) => (item.parent_id || '') === parentId).length + 1,
         created_at: new Date().toISOString()
       }
     ])
-    setWorkflowForm({ name: '', parent_id: '', notes: '', color: '#4c6783' })
+    setWorkflowForm({ name: '', parent_id: '', notes: '', color: '#4c6783', link_label: '', link_url: '' })
     if (parentId) setCollapsedWorkflowIds((current) => current.filter((id) => id !== parentId))
   }
 
@@ -9345,6 +9348,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         parent_id: parentId,
         notes: '',
         color: parentItem.color || '#4c6783',
+        link_label: '',
+        link_url: '',
         sort_order: current.filter((item) => (item.parent_id || '') === parentId).length + 1,
         created_at: new Date().toISOString()
       }
@@ -9444,7 +9449,31 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     window.open(`${base}#${pageName}`, '_blank', 'noopener,noreferrer')
   }
 
+  function openWorkflowCustomLink(linkUrl = '') {
+    const trimmed = String(linkUrl || '').trim()
+    if (!trimmed) return
+    if (/^https?:\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed)) {
+      window.open(trimmed, '_blank', 'noopener,noreferrer')
+      return
+    }
+    if (trimmed.startsWith('#')) {
+      const base = `${window.location.origin}${window.location.pathname}`
+      window.open(`${base}${trimmed}`, '_blank', 'noopener,noreferrer')
+      return
+    }
+    if (/^[a-z0-9_-]+$/i.test(trimmed) && !trimmed.includes(' ')) {
+      openMioPageInNewTab(trimmed)
+      return
+    }
+    if (trimmed.startsWith('/')) {
+      window.open(`${window.location.origin}${trimmed}`, '_blank', 'noopener,noreferrer')
+      return
+    }
+    window.open(trimmed, '_blank', 'noopener,noreferrer')
+  }
+
   function workflowLinkForItem(item = {}) {
+    if ((item?.link_url || '').trim()) return { label: (item?.link_label || '').trim() || 'Open Link', url: (item.link_url || '').trim(), custom: true }
     const text = `${workflowItemPath(item.id) || ''} ${item.name || ''}`.toLowerCase()
     if (text.includes('matter timeline')) return { label: 'Open Matter Timelines', page: 'matter_timelines' }
     if (text.includes('email')) return { label: 'Open Email Tab', page: 'service_inbox' }
@@ -9453,6 +9482,48 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (text.includes('served')) return { label: 'Open Matters', page: 'matters' }
     if (text.includes('need to set')) return { label: 'Open Need to Set', page: 'checklist' }
     return null
+  }
+
+  function openWorkflowItemLink(item = {}) {
+    const link = workflowLinkForItem(item)
+    if (!link) return
+    if (link.custom && link.url) {
+      openWorkflowCustomLink(link.url)
+      return
+    }
+    if (link.page) {
+      openMioPageInNewTab(link.page)
+    }
+  }
+
+  function currentWorkflowViewUrl() {
+    return window.location.href
+  }
+
+  function saveCurrentViewToWorkflowItem(itemId, urlOverride = '') {
+    const targetId = String(itemId || '').trim()
+    if (!targetId) {
+      alert('Select a workflow row first.')
+      return
+    }
+    const urlToSave = String(urlOverride || currentWorkflowViewUrl() || '').trim()
+    if (!urlToSave) {
+      alert('There is no URL to save.')
+      return
+    }
+    setWorkflowItems((current) => current.map((item) => {
+      if (item.id !== targetId) return item
+      return {
+        ...item,
+        link_label: item.link_label || `Open ${item.name || 'Link'}`,
+        link_url: urlToSave
+      }
+    }))
+    alert('Saved this URL to the selected workflow row.')
+  }
+
+  function saveWorkflowItemCurrentUrl(itemId) {
+    saveCurrentViewToWorkflowItem(itemId, window.location.href)
   }
 
   function openDocumentEditWindow(doc) {
@@ -29332,6 +29403,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           💡
         </button>
 
+        {page !== 'workflow' && workflowItems.length > 0 && (
+          <div style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 55, border: '1px solid #cbd5e1', borderRadius: 14, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 'min(560px, 94vw)' }}>
+            <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>Save view to workflow:</span>
+            <select value={workflowQuickLinkTargetId} onChange={(e) => setWorkflowQuickLinkTargetId(e.target.value)} style={{ maxWidth: 260 }}>
+              <option value="">Choose row...</option>
+              {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
+            </select>
+            <button type="button" onClick={() => saveCurrentViewToWorkflowItem(workflowQuickLinkTargetId)}>Save current URL</button>
+          </div>
+        )}
+
         {screenSaverRunning && (
           <div style={{ position: 'sticky', top: 0, zIndex: 20, background: '#ecfdf5', border: '1px solid #86efac', borderRadius: 8, padding: 10, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
             <span><strong>Screensaver running.</strong> It will continue cycling through the selected pages until stopped.</span>
@@ -32076,40 +32158,128 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             </div>
 
             {workflowActiveTab === 'daily' && (
-              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-                  <h2 style={{ margin: 0 }}>Daily Workflow Checklist</h2>
-                  <label style={{ marginLeft: 'auto' }}>Date:{' '}<input type="date" value={workflowDailyDate} onChange={(e) => setWorkflowDailyDate(e.target.value)} /></label>
-                  <button type="button" onClick={resetWorkflowDailyChecks}>Reset this day</button>
-                  <button type="button" onClick={() => setWorkflowActiveTab('settings')}>Edit workflow settings</button>
-                </div>
+              <div style={{ display: 'grid', gap: 16 }}>
                 {(() => {
                   const rows = allWorkflowItemsIndented()
+                  const rootItems = childWorkflowItems('')
                   const checkedMap = workflowDailyCheckedMap()
                   const checkedCount = rows.filter((item) => checkedMap[item.id]).length
+                  const completionPct = rows.length ? Math.round((checkedCount / rows.length) * 100) : 0
+                  const renderChecklistRow = (item) => {
+                    const link = workflowLinkForItem(item)
+                    const isChecked = !!checkedMap[item.id]
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          marginLeft: Math.max(0, item.level - 1) * 26,
+                          display: 'grid',
+                          gridTemplateColumns: 'auto minmax(220px, 1fr) auto',
+                          gap: 12,
+                          alignItems: 'start',
+                          border: '1px solid #dbe4ee',
+                          borderRadius: 16,
+                          padding: 14,
+                          background: isChecked ? '#f1f5f9' : 'white',
+                          boxShadow: isChecked ? 'none' : '0 6px 18px rgba(15, 23, 42, 0.05)'
+                        }}
+                      >
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginTop: 2, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={isChecked} onChange={() => toggleWorkflowDailyCheck(item.id)} />
+                          <span style={{ width: 12, height: 12, borderRadius: 999, background: item.color || '#4c6783', border: '1px solid rgba(15,23,42,0.12)' }} />
+                        </label>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <strong style={{ fontSize: 16, color: isChecked ? '#64748b' : '#0f172a', textDecoration: isChecked ? 'line-through' : 'none' }}>{item.name}</strong>
+                            {isChecked && <span style={{ fontSize: 12, fontWeight: 700, color: '#475569', background: '#e2e8f0', borderRadius: 999, padding: '3px 8px' }}>Done</span>}
+                          </div>
+                          {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.notes}</div>}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+                          {link && (
+                            <button
+                              type="button"
+                              onClick={() => openWorkflowItemLink(item)}
+                              style={{ whiteSpace: 'nowrap', borderRadius: 999, border: '1px solid #cbd5e1', background: '#f8fafc', padding: '8px 12px', fontWeight: 600 }}
+                            >
+                              {link.label}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  }
                   return (
                     <>
-                      <div style={{ marginBottom: 10, color: '#475569' }}>{checkedCount} of {rows.length} activities checked for {workflowDailyKey()}.</div>
-                      <div style={{ display: 'grid', gap: 6 }}>
-                        {rows.map((item) => {
-                          const link = workflowLinkForItem(item)
-                          const isChecked = !!checkedMap[item.id]
-                          const hasParent = !!item.parent_id
-                          return (
-                            <div key={item.id} style={{ marginLeft: item.level * 28, maxWidth: '980px' }}>
-                              <label style={{ display: 'grid', gridTemplateColumns: 'auto minmax(220px, 1fr) auto', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderLeft: hasParent ? '4px solid #94a3b8' : '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: isChecked ? '#e5e7eb' : (hasParent ? '#f8fafc' : 'white'), color: isChecked ? '#64748b' : '#0f172a', width: 'fit-content', minWidth: hasParent ? 360 : 520, maxWidth: '100%' }}>
-                                <input type="checkbox" checked={isChecked} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
-                                <span>
-                                  <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
-                                  <strong style={{ textDecoration: isChecked ? 'line-through' : 'none' }}>{hasParent ? item.name : (workflowItemPath(item.id) || item.name)}</strong>
-                                  {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
-                                </span>
-                                {link && <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openMioPageInNewTab(link.page) }} style={{ whiteSpace: 'nowrap' }}>{link.label}</button>}
-                              </label>
+                      <div style={{ border: '1px solid #d5dce3', borderRadius: 22, padding: 18, background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)', boxShadow: '0 10px 32px rgba(15, 23, 42, 0.06)' }}>
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+                          <div>
+                            <h2 style={{ margin: 0, fontSize: 30 }}>Daily Workflow Checklist</h2>
+                            <div style={{ color: '#64748b', marginTop: 4 }}>Check off completed work and use the action buttons to jump into the right page.</div>
+                          </div>
+                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>Date
+                              <input type="date" value={workflowDailyDate} onChange={(e) => setWorkflowDailyDate(e.target.value)} />
+                            </label>
+                            <button type="button" onClick={resetWorkflowDailyChecks}>Reset this day</button>
+                            <button type="button" onClick={() => setWorkflowActiveTab('settings')}>Edit workflow settings</button>
+                          </div>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 18, alignItems: 'center' }}>
+                          <div style={{ border: '1px solid #dbe4ee', borderRadius: 18, padding: 16, background: 'white' }}>
+                            <div style={{ color: '#64748b', fontSize: 13, marginBottom: 6 }}>Today's progress</div>
+                            <div style={{ fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{checkedCount} / {rows.length}</div>
+                            <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>{completionPct}% complete for {workflowDailyKey()}.</div>
+                          </div>
+                          <div>
+                            <div style={{ height: 14, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
+                              <div style={{ width: `${completionPct}%`, height: '100%', background: 'linear-gradient(90deg, #2563eb 0%, #38bdf8 100%)' }} />
                             </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, color: '#64748b', fontSize: 13 }}>
+                              <span>{checkedCount} activities checked</span>
+                              <span>{Math.max(0, rows.length - checkedCount)} remaining</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: 16 }}>
+                        {rootItems.map((root) => {
+                          const branchRows = allWorkflowItemsIndented(root.id, 1)
+                          const link = workflowLinkForItem(root)
+                          const rootCheckedCount = branchRows.length
+                            ? branchRows.filter((item) => checkedMap[item.id]).length
+                            : (checkedMap[root.id] ? 1 : 0)
+                          const rootTotal = branchRows.length || 1
+                          if (!branchRows.length) return renderChecklistRow({ ...root, level: 0 })
+                          return (
+                            <section key={root.id} style={{ border: '1px solid #d5dce3', borderRadius: 20, padding: 16, background: 'white', boxShadow: '0 8px 24px rgba(15, 23, 42, 0.05)', maxWidth: 1120 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                                <div style={{ width: 14, height: 14, borderRadius: 4, background: root.color || '#4c6783', border: '1px solid rgba(15,23,42,0.12)' }} />
+                                <div>
+                                  <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a' }}>{root.name}</div>
+                                  {root.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{root.notes}</div>}
+                                </div>
+                                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: 13, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 999, padding: '5px 10px' }}>{rootCheckedCount} of {rootTotal} complete</span>
+                                  {link && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openWorkflowItemLink(root)}
+                                      style={{ whiteSpace: 'nowrap', borderRadius: 999, border: '1px solid #cbd5e1', background: '#f8fafc', padding: '8px 12px', fontWeight: 700 }}
+                                    >
+                                      {link.label}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <div style={{ display: 'grid', gap: 10 }}>
+                                {branchRows.map((item) => renderChecklistRow(item))}
+                              </div>
+                            </section>
                           )
                         })}
-                        {!rows.length && <p>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
+                        {!rows.length && <p style={{ margin: 0, padding: 18, border: '1px dashed #cbd5e1', borderRadius: 16, background: 'white', color: '#64748b' }}>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
                       </div>
                     </>
                   )
@@ -32127,6 +32297,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
                   </select>
                   <textarea placeholder="Notes or instructions for this work area" value={workflowForm.notes} onChange={(e) => setWorkflowForm({ ...workflowForm, notes: e.target.value })} rows={4} />
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <input placeholder="Button label for this row (optional)" value={workflowForm.link_label || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_label: e.target.value })} />
+                    <input placeholder="Link or Mio page for this row (optional)" value={workflowForm.link_url || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_url: e.target.value })} />
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => setWorkflowForm({ ...workflowForm, link_url: window.location.href })}>Use current URL</button>
+                      {workflowForm.link_url && <button type="button" onClick={() => openWorkflowCustomLink(workflowForm.link_url)}>Test link</button>}
+                    </div>
+                    <div style={{ color: '#64748b', fontSize: 12 }}>Examples: <code>matter_timelines</code>, <code>#calendar</code>, or a full URL. For filtered pages, open the page, set the filters, copy/paste or save that exact URL.</div>
+                  </div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     Color:{' '}
                     <input type="color" value={workflowForm.color || '#4c6783'} onChange={(e) => setWorkflowForm({ ...workflowForm, color: e.target.value })} />
@@ -32190,6 +32369,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             <div>
                               <input value={item.name || ''} onChange={(e) => updateWorkflowItem(item.id, { name: e.target.value })} style={{ fontWeight: 700, width: '100%', minWidth: 180 }} />
                               <textarea value={item.notes || ''} onChange={(e) => updateWorkflowItem(item.id, { notes: e.target.value })} placeholder="Notes" rows={2} style={{ width: '100%', marginTop: 4 }} />
+                              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) 1fr auto auto', gap: 6, marginTop: 6 }}>
+                                <input value={item.link_label || ''} onChange={(e) => updateWorkflowItem(item.id, { link_label: e.target.value })} placeholder="Button label" />
+                                <input value={item.link_url || ''} onChange={(e) => updateWorkflowItem(item.id, { link_url: e.target.value })} placeholder="Link or Mio page to open in a new window" />
+                                <button type="button" onClick={() => saveWorkflowItemCurrentUrl(item.id)} title="Save the current browser URL to this workflow row">Save current URL</button>
+                                {item.link_url && <button type="button" onClick={() => openWorkflowItemLink(item)} title="Open/test this link">Open</button>}
+                              </div>
                             </div>
                             <input type="color" value={item.color || '#4c6783'} onChange={(e) => updateWorkflowItem(item.id, { color: e.target.value })} title="Workflow color" />
                             <select value={item.parent_id || ''} onChange={(e) => moveWorkflowItem(item.id, e.target.value)}>
