@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V81'
+const MIO_APP_VERSION = 'Mio V83'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -209,6 +209,14 @@ const screenSaverBasePages = [
 ]
 
 
+function mergeInventoryColumns(storedColumns = []) {
+  const stored = Array.isArray(storedColumns) ? storedColumns : []
+  const storedById = new Map(stored.map((column) => [column.id, column]))
+  const mergedDefaults = DEFAULT_INVENTORY_SETTINGS.columns.map((column) => ({ ...column, ...(storedById.get(column.id) || {}) }))
+  const custom = stored.filter((column) => column && column.id && !DEFAULT_INVENTORY_SETTINGS.columns.some((defaultColumn) => defaultColumn.id === column.id))
+  return [...mergedDefaults, ...custom]
+}
+
 const DEFAULT_INVENTORY_SETTINGS = {
   assetCategories: [
     { id: 'real_estate', name: 'Real Estate', subcategories: ['Homestead', 'Rental Property', 'Land', 'Commercial Property', 'Mineral Interest'] },
@@ -225,26 +233,36 @@ const DEFAULT_INVENTORY_SETTINGS = {
     { id: 'unsecured_debt', name: 'Unsecured Debt', subcategories: ['Credit Card', 'Medical Debt', 'Personal Loan', 'Student Loan', 'IRS Debt', 'Business Debt', 'Attorney Fees', 'Family Loan', 'Other Unsecured Debt'] }
   ],
   columns: [
-    { id: 'type', label: 'Type', visible: true },
-    { id: 'estate', label: 'Estate', visible: true },
+    { id: 'type', label: 'Asset / Liability', visible: true },
+    { id: 'estate', label: 'Estate Bucket', visible: true },
     { id: 'category', label: 'Category', visible: true },
     { id: 'subcategory', label: 'Subcategory', visible: true },
-    { id: 'item_name', label: 'Item', visible: true },
+    { id: 'item_name', label: 'Property / Debt Name', visible: true },
+    { id: 'description', label: 'Description', visible: true },
     { id: 'characterization', label: 'Characterization', visible: true },
-    { id: 'date_acquired', label: 'Date Acq.', visible: true },
-    { id: 'manner_acquired', label: 'Manner', visible: true },
+    { id: 'date_acquired', label: 'Date of Acquisition', visible: true },
+    { id: 'manner_acquired', label: 'Manner of Acquisition', visible: true },
     { id: 'location', label: 'Where / Location', visible: true },
-    { id: 'value', label: 'Value', visible: true },
-    { id: 'valuation_date', label: 'Valuation Date', visible: true },
-    { id: 'possession', label: 'Possession', visible: true },
+    { id: 'value', label: 'Value / Balance', visible: true },
+    { id: 'valuation_date', label: 'Valuation / Balance Date', visible: true },
+    { id: 'valuation_source', label: 'Valuation Source', visible: true },
+    { id: 'possession', label: 'Current Possession', visible: true },
     { id: 'award', label: 'Proposed Award / Payor', visible: true },
     { id: 'debt_type', label: 'Debt Type', visible: true },
+    { id: 'creditor', label: 'Creditor / Lender', visible: true },
     { id: 'liable_party', label: 'Liable Party', visible: true },
-    { id: 'agreement_status', label: 'Agreement', visible: true },
-    { id: 'opposing_value', label: 'Opp. Value', visible: true },
-    { id: 'opposing_award', label: 'Opp. Award', visible: true },
-    { id: 'vin', label: 'VIN / Year / Mileage', visible: true },
-    { id: 'attorney_notes', label: 'Notes', visible: true }
+    { id: 'agreement_status', label: 'Agreement Status', visible: true },
+    { id: 'opposing_value', label: 'Opposing Value', visible: true },
+    { id: 'opposing_award', label: 'Opposing Award', visible: true },
+    { id: 'opposing_notes', label: 'Opposing Notes', visible: true },
+    { id: 'vin', label: 'VIN', visible: true },
+    { id: 'year', label: 'Year', visible: true },
+    { id: 'make', label: 'Make', visible: true },
+    { id: 'model', label: 'Model', visible: true },
+    { id: 'mileage', label: 'Mileage', visible: true },
+    { id: 'address', label: 'Address', visible: true },
+    { id: 'attorney_notes', label: 'Attorney Notes', visible: true },
+    { id: 'client_notes', label: 'Client Notes', visible: true }
   ]
 }
 
@@ -1978,7 +1996,7 @@ function App() {
         return {
           assetCategories: Array.isArray(stored.assetCategories) && stored.assetCategories.length ? stored.assetCategories : DEFAULT_INVENTORY_SETTINGS.assetCategories,
           liabilityCategories: Array.isArray(stored.liabilityCategories) && stored.liabilityCategories.length ? stored.liabilityCategories : DEFAULT_INVENTORY_SETTINGS.liabilityCategories,
-          columns: Array.isArray(stored.columns) && stored.columns.length ? stored.columns : DEFAULT_INVENTORY_SETTINGS.columns
+          columns: Array.isArray(stored.columns) && stored.columns.length ? mergeInventoryColumns(stored.columns) : DEFAULT_INVENTORY_SETTINGS.columns
         }
       }
     } catch {}
@@ -1992,6 +2010,10 @@ function App() {
   const [inventoryScenarioByMatter, setInventoryScenarioByMatter] = useState({})
   const [inventoryCompareScenarioByMatter, setInventoryCompareScenarioByMatter] = useState({})
   const [inventoryViewModeByMatter, setInventoryViewModeByMatter] = useState({})
+  const [inventoryFullTableHeight, setInventoryFullTableHeight] = useState(() => {
+    try { return Number(localStorage.getItem('caseMioInventoryFullTableHeight') || '520') || 520 }
+    catch { return 520 }
+  })
 
   const [taskSubpartCompletions, setTaskSubpartCompletions] = useState(() => {
     try {
@@ -2189,11 +2211,11 @@ function App() {
       caseMioNeedToSetFirstSeenDates: { setter: setNeedToSetFirstSeenDates, kind: 'object', fallback: {} },
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
-      caseMioRequestedReliefOptions: { setter: setRequestedReliefOptions, kind: 'array', fallback: defaultRequestedReliefOptions },
+      caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(Array.isArray(value) ? value.map(ensureRequestedReliefOptionShape) : defaultRequestedReliefOptions.map(ensureRequestedReliefOptionShape)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: setRequestedReliefIssueSets, kind: 'array', fallback: [] },
       caseMioRequestedReliefTemplates: { setter: setRequestedReliefTemplates, kind: 'array', fallback: [] },
-      caseMioRequestedReliefTables: { setter: setRequestedReliefTables, kind: 'array', fallback: defaultRequestedReliefTables },
+      caseMioRequestedReliefTables: { setter: (value) => setRequestedReliefTables(Array.isArray(value) && value.length ? value.map(ensureRequestedReliefTableShape) : defaultRequestedReliefTables.map(ensureRequestedReliefTableShape)), kind: 'array', fallback: defaultRequestedReliefTables },
       caseMioRequestedReliefMatrixTable: { setter: (value) => setRequestedReliefMatrixTable(ensureRequestedReliefMatrixShape(value)), kind: 'object', fallback: defaultRequestedReliefMatrixTable },
       caseMioRequestedReliefTableExpandedIds: { setter: setRequestedReliefTableExpandedIds, kind: 'array', fallback: [] },
       caseMioRequestedReliefComparisonOrder: { setter: setRequestedReliefComparisonOrder, kind: 'object', fallback: {} },
@@ -2278,7 +2300,7 @@ function App() {
 
       mioCloudStateSkipSaveRef.current = true
       data.forEach((record) => applyMioCloudStateRecord(record))
-      window.setTimeout(() => { mioCloudStateSkipSaveRef.current = false }, 0)
+      window.setTimeout(() => { mioCloudStateSkipSaveRef.current = false }, 750)
     } finally {
       mioCloudStateLoadedRef.current = true
       mioCloudStateLoadingRef.current = false
@@ -2316,8 +2338,15 @@ function App() {
   }
 
   function saveMioStateKey(key, value) {
+    // Recovery-safe cloud sync: do not let initial default state overwrite Supabase before the cloud copy has loaded.
+    // This protects large custom settings like Requested Relief issue trees during version upgrades/reloads.
+    const rawValue = value === undefined || value === null ? '' : String(value)
+    if (session?.user?.id && !mioCloudStateLoadedRef.current) {
+      mioCloudStateLastValuesRef.current[key] = rawValue
+      return
+    }
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
-    mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, value), 350)
+    mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
   }
 
   function billingEntryFromRelationalRow(row) {
@@ -2494,6 +2523,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioInventorySettings', JSON.stringify(inventorySettings)) } catch {}
   }, [inventorySettings])
+
+  useEffect(() => {
+    try { localStorage.setItem('caseMioInventoryFullTableHeight', String(inventoryFullTableHeight)) } catch {}
+  }, [inventoryFullTableHeight])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioMatterInventories', JSON.stringify(matterInventories)) } catch {}
@@ -22243,28 +22276,38 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       category: { render: (item) => <select value={item.category || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'category', e.target.value)}>{inventoryCategoryOptions(item.type).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       subcategory: { render: (item) => <select value={item.subcategory || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'subcategory', e.target.value)}><option value="">--</option>{inventorySubcategoryOptions(item.type, item.category).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       item_name: { render: (item) => <input value={item.item_name || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'item_name', e.target.value)} /> },
+      description: { render: (item) => <textarea value={item.description || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'description', e.target.value)} rows={1} /> },
       characterization: { render: (item) => <select value={item.characterization || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'characterization', e.target.value)}>{INVENTORY_CHARACTERIZATIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       date_acquired: { render: (item) => <input type="date" value={item.date_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'date_acquired', e.target.value)} /> },
       manner_acquired: { render: (item) => <select value={item.manner_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'manner_acquired', e.target.value)}><option value="">--</option>{INVENTORY_ACQUISITION_MANNERS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       location: { render: (item) => <input value={item.address || item.location || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'location', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value) }} /> },
       value: { render: (item) => <input style={{ width: 90 }} value={item.value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'value', e.target.value)} /> },
       valuation_date: { render: (item) => <input type="date" value={item.valuation_date || item.balance_date || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_date', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'balance_date', e.target.value) }} /> },
+      valuation_source: { render: (item) => <input value={item.valuation_source || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_source', e.target.value)} /> },
       possession: { render: (item) => <select value={item.possession || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'possession', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       award: { render: (item) => <select value={item.type === 'liability' ? (item.proposed_payor || '') : (item.proposed_award || '')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, item.type === 'liability' ? 'proposed_payor' : 'proposed_award', e.target.value)}><option value="">--</option>{INVENTORY_AWARD_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       debt_type: { render: (item) => <select value={item.debt_type || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'debt_type', e.target.value)}><option value="">--</option><option value="secured">Secured</option><option value="unsecured">Unsecured</option></select> },
+      creditor: { render: (item) => <input value={item.creditor || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'creditor', e.target.value)} /> },
       liable_party: { render: (item) => <select value={item.liable_party || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'liable_party', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       agreement_status: { render: (item) => <select value={item.agreement_status || 'Unknown'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'agreement_status', e.target.value)}>{INVENTORY_AGREEMENT_STATUSES.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
       opposing_value: { render: (item) => <input style={{ width: 90 }} value={item.opposing_value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_value', e.target.value)} /> },
       opposing_award: { render: (item) => <input value={item.opposing_award || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_award', e.target.value)} /> },
-      vin: { render: (item) => <input placeholder="VIN / year / mileage" value={[item.vin, item.year, item.mileage].filter(Boolean).join(' / ')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /> },
-      attorney_notes: { render: (item) => <textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /> }
+      opposing_notes: { render: (item) => <textarea value={item.opposing_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_notes', e.target.value)} rows={1} /> },
+      vin: { render: (item) => <input value={item.vin || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /> },
+      year: { render: (item) => <input style={{ width: 70 }} value={item.year || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'year', e.target.value)} /> },
+      make: { render: (item) => <input value={item.make || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'make', e.target.value)} /> },
+      model: { render: (item) => <input value={item.model || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'model', e.target.value)} /> },
+      mileage: { render: (item) => <input style={{ width: 90 }} value={item.mileage || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'mileage', e.target.value)} /> },
+      address: { render: (item) => <input value={item.address || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value)} /> },
+      attorney_notes: { render: (item) => <textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /> },
+      client_notes: { render: (item) => <textarea value={item.client_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'client_notes', e.target.value)} rows={1} /> }
     }
   }
 
   function visibleInventoryColumns() {
     const stored = Array.isArray(inventorySettings.columns) && inventorySettings.columns.length ? inventorySettings.columns : DEFAULT_INVENTORY_SETTINGS.columns
-    const defaultById = new Map(DEFAULT_INVENTORY_SETTINGS.columns.map((column) => [column.id, column]))
-    return stored.map((column) => ({ ...(defaultById.get(column.id) || {}), ...column })).filter((column) => column.visible !== false)
+    const columns = mergeInventoryColumns(stored)
+    return columns.filter((column) => column.visible !== false)
   }
 
   function renderInventorySettings() {
@@ -22301,17 +22344,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
             <h3 style={{ margin: 0 }}>Inventory Columns</h3>
-            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: [...(current.columns || DEFAULT_INVENTORY_SETTINGS.columns), { id: `custom_${Date.now()}`, label: 'New Column', visible: true, custom: true }] }))}>Add Column</button>
+            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: [...mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns), { id: `custom_${Date.now()}`, label: 'New Column', visible: true, custom: true }] }))}>Add Column</button><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: DEFAULT_INVENTORY_SETTINGS.columns }))}>Reset to Full Default Table</button>
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
             <thead><tr><th style={{ textAlign: 'left' }}>Show</th><th style={{ textAlign: 'left' }}>Column Heading</th><th style={{ textAlign: 'left' }}>Column ID</th><th></th></tr></thead>
             <tbody>
-              {(inventorySettings.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((column, index) => (
+              {mergeInventoryColumns(inventorySettings.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((column, index) => (
                 <tr key={column.id || index}>
-                  <td><input type="checkbox" checked={column.visible !== false} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, visible: e.target.checked } : row) }))} /></td>
-                  <td><input value={column.label || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, label: e.target.value } : row) }))} /></td>
+                  <td><input type="checkbox" checked={column.visible !== false} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, visible: e.target.checked } : row) }))} /></td>
+                  <td><input value={column.label || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, label: e.target.value } : row) }))} /></td>
                   <td style={{ color: '#64748b' }}>{column.id}</td>
-                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).filter((_, i) => i !== index) }))}>Delete</button></td>
+                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).filter((_, i) => i !== index) }))}>Delete</button></td>
                 </tr>
               ))}
             </tbody>
@@ -22336,7 +22379,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     }
     const filteredItems = items
     return (
-      <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fafc' }}>
+      <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fafc', width: '100%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
             <h3 style={{ margin: 0 }}>Inventory</h3>
@@ -22393,24 +22436,36 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         )}
 
         {viewMode === 'working' && (
-          <div style={{ overflowX: 'auto', background: 'white', border: '1px solid #d5dce3', borderRadius: 8 }}>
-            <table style={{ width: '1900px', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: '#eef2f7' }}>{visibleInventoryColumns().map((column) => <th key={column.id} style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}>{column.label}</th>)}<th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}></th></tr></thead>
-              <tbody>
-                {filteredItems.map((item) => {
-                  const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
-                  return (
-                    <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0' }}>
-                      {visibleInventoryColumns().map((column) => (
-                        <td key={column.id}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>
-                      ))}
-                      <td><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
-                    </tr>
-                  )
-                })}
-                {!filteredItems.length && <tr><td colSpan={visibleInventoryColumns().length + 1} style={{ padding: 16, color: '#64748b' }}>No inventory items yet. Add an asset or liability.</td></tr>}
-              </tbody>
-            </table>
+          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+              <div>
+                <strong>Full Inventory Table</strong>
+                <div style={{ color: '#64748b', fontSize: 12 }}>All visible inventory columns are shown below. Use Settings &gt; Inventory Settings to add, rename, hide, or delete columns and property categories.</div>
+              </div>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Table height
+                <input type="range" min="260" max="900" step="20" value={inventoryFullTableHeight} onChange={(e) => setInventoryFullTableHeight(Number(e.target.value) || 520)} />
+                <span>{inventoryFullTableHeight}px</span>
+              </label>
+            </div>
+            <div style={{ overflow: 'auto', maxHeight: inventoryFullTableHeight, border: '1px solid #e2e8f0', borderRadius: 8 }}>
+              <table style={{ minWidth: `${Math.max(2400, visibleInventoryColumns().length * 150)}px`, width: 'max-content', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead><tr style={{ background: '#eef2f7' }}>{visibleInventoryColumns().map((column) => <th key={column.id} style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1', borderRight: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{column.label}</th>)}<th style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Action</th></tr></thead>
+                <tbody>
+                  {filteredItems.map((item) => {
+                    const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
+                    return (
+                      <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0', background: item.type === 'liability' ? '#fff7ed' : 'white' }}>
+                        {visibleInventoryColumns().map((column) => (
+                          <td key={column.id} style={{ minWidth: 140, maxWidth: 260, padding: 4, borderRight: '1px solid #eef2f7', verticalAlign: 'top' }}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>
+                        ))}
+                        <td style={{ padding: 4, verticalAlign: 'top' }}><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
+                      </tr>
+                    )
+                  })}
+                  {!filteredItems.length && <tr><td colSpan={visibleInventoryColumns().length + 1} style={{ padding: 18, color: '#64748b', textAlign: 'center' }}>No inventory items yet. Use Add Asset or Add Liability above to create a full editable row.</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </div>
