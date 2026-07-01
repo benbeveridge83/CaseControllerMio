@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V90'
+const MIO_APP_VERSION = 'Mio V91'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2032,6 +2032,7 @@ function App() {
   const [inventoryScenarioByMatter, setInventoryScenarioByMatter] = useState({})
   const [inventoryCompareScenarioByMatter, setInventoryCompareScenarioByMatter] = useState({})
   const [inventoryViewModeByMatter, setInventoryViewModeByMatter] = useState({})
+  const [inventoryCollapsedGroupsByMatter, setInventoryCollapsedGroupsByMatter] = useState({})
   const [inventoryFullTableHeight, setInventoryFullTableHeight] = useState(() => {
     try { return Number(localStorage.getItem('caseMioInventoryFullTableHeight') || '520') || 520 }
     catch { return 520 }
@@ -12563,6 +12564,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       'Assc. Court Reporter',
       'Assc. Court Reporter Email',
       'Assc. Court Reporter Phone',
+      'Court Setting Page URL',
       'Court Website',
       'Court Docket'
     ]
@@ -22443,15 +22445,15 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       category: defaults.category || (type === 'asset' ? 'Real Estate' : 'Unsecured Debt'),
       subcategory: defaults.subcategory || '',
       item_name: defaults.item_name || (type === 'asset' ? 'New Asset' : 'New Debt'),
-      description: '',
-      estate: 'community',
-      characterization: type === 'asset' ? 'Community' : 'Community',
-      date_acquired: '',
-      manner_acquired: '',
-      location: '',
-      value: '',
-      valuation_date: '',
-      valuation_source: '',
+      description: defaults.description || '',
+      estate: defaults.estate || 'community',
+      characterization: defaults.characterization || (type === 'asset' ? 'Community' : 'Community'),
+      date_acquired: defaults.date_acquired || '',
+      manner_acquired: defaults.manner_acquired || '',
+      location: defaults.location || '',
+      value: defaults.value || '',
+      valuation_date: defaults.valuation_date || '',
+      valuation_source: defaults.valuation_source || '',
       paid_off_status: type === 'asset' ? 'Unknown' : '',
       has_secured_debt: false,
       linked_debt_id: '',
@@ -22459,9 +22461,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       creditor: '',
       balance_date: '',
       liable_party: '',
-      possession: '',
-      proposed_award: '',
-      proposed_payor: '',
+      possession: defaults.possession || '',
+      proposed_award: defaults.proposed_award || '',
+      proposed_payor: defaults.proposed_payor || '',
       agreement_status: 'Unknown',
       opposing_value: '',
       opposing_award: '',
@@ -22569,11 +22571,104 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     ]
   }
 
-  function addInventoryItemForCategory(matterId, scenarioId, categoryRow) {
+  function inventoryGroupKey(row = {}) {
+    return `${row.rowType || 'asset'}::${row.name || ''}`
+  }
+
+  function toggleInventoryGroupCollapsed(matterId, groupKey) {
+    setInventoryCollapsedGroupsByMatter((current) => {
+      const matterMap = current[String(matterId)] || {}
+      return { ...current, [String(matterId)]: { ...matterMap, [groupKey]: !matterMap[groupKey] } }
+    })
+  }
+
+  function addInventoryItemForSpouse(matterId, scenarioId, categoryRow, spouse) {
+    const label = spouse === 'wife' ? 'Wife' : 'Husband'
+    addInventoryItemForCategory(matterId, scenarioId, categoryRow, { estate: spouse === 'wife' ? 'wife_separate' : 'husband_separate', possession: label, proposed_award: label })
+  }
+
+  function addInventoryItemForCategory(matterId, scenarioId, categoryRow, extraDefaults = {}) {
     const type = categoryRow?.rowType || 'asset'
     const categoryName = categoryRow?.name || (type === 'asset' ? 'Real Estate' : 'Unsecured Debt')
     const subcategory = Array.isArray(categoryRow?.subcategories) && categoryRow.subcategories.length ? categoryRow.subcategories[0] : ''
-    addInventoryItem(matterId, scenarioId, type, { category: categoryName, subcategory, item_name: categoryName, debt_type: type === 'liability' ? 'unsecured' : (/secured/i.test(categoryName) ? 'secured' : '') })
+    addInventoryItem(matterId, scenarioId, type, {
+      category: categoryName,
+      subcategory,
+      item_name: extraDefaults.item_name || categoryName,
+      debt_type: type === 'liability' ? 'unsecured' : (/secured/i.test(categoryName) && !/unsecured/i.test(categoryName) ? 'secured' : ''),
+      ...extraDefaults
+    })
+  }
+
+
+  function renderInventoryGroupedWorkingTable(matter, selectedScenarioId, items = []) {
+    const groupRows = inventoryCategoryRowsForFullTable()
+    const collapsedMap = inventoryCollapsedGroupsByMatter[String(matter.id)] || {}
+    const columns = visibleInventoryColumns()
+    const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
+    const compactColumns = columns.filter((column) => ['item_name', 'description', 'estate', 'subcategory', 'characterization', 'value', 'possession', 'proposed_award'].includes(column.id))
+    const tableColumns = compactColumns.length ? compactColumns : columns.slice(0, 8)
+    return (
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Inventory Workbook</h3>
+            <div style={{ color: '#64748b', fontSize: 12 }}>Assets and secured debts are grouped together. Use H/W/Joint on a category row to add directly without scrolling a giant table.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Expand all</button>
+            <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (!collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Collapse all</button>
+            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')}>+ Add Asset</button>
+            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')}>+ Add Unsecured Debt</button>
+          </div>
+        </div>
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 12, overflow: 'hidden', background: 'white' }}>
+          {groupRows.map((categoryRow) => {
+            const key = inventoryGroupKey(categoryRow)
+            const groupItems = items.filter((item) => item.type === categoryRow.rowType && item.category === categoryRow.name)
+            const collapsed = !!collapsedMap[key]
+            const total = groupItems.reduce((sum, item) => sum + Math.abs(inventoryNumber(item.value)), 0)
+            const isLiability = categoryRow.rowType === 'liability'
+            return (
+              <div key={key} style={{ borderTop: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(220px, 1fr) auto auto', gap: 10, alignItems: 'center', padding: '10px 12px', background: isLiability ? '#fff7ed' : '#f8fafc' }}>
+                  <button type="button" onClick={() => toggleInventoryGroupCollapsed(matter.id, key)} style={{ border: 0, background: 'transparent', fontWeight: 900, fontSize: 16 }}>{collapsed ? '▸' : '▾'}</button>
+                  <div>
+                    <strong>{categoryRow.name}</strong>
+                    <span style={{ marginLeft: 8, color: '#64748b' }}>{categoryRow.rowType === 'asset' ? 'Asset / secured debt' : 'Unsecured debt'} · {groupItems.length} item(s)</span>
+                    {!!(categoryRow.subcategories || []).length && <div style={{ color: '#64748b', fontSize: 12 }}>{(categoryRow.subcategories || []).slice(0, 8).join(', ')}{(categoryRow.subcategories || []).length > 8 ? '…' : ''}</div>}
+                  </div>
+                  <strong style={{ textAlign: 'right', color: isLiability ? '#991b1b' : '#166534' }}>{money(total)}</strong>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => addInventoryItemForCategory(matter.id, selectedScenarioId, categoryRow, { estate: 'community', possession: 'Joint', proposed_award: 'Joint' })}>+ Joint</button>
+                    {!isLiability && <button type="button" onClick={() => addInventoryItemForSpouse(matter.id, selectedScenarioId, categoryRow, 'husband')}>+ H</button>}
+                    {!isLiability && <button type="button" onClick={() => addInventoryItemForSpouse(matter.id, selectedScenarioId, categoryRow, 'wife')}>+ W</button>}
+                    {isLiability && <button type="button" onClick={() => addInventoryItemForCategory(matter.id, selectedScenarioId, categoryRow, { estate: 'community', liable_party: 'Husband', proposed_payor: 'Husband' })}>+ H debt</button>}
+                    {isLiability && <button type="button" onClick={() => addInventoryItemForCategory(matter.id, selectedScenarioId, categoryRow, { estate: 'community', liable_party: 'Wife', proposed_payor: 'Wife' })}>+ W debt</button>}
+                  </div>
+                </div>
+                {!collapsed && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead><tr style={{ background: '#eef2f7' }}>{tableColumns.map((column) => <th key={column.id} style={{ textAlign: 'left', padding: 7, borderTop: '1px solid #e2e8f0' }}>{column.label}</th>)}<th style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>Action</th></tr></thead>
+                      <tbody>
+                        {groupItems.map((item) => (
+                          <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                            {tableColumns.map((column) => <td key={column.id} style={{ padding: 5, verticalAlign: 'top' }}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>)}
+                            <td style={{ padding: 5, whiteSpace: 'nowrap' }}><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
+                          </tr>
+                        ))}
+                        {!groupItems.length && <tr><td colSpan={tableColumns.length + 1} style={{ padding: 12, color: '#64748b', textAlign: 'center' }}>No items in this category yet. Use the buttons on this category row to add one.</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
   }
 
   function renderInventoryTotalsGrid(totals) {
@@ -22765,66 +22860,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           </div>
         )}
 
-        {viewMode === 'working' && (
-          <div style={{ display: 'grid', gap: 14 }}>
-            <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-                <div>
-                  <strong>Inventory Category Add Table</strong>
-                  <div style={{ color: '#64748b', fontSize: 12 }}>Every asset/debt category is listed here. Click Add on the category row to create an editable inventory row for that category.</div>
-                </div>
-              </div>
-              <div style={{ overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8 }}>Type</th><th style={{ textAlign: 'left', padding: 8 }}>Category</th><th style={{ textAlign: 'left', padding: 8 }}>Subcategories</th><th style={{ padding: 8 }}>Existing Rows</th><th style={{ padding: 8 }}>Action</th></tr></thead>
-                  <tbody>
-                    {inventoryCategoryRowsForFullTable().map((categoryRow) => {
-                      const existingCount = items.filter((item) => item.type === categoryRow.rowType && item.category === categoryRow.name).length
-                      return <tr key={`${categoryRow.rowType}-${categoryRow.id || categoryRow.name}`} style={{ borderTop: '1px solid #e2e8f0' }}>
-                        <td style={{ padding: 8 }}>{categoryRow.rowType === 'asset' ? 'Asset / secured debt' : 'Liability'}</td>
-                        <td style={{ padding: 8 }}><strong>{categoryRow.name}</strong></td>
-                        <td style={{ padding: 8, color: '#64748b' }}>{(categoryRow.subcategories || []).join(', ')}</td>
-                        <td style={{ padding: 8, textAlign: 'center' }}>{existingCount}</td>
-                        <td style={{ padding: 8, textAlign: 'center' }}><button type="button" onClick={() => addInventoryItemForCategory(matter.id, selectedScenarioId, categoryRow)}>Add</button></td>
-                      </tr>
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-              <div>
-                <strong>Full Inventory Table</strong>
-                <div style={{ color: '#64748b', fontSize: 12 }}>All visible inventory columns are shown below. Use Settings &gt; Inventory Settings to add, rename, hide, or delete columns and property categories.</div>
-              </div>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Table height
-                <input type="range" min="260" max="900" step="20" value={inventoryFullTableHeight} onChange={(e) => setInventoryFullTableHeight(Number(e.target.value) || 520)} />
-                <span>{inventoryFullTableHeight}px</span>
-              </label>
-            </div>
-            <div style={{ overflow: 'auto', maxHeight: inventoryFullTableHeight, border: '1px solid #e2e8f0', borderRadius: 8 }}>
-              <table style={{ minWidth: `${Math.max(2400, visibleInventoryColumns().length * 150)}px`, width: 'max-content', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead><tr style={{ background: '#eef2f7' }}>{visibleInventoryColumns().map((column) => <th key={column.id} style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1', borderRight: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{column.label}</th>)}<th style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Action</th></tr></thead>
-                <tbody>
-                  {filteredItems.map((item) => {
-                    const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
-                    return (
-                      <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0', background: item.type === 'liability' ? '#fff7ed' : 'white' }}>
-                        {visibleInventoryColumns().map((column) => (
-                          <td key={column.id} style={{ minWidth: 140, maxWidth: 260, padding: 4, borderRight: '1px solid #eef2f7', verticalAlign: 'top' }}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>
-                        ))}
-                        <td style={{ padding: 4, verticalAlign: 'top' }}><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
-                      </tr>
-                    )
-                  })}
-                  {!filteredItems.length && <tr><td colSpan={visibleInventoryColumns().length + 1} style={{ padding: 18, color: '#64748b', textAlign: 'center' }}>No inventory items yet. Use Add Asset or Add Liability above to create a full editable row.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          </div>
-        )}
+        {viewMode === 'working' && renderInventoryGroupedWorkingTable(matter, selectedScenarioId, items)}
       </div>
     )
   }
@@ -23955,32 +23991,49 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court') {
-    const email = createWorkspaceEmailRecord(context, stepContext, role)
-    const recipient = needToSetRecipientOption(stepContext, role)
-    const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
-    const safe = (value = '') => escapeEmailHtml(value)
-    const popup = window.open('', '_blank', 'width=1160,height=860,noopener,noreferrer')
-    if (!popup) {
-      alert('Popup was blocked. Allow popups for Mio to open the email compose window.')
-      return
-    }
-    const html = `<!doctype html><html><head><title>New email - ${safe(stepLabelForContext(stepContext))}</title><style>
-      body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#f5f7fb;color:#0f172a}.bar{background:#0f72c9;color:white;padding:14px 18px;font-size:18px;font-weight:700;display:flex;justify-content:space-between;align-items:center}.wrap{padding:18px}.context{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;background:white;border:1px solid #dbe4ee;border-radius:14px;padding:14px;margin-bottom:12px}.context div{font-size:13px;color:#475569}.context strong{display:block;color:#0f172a;margin-bottom:3px}.compose{background:white;border:1px solid #dbe4ee;border-radius:16px;box-shadow:0 12px 32px rgba(15,23,42,.10);overflow:hidden}.toolbar{display:flex;gap:8px;align-items:center;border-bottom:1px solid #e2e8f0;padding:10px 14px;background:#f8fafc}.send{background:#0f72c9;color:white;border:0;border-radius:8px;padding:10px 16px;font-weight:800}.ghost{border:1px solid #cbd5e1;background:white;border-radius:8px;padding:9px 12px}.row{display:grid;grid-template-columns:70px 1fr;gap:10px;align-items:center;border-bottom:1px solid #e2e8f0;padding:11px 14px}.row label{font-weight:700;color:#475569}.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:7px 10px;font-weight:700}.input{border:0;outline:0;font-size:15px;width:100%}.body{min-height:360px;padding:18px;border:0;outline:0;font-size:15px;line-height:1.5}.attach{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:10px;margin:12px 14px;color:#9a3412}.foot{display:grid;grid-template-columns:1fr 360px;gap:12px;margin-top:12px}.panel{background:white;border:1px solid #dbe4ee;border-radius:14px;padding:12px}.thread{border:1px solid #e2e8f0;border-radius:10px;padding:9px;margin-top:8px;display:grid;grid-template-columns:1fr auto;gap:8px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.note{color:#64748b;font-size:13px}</style></head><body>
-      <div class="bar"><span>New mail - ${safe(stepLabelForContext(stepContext))}</span><span style="font-size:13px;font-weight:500">Attached to Mio workflow step</span></div>
-      <div class="wrap">
-        <div class="context"><div><strong>Matter</strong>${safe(matter?.name || '')}</div><div><strong>Cause #</strong>${safe(matter?.cause_number || matter?.cause || '')}</div><div><strong>Event</strong>${safe(stepContext.settingType || '')}</div><div><strong>Step</strong>${safe(stepLabelForContext(stepContext))}</div><div><strong>Recipient role</strong>${safe(recipient.label)}</div></div>
-        <div class="compose"><div class="toolbar"><button class="send">Send</button><button class="ghost">Save Draft</button><button class="ghost">Attach File</button><button class="ghost">Insert Template</button><button class="ghost" onclick="window.opener&&window.opener.focus()">Open Mio</button><span class="note">This draft/thread is linked to this Need to Set step.</span></div>
-          <div class="row"><label>From</label><div>${safe(email.mailbox_email || serviceGraphAuth?.account?.username || 'service@beveridgelawfirm.com')}</div></div>
-          <div class="row"><label>To</label><div><span class="chip">${safe(recipient.label)} ${recipient.email ? '&lt;'+safe(recipient.email)+'&gt;' : '(no saved email)'}</span></div></div>
-          <div class="row"><label>Cc</label><input class="input" placeholder="Add Cc" /></div>
-          <div class="row"><label>Subject</label><input class="input" value="${safe(email.subject)}" /></div>
-          <div class="body" contenteditable="true">${emailHtmlWithSignature('')}</div>
+    let email = null
+    try {
+      email = createWorkspaceEmailRecord(context, stepContext, role)
+      const recipient = needToSetRecipientOption(stepContext, role)
+      const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
+      const stepName = stepLabelForContext(stepContext)
+      const safe = (value = '') => escapeEmailHtml(value)
+      const fromEmail = email?.mailbox_email || serviceGraphAuth?.account?.username || session?.user?.email || 'service@beveridgelawfirm.com'
+      const linkedThreads = needToSetEmailsForStep(stepContext.event || context.event || {}, stepContext.step || {}, stepContext.stepIndex || 0)
+      const popup = window.open('', '_blank', 'width=1180,height=860')
+      if (!popup) {
+        alert('Popup was blocked. Allow popups for Mio to open the email compose window.')
+        return
+      }
+      const existingThreadsHtml = linkedThreads.map((thread) => `
+        <div class="thread">
+          <div><strong>${safe(thread.subject || thread.title || 'Linked email')}</strong><br><span class="muted">${safe(thread.recipient_label || needToSetEmailRoleLabel(thread))} - ${thread.last_activity ? safe(new Date(thread.last_activity).toLocaleString()) : 'Linked to this step'}</span></div>
+          ${thread.new_email_notice || workspaceEmailHasUnreadActivity(thread) ? '<span class="badge">Unread</span>' : '<span class="ok">Read</span>'}
+        </div>`).join('') || '<div class="muted">This new draft is the first email linked to this step.</div>'
+      const signature = emailHtmlWithSignature('')
+      popup.document.open()
+      popup.document.write(`<!doctype html><html><head><title>New email - ${safe(stepName)}</title><style>
+        body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f5f7fb;color:#0f172a}.top{background:#0f72c9;color:white;padding:12px 18px;font-size:18px;font-weight:700;display:flex;justify-content:space-between}.wrap{padding:16px}.ctx{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;background:#fff;border:1px solid #dbe4ee;border-radius:14px;padding:12px;margin-bottom:12px}.ctx div{font-size:13px;color:#475569}.ctx strong{display:block;color:#0f172a}.compose{background:white;border:1px solid #dbe4ee;border-radius:16px;box-shadow:0 12px 32px rgba(15,23,42,.12);overflow:hidden}.tools{display:flex;gap:8px;align-items:center;border-bottom:1px solid #e2e8f0;padding:10px 14px;background:#f8fafc;flex-wrap:wrap}.send{background:#0f72c9;color:white;border:0;border-radius:8px;padding:10px 18px;font-weight:800}.btn{border:1px solid #cbd5e1;background:white;border-radius:8px;padding:9px 12px}.row{display:grid;grid-template-columns:74px 1fr;gap:10px;align-items:center;border-bottom:1px solid #e2e8f0;padding:11px 14px}.row label{font-weight:700;color:#475569}.input{border:0;outline:0;font-size:15px;width:100%}.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:7px 10px;font-weight:700}.body{min-height:330px;padding:18px;font-size:15px;line-height:1.5;outline:0}.grid{display:grid;grid-template-columns:1fr 380px;gap:12px;margin-top:12px}.panel{background:white;border:1px solid #dbe4ee;border-radius:14px;padding:12px}.thread{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid #e2e8f0;border-radius:10px;padding:9px;margin-top:8px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.ok{background:#dcfce7;color:#166534;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.muted{color:#64748b;font-size:13px}.attached{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px;color:#1d4ed8;margin-top:8px}</style></head><body>
+        <div class="top"><span>New mail</span><span>Attached to Need to Set step</span></div>
+        <div class="wrap">
+          <div class="ctx"><div><strong>Matter</strong>${safe(matter?.name || '')}</div><div><strong>Cause #</strong>${safe(matter?.cause_number || matter?.cause || '')}</div><div><strong>Event</strong>${safe(stepContext.settingType || '')}</div><div><strong>Step</strong>${safe(stepName)}</div><div><strong>Recipient</strong>${safe(recipient.label)}</div></div>
+          <div class="compose">
+            <div class="tools"><button class="send">Send</button><button class="btn">Save Draft</button><button class="btn">Attach File</button><button class="btn">Insert Template</button><button class="btn">Add Time</button><span class="muted">This email is saved to this exact step in Mio.</span></div>
+            <div class="row"><label>From</label><div>${safe(fromEmail)}</div></div>
+            <div class="row"><label>To</label><div><span class="chip">${safe(recipient.label)} ${recipient.email ? '&lt;'+safe(recipient.email)+'&gt;' : '(no saved email)'}</span></div></div>
+            <div class="row"><label>Cc</label><input class="input" placeholder="Add Cc" value="${safe(email.cc || '')}"></div>
+            <div class="row"><label>Subject</label><input class="input" value="${safe(email.subject || '')}"></div>
+            <div class="body" contenteditable="true">${signature}</div>
+          </div>
+          <div class="grid"><div class="panel"><strong>Step attachment</strong><div class="attached">Matter: ${safe(matter?.name || '')}<br>Step: ${safe(stepName)}<br>Recipient role: ${safe(recipient.label)}<br>This thread will show as an email icon on this step.</div></div><div class="panel"><strong>Emails linked to this step</strong>${existingThreadsHtml}</div></div>
         </div>
-        <div class="foot"><div class="panel"><strong>Step context</strong><p class="note">All emails opened from this window are recorded under: ${safe(stepLabelForContext(stepContext))}. Reopen this step in Mio to see time, notes, billing entries, and linked threads.</p></div><div class="panel"><strong>Emails linked to this step</strong><div class="thread"><div><strong>${safe(email.title)}</strong><br/><span class="note">Draft created just now</span></div><span class="badge">New</span></div></div></div>
-      </div></body></html>`
-    popup.document.open()
-    popup.document.write(html)
-    popup.document.close()
+      </body></html>`)
+      popup.document.close()
+      try { popup.focus() } catch {}
+    } catch (error) {
+      console.error('Need to Set email compose failed', error)
+      alert(`The email window could not be built: ${error?.message || error}. The email record was still attached to the step if it was created.`)
+    }
   }
 
   function openNeedToSetEmailThreadsWindow(event = {}, step = {}, stepIndex = 0) {
@@ -34141,11 +34194,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   onScroll={() => syncCourtTableScroll('top')}
                   style={{ overflowX: 'auto', overflowY: 'hidden', width: '100%', height: 18, border: '1px solid #aaa', borderBottom: 0 }}
                 >
-                  <div style={{ width: 4600, height: 1 }} />
+                  <div style={{ width: 4800, height: 1 }} />
                 </div>
 
                 <div ref={courtTableBodyScrollRef} onScroll={() => syncCourtTableScroll('body')} style={{ overflow: 'auto', width: '100%', maxHeight: '72vh', border: '1px solid #aaa' }}>
-                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 4600, width: 'max-content' }}>
+                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 4800, width: 'max-content' }}>
                     <thead>
                       <tr>
                         {courtTableHeaders().map((header, index) => <th key={header} style={index === 0 ? { position: 'sticky', left: 0, zIndex: 20, background: '#f8fafc', minWidth: 240, boxShadow: '2px 0 3px rgba(0,0,0,0.08)' } : undefined}>{header}</th>)}
@@ -34178,6 +34231,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <td><EditableTextCell value={court.associate_court_reporter} onSave={(value) => updateCourtCell(court.id, 'associate_court_reporter', value)} width={190} /></td>
                           <td><EditableTextCell value={court.associate_court_reporter_email} onSave={(value) => updateCourtCell(court.id, 'associate_court_reporter_email', value)} width={230} /></td>
                           <td><EditableTextCell value={court.associate_court_reporter_phone} onSave={(value) => updateCourtCell(court.id, 'associate_court_reporter_phone', value)} width={210} /></td>
+                          <td>
+                            <EditableTextCell value={courtTimelineRules[court.id]?.court_setting_url || ''} onSave={(value) => updateCourtTimelineRule(court.id, 'court_setting_url', value)} width={240} />
+                            <div>{websiteLink(courtTimelineRules[court.id]?.court_setting_url, 'Open setting page')}</div>
+                          </td>
                           <td><EditableTextCell value={court.court_website} onSave={(value) => updateCourtCell(court.id, 'court_website', value)} width={240} /></td>
                           <td><EditableTextCell value={court.court_docket} onSave={(value) => updateCourtCell(court.id, 'court_docket', value)} width={240} /></td>
                         </tr>
@@ -34553,6 +34610,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       <th onClick={() => changeSort(courtsSort, setCourtsSort, 'court_coordinator')} style={{ cursor: 'pointer' }}>Coordinator{sortLabel(courtsSort, 'court_coordinator')}</th>
                       <th onClick={() => changeSort(courtsSort, setCourtsSort, 'court_coordinator_email')} style={{ cursor: 'pointer' }}>Coordinator Email{sortLabel(courtsSort, 'court_coordinator_email')}</th>
                       <th onClick={() => changeSort(courtsSort, setCourtsSort, 'court_coordinator_phone')} style={{ cursor: 'pointer' }}>Coordinator Phone{sortLabel(courtsSort, 'court_coordinator_phone')}</th>
+                      <th>Court Setting Page</th>
                       <th>Court Website</th>
                       <th>Court Docket</th>
                       <th>Status</th>
@@ -34570,6 +34628,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         <td>{court.court_coordinator}</td>
                         <td>{court.court_coordinator_email}</td>
                         <td>{court.court_coordinator_phone}</td>
+                        <td>{websiteLink(courtTimelineRules[court.id]?.court_setting_url, 'Open setting page')}</td>
                         <td>{websiteLink(court.court_website, 'Open website')}</td>
                         <td>{websiteLink(court.court_docket, 'Open docket')}</td>
                         <td>{court.is_active ? 'Active' : 'Inactive'}</td>
