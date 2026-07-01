@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V87'
+const MIO_APP_VERSION = 'Mio V88'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -220,6 +220,7 @@ function mergeInventoryColumns(storedColumns = []) {
 const DEFAULT_INVENTORY_SETTINGS = {
   assetCategories: [
     { id: 'real_estate', name: 'Real Estate', subcategories: ['Homestead', 'Rental Property', 'Land', 'Commercial Property', 'Mineral Interest'] },
+    { id: 'secured_debt', name: 'Secured Debt / Liens Attached to Assets', subcategories: ['Mortgage', 'Vehicle Loan', 'Equipment Loan', 'Business Secured Debt', 'HELOC', 'Tax Lien', 'Judgment Lien', 'Other Secured Debt'] },
     { id: 'vehicles', name: 'Vehicles', subcategories: ['Car', 'Truck', 'Motorcycle', 'Boat', 'Trailer', 'RV', 'ATV'] },
     { id: 'financial_accounts', name: 'Financial Accounts', subcategories: ['Checking', 'Savings', 'Brokerage', 'Cash App', 'PayPal', 'Venmo'] },
     { id: 'retirement', name: 'Retirement', subcategories: ['401(k)', 'IRA', 'Pension', 'TRS', 'TCDRS', 'Deferred Compensation'] },
@@ -229,7 +230,6 @@ const DEFAULT_INVENTORY_SETTINGS = {
     { id: 'other', name: 'Other', subcategories: ['Other'] }
   ],
   liabilityCategories: [
-    { id: 'secured_debt', name: 'Secured Debt', subcategories: ['Mortgage', 'Vehicle Loan', 'Equipment Loan', 'Business Secured Debt', 'HELOC', 'Tax Lien', 'Judgment Lien', 'Other Secured Debt'] },
     { id: 'unsecured_debt', name: 'Unsecured Debt', subcategories: ['Credit Card', 'Medical Debt', 'Personal Loan', 'Student Loan', 'IRS Debt', 'Business Debt', 'Attorney Fees', 'Family Loan', 'Other Unsecured Debt'] }
   ],
   columns: [
@@ -906,6 +906,8 @@ function ensureRequestedReliefOptionShape(option, index = 0) {
     notes: option?.notes || '',
     is_active: option?.is_active !== false,
     is_relief_option: option?.is_relief_option === true,
+    is_relief_table: option?.is_relief_table === true,
+    table_id: option?.table_id || '',
     option_type: option?.option_type === 'exclusive' ? 'exclusive' : 'non_exclusive',
     has_text_box: option?.has_text_box === true,
     text_box_label: option?.text_box_label || '',
@@ -22388,14 +22390,14 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     }))
   }
 
-  function addInventoryItem(matterId, scenarioId, type = 'asset') {
+  function addInventoryItem(matterId, scenarioId, type = 'asset', defaults = {}) {
     const now = new Date().toISOString()
     const item = {
       id: `inv-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       type,
-      category: type === 'asset' ? 'Real Estate' : 'Secured Debt',
-      subcategory: '',
-      item_name: type === 'asset' ? 'New Asset' : 'New Debt',
+      category: defaults.category || (type === 'asset' ? 'Real Estate' : 'Unsecured Debt'),
+      subcategory: defaults.subcategory || '',
+      item_name: defaults.item_name || (type === 'asset' ? 'New Asset' : 'New Debt'),
       description: '',
       estate: 'community',
       characterization: type === 'asset' ? 'Community' : 'Community',
@@ -22408,7 +22410,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       paid_off_status: type === 'asset' ? 'Unknown' : '',
       has_secured_debt: false,
       linked_debt_id: '',
-      debt_type: type === 'liability' ? 'secured' : '',
+      debt_type: defaults.debt_type || (type === 'liability' ? 'unsecured' : ''),
       creditor: '',
       balance_date: '',
       liable_party: '',
@@ -22488,14 +22490,45 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function inventoryCategoryOptions(type) {
-    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
+    const groups = type === 'liability' ? normalizedInventoryLiabilityCategories() : normalizedInventoryAssetCategories()
     return (groups || []).map((group) => group.name)
   }
 
   function inventorySubcategoryOptions(type, categoryName) {
-    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
+    const groups = type === 'liability' ? normalizedInventoryLiabilityCategories() : normalizedInventoryAssetCategories()
     const group = (groups || []).find((entry) => entry.name === categoryName)
     return Array.isArray(group?.subcategories) ? group.subcategories : []
+  }
+
+  function normalizedInventoryAssetCategories() {
+    const assetCategories = Array.isArray(inventorySettings.assetCategories) ? inventorySettings.assetCategories : []
+    const liabilityCategories = Array.isArray(inventorySettings.liabilityCategories) ? inventorySettings.liabilityCategories : []
+    const securedFromLiabilities = liabilityCategories.filter((group) => /secured/i.test(group.name || '') && !/unsecured/i.test(group.name || ''))
+    const base = [...assetCategories]
+    securedFromLiabilities.forEach((group) => {
+      const alreadyThere = base.some((row) => String(row.id || row.name) === String(group.id || group.name) || (/secured/i.test(row.name || '') && !/unsecured/i.test(row.name || '')))
+      if (!alreadyThere) base.push({ ...group, id: group.id || `asset-secured-${Date.now()}` })
+    })
+    return base
+  }
+
+  function normalizedInventoryLiabilityCategories() {
+    const liabilityCategories = Array.isArray(inventorySettings.liabilityCategories) ? inventorySettings.liabilityCategories : []
+    return liabilityCategories.filter((group) => !(/secured/i.test(group.name || '') && !/unsecured/i.test(group.name || '')))
+  }
+
+  function inventoryCategoryRowsForFullTable() {
+    return [
+      ...normalizedInventoryAssetCategories().map((group) => ({ ...group, rowType: 'asset' })),
+      ...normalizedInventoryLiabilityCategories().map((group) => ({ ...group, rowType: 'liability' }))
+    ]
+  }
+
+  function addInventoryItemForCategory(matterId, scenarioId, categoryRow) {
+    const type = categoryRow?.rowType || 'asset'
+    const categoryName = categoryRow?.name || (type === 'asset' ? 'Real Estate' : 'Unsecured Debt')
+    const subcategory = Array.isArray(categoryRow?.subcategories) && categoryRow.subcategories.length ? categoryRow.subcategories[0] : ''
+    addInventoryItem(matterId, scenarioId, type, { category: categoryName, subcategory, item_name: categoryName, debt_type: type === 'liability' ? 'unsecured' : (/secured/i.test(categoryName) ? 'secured' : '') })
   }
 
   function renderInventoryTotalsGrid(totals) {
@@ -22587,8 +22620,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       <div>
         <h2>Inventory Settings</h2>
         <p style={{ color: '#64748b' }}>Set the asset, liability, category, subcategory, and visible table columns used by all matter inventories.</p>
-        {renderGroupEditor('asset', 'Asset Categories')}
-        {renderGroupEditor('liability', 'Liability Categories')}
+        {renderGroupEditor('asset', 'Asset Categories (includes secured debts/liens attached to assets)')}
+        <div style={{ border: '1px solid #fed7aa', background: '#fff7ed', borderRadius: 8, padding: 10, marginBottom: 16, color: '#9a3412' }}>
+          Secured debt belongs with the related asset. Unsecured debt remains in Liability Categories below.
+          <button type="button" style={{ marginLeft: 10 }} onClick={() => setInventorySettings((current) => ({ ...current, assetCategories: normalizedInventoryAssetCategories(), liabilityCategories: normalizedInventoryLiabilityCategories() }))}>Move secured debt into assets now</button>
+        </div>
+        {renderGroupEditor('liability', 'Liability Categories (unsecured only)')}
         <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
             <h3 style={{ margin: 0 }}>Inventory Columns</h3>
@@ -22684,7 +22721,33 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         )}
 
         {viewMode === 'working' && (
-          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                <div>
+                  <strong>Inventory Category Add Table</strong>
+                  <div style={{ color: '#64748b', fontSize: 12 }}>Every asset/debt category is listed here. Click Add on the category row to create an editable inventory row for that category.</div>
+                </div>
+              </div>
+              <div style={{ overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8 }}>Type</th><th style={{ textAlign: 'left', padding: 8 }}>Category</th><th style={{ textAlign: 'left', padding: 8 }}>Subcategories</th><th style={{ padding: 8 }}>Existing Rows</th><th style={{ padding: 8 }}>Action</th></tr></thead>
+                  <tbody>
+                    {inventoryCategoryRowsForFullTable().map((categoryRow) => {
+                      const existingCount = items.filter((item) => item.type === categoryRow.rowType && item.category === categoryRow.name).length
+                      return <tr key={`${categoryRow.rowType}-${categoryRow.id || categoryRow.name}`} style={{ borderTop: '1px solid #e2e8f0' }}>
+                        <td style={{ padding: 8 }}>{categoryRow.rowType === 'asset' ? 'Asset / secured debt' : 'Liability'}</td>
+                        <td style={{ padding: 8 }}><strong>{categoryRow.name}</strong></td>
+                        <td style={{ padding: 8, color: '#64748b' }}>{(categoryRow.subcategories || []).join(', ')}</td>
+                        <td style={{ padding: 8, textAlign: 'center' }}>{existingCount}</td>
+                        <td style={{ padding: 8, textAlign: 'center' }}><button type="button" onClick={() => addInventoryItemForCategory(matter.id, selectedScenarioId, categoryRow)}>Add</button></td>
+                      </tr>
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
               <div>
                 <strong>Full Inventory Table</strong>
@@ -22714,6 +22777,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 </tbody>
               </table>
             </div>
+          </div>
           </div>
         )}
       </div>
@@ -25310,6 +25374,38 @@ ${choices}`, '1'))
     setTimeout(() => window.scrollTo(scrollX, scrollY), 0)
   }
 
+  function addRequestedReliefTableUnderIssue(parentOption) {
+    const tables = activeRequestedReliefTables()
+    if (!tables.length) {
+      alert('No requested relief tables exist yet. Open the Other relief tables tab to add one.')
+      return
+    }
+    const tableList = tables.map((table, index) => `${index + 1}. ${table.title}`).join('\n')
+    const raw = (window.prompt(`Which table should be added under ${parentOption.name}?\n\n${tableList}\n\nEnter the number:`, '1') || '').trim()
+    const selectedIndex = Number(raw) - 1
+    const table = tables[selectedIndex]
+    if (!table) return
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-table-node-${Date.now()}`
+    setRequestedReliefOptions((current) => {
+      const siblings = current.filter((item) => String(item.parent_id || '') === String(parentOption.id || ''))
+      return resequenceRequestedReliefOptions([
+        ...current,
+        ensureRequestedReliefOptionShape({
+          id: newId,
+          parent_id: parentOption.id,
+          name: table.title,
+          notes: 'Requested relief table inserted into this issue row.',
+          is_active: true,
+          is_relief_option: false,
+          is_relief_table: true,
+          table_id: table.id,
+          sort_order: siblings.length + 1
+        }, current.length)
+      ])
+    })
+    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, parentOption.id, newId])))
+  }
+
   function addRequestedReliefOptionChoice(parentOption, optionType = 'non_exclusive') {
     const label = optionType === 'exclusive' ? 'exclusive' : 'non-exclusive'
     const name = (window.prompt(`Name the ${label} relief option under ${parentOption.name}:`) || '').trim()
@@ -25448,6 +25544,7 @@ ${choices}`, '1'))
               )}
               {mode !== 'relief_builder' && childCount ? <span style={{ color: '#64748b', fontSize: 12 }}>({childCount})</span> : null}
               {mode === 'settings' && isReliefOption && <span style={{ color: '#1e3a8a', background: '#dbeafe', borderRadius: 999, padding: '1px 6px', fontSize: 12 }}>{option.option_type === 'exclusive' ? 'Exclusive option' : 'Non-exclusive option'}{option.has_text_box ? ' + text box' : ''}</span>}
+              {option.is_relief_table && <span style={{ color: '#7c2d12', background: '#ffedd5', borderRadius: 999, padding: '1px 6px', fontSize: 12, fontWeight: 800 }}>TABLE</span>}
               
               {mode === 'relief_builder' && isLeafSelected && <span style={{ color: '#15803d', fontSize: 12 }}>selected</span>}
             </div>
@@ -25456,6 +25553,7 @@ ${choices}`, '1'))
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
                 <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
                 <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
+                {!isReliefOption && !option.is_relief_table && <button type="button" onClick={() => addRequestedReliefTableUnderIssue(option)} title="Insert one of the requested relief tables under this issue row">Add table</button>}
                 {isReliefOption && <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, false, option.option_type)} title="Make this row a regular issue/category again">Remove option status</button>}
                 {isReliefOption && <button type="button" onClick={() => toggleRequestedReliefOptionTextBox(option.id)}>{option.has_text_box ? 'Remove text box' : 'Add text box'}</button>}
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
@@ -25480,6 +25578,11 @@ ${choices}`, '1'))
                 ) : <span style={{ color: '#94a3b8' }}>Select options below.</span>}
               </div>
             ) : <span />}
+            {option.is_relief_table && option.table_id && (
+              <div style={{ gridColumn: '1 / -1', margin: '8px 0 8px 30px', border: '1px solid #fed7aa', borderRadius: 8, padding: 8, background: '#fff7ed' }}>
+                {renderRequestedReliefTable(activeRequestedReliefTables().find((table) => table.id === option.table_id), { mode: mode === 'settings' ? 'settings' : 'matter' })}
+              </div>
+            )}
             {mode === 'relief_builder' && isLeafForRelief && (
               <div style={{ gridColumn: '1 / -1', marginLeft: mode === 'settings' ? 0 : 30, paddingTop: 4 }}>
                 <label style={{ display: 'grid', gap: 3, color: isFadedBySelection ? '#cbd5e1' : '#334155', fontSize: 12 }}>
