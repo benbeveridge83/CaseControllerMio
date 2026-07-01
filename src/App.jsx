@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V88'
+const MIO_APP_VERSION = 'Mio V89'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -23777,6 +23777,348 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
   }
 
+
+  function needToSetShortDate(value) {
+    const date = dateOnlyFromValue(value)
+    if (!date) return 'N/A'
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  }
+
+  function needToSetEventTitle(event = {}) {
+    return event.checklist_title || event.title || checklistEventCategoryLabel(event) || 'Need to Set'
+  }
+
+  function needToSetStepContext(event = {}, step = {}, stepIndex = 0) {
+    const matter = checklistMatterForEvent(event)
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const settingType = event?.checklist_category || event?.event_category || step?.parent_name || 'Setting'
+    return {
+      type: 'checklist',
+      event,
+      eventId,
+      matter,
+      matterId: matter?.id || event?.matter_id || '',
+      step,
+      stepIndex,
+      stepName: step?.name || 'Step',
+      settingType,
+      billingStepName: `Need to Set - ${settingType}: ${step?.name || 'Step'}`,
+      courtName: checklistCourtName(event),
+      courtEmail: checklistCourtCoordinatorEmail(event)
+    }
+  }
+
+  function needToSetEventWorkspaceContext(event = {}) {
+    const matter = checklistMatterForEvent(event)
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const settingType = event?.checklist_category || event?.event_category || 'Setting'
+    return { type: 'checklist', event, eventId, matter, matterId: matter?.id || event?.matter_id || '', settingType, billingStepName: `Need to Set - ${settingType}`, courtName: checklistCourtName(event), courtEmail: checklistCourtCoordinatorEmail(event) }
+  }
+
+  function needToSetEmailsForStep(event = {}, step = {}, stepIndex = 0) {
+    const eventContext = needToSetEventWorkspaceContext(event)
+    const workspace = normalizeWorkspace(eventContext)
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    const stepKey = workspaceStepKey(stepContext, stepIndex)
+    return (workspace.emails || []).filter((email) => String(email.step_key || email.step_id || '') === String(stepKey))
+  }
+
+  function needToSetEmailsForEvent(event = {}) {
+    const workspace = normalizeWorkspace(needToSetEventWorkspaceContext(event))
+    return Array.isArray(workspace.emails) ? workspace.emails : []
+  }
+
+  function needToSetEmailSummary(event = {}) {
+    const emails = needToSetEmailsForEvent(event)
+    const unread = emails.filter((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email)).length
+    return { total: emails.length, unread }
+  }
+
+  function needToSetEmailRoleLabel(email = {}) {
+    const role = String(email.recipient_role || email.role || '').toLowerCase()
+    if (role.includes('client')) return 'Client'
+    if (role.includes('opposing_counsel') || role.includes('oc')) return 'OC'
+    if (role.includes('opposing_party')) return 'Opposing Party'
+    if (role.includes('mediator')) return 'Mediator'
+    if (role.includes('court')) return 'Court'
+    const text = `${email.title || ''} ${email.to || ''}`.toLowerCase()
+    if (text.includes('court') || text.includes('coordinator')) return 'Court'
+    if (text.includes('client')) return 'Client'
+    return email.step_name ? 'Email' : 'Thread'
+  }
+
+  function needToSetRecipientOption(context = {}, role = 'court') {
+    const matter = matterForWorkspaceContext(context)
+    const extra = matter ? matterExtraFor(matter.id) : {}
+    const opposingParties = Array.isArray(extra.opposing_parties) ? extra.opposing_parties : []
+    const lower = String(role || '').toLowerCase()
+    if (lower === 'client') return { role: 'client', label: 'Client', email: matterClientEmail(matter) || clientEmailForMatter(matter) || '', name: matterClientName(matter) || matter?.matter_client_name || 'Client' }
+    if (lower === 'opposing_counsel') return { role: 'opposing_counsel', label: 'Opposing Counsel', email: matterOpposingCounselEmail(matter) || matter?.opposing_counsel_email || opposingParties[0]?.counsel?.email || '', name: matter?.opposing_counsel || opposingParties[0]?.counsel?.name || 'Opposing Counsel' }
+    if (lower === 'opposing_party') return { role: 'opposing_party', label: 'Opposing Party', email: matterOpposingPartyEmail(matter) || opposingParties[0]?.email || '', name: matter?.opposing_party || opposingParties[0]?.name || 'Opposing Party' }
+    if (lower === 'mediator') return { role: 'mediator', label: 'Mediator', email: matter?.mediator_email || extra?.mediator_email || '', name: matter?.mediator_name || extra?.mediator_name || 'Mediator' }
+    return { role: 'court', label: 'Court', email: context.courtEmail || matterCourtCoordinatorEmail(matter) || matter?.courts?.court_coordinator_email || '', name: context.courtName || matter?.courts?.court_name || 'Court' }
+  }
+
+  function createWorkspaceEmailRecord(context = {}, stepContext = {}, role = 'court') {
+    const recipient = needToSetRecipientOption(stepContext, role)
+    const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
+    const stepName = stepLabelForContext(stepContext)
+    const stepKey = workspaceStepKey(stepContext, stepContext.stepIndex || '')
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `email-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const subject = `${stepContext.settingType || 'Setting'} - ${stepName} - ${matter?.name || ''}`.trim()
+    const emailRecord = {
+      id: newId,
+      title: `${stepName} - ${recipient.label}`,
+      recipient_role: recipient.role,
+      recipient_label: recipient.label,
+      subject,
+      to: recipient.email || '',
+      cc: '',
+      body: '',
+      reply_body: '',
+      forward_to: '',
+      forward_body: '',
+      mailbox_email: serviceGraphAuth?.account?.username || session?.user?.email || '',
+      search_query: [matter?.name, matter?.cause_number, stepContext.settingType, stepName, recipient.email].filter(Boolean).join(' '),
+      search_email: recipient.email || '',
+      search_subject: subject,
+      search_date_from: '',
+      search_date_to: '',
+      search_results: [],
+      thread_messages: [],
+      outlook_conversation_id: '',
+      outlook_message_id: '',
+      outlook_web_link: '',
+      last_activity: '',
+      last_viewed_at: '',
+      step_id: stepContext.step?.id || stepContext.stepId || '',
+      step_key: stepKey,
+      step_name: stepName,
+      status_note: `Linked to ${stepName}. Compose or attach the ${recipient.label} email thread here.`,
+      notes: '',
+      collapsed: false,
+      send_collapsed: false,
+      compose_mode: 'new',
+      created_at: new Date().toISOString()
+    }
+    updateWorkspace(context, (workspace) => ({ ...workspace, emails: [...(workspace.emails || []), emailRecord] }))
+    return emailRecord
+  }
+
+  function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court') {
+    const email = createWorkspaceEmailRecord(context, stepContext, role)
+    const recipient = needToSetRecipientOption(stepContext, role)
+    const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
+    const safe = (value = '') => escapeEmailHtml(value)
+    const popup = window.open('', '_blank', 'width=1160,height=860,noopener,noreferrer')
+    if (!popup) {
+      alert('Popup was blocked. Allow popups for Mio to open the email compose window.')
+      return
+    }
+    const html = `<!doctype html><html><head><title>New email - ${safe(stepLabelForContext(stepContext))}</title><style>
+      body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#f5f7fb;color:#0f172a}.bar{background:#0f72c9;color:white;padding:14px 18px;font-size:18px;font-weight:700;display:flex;justify-content:space-between;align-items:center}.wrap{padding:18px}.context{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;background:white;border:1px solid #dbe4ee;border-radius:14px;padding:14px;margin-bottom:12px}.context div{font-size:13px;color:#475569}.context strong{display:block;color:#0f172a;margin-bottom:3px}.compose{background:white;border:1px solid #dbe4ee;border-radius:16px;box-shadow:0 12px 32px rgba(15,23,42,.10);overflow:hidden}.toolbar{display:flex;gap:8px;align-items:center;border-bottom:1px solid #e2e8f0;padding:10px 14px;background:#f8fafc}.send{background:#0f72c9;color:white;border:0;border-radius:8px;padding:10px 16px;font-weight:800}.ghost{border:1px solid #cbd5e1;background:white;border-radius:8px;padding:9px 12px}.row{display:grid;grid-template-columns:70px 1fr;gap:10px;align-items:center;border-bottom:1px solid #e2e8f0;padding:11px 14px}.row label{font-weight:700;color:#475569}.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:7px 10px;font-weight:700}.input{border:0;outline:0;font-size:15px;width:100%}.body{min-height:360px;padding:18px;border:0;outline:0;font-size:15px;line-height:1.5}.attach{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:10px;margin:12px 14px;color:#9a3412}.foot{display:grid;grid-template-columns:1fr 360px;gap:12px;margin-top:12px}.panel{background:white;border:1px solid #dbe4ee;border-radius:14px;padding:12px}.thread{border:1px solid #e2e8f0;border-radius:10px;padding:9px;margin-top:8px;display:grid;grid-template-columns:1fr auto;gap:8px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.note{color:#64748b;font-size:13px}</style></head><body>
+      <div class="bar"><span>New mail - ${safe(stepLabelForContext(stepContext))}</span><span style="font-size:13px;font-weight:500">Attached to Mio workflow step</span></div>
+      <div class="wrap">
+        <div class="context"><div><strong>Matter</strong>${safe(matter?.name || '')}</div><div><strong>Cause #</strong>${safe(matter?.cause_number || matter?.cause || '')}</div><div><strong>Event</strong>${safe(stepContext.settingType || '')}</div><div><strong>Step</strong>${safe(stepLabelForContext(stepContext))}</div><div><strong>Recipient role</strong>${safe(recipient.label)}</div></div>
+        <div class="compose"><div class="toolbar"><button class="send">Send</button><button class="ghost">Save Draft</button><button class="ghost">Attach File</button><button class="ghost">Insert Template</button><button class="ghost" onclick="window.opener&&window.opener.focus()">Open Mio</button><span class="note">This draft/thread is linked to this Need to Set step.</span></div>
+          <div class="row"><label>From</label><div>${safe(email.mailbox_email || serviceGraphAuth?.account?.username || 'service@beveridgelawfirm.com')}</div></div>
+          <div class="row"><label>To</label><div><span class="chip">${safe(recipient.label)} ${recipient.email ? '&lt;'+safe(recipient.email)+'&gt;' : '(no saved email)'}</span></div></div>
+          <div class="row"><label>Cc</label><input class="input" placeholder="Add Cc" /></div>
+          <div class="row"><label>Subject</label><input class="input" value="${safe(email.subject)}" /></div>
+          <div class="body" contenteditable="true">${emailHtmlWithSignature('')}</div>
+        </div>
+        <div class="foot"><div class="panel"><strong>Step context</strong><p class="note">All emails opened from this window are recorded under: ${safe(stepLabelForContext(stepContext))}. Reopen this step in Mio to see time, notes, billing entries, and linked threads.</p></div><div class="panel"><strong>Emails linked to this step</strong><div class="thread"><div><strong>${safe(email.title)}</strong><br/><span class="note">Draft created just now</span></div><span class="badge">New</span></div></div></div>
+      </div></body></html>`
+    popup.document.open()
+    popup.document.write(html)
+    popup.document.close()
+  }
+
+  function openNeedToSetEmailThreadsWindow(event = {}, step = {}, stepIndex = 0) {
+    const context = needToSetEventWorkspaceContext(event)
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
+    if (!stepEmails.length) return
+    const safe = (value = '') => escapeEmailHtml(value)
+    const popup = window.open('', '_blank', 'width=1100,height=780,noopener,noreferrer')
+    if (!popup) { alert('Popup was blocked. Allow popups for Mio to open the email thread window.'); return }
+    const rows = stepEmails.map((email, idx) => {
+      const latest = latestIncomingWorkspaceMessage(email) || (Array.isArray(email.thread_messages) ? email.thread_messages[0] : null) || {}
+      const unread = email.new_email_notice || workspaceEmailHasUnreadActivity(email)
+      const webLink = email.outlook_web_link || latest.web_link || ''
+      return `<div class="thread"><div><div><strong>${safe(email.subject || email.title || `Email ${idx+1}`)}</strong> <span class="role">${safe(needToSetEmailRoleLabel(email))}</span> ${unread ? '<span class="badge">Unread</span>' : ''}</div><div class="note">${safe(latest.from_email || email.to || '')} ${latest.received_at ? ' • '+safe(needToSetShortDate(latest.received_at)) : ''}</div><div class="preview">${safe(latest.preview || email.status_note || 'No message preview saved yet.')}</div></div><div>${webLink ? `<button onclick="window.open('${safe(webLink)}','_blank')">Open Outlook</button>` : ''}</div></div>`
+    }).join('')
+    popup.document.open()
+    popup.document.write(`<!doctype html><html><head><title>Email threads - ${safe(stepLabelForContext(stepContext))}</title><style>body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#f6f8fb;color:#0f172a}.bar{background:#0f72c9;color:white;padding:14px 18px;font-size:18px;font-weight:800}.wrap{padding:18px}.panel{background:white;border:1px solid #dbe4ee;border-radius:16px;padding:14px;box-shadow:0 12px 32px rgba(15,23,42,.08)}.thread{display:grid;grid-template-columns:1fr auto;gap:12px;border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:10px 0;background:#fff}.role{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:999px;padding:2px 8px;font-size:12px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:800}.note{color:#64748b;font-size:13px;margin-top:4px}.preview{margin-top:7px;color:#334155}button{border:1px solid #cbd5e1;background:#fff;border-radius:8px;padding:8px 10px}</style></head><body><div class="bar">Emails linked to ${safe(stepLabelForContext(stepContext))}</div><div class="wrap"><div class="panel"><div class="note">Matter: ${safe(matterForWorkspaceContext(stepContext)?.name || '')} • Event: ${safe(stepContext.settingType || '')}</div>${rows}</div></div></body></html>`)
+    popup.document.close()
+    markWorkspaceEmailReviewed(context, stepEmails[0])
+  }
+
+
+  function renderNeedToSetStepPill(event = {}, step = {}, stepIndex = 0, totalSteps = 0) {
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const completion = checklistStepCompletion(eventId, step.id)
+    const completed = !!completion?.completed
+    const firstOpenIndex = checklistStepsForEvent(event).findIndex((item) => !checklistStepCompletion(eventId, item.id)?.completed)
+    const currentIndex = firstOpenIndex === -1 ? Math.max(totalSteps - 1, 0) : firstOpenIndex
+    const isCurrent = stepIndex === currentIndex
+    const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
+    const unreadCount = stepEmails.filter((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email)).length
+    const roleLabels = [...new Set(stepEmails.map(needToSetEmailRoleLabel).filter(Boolean))]
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    return (
+      <div key={step.id} style={{ display: 'grid', justifyItems: 'center', gap: 5, minWidth: 92 }}>
+        <button
+          type="button"
+          onClick={() => openStepDetail(stepContext)}
+          title="Open this step detail"
+          style={{ width: 34, height: 34, borderRadius: 999, border: isCurrent ? '3px solid #2563eb' : '2px solid #dbe4ee', background: completed ? '#dcfce7' : (isCurrent ? '#eff6ff' : '#fff'), color: completed ? '#166534' : (isCurrent ? '#1d4ed8' : '#64748b'), fontWeight: 800 }}
+        >
+          {completed ? '✓' : stepIndex + 1}
+        </button>
+        <div style={{ fontSize: 11, textAlign: 'center', color: isCurrent ? '#0f172a' : '#64748b', fontWeight: isCurrent ? 800 : 600, minHeight: 26 }}>{step.name}</div>
+        {!!stepEmails.length && (
+          <button
+            type="button"
+            onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)}
+            title="Open linked emails for this step"
+            style={{ position: 'relative', border: '1px solid #cbd5e1', borderRadius: 999, background: '#fff', color: '#334155', padding: '4px 8px', fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center' }}
+          >
+            <span>✉</span><span>{roleLabels.slice(0, 2).join('/') || 'Email'}</span>
+            {unreadCount > 0 && <span style={{ position: 'absolute', top: -8, right: -8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 5px', fontSize: 10, fontWeight: 800 }}>{unreadCount}</span>}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  function renderNeedToSetExpandedStepDetail(event = {}) {
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    if (!checklistStepsRowVisible(eventId)) return null
+    const steps = checklistStepsForEvent(event)
+    if (!steps.length) return null
+    const firstOpenIndex = steps.findIndex((step) => !checklistStepCompletion(eventId, step.id)?.completed)
+    const stepIndex = firstOpenIndex === -1 ? Math.max(steps.length - 1, 0) : firstOpenIndex
+    const step = steps[stepIndex]
+    const eventContext = needToSetEventWorkspaceContext(event)
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
+    const allRows = []
+    steps.forEach((candidateStep) => {
+      const candidateContext = needToSetStepContext(event, candidateStep, steps.indexOf(candidateStep))
+      stepBillingEntries(candidateContext).forEach((entry) => allRows.push({ step: candidateStep.name, entry }))
+    })
+    const addEmailRoleButton = (role, label) => (
+      <button type="button" onClick={() => openNeedToSetEmailComposeWindow(eventContext, stepContext, role)} style={{ border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', padding: '7px 10px', fontWeight: 700 }}>✉ {label}</button>
+    )
+    return (
+      <div style={{ margin: '0 10px 16px', border: '1px solid #bfdbfe', borderRadius: 16, background: '#f8fbff', padding: 14, boxShadow: '0 8px 24px rgba(15,23,42,.05)' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <strong>Step {stepIndex + 1} of {steps.length}: {step.name}</strong>
+          <span style={{ background: '#dbeafe', color: '#1d4ed8', borderRadius: 999, padding: '3px 8px', fontSize: 12, fontWeight: 800 }}>Current Step</span>
+          <button type="button" onClick={() => openStepDetail(stepContext)}>Open Step</button>
+          <button type="button" onClick={() => openBillingWindow({ matter_id: stepContext.matterId || '', matter_status: stepContext.matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!stepContext.matterId}>Add Time</button>
+          <button type="button" onClick={() => toggleChecklistStepComplete(eventId, step.id)}>Mark Complete</button>
+          <button type="button" onClick={() => addWorkspaceEmailForStep(eventContext, stepContext, null, 'attach')}>Open Existing Email Thread</button>
+          <button type="button" onClick={() => openNeedToSetEmailComposeWindow(eventContext, stepContext, 'court')} style={{ background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, padding: '8px 12px', fontWeight: 800 }}>New Email</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {addEmailRoleButton('client', 'Email Client')}
+          {addEmailRoleButton('opposing_counsel', 'Email Opposing Counsel')}
+          {addEmailRoleButton('opposing_party', 'Email Opposing Party')}
+          {addEmailRoleButton('mediator', 'Email Mediator')}
+          {addEmailRoleButton('court', 'Email Court')}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr) minmax(280px, 1fr)', gap: 12 }}>
+          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Prior Time Entries on This Step</h3>
+            {stepBillingEntries(stepContext).slice(0, 4).map((entry) => <div key={entry.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 50px', gap: 8, padding: '6px 0', borderTop: '1px solid #e2e8f0' }}><span>{entry.date || ''}</span><span>{entry.description || ''}</span><strong>{entry.billing_time || ''}</strong></div>)}
+            {!stepBillingEntries(stepContext).length && <p style={{ color: '#64748b' }}>No time entries have been saved for this exact step yet.</p>}
+            <button type="button" onClick={() => openBillingWindow({ matter_id: stepContext.matterId || '', matter_status: stepContext.matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!stepContext.matterId}>Add time on this step</button>
+          </section>
+          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
+            <h3 style={{ marginTop: 0 }}>All Billing Entries for Setting This Event</h3>
+            {allRows.slice(0, 7).map(({ step: rowStep, entry }) => <div key={`${rowStep}-${entry.id}`} style={{ display: 'grid', gridTemplateColumns: '1fr 70px', gap: 8, padding: '6px 0', borderTop: '1px solid #e2e8f0' }}><span><strong>{rowStep}</strong><br /><span style={{ color: '#64748b' }}>{entry.description || entry.date || ''}</span></span><strong>{entry.billing_time || ''}</strong></div>)}
+            {!allRows.length && <p style={{ color: '#64748b' }}>No billing entries have been entered for this setting yet.</p>}
+          </section>
+          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Email Threads Linked to This Step</h3>
+            {stepEmails.map((email, index) => {
+              const unread = email.new_email_notice || workspaceEmailHasUnreadActivity(email)
+              const latest = latestIncomingWorkspaceMessage(email) || (Array.isArray(email.thread_messages) ? email.thread_messages[0] : null) || {}
+              return <button key={email.id} type="button" onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)} style={{ width: '100%', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: 10, background: unread ? '#eff6ff' : '#fff', padding: 10, marginBottom: 8 }}><strong>✉ {email.subject || email.title || `Thread ${index + 1}`}</strong>{unread && <span style={{ marginLeft: 8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '2px 7px', fontSize: 11 }}>Unread</span>}<div style={{ color: '#64748b', marginTop: 4 }}>{latest.from_email || email.to || ''} {latest.received_at ? `• ${needToSetShortDate(latest.received_at)}` : ''}</div></button>
+            })}
+            {!stepEmails.length && <p style={{ color: '#64748b' }}>No email thread is attached to this step yet.</p>}
+          </section>
+        </div>
+      </div>
+    )
+  }
+
+  function renderNeedToSetCardDashboard() {
+    const rows = checklistDisplayRows().filter((row) => row.type === 'event')
+    return (
+      <div style={{ display: 'grid', gap: 14 }}>
+        {rows.map((row) => {
+          const event = row.event
+          const matter = checklistMatterForEvent(event)
+          const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+          const needRowId = checklistNeedToSetRowId(event)
+          const needPaused = Boolean(needToSetPausedRows[needRowId])
+          const steps = checklistStepsForEvent(event)
+          const status = currentNeedToSetStatus(event)
+          const summary = needToSetEmailSummary(event)
+          const accent = needPaused ? '#94a3b8' : (status?.rowColor || '#2563eb')
+          return (
+            <section key={eventId || needRowId} data-need-paused-row={needPaused ? 'true' : undefined} draggable onDragStart={() => setDraggedNeedToSetRowId(needRowId)} onDragOver={(dragEvent) => dragEvent.preventDefault()} onDrop={() => moveNeedToSetRow(draggedNeedToSetRowId, needRowId)} style={{ border: '1px solid #dbe4ee', borderLeft: `6px solid ${accent}`, borderRadius: 18, background: needPaused ? '#f1f5f9' : '#fff', boxShadow: '0 10px 28px rgba(15,23,42,.06)', overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, .9fr) minmax(220px, .75fr) minmax(420px, 1.6fr) 140px', gap: 16, padding: 16, alignItems: 'start' }}>
+                <div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                    <div style={{ width: 42, height: 42, borderRadius: 12, background: '#eff6ff', display: 'grid', placeItems: 'center', fontSize: 22 }}>⚖</div>
+                    <div><a href={matter ? `#matter_dashboard:${encodeURIComponent(matter.id)}` : '#'} onClick={(e) => { if (!matter) e.preventDefault() }} style={{ fontSize: 17, fontWeight: 800, color: '#1d4ed8' }}>{checklistMatterLabel(event)}</a><div style={{ color: '#64748b', marginTop: 3 }}>{matter?.cause_number || matter?.cause || ''}</div></div>
+                  </div>
+                  <div style={{ marginTop: 14, display: 'grid', gap: 7, fontSize: 13 }}>
+                    <div><strong>Event Type:</strong> {checklistEventCategoryLabel(event)}</div>
+                    <div><strong>Court:</strong> {checklistCourtWebsite(event) ? <a href={checklistCourtWebsite(event)} target="_blank" rel="noreferrer">{checklistCourtName(event) || 'Court'}</a> : (checklistCourtName(event) || 'No court listed')}</div>
+                    <div><strong>Court Coordinator:</strong> {checklistCourtCoordinatorEmail(event) ? <a href={`mailto:${checklistCourtCoordinatorEmail(event)}`}>{checklistCourtCoordinatorEmail(event)}</a> : 'No email listed'}</div>
+                  </div>
+                  {summary.total > 0 && <button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))} style={{ marginTop: 14, border: '1px solid #dbe4ee', borderRadius: 999, background: '#f8fafc', padding: '6px 10px', color: '#334155' }}>✉ Email activity: {summary.unread} unread / {summary.total} total thread{summary.total === 1 ? '' : 's'}</button>}
+                </div>
+                <div style={{ display: 'grid', gap: 9, fontSize: 13 }}>
+                  <div><strong>Need to Set Since</strong><br /><span style={{ color: '#dc2626', fontWeight: 800 }}>{needToSetShortDate(needToSetCreatedAt(event))}</span></div>
+                  <div><strong>Total Days Waiting</strong><br /><span style={{ color: '#dc2626', fontWeight: 800 }}>{status.rowDays} days</span></div>
+                  <div><strong>Current Step Age</strong><br /><span style={{ color: '#7c3aed', fontWeight: 800 }}>{status.stepDays ?? '—'} days</span></div>
+                  <div><strong>Last Worked</strong><br /><span>{status.lastTimeEntryAt ? needToSetShortDate(status.lastTimeEntryAt) : 'No time yet'}</span></div>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'start', gap: 4, flex: 1, overflowX: 'auto', paddingBottom: 6 }}>
+                      {steps.map((step, stepIndex) => renderNeedToSetStepPill(event, step, stepIndex, steps.length))}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc', padding: 10 }}>
+                    <strong>Remaining Steps ({steps.filter((step) => !checklistStepCompletion(eventId, step.id)?.completed).length})</strong>
+                    <ol style={{ margin: '6px 0 0 22px', color: '#334155' }}>{steps.filter((step) => !checklistStepCompletion(eventId, step.id)?.completed).map((step) => <li key={step.id}>{step.name}</li>)}</ol>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <button type="button" onClick={() => matter ? openMatterDashboardInNewWindow(matter) : null} style={{ background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, padding: '9px 10px', fontWeight: 800 }}>Open Matter ↗</button>
+                  <button type="button" onClick={() => openStepDetail(needToSetStepContext(event, steps.find((step) => step.name === status.stepName) || steps[0] || {}, Math.max(0, steps.findIndex((step) => step.name === status.stepName))))}>Add Note</button>
+                  <button type="button" onClick={() => { const currentStep = steps.find((step) => step.name === status.stepName) || steps[0]; if (currentStep) toggleChecklistStepComplete(eventId, currentStep.id) }} style={{ color: '#15803d', border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>✓ Complete Step</button>
+                  <button type="button" onClick={() => toggleNeedToSetPaused(event)} style={{ color: '#b45309', border: '1px solid #fed7aa', background: '#fffbeb', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{needPaused ? 'Resume' : 'Pause'}</button>
+                  <button type="button" onClick={() => resetNeedToSetRowSteps(event)} style={{ color: '#dc2626', border: '1px solid #fecaca', background: '#fff', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Reset</button>
+                  <button type="button" onClick={() => toggleChecklistStepsRow(eventId)} style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: 8, padding: '8px 10px' }}>{checklistStepsRowVisible(eventId) ? 'Hide Details' : 'Show Details'}</button>
+                </div>
+              </div>
+              {renderNeedToSetExpandedStepDetail(event)}
+            </section>
+          )
+        })}
+        {!rows.length && <div style={{ padding: 16, textAlign: 'center', color: '#64748b', border: '1px dashed #cbd5e1', borderRadius: 12 }}>No Need to Set rows match the current filters.</div>}
+      </div>
+    )
+  }
+
   function renderStepDetailModal() {
     if (!showStepDetailWindow || !stepDetailContext) return null
     const context = stepDetailContext
@@ -31819,7 +32161,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
             )}
 
-            {checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : (
+            {checklistTab === 'need_date' && checklistViewMode === 'table' ? renderNeedToSetCardDashboard() : checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : (
             <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 6 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
                 <thead>
