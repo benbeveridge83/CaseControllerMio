@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V89'
+const MIO_APP_VERSION = 'Mio V90'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -13767,6 +13767,28 @@ async function updateTeamCell(memberId, field, value) {
     return days === null ? '' : String(days)
   }
 
+  function latestTrustSnapshotForMatter(matter = {}) {
+    const matterId = String(matter?.id || '')
+    const matterCause = normalizeClioMatterNumber(matter?.cause_number || '')
+    const matterName = String(matter?.name || '').toLowerCase().trim()
+    const candidates = (clioSnapshotRows || []).filter((row) => {
+      if (!row) return false
+      if (matterId && String(row.mio_matter_id || '') === matterId) return true
+      const rowNumber = normalizeClioMatterNumber(row.clio_matter_number || '')
+      if (matterCause && rowNumber && (rowNumber === matterCause || clioMatterNumberPrefix(rowNumber) === clioMatterNumberPrefix(matterCause))) return true
+      const rowName = String(row.matter_name || row.client_name || '').toLowerCase().trim()
+      return !!matterName && !!rowName && (rowName.includes(matterName) || matterName.includes(rowName))
+    })
+    return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
+  }
+
+  function latestTrustAmountForMatter(matter = {}) {
+    const snapshot = latestTrustSnapshotForMatter(matter)
+    if (!snapshot) return ''
+    const value = Number(snapshot.matter_trust_funds ?? snapshot.trust_running_balance ?? 0)
+    return Number.isFinite(value) ? money(value) : ''
+  }
+
   function matterCaseTypeText(matter) {
     return matter.matter_subtype
       ? `${matter.matter_type || ''} - ${matter.matter_subtype}`
@@ -13839,6 +13861,7 @@ async function updateTeamCell(memberId, field, value) {
     return (
       <tr>
         <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Link</th>
+        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 132, background: '#f8fafc' }} title="Most recent loaded Clio Trust Management Report snapshot">Trust</th>
         {shownMatterColumns().map((column) => (
           <th
             key={column.key}
@@ -13923,6 +13946,9 @@ async function updateTeamCell(memberId, field, value) {
               {matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Show steps'}
             </button>
           </div>
+        </td>
+        <td style={{ ...matterDataCellStyle('trust'), minWidth: 132, textAlign: 'right', fontWeight: 700, color: latestTrustAmountForMatter(matter) ? '#166534' : '#94a3b8', background: '#f8fafc' }} title="Most recent trust value from loaded Clio financial snapshots">
+          {latestTrustAmountForMatter(matter) || '--'}
         </td>
         {visibleMatterColumns.matter && (
           <td style={matterDataCellStyle('matter')}>
@@ -14326,7 +14352,7 @@ async function updateTeamCell(memberId, field, value) {
     if (!showMatterStepsOnMatterPage || !matterStepsRowVisible(matter.id) || steps.length === 0) return null
     return (
       <tr key={`${matter.id}-steps`}>
-        <td colSpan={shownMatterColumns().length + 1} style={{ background: '#f8fafc', padding: 8 }}>
+        <td colSpan={shownMatterColumns().length + 2} style={{ background: '#f8fafc', padding: 8 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
             {steps.map((step, stepIndex) => {
               const completion = matterStepCompletion(matter.id, step.id)
@@ -19732,9 +19758,23 @@ useEffect(() => {
     return ''
   }
 
+  function serviceEmailSuggestedNeedsResponse(row = {}) {
+    const action = String(row.action_group || '').toLowerCase()
+    const checked = String(row.category_checked || '').toLowerCase()
+    const suggested = `${row.suggested_action || ''} ${row.ai_summary || ''} ${row.draft_response || ''}`.toLowerCase()
+    if (action === 'response_mark_read' || action === 'response_non_client' || action === 'client_response') return true
+    if (checked === 'response_mark_read') return true
+    if (row.draft_response && String(row.draft_response).trim()) return true
+    return /respond|response needed|draft|send\/?respond|client response|required response/.test(suggested)
+  }
+
   function serviceEmailRowCategory(row) {
     const raw = row?.category_checked ?? row?.action_group ?? ''
-    return normalizedServiceEmailActionGroup(raw) || 'no_response'
+    const normalized = normalizedServiceEmailActionGroup(raw)
+    // Older rows sometimes had category_checked saved as no_response even though the scanner/suggested action
+    // said they needed a response. Keep the response-needed queue as the source of truth in that conflict.
+    if (normalized === 'no_response' && serviceEmailSuggestedNeedsResponse(row)) return 'response_mark_read'
+    return normalized || (serviceEmailSuggestedNeedsResponse(row) ? 'response_mark_read' : 'no_response')
   }
 
   function clearServiceEmailRowCategory(rowId) {
@@ -20242,7 +20282,12 @@ useEffect(() => {
       const existing = new Set(rows.map((row) => row.id))
       const nextRows = [...rows]
       defaultServiceEmailIntakeRows.forEach((row) => {
-        if (!existing.has(row.id)) nextRows.push(row)
+        if (!existing.has(row.id)) {
+          const category = serviceEmailSuggestedNeedsResponse(row) ? 'response_mark_read' : (normalizedServiceEmailActionGroup(row.action_group) || 'no_response')
+          nextRows.push({ ...row, action_group: category, category_checked: category, selected: category === 'no_response', suggested_action: serviceEmailPhaseDescription(category), draft_response: category === 'response_mark_read' ? (row.draft_response || `Thank you for your email. I have received it and will review it.
+
+Ben`) : (row.draft_response || '') })
+        }
       })
       return nextRows
     })
@@ -22803,7 +22848,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               return <tr key={matter.id} style={{ borderTop: '1px solid #e2e8f0' }}>
                 <td style={{ padding: 8 }}><strong>{matter.name}</strong><div style={{ color: '#64748b' }}>{matterClientName(matter)} {matter.cause_number ? `| ${matter.cause_number}` : ''}</div></td>
                 <td>{scenario?.name || 'No inventory yet'}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_assets)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_secured_debt)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_unsecured_debt)}</td><td style={{ textAlign: 'right' }}><strong>{money(summary.all.total_net)}</strong></td><td>{scenario?.status || '--'}</td><td>{scenario?.updated_at ? new Date(scenario.updated_at).toLocaleDateString() : '--'}</td>
-                <td><button type="button" onClick={() => { ensureInventoryForMatter(matter); setSelectedTemplateMatterId(matter.id); setClientDashboardTab('inventory'); setPageState('tasks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matter.id)}?tab=inventory`) }}>Open</button></td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <button type="button" onClick={() => { ensureInventoryForMatter(matter); setSelectedTemplateMatterId(matter.id); setClientDashboardTab('inventory'); setPageState('tasks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matter.id)}?tab=inventory`) }}>Open</button>
+                  <button type="button" onClick={() => { ensureInventoryForMatter(matter); const scenario = inventoryScenario(matter.id, inventoryScenarioByMatter[matter.id]) || defaultInventoryScenario(matter); addInventoryItem(matter.id, scenario.id || '', 'asset', { item_name: 'New Asset' }); setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: scenario.id || current[matter.id] || '' })) }} style={{ marginLeft: 6 }}>Add Item</button>
+                  <button type="button" onClick={() => { ensureInventoryForMatter(matter); const scenario = inventoryScenario(matter.id, inventoryScenarioByMatter[matter.id]) || defaultInventoryScenario(matter); addInventoryItem(matter.id, scenario.id || '', 'liability', { item_name: 'New Unsecured Debt', category: 'Unsecured Debt', debt_type: 'unsecured' }); setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: scenario.id || current[matter.id] || '' })) }} style={{ marginLeft: 6 }}>Add Debt</button>
+                </td>
               </tr>
             })}
           </tbody>
@@ -30784,7 +30833,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <Fragment key={section.label}>
                       <tr>
                         <td
-                          colSpan={shownMatterColumns().length + 1}
+                          colSpan={shownMatterColumns().length + 2}
                           style={{
                             background: matterStatusColor(section.label),
                             borderTop: '3px solid #000',
@@ -30807,7 +30856,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
                       {section.matters.length === 0 && (
                         <tr>
-                          <td colSpan={shownMatterColumns().length + 1} style={{ fontStyle: 'italic', textAlign: 'center', height: 34, padding: 4 }}>
+                          <td colSpan={shownMatterColumns().length + 2} style={{ fontStyle: 'italic', textAlign: 'center', height: 34, padding: 4 }}>
                             No matters in this status.
                           </td>
                         </tr>
