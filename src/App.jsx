@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V79'
+const MIO_APP_VERSION = 'Mio V80'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -223,6 +223,28 @@ const DEFAULT_INVENTORY_SETTINGS = {
   liabilityCategories: [
     { id: 'secured_debt', name: 'Secured Debt', subcategories: ['Mortgage', 'Vehicle Loan', 'Equipment Loan', 'Business Secured Debt', 'HELOC', 'Tax Lien', 'Judgment Lien', 'Other Secured Debt'] },
     { id: 'unsecured_debt', name: 'Unsecured Debt', subcategories: ['Credit Card', 'Medical Debt', 'Personal Loan', 'Student Loan', 'IRS Debt', 'Business Debt', 'Attorney Fees', 'Family Loan', 'Other Unsecured Debt'] }
+  ],
+  columns: [
+    { id: 'type', label: 'Type', visible: true },
+    { id: 'estate', label: 'Estate', visible: true },
+    { id: 'category', label: 'Category', visible: true },
+    { id: 'subcategory', label: 'Subcategory', visible: true },
+    { id: 'item_name', label: 'Item', visible: true },
+    { id: 'characterization', label: 'Characterization', visible: true },
+    { id: 'date_acquired', label: 'Date Acq.', visible: true },
+    { id: 'manner_acquired', label: 'Manner', visible: true },
+    { id: 'location', label: 'Where / Location', visible: true },
+    { id: 'value', label: 'Value', visible: true },
+    { id: 'valuation_date', label: 'Valuation Date', visible: true },
+    { id: 'possession', label: 'Possession', visible: true },
+    { id: 'award', label: 'Proposed Award / Payor', visible: true },
+    { id: 'debt_type', label: 'Debt Type', visible: true },
+    { id: 'liable_party', label: 'Liable Party', visible: true },
+    { id: 'agreement_status', label: 'Agreement', visible: true },
+    { id: 'opposing_value', label: 'Opp. Value', visible: true },
+    { id: 'opposing_award', label: 'Opp. Award', visible: true },
+    { id: 'vin', label: 'VIN / Year / Mileage', visible: true },
+    { id: 'attorney_notes', label: 'Notes', visible: true }
   ]
 }
 
@@ -1708,6 +1730,7 @@ function App() {
   })
   const [requestedReliefOptionForm, setRequestedReliefOptionForm] = useState({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })
   const [requestedReliefMatterFilter, setRequestedReliefMatterFilter] = useState('all')
+  const [requestedReliefMatterSearchText, setRequestedReliefMatterSearchText] = useState('')
   const [requestedReliefSavedIssueSetId, setRequestedReliefSavedIssueSetId] = useState('')
   const [requestedReliefSavedReliefId, setRequestedReliefSavedReliefId] = useState('')
   const [requestedReliefShowComparison, setRequestedReliefShowComparison] = useState(false)
@@ -1866,6 +1889,7 @@ function App() {
     } catch { return null }
   })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
+  const [checklistViewMode, setChecklistViewMode] = useState(() => localStorage.getItem('caseMioChecklistViewMode') || 'table')
   const [showNeedToSetSteps, setShowNeedToSetSteps] = useState(() => localStorage.getItem('caseMioShowNeedToSetSteps') !== 'false')
   const [checklistStepCompletions, setChecklistStepCompletions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioChecklistStepCompletions') || '{}') }
@@ -1948,7 +1972,8 @@ function App() {
       if (stored && typeof stored === 'object') {
         return {
           assetCategories: Array.isArray(stored.assetCategories) && stored.assetCategories.length ? stored.assetCategories : DEFAULT_INVENTORY_SETTINGS.assetCategories,
-          liabilityCategories: Array.isArray(stored.liabilityCategories) && stored.liabilityCategories.length ? stored.liabilityCategories : DEFAULT_INVENTORY_SETTINGS.liabilityCategories
+          liabilityCategories: Array.isArray(stored.liabilityCategories) && stored.liabilityCategories.length ? stored.liabilityCategories : DEFAULT_INVENTORY_SETTINGS.liabilityCategories,
+          columns: Array.isArray(stored.columns) && stored.columns.length ? stored.columns : DEFAULT_INVENTORY_SETTINGS.columns
         }
       }
     } catch {}
@@ -2184,6 +2209,7 @@ function App() {
       caseMioChecklistMatterStatusFilter: { setter: setChecklistMatterStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistEventCategoryFilter: { setter: setChecklistEventCategoryFilter, kind: 'object', fallback: null },
       caseMioChecklistShowBlankDays: { setter: setChecklistShowBlankDays, kind: 'boolean', fallback: false },
+      caseMioChecklistViewMode: { setter: setChecklistViewMode, kind: 'string', fallback: 'table' },
       caseMioShowNeedToSetSteps: { setter: setShowNeedToSetSteps, kind: 'boolean', fallback: true },
       caseMioChecklistStepCompletions: { setter: setChecklistStepCompletions, kind: 'object', fallback: {} },
       caseMioChecklistCompletionDefaultTagId: { setter: setChecklistCompletionDefaultTagId, kind: 'string', fallback: '' },
@@ -2945,6 +2971,10 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistShowBlankDays', checklistShowBlankDays ? 'true' : 'false')
   }, [checklistShowBlankDays])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioChecklistViewMode', checklistViewMode || 'table')
+  }, [checklistViewMode])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioShowNeedToSetSteps', showNeedToSetSteps ? 'true' : 'false')
@@ -4738,6 +4768,98 @@ function App() {
     return rows
   }
 
+
+  function checklistCategoryColumnLabels(eventsList = []) {
+    const labels = Array.from(new Set((eventsList || []).map((event) => checklistEventCategoryLabel(event) || 'Other')))
+    const preferred = ['Trial', 'Hearing', 'Mediation', 'Deadline', 'Conference', 'Other']
+    return labels.sort((a, b) => {
+      const ai = preferred.findIndex((item) => a.toLowerCase().includes(item.toLowerCase()))
+      const bi = preferred.findIndex((item) => b.toLowerCase().includes(item.toLowerCase()))
+      const av = ai === -1 ? 999 : ai
+      const bv = bi === -1 ? 999 : bi
+      return av - bv || a.localeCompare(b)
+    })
+  }
+
+  function renderChecklistEventMiniCard(event) {
+    const matter = checklistMatterForEvent(event)
+    return (
+      <div key={event.checklist_id || event.id} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 8, marginBottom: 8, background: checklistRowBackground(event) || '#fff' }}>
+        <div style={{ fontWeight: 800 }}>{event.checklist_title || event.title || '(No title)'}</div>
+        <div style={{ fontSize: 12, color: '#475569' }}>{formatChecklistDate(event)}{event.start_time ? ` ${formatEventTime(event.start_time)}` : ''}</div>
+        {matter ? <a href={`#matter_dashboard:${encodeURIComponent(matter.id)}`} onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); openMatterTaskTemplates(matter) }} style={{ fontSize: 12 }}>{checklistMatterLabel(event)}</a> : <div style={{ fontSize: 12 }}>{checklistMatterLabel(event)}</div>}
+      </div>
+    )
+  }
+
+  function renderChecklistColumnsView() {
+    const eventsList = filteredChecklistEvents(checklistTab)
+    const labels = checklistCategoryColumnLabels(eventsList)
+    const grouped = new Map(labels.map((label) => [label, []]))
+    eventsList.forEach((event) => {
+      const label = checklistEventCategoryLabel(event) || 'Other'
+      if (!grouped.has(label)) grouped.set(label, [])
+      grouped.get(label).push(event)
+    })
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, labels.length)}, minmax(240px, 1fr))`, gap: 12, alignItems: 'start' }}>
+        {labels.map((label) => (
+          <div key={label} style={{ border: '1px solid #d5dce3', borderRadius: 10, background: '#f8fafc', padding: 10 }}>
+            <h3 style={{ margin: '0 0 10px' }}>{label}</h3>
+            {(grouped.get(label) || []).map(renderChecklistEventMiniCard)}
+            {!(grouped.get(label) || []).length && <div style={{ color: '#64748b', fontStyle: 'italic' }}>No events.</div>}
+          </div>
+        ))}
+        {!labels.length && <div style={{ color: '#64748b' }}>No events match this tab and filters.</div>}
+      </div>
+    )
+  }
+
+  function renderChecklistDayGridView() {
+    const eventsList = filteredChecklistEvents(checklistTab)
+    const labels = checklistCategoryColumnLabels(eventsList)
+    const byDay = new Map()
+    eventsList.forEach((event) => {
+      const dateObj = checklistDateObj(event)
+      if (!dateObj) return
+      const key = dateToInputValue(dateObj)
+      if (!byDay.has(key)) byDay.set(key, [])
+      byDay.get(key).push(event)
+    })
+    let dayKeys = Array.from(byDay.keys()).sort()
+    if (checklistShowBlankDays && dayKeys.length > 1) {
+      const filled = []
+      const cursor = new Date(`${dayKeys[0]}T00:00:00`)
+      const end = new Date(`${dayKeys[dayKeys.length - 1]}T00:00:00`)
+      let guard = 0
+      while (cursor <= end && guard < 366) {
+        filled.push(dateToInputValue(cursor))
+        cursor.setDate(cursor.getDate() + 1)
+        guard += 1
+      }
+      dayKeys = filled
+    }
+    return (
+      <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 8, background: '#fff' }}>
+        <table style={{ width: '100%', minWidth: Math.max(900, 180 + labels.length * 240), borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8, width: 170 }}>Day</th>{labels.map((label) => <th key={label} style={{ textAlign: 'left', padding: 8 }}>{label}</th>)}</tr></thead>
+          <tbody>
+            {dayKeys.map((dayKey) => {
+              const dayEvents = byDay.get(dayKey) || []
+              const byLabel = new Map(labels.map((label) => [label, dayEvents.filter((event) => (checklistEventCategoryLabel(event) || 'Other') === label)]))
+              return (
+                <tr key={dayKey} style={{ borderTop: '1px solid #e2e8f0', background: dayEvents.length ? '#fff' : '#f8fafc' }}>
+                  <td style={{ padding: 8, verticalAlign: 'top', fontWeight: 800 }}>{formatChecklistBlankDay(new Date(`${dayKey}T00:00:00`))}</td>
+                  {labels.map((label) => <td key={label} style={{ padding: 8, verticalAlign: 'top' }}>{(byLabel.get(label) || []).map(renderChecklistEventMiniCard)}</td>)}
+                </tr>
+              )
+            })}
+            {!dayKeys.length && <tr><td colSpan={labels.length + 1} style={{ padding: 16, color: '#64748b', textAlign: 'center' }}>No events match this tab and filters.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
 
   function SmartMatterSelect({ value, onChange, placeholder = 'Type to search matters', style = {}, activeOnly = false }) {
     const listId = useRef(`matter-smart-${Math.random().toString(36).slice(2)}`)
@@ -22089,6 +22211,37 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
   }
 
+  function inventoryColumnDefinitions(matter, selectedScenarioId) {
+    return {
+      type: { render: (item) => <select value={item.type || 'asset'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'type', e.target.value)}><option value="asset">Asset</option><option value="liability">Liability</option></select> },
+      estate: { render: (item) => <select value={item.estate || 'community'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'estate', e.target.value)}>{INVENTORY_ESTATE_BUCKETS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select> },
+      category: { render: (item) => <select value={item.category || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'category', e.target.value)}>{inventoryCategoryOptions(item.type).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      subcategory: { render: (item) => <select value={item.subcategory || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'subcategory', e.target.value)}><option value="">--</option>{inventorySubcategoryOptions(item.type, item.category).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      item_name: { render: (item) => <input value={item.item_name || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'item_name', e.target.value)} /> },
+      characterization: { render: (item) => <select value={item.characterization || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'characterization', e.target.value)}>{INVENTORY_CHARACTERIZATIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      date_acquired: { render: (item) => <input type="date" value={item.date_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'date_acquired', e.target.value)} /> },
+      manner_acquired: { render: (item) => <select value={item.manner_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'manner_acquired', e.target.value)}><option value="">--</option>{INVENTORY_ACQUISITION_MANNERS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      location: { render: (item) => <input value={item.address || item.location || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'location', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value) }} /> },
+      value: { render: (item) => <input style={{ width: 90 }} value={item.value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'value', e.target.value)} /> },
+      valuation_date: { render: (item) => <input type="date" value={item.valuation_date || item.balance_date || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_date', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'balance_date', e.target.value) }} /> },
+      possession: { render: (item) => <select value={item.possession || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'possession', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      award: { render: (item) => <select value={item.type === 'liability' ? (item.proposed_payor || '') : (item.proposed_award || '')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, item.type === 'liability' ? 'proposed_payor' : 'proposed_award', e.target.value)}><option value="">--</option>{INVENTORY_AWARD_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      debt_type: { render: (item) => <select value={item.debt_type || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'debt_type', e.target.value)}><option value="">--</option><option value="secured">Secured</option><option value="unsecured">Unsecured</option></select> },
+      liable_party: { render: (item) => <select value={item.liable_party || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'liable_party', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      agreement_status: { render: (item) => <select value={item.agreement_status || 'Unknown'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'agreement_status', e.target.value)}>{INVENTORY_AGREEMENT_STATUSES.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
+      opposing_value: { render: (item) => <input style={{ width: 90 }} value={item.opposing_value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_value', e.target.value)} /> },
+      opposing_award: { render: (item) => <input value={item.opposing_award || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_award', e.target.value)} /> },
+      vin: { render: (item) => <input placeholder="VIN / year / mileage" value={[item.vin, item.year, item.mileage].filter(Boolean).join(' / ')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /> },
+      attorney_notes: { render: (item) => <textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /> }
+    }
+  }
+
+  function visibleInventoryColumns() {
+    const stored = Array.isArray(inventorySettings.columns) && inventorySettings.columns.length ? inventorySettings.columns : DEFAULT_INVENTORY_SETTINGS.columns
+    const defaultById = new Map(DEFAULT_INVENTORY_SETTINGS.columns.map((column) => [column.id, column]))
+    return stored.map((column) => ({ ...(defaultById.get(column.id) || {}), ...column })).filter((column) => column.visible !== false)
+  }
+
   function renderInventorySettings() {
     const renderGroupEditor = (kind, title) => {
       const key = kind === 'asset' ? 'assetCategories' : 'liabilityCategories'
@@ -22117,9 +22270,28 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <div>
         <h2>Inventory Settings</h2>
-        <p style={{ color: '#64748b' }}>Set the asset, liability, category, and subcategory lists used by all matter inventories.</p>
+        <p style={{ color: '#64748b' }}>Set the asset, liability, category, subcategory, and visible table columns used by all matter inventories.</p>
         {renderGroupEditor('asset', 'Asset Categories')}
         {renderGroupEditor('liability', 'Liability Categories')}
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <h3 style={{ margin: 0 }}>Inventory Columns</h3>
+            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: [...(current.columns || DEFAULT_INVENTORY_SETTINGS.columns), { id: `custom_${Date.now()}`, label: 'New Column', visible: true, custom: true }] }))}>Add Column</button>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
+            <thead><tr><th style={{ textAlign: 'left' }}>Show</th><th style={{ textAlign: 'left' }}>Column Heading</th><th style={{ textAlign: 'left' }}>Column ID</th><th></th></tr></thead>
+            <tbody>
+              {(inventorySettings.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((column, index) => (
+                <tr key={column.id || index}>
+                  <td><input type="checkbox" checked={column.visible !== false} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, visible: e.target.checked } : row) }))} /></td>
+                  <td><input value={column.label || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, label: e.target.value } : row) }))} /></td>
+                  <td style={{ color: '#64748b' }}>{column.id}</td>
+                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: (current.columns || DEFAULT_INVENTORY_SETTINGS.columns).filter((_, i) => i !== index) }))}>Delete</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     )
   }
@@ -22198,34 +22370,20 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         {viewMode === 'working' && (
           <div style={{ overflowX: 'auto', background: 'white', border: '1px solid #d5dce3', borderRadius: 8 }}>
             <table style={{ width: '1900px', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: '#eef2f7' }}>{['Type','Estate','Category','Subcategory','Item','Characterization','Date Acq.','Manner','Location / Address','Value','Valuation Date','Possession','Proposed Award / Payor','Debt Type','Liable Party','Agreement','Opp. Value','Opp. Award','VIN / Year / Mileage','Notes',''].map((h) => <th key={h} style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}>{h}</th>)}</tr></thead>
+              <thead><tr style={{ background: '#eef2f7' }}>{visibleInventoryColumns().map((column) => <th key={column.id} style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}>{column.label}</th>)}<th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #cbd5e1' }}></th></tr></thead>
               <tbody>
-                {filteredItems.map((item) => (
-                  <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0' }}>
-                    <td><select value={item.type || 'asset'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'type', e.target.value)}><option value="asset">Asset</option><option value="liability">Liability</option></select></td>
-                    <td><select value={item.estate || 'community'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'estate', e.target.value)}>{INVENTORY_ESTATE_BUCKETS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select></td>
-                    <td><select value={item.category || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'category', e.target.value)}>{inventoryCategoryOptions(item.type).map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><select value={item.subcategory || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'subcategory', e.target.value)}><option value="">--</option>{inventorySubcategoryOptions(item.type, item.category).map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><input value={item.item_name || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'item_name', e.target.value)} /></td>
-                    <td><select value={item.characterization || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'characterization', e.target.value)}>{INVENTORY_CHARACTERIZATIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><input type="date" value={item.date_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'date_acquired', e.target.value)} /></td>
-                    <td><select value={item.manner_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'manner_acquired', e.target.value)}><option value="">--</option>{INVENTORY_ACQUISITION_MANNERS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><input value={item.address || item.location || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'location', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value) }} /></td>
-                    <td><input style={{ width: 90 }} value={item.value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'value', e.target.value)} /></td>
-                    <td><input type="date" value={item.valuation_date || item.balance_date || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_date', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'balance_date', e.target.value) }} /></td>
-                    <td><select value={item.possession || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'possession', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><select value={item.type === 'liability' ? (item.proposed_payor || '') : (item.proposed_award || '')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, item.type === 'liability' ? 'proposed_payor' : 'proposed_award', e.target.value)}><option value="">--</option>{INVENTORY_AWARD_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><select value={item.debt_type || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'debt_type', e.target.value)}><option value="">--</option><option value="secured">Secured</option><option value="unsecured">Unsecured</option></select></td>
-                    <td><select value={item.liable_party || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'liable_party', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><select value={item.agreement_status || 'Unknown'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'agreement_status', e.target.value)}>{INVENTORY_AGREEMENT_STATUSES.map((name) => <option key={name} value={name}>{name}</option>)}</select></td>
-                    <td><input style={{ width: 90 }} value={item.opposing_value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_value', e.target.value)} /></td>
-                    <td><input value={item.opposing_award || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_award', e.target.value)} /></td>
-                    <td><input placeholder="VIN / year / mileage" value={[item.vin, item.year, item.mileage].filter(Boolean).join(' / ')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /></td>
-                    <td><textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /></td>
-                    <td><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
-                  </tr>
-                ))}
-                {!filteredItems.length && <tr><td colSpan={21} style={{ padding: 16, color: '#64748b' }}>No inventory items yet. Add an asset or liability.</td></tr>}
+                {filteredItems.map((item) => {
+                  const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
+                  return (
+                    <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                      {visibleInventoryColumns().map((column) => (
+                        <td key={column.id}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>
+                      ))}
+                      <td><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
+                    </tr>
+                  )
+                })}
+                {!filteredItems.length && <tr><td colSpan={visibleInventoryColumns().length + 1} style={{ padding: 16, color: '#64748b' }}>No inventory items yet. Add an asset or liability.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -26279,23 +26437,34 @@ ${choices}`, '1'))
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) auto', gap: 12, alignItems: 'end', marginBottom: 14 }}>
               <LabeledField label="Matter">
                 <input
-                  placeholder="Predictive search matters..."
+                  placeholder="Type to filter matters..."
                   list="requested-relief-matter-suggestions"
-                  value={requestedReliefMatterFilter === 'all' ? '' : (matterName(requestedReliefMatterFilter) || '')}
+                  value={requestedReliefMatterSearchText || (requestedReliefMatterFilter === 'all' ? '' : (matterName(requestedReliefMatterFilter) || ''))}
                   onChange={(e) => {
                     const typed = e.target.value
+                    setRequestedReliefMatterSearchText(typed)
                     if (!typed) { handleMatterFilterChange('all'); return }
-                    const match = matters.find((matter) => matterName(matter.id) === typed) || matters.find((matter) => (matterName(matter.id) || '').toLowerCase().includes(typed.toLowerCase()))
-                    if (match) handleMatterFilterChange(match.id)
+                    const exact = matters.find((matter) => String(matterName(matter.id) || '').toLowerCase() === typed.toLowerCase())
+                    if (exact) { handleMatterFilterChange(exact.id); setRequestedReliefMatterSearchText('') }
+                  }}
+                  onBlur={(e) => {
+                    const typed = e.target.value
+                    const exact = matters.find((matter) => String(matterName(matter.id) || '').toLowerCase() === typed.toLowerCase())
+                    if (exact) { handleMatterFilterChange(exact.id); setRequestedReliefMatterSearchText('') }
                   }}
                   style={{ width: '100%' }}
                 />
                 <datalist id="requested-relief-matter-suggestions">
-                  {matters.map((matter) => <option key={matter.id} value={matterName(matter.id)} />)}
+                  {matters
+                    .filter((matter) => !requestedReliefMatterSearchText || matchesSmartSearch(requestedReliefMatterSearchText, matterName(matter.id)))
+                    .slice(0, 30)
+                    .map((matter) => <option key={matter.id} value={matterName(matter.id)} />)}
                 </datalist>
-                <select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)} style={{ marginTop: 6 }}>
+                <select value={requestedReliefMatterFilter} onChange={(e) => { setRequestedReliefMatterSearchText(''); handleMatterFilterChange(e.target.value) }} style={{ marginTop: 6 }}>
                   <option value="all">All matters</option>
-                  {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
+                  {matters
+                    .filter((matter) => !requestedReliefMatterSearchText || matchesSmartSearch(requestedReliefMatterSearchText, matterName(matter.id)))
+                    .map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
                 </select>
               </LabeledField>
               {selectedMatterId ? <button type="button" style={pageButton} onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open Matter Page</button> : <button type="button" style={disabledButton} disabled>Open Matter Page</button>}
@@ -31103,6 +31272,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               ))}
             </div>
 
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+              <strong>View:</strong>
+              <button type="button" onClick={() => setChecklistViewMode('table')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'table' ? '#2f6584' : '#fff', color: checklistViewMode === 'table' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'table' ? 'bold' : 'normal' }}>Table</button>
+              <button type="button" onClick={() => setChecklistViewMode('columns')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'columns' ? '#2f6584' : '#fff', color: checklistViewMode === 'columns' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'columns' ? 'bold' : 'normal' }}>Category columns</button>
+              <button type="button" onClick={() => setChecklistViewMode('day_grid')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'day_grid' ? '#2f6584' : '#fff', color: checklistViewMode === 'day_grid' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'day_grid' ? 'bold' : 'normal' }}>Day grid</button>
+              {checklistTab !== 'future' && checklistViewMode !== 'table' && <span style={{ color: '#64748b', fontSize: 12 }}>Alternative views work for the selected tab, but are most useful under Upcoming.</span>}
+            </div>
+
             {checklistTab === 'need_date' && pausedNeedToSetEvents().length > 0 && (
               <button
                 type="button"
@@ -31114,6 +31291,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
             )}
 
+            {checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : (
             <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 6 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
                 <thead>
@@ -31240,6 +31418,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </tbody>
               </table>
             </div>
+            )}
           </>
         )}
 
@@ -31824,12 +32003,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           const isChecked = !!checkedMap[item.id]
                           const hasParent = !!item.parent_id
                           return (
-                            <div key={item.id} style={{ marginLeft: item.level * 28, maxWidth: hasParent ? `calc(100% - ${item.level * 28}px)` : '100%' }}>
-                              <label style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderLeft: hasParent ? '4px solid #94a3b8' : '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: isChecked ? '#e5e7eb' : (hasParent ? '#f8fafc' : 'white'), color: isChecked ? '#64748b' : '#0f172a', width: hasParent ? 'fit-content' : '100%', minWidth: hasParent ? 420 : 'auto' }}>
+                            <div key={item.id} style={{ marginLeft: item.level * 28, maxWidth: '980px' }}>
+                              <label style={{ display: 'grid', gridTemplateColumns: 'auto minmax(220px, 1fr) auto', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderLeft: hasParent ? '4px solid #94a3b8' : '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: isChecked ? '#e5e7eb' : (hasParent ? '#f8fafc' : 'white'), color: isChecked ? '#64748b' : '#0f172a', width: 'fit-content', minWidth: hasParent ? 360 : 520, maxWidth: '100%' }}>
                                 <input type="checkbox" checked={isChecked} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
                                 <span>
                                   <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
-                                  <strong style={{ textDecoration: isChecked ? 'line-through' : 'none' }}>{workflowItemPath(item.id) || item.name}</strong>
+                                  <strong style={{ textDecoration: isChecked ? 'line-through' : 'none' }}>{hasParent ? item.name : (workflowItemPath(item.id) || item.name)}</strong>
                                   {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
                                 </span>
                                 {link && <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openMioPageInNewTab(link.page) }} style={{ whiteSpace: 'nowrap' }}>{link.label}</button>}
