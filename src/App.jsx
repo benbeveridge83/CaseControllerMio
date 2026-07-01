@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V86'
+const MIO_APP_VERSION = 'Mio V87'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2910,10 +2910,20 @@ function App() {
       localStorage.setItem('serviceInboxPreviewMode', serviceState.preview)
     } catch {}
     if (page === 'service_inbox' && typeof window !== 'undefined') {
+      const selectedFolder = selectedServiceInboxFolderSource()
       const params = new URLSearchParams(serviceState)
+      if (selectedFolder) {
+        params.set('folder_name', selectedFolder.outlook_folder_name || '')
+        params.set('folder_mailbox', selectedFolder.mailbox_email || '')
+        params.set('folder_label', selectedFolder.account_label || '')
+      }
       window.history.replaceState(null, '', `#service_inbox?${params.toString()}`)
     }
   }, [page, serviceInboxFilter, serviceInboxMailboxFilter, serviceInboxPhase, serviceInboxViewMode, serviceInboxFolderFilter, serviceInboxSortMode, serviceInboxRowDensity, serviceInboxPreviewMode])
+
+  useEffect(() => {
+    applyServiceInboxHashFilters()
+  }, [page, serviceEmailSources.length])
 
 
   useEffect(() => {
@@ -9603,8 +9613,68 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     }
   }
 
-  function currentWorkflowViewUrl() {
+  function selectedServiceInboxFolderSource() {
+    return (serviceEmailSources || []).find((source) => String(source.id) === String(serviceInboxFolderFilter)) || null
+  }
+
+  function buildCurrentWorkflowViewUrl() {
+    if (page === 'service_inbox') {
+      const selectedFolder = selectedServiceInboxFolderSource()
+      const params = new URLSearchParams({
+        status: serviceInboxFilter || 'needs_review',
+        mailbox: serviceInboxMailboxFilter || 'all',
+        phase: serviceInboxPhase || 'no_response',
+        view: serviceInboxViewMode || 'grouped',
+        folder: serviceInboxFolderFilter || 'all',
+        sort: serviceInboxSortMode || 'folder_date',
+        density: serviceInboxRowDensity || 'normal',
+        preview: serviceInboxPreviewMode || 'bottom'
+      })
+      if (selectedFolder) {
+        params.set('folder_name', selectedFolder.outlook_folder_name || '')
+        params.set('folder_mailbox', selectedFolder.mailbox_email || '')
+        params.set('folder_label', selectedFolder.account_label || '')
+      }
+      return `${window.location.origin}${window.location.pathname}#service_inbox?${params.toString()}`
+    }
     return window.location.href
+  }
+
+  function applyServiceInboxHashFilters() {
+    if (page !== 'service_inbox') return
+    const params = currentHashParams()
+    const nextStatus = params.get('status')
+    const nextMailbox = params.get('mailbox')
+    const nextPhase = params.get('phase')
+    const nextView = params.get('view')
+    const nextSort = params.get('sort')
+    const nextDensity = params.get('density')
+    const nextPreview = params.get('preview')
+    const nextFolder = params.get('folder')
+    const nextFolderName = params.get('folder_name')
+    const nextFolderMailbox = params.get('folder_mailbox')
+    if (nextStatus && nextStatus !== serviceInboxFilter) setServiceInboxFilter(nextStatus)
+    if (nextMailbox && nextMailbox !== serviceInboxMailboxFilter) setServiceInboxMailboxFilter(nextMailbox)
+    if (nextPhase && nextPhase !== serviceInboxPhase) setServiceInboxPhase(nextPhase)
+    if (nextView && nextView !== serviceInboxViewMode) setServiceInboxViewMode(nextView)
+    if (nextSort && nextSort !== serviceInboxSortMode) setServiceInboxSortMode(nextSort)
+    if (nextDensity && nextDensity !== serviceInboxRowDensity) setServiceInboxRowDensity(nextDensity)
+    if (nextPreview && nextPreview !== serviceInboxPreviewMode) setServiceInboxPreviewMode(nextPreview)
+    let resolvedFolder = nextFolder || ''
+    if (resolvedFolder && resolvedFolder !== 'all' && !(serviceEmailSources || []).some((source) => String(source.id) === String(resolvedFolder))) resolvedFolder = ''
+    if (!resolvedFolder && nextFolderName) {
+      const match = (serviceEmailSources || []).find((source) => {
+        const sourceName = String(source.outlook_folder_name || '').toLowerCase()
+        const sourceMailbox = String(source.mailbox_email || '').toLowerCase()
+        return sourceName === String(nextFolderName || '').toLowerCase() && (!nextFolderMailbox || sourceMailbox === String(nextFolderMailbox || '').toLowerCase())
+      })
+      if (match) resolvedFolder = match.id
+    }
+    if (resolvedFolder && resolvedFolder !== serviceInboxFolderFilter) setServiceInboxFolderFilter(resolvedFolder)
+  }
+
+  function currentWorkflowViewUrl() {
+    return buildCurrentWorkflowViewUrl()
   }
 
   function saveCurrentViewToWorkflowItem(itemId, urlOverride = '') {
@@ -26029,6 +26099,75 @@ ${choices}`, '1'))
     )
   }
 
+  function requestedReliefRecoveryCandidateCount(raw) {
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+      return Array.isArray(parsed) ? parsed.length : 0
+    } catch { return 0 }
+  }
+
+  async function scanAndRestoreRequestedReliefBackups() {
+    const keys = [
+      'caseMioRequestedReliefOptions',
+      'caseMioRequestedReliefOptionsBackup',
+      'caseMioRequestedReliefIssueSets',
+      'caseMioRequestedReliefIssueSetsBackup',
+      'caseMioRequestedReliefTemplates',
+      'caseMioRequestedReliefTemplatesBackup'
+    ]
+    const candidates = []
+    keys.forEach((key) => {
+      try {
+        const raw = window.localStorage.getItem(key)
+        if (raw) candidates.push({ source: 'browser', key, raw, count: requestedReliefRecoveryCandidateCount(raw) })
+      } catch {}
+    })
+    try {
+      if (session?.user?.id) {
+        const { data, error } = await supabase
+          .from('case_mio_user_state')
+          .select('key,raw_value,json_value,updated_at')
+          .eq('user_id', session.user.id)
+          .in('key', keys)
+        if (!error && Array.isArray(data)) {
+          data.forEach((row) => {
+            const raw = row.raw_value || JSON.stringify(row.json_value || null)
+            candidates.push({ source: 'supabase', key: row.key, raw, count: requestedReliefRecoveryCandidateCount(raw), updated_at: row.updated_at })
+          })
+        }
+      }
+    } catch (error) {
+      console.warn('Requested Relief recovery scan failed.', error)
+    }
+    const optionCandidates = candidates.filter((entry) => entry.key.includes('Options')).sort((a, b) => b.count - a.count)
+    const issueSetCandidates = candidates.filter((entry) => entry.key.includes('IssueSets')).sort((a, b) => b.count - a.count)
+    const templateCandidates = candidates.filter((entry) => entry.key.includes('Templates')).sort((a, b) => b.count - a.count)
+    const lines = candidates
+      .sort((a, b) => b.count - a.count)
+      .map((entry) => `${entry.source} ${entry.key}: ${entry.count} row(s)${entry.updated_at ? `, updated ${entry.updated_at}` : ''}`)
+      .join('\n') || 'No browser/Supabase Requested Relief backup rows were found.'
+    const currentCounts = `Current visible counts:\nOptions: ${(requestedReliefOptions || []).length}\nIssue sets: ${(requestedReliefIssueSets || []).length}\nTemplates: ${(requestedReliefTemplates || []).length}`
+    const bestOptions = optionCandidates[0]
+    const bestIssueSets = issueSetCandidates[0]
+    const bestTemplates = templateCandidates[0]
+    const bestSummary = `\n\nBest candidates:\nOptions: ${bestOptions ? `${bestOptions.source} ${bestOptions.key} (${bestOptions.count})` : 'none'}\nIssue sets: ${bestIssueSets ? `${bestIssueSets.source} ${bestIssueSets.key} (${bestIssueSets.count})` : 'none'}\nTemplates: ${bestTemplates ? `${bestTemplates.source} ${bestTemplates.key} (${bestTemplates.count})` : 'none'}`
+    if (!confirm(`${currentCounts}\n\nFound:\n${lines}${bestSummary}\n\nRestore the largest non-empty candidates where they have more rows than the current screen?`)) return
+    try {
+      if (bestOptions && bestOptions.count > (requestedReliefOptions || []).length) {
+        setRequestedReliefOptions(JSON.parse(bestOptions.raw).map(ensureRequestedReliefOptionShape))
+      }
+      if (bestIssueSets && bestIssueSets.count > (requestedReliefIssueSets || []).length) {
+        setRequestedReliefIssueSets(JSON.parse(bestIssueSets.raw))
+      }
+      if (bestTemplates && bestTemplates.count > (requestedReliefTemplates || []).length) {
+        setRequestedReliefTemplates(JSON.parse(bestTemplates.raw))
+      }
+      alert('Requested Relief recovery restore attempted. Review the Issues / Relief Options and Issue sets now before editing further.')
+    } catch (error) {
+      alert(`Could not restore backup automatically: ${error?.message || error}`)
+    }
+  }
+
   function renderRequestedReliefSettings() {
     const parentChoices = activeRequestedReliefOptions().filter((option) => option.id !== requestedReliefOptionForm.id)
     const settingsTabButton = (value, label) => (
@@ -26045,6 +26184,10 @@ ${choices}`, '1'))
       <>
         {settingsTabs}
         <h2>Issues / Relief Options</h2>
+        <div style={{ border: '1px solid #f59e0b', background: '#fffbeb', color: '#78350f', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+          <strong>Requested Relief recovery:</strong> If custom issue rows or issue sets are missing, click this before editing the tree. It scans browser storage and Supabase backup keys and only restores a larger candidate after confirmation.{' '}
+          <button type="button" onClick={scanAndRestoreRequestedReliefBackups} style={{ marginLeft: 8, fontWeight: 700 }}>Scan / Restore Requested Relief Backups</button>
+        </div>
         <p>Build the master tree here. Issue/category rows create the structure. Use <strong>Add exclusive option</strong> or <strong>Add non-exclusive option</strong> to create selectable relief choices under a row. Relief Option rows will not appear as issues; their parent row is the issue. Use <strong>Hide options</strong> when you want to focus only on the issue structure.</p>
         <form onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
@@ -32408,7 +32551,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <input placeholder="Button label for this row (optional)" value={workflowForm.link_label || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_label: e.target.value })} />
                     <input placeholder="Link or Mio page for this row (optional)" value={workflowForm.link_url || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_url: e.target.value })} />
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <button type="button" onClick={() => setWorkflowForm({ ...workflowForm, link_url: window.location.href })}>Use current URL</button>
+                      <button type="button" onClick={() => setWorkflowForm({ ...workflowForm, link_url: currentWorkflowViewUrl() })}>Use current URL</button>
                       {workflowForm.link_url && <button type="button" onClick={() => openWorkflowCustomLink(workflowForm.link_url)}>Test link</button>}
                     </div>
                     <div style={{ color: '#64748b', fontSize: 12 }}>Examples: <code>matter_timelines</code>, <code>#calendar</code>, or a full URL. For filtered pages, open the page, set the filters, copy/paste or save that exact URL.</div>
