@@ -2,9 +2,8 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V85'
+const MIO_APP_VERSION = 'Mio V66'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
-const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
 
 const DISCOVERY_RFP_RESPONSE_OPTIONS = [
@@ -163,8 +162,6 @@ const appPages = [
   { value: 'team', label: 'Team' },
   { value: 'clients', label: 'Clients' },
   { value: 'matters', label: 'Matters' },
-  { value: 'withdrawals', label: 'Withdrawals' },
-  { value: 'inventory', label: 'Inventory' },
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
@@ -188,8 +185,6 @@ const screenSaverBasePages = [
   { value: 'team', label: 'Team', page: 'team' },
   { value: 'clients', label: 'Clients', page: 'clients' },
   { value: 'matters', label: 'Matters', page: 'matters' },
-  { value: 'withdrawals', label: 'Withdrawals', page: 'withdrawals' },
-  { value: 'inventory', label: 'Inventory', page: 'inventory' },
   { value: 'matter_timelines', label: 'Matter Timelines', page: 'matter_timelines' },
   { value: 'tasks', label: 'Tasks', page: 'tasks' },
   { value: 'billing', label: 'Billing', page: 'billing' },
@@ -207,76 +202,6 @@ const screenSaverBasePages = [
   { value: 'workflow', label: 'Workflow', page: 'workflow' },
   { value: 'settings', label: 'Settings', page: 'settings' }
 ]
-
-
-function mergeInventoryColumns(storedColumns = []) {
-  const stored = Array.isArray(storedColumns) ? storedColumns : []
-  const storedById = new Map(stored.map((column) => [column.id, column]))
-  const mergedDefaults = DEFAULT_INVENTORY_SETTINGS.columns.map((column) => ({ ...column, ...(storedById.get(column.id) || {}) }))
-  const custom = stored.filter((column) => column && column.id && !DEFAULT_INVENTORY_SETTINGS.columns.some((defaultColumn) => defaultColumn.id === column.id))
-  return [...mergedDefaults, ...custom]
-}
-
-const DEFAULT_INVENTORY_SETTINGS = {
-  assetCategories: [
-    { id: 'real_estate', name: 'Real Estate', subcategories: ['Homestead', 'Rental Property', 'Land', 'Commercial Property', 'Mineral Interest'] },
-    { id: 'vehicles', name: 'Vehicles', subcategories: ['Car', 'Truck', 'Motorcycle', 'Boat', 'Trailer', 'RV', 'ATV'] },
-    { id: 'financial_accounts', name: 'Financial Accounts', subcategories: ['Checking', 'Savings', 'Brokerage', 'Cash App', 'PayPal', 'Venmo'] },
-    { id: 'retirement', name: 'Retirement', subcategories: ['401(k)', 'IRA', 'Pension', 'TRS', 'TCDRS', 'Deferred Compensation'] },
-    { id: 'business_interests', name: 'Business Interests', subcategories: ['LLC', 'Corporation', 'Partnership', 'Sole Proprietorship'] },
-    { id: 'personal_property', name: 'Personal Property', subcategories: ['Household Goods', 'Jewelry', 'Firearms', 'Tools / Equipment', 'Electronics', 'Livestock / Animals', 'Other'] },
-    { id: 'claims', name: 'Claims / Lawsuits', subcategories: ['Personal Injury Claim', 'Contract Claim', 'Tax Refund', 'Other'] },
-    { id: 'other', name: 'Other', subcategories: ['Other'] }
-  ],
-  liabilityCategories: [
-    { id: 'secured_debt', name: 'Secured Debt', subcategories: ['Mortgage', 'Vehicle Loan', 'Equipment Loan', 'Business Secured Debt', 'HELOC', 'Tax Lien', 'Judgment Lien', 'Other Secured Debt'] },
-    { id: 'unsecured_debt', name: 'Unsecured Debt', subcategories: ['Credit Card', 'Medical Debt', 'Personal Loan', 'Student Loan', 'IRS Debt', 'Business Debt', 'Attorney Fees', 'Family Loan', 'Other Unsecured Debt'] }
-  ],
-  columns: [
-    { id: 'type', label: 'Asset / Liability', visible: true },
-    { id: 'estate', label: 'Estate Bucket', visible: true },
-    { id: 'category', label: 'Category', visible: true },
-    { id: 'subcategory', label: 'Subcategory', visible: true },
-    { id: 'item_name', label: 'Property / Debt Name', visible: true },
-    { id: 'description', label: 'Description', visible: true },
-    { id: 'characterization', label: 'Characterization', visible: true },
-    { id: 'date_acquired', label: 'Date of Acquisition', visible: true },
-    { id: 'manner_acquired', label: 'Manner of Acquisition', visible: true },
-    { id: 'location', label: 'Where / Location', visible: true },
-    { id: 'value', label: 'Value / Balance', visible: true },
-    { id: 'valuation_date', label: 'Valuation / Balance Date', visible: true },
-    { id: 'valuation_source', label: 'Valuation Source', visible: true },
-    { id: 'possession', label: 'Current Possession', visible: true },
-    { id: 'award', label: 'Proposed Award / Payor', visible: true },
-    { id: 'debt_type', label: 'Debt Type', visible: true },
-    { id: 'creditor', label: 'Creditor / Lender', visible: true },
-    { id: 'liable_party', label: 'Liable Party', visible: true },
-    { id: 'agreement_status', label: 'Agreement Status', visible: true },
-    { id: 'opposing_value', label: 'Opposing Value', visible: true },
-    { id: 'opposing_award', label: 'Opposing Award', visible: true },
-    { id: 'opposing_notes', label: 'Opposing Notes', visible: true },
-    { id: 'vin', label: 'VIN', visible: true },
-    { id: 'year', label: 'Year', visible: true },
-    { id: 'make', label: 'Make', visible: true },
-    { id: 'model', label: 'Model', visible: true },
-    { id: 'mileage', label: 'Mileage', visible: true },
-    { id: 'address', label: 'Address', visible: true },
-    { id: 'attorney_notes', label: 'Attorney Notes', visible: true },
-    { id: 'client_notes', label: 'Client Notes', visible: true }
-  ]
-}
-
-const INVENTORY_ESTATE_BUCKETS = [
-  { id: 'community', label: 'Community Estate' },
-  { id: 'husband_separate', label: "Husband's Separate Estate" },
-  { id: 'wife_separate', label: "Wife's Separate Estate" }
-]
-
-const INVENTORY_CHARACTERIZATIONS = ['Community', 'Separate', 'Mixed Property', 'Unknown / Needs Review']
-const INVENTORY_ACQUISITION_MANNERS = ['Gift', 'Devise', 'Inheritance', 'Purchase', 'Exchange', 'Other']
-const INVENTORY_PARTY_OPTIONS = ['Client', 'Opposing Party', 'Husband', 'Wife', 'Joint', 'Third Party', 'Unknown']
-const INVENTORY_AWARD_OPTIONS = ['Client', 'Opposing Party', 'Husband', 'Wife', 'Sell and Divide', 'Confirm Separate Property', 'Reimburse Estate', 'Needs Decision']
-const INVENTORY_AGREEMENT_STATUSES = ['Unknown', 'Agreed', 'Opposed', 'Countered', 'Needs Follow-Up']
 
 const defaultScreenSaverSeconds = 150
 
@@ -1412,7 +1337,6 @@ function App() {
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([])
   const [documentSearchText, setDocumentSearchText] = useState('')
   const [documentFilters, setDocumentFilters] = useState({ matter_id: 'all', name: '', date: '', description: '', status: 'all', tagId: 'all' })
-  const [documentSort, setDocumentSort] = useState({ key: 'upload_date', direction: 'desc' })
   const [bulkSelectedTagIds, setBulkSelectedTagIds] = useState([])
   const [bulkAiProgress, setBulkAiProgress] = useState({ running: false, total: 0, done: 0, current: '' })
   const [tagForm, setTagForm] = useState({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
@@ -1482,7 +1406,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioWorkflowItems') || '[]') }
     catch { return [] }
   })
-  const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783', link_label: '', link_url: '' })
+  const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783' })
   const [workflowFilter, setWorkflowFilter] = useState('')
   const [workflowActiveTab, setWorkflowActiveTab] = useState(() => localStorage.getItem('caseMioWorkflowActiveTab') || 'daily')
   const [workflowDailyDate, setWorkflowDailyDate] = useState(() => dateToInputValue(new Date()))
@@ -1490,7 +1414,6 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioWorkflowDailyChecks') || '{}') }
     catch { return {} }
   })
-  const [workflowQuickLinkTargetId, setWorkflowQuickLinkTargetId] = useState('')
   const [collapsedWorkflowIds, setCollapsedWorkflowIds] = useState([])
   const [draggedWorkflowId, setDraggedWorkflowId] = useState(null)
   const [elements, setElements] = useState(() => {
@@ -1680,37 +1603,6 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetPausedRows') || '{}') }
     catch { return {} }
   })
-  const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem('caseMioWithdrawalSteps') || 'null')
-      return Array.isArray(parsed) && parsed.length ? parsed : [
-        { id: 'withdraw-step-review', name: 'Review balance / reason for withdrawal' },
-        { id: 'withdraw-step-notice', name: 'Send client notice and request cure' },
-        { id: 'withdraw-step-motion', name: 'Draft motion to withdraw' },
-        { id: 'withdraw-step-order', name: 'Draft proposed order' },
-        { id: 'withdraw-step-file', name: 'File motion / set hearing if required' },
-        { id: 'withdraw-step-serve', name: 'Serve client and parties' },
-        { id: 'withdraw-step-hearing', name: 'Attend hearing / obtain order' },
-        { id: 'withdraw-step-close', name: 'Close file and update matter status' }
-      ]
-    } catch {
-      return [
-        { id: 'withdraw-step-review', name: 'Review balance / reason for withdrawal' },
-        { id: 'withdraw-step-notice', name: 'Send client notice and request cure' },
-        { id: 'withdraw-step-motion', name: 'Draft motion to withdraw' },
-        { id: 'withdraw-step-order', name: 'Draft proposed order' },
-        { id: 'withdraw-step-file', name: 'File motion / set hearing if required' },
-        { id: 'withdraw-step-serve', name: 'Serve client and parties' },
-        { id: 'withdraw-step-hearing', name: 'Attend hearing / obtain order' },
-        { id: 'withdraw-step-close', name: 'Close file and update matter status' }
-      ]
-    }
-  })
-  const [withdrawalStepChecks, setWithdrawalStepChecks] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('caseMioWithdrawalStepChecks') || '{}') }
-    catch { return {} }
-  })
-  const [withdrawalStepDraft, setWithdrawalStepDraft] = useState('')
 
   const [requestedReliefOptions, setRequestedReliefOptions] = useState(() => {
     try {
@@ -1749,7 +1641,6 @@ function App() {
   })
   const [requestedReliefOptionForm, setRequestedReliefOptionForm] = useState({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })
   const [requestedReliefMatterFilter, setRequestedReliefMatterFilter] = useState('all')
-  const [requestedReliefMatterSearchText, setRequestedReliefMatterSearchText] = useState('')
   const [requestedReliefSavedIssueSetId, setRequestedReliefSavedIssueSetId] = useState('')
   const [requestedReliefSavedReliefId, setRequestedReliefSavedReliefId] = useState('')
   const [requestedReliefShowComparison, setRequestedReliefShowComparison] = useState(false)
@@ -1873,10 +1764,9 @@ function App() {
       const nextColumns = {
         ...defaults,
         ...savedColumns,
-        // Keep these core columns visible even when an older saved column layout exists.
+        // Keep these new trial columns visible even when an older saved column layout exists.
         trial_date: true,
-        days_until_trial: true,
-        action: true
+        days_until_trial: true
       }
       saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
       return nextColumns
@@ -1908,12 +1798,6 @@ function App() {
     } catch { return null }
   })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
-  const [checklistViewMode, setChecklistViewMode] = useState(() => localStorage.getItem('caseMioChecklistViewMode') || 'table')
-  const [checklistDayGridShowEmptyDays, setChecklistDayGridShowEmptyDays] = useState(() => localStorage.getItem('caseMioChecklistDayGridShowEmptyDays') === 'true')
-  const [checklistDayGridRowHeight, setChecklistDayGridRowHeight] = useState(() => {
-    const saved = Number(localStorage.getItem('caseMioChecklistDayGridRowHeight') || 96)
-    return Number.isFinite(saved) ? Math.min(260, Math.max(44, saved)) : 96
-  })
   const [showNeedToSetSteps, setShowNeedToSetSteps] = useState(() => localStorage.getItem('caseMioShowNeedToSetSteps') !== 'false')
   const [checklistStepCompletions, setChecklistStepCompletions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioChecklistStepCompletions') || '{}') }
@@ -1951,7 +1835,6 @@ function App() {
   const [matterPageFilterCaseStatus, setMatterPageFilterCaseStatus] = useState(() => localStorage.getItem('matterPageFilterCaseStatus') || 'all')
   const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => localStorage.getItem('matterPageFilterMatterStatus') || 'all')
   const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => localStorage.getItem('matterPageFilterCaseType') || 'all')
-  const [matterExternalEfileUrl, setMatterExternalEfileUrl] = useState(() => localStorage.getItem('matterExternalEfileUrl') || 'https://efile.txcourts.gov/')
   const [matterColumnWidths, setMatterColumnWidths] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('matterColumnWidths') || '{}')
@@ -1989,33 +1872,6 @@ function App() {
       return decodeURIComponent(hashPage.slice('matter_dashboard:'.length).split('?')[0])
     } catch { return '' }
   })
-
-  const [inventorySettings, setInventorySettings] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('caseMioInventorySettings') || 'null')
-      if (stored && typeof stored === 'object') {
-        return {
-          assetCategories: Array.isArray(stored.assetCategories) && stored.assetCategories.length ? stored.assetCategories : DEFAULT_INVENTORY_SETTINGS.assetCategories,
-          liabilityCategories: Array.isArray(stored.liabilityCategories) && stored.liabilityCategories.length ? stored.liabilityCategories : DEFAULT_INVENTORY_SETTINGS.liabilityCategories,
-          columns: Array.isArray(stored.columns) && stored.columns.length ? mergeInventoryColumns(stored.columns) : DEFAULT_INVENTORY_SETTINGS.columns
-        }
-      }
-    } catch {}
-    return DEFAULT_INVENTORY_SETTINGS
-  })
-  const [matterInventories, setMatterInventories] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('caseMioMatterInventories') || '{}') }
-    catch { return {} }
-  })
-  const [inventoryMasterFilter, setInventoryMasterFilter] = useState('')
-  const [inventoryScenarioByMatter, setInventoryScenarioByMatter] = useState({})
-  const [inventoryCompareScenarioByMatter, setInventoryCompareScenarioByMatter] = useState({})
-  const [inventoryViewModeByMatter, setInventoryViewModeByMatter] = useState({})
-  const [inventoryFullTableHeight, setInventoryFullTableHeight] = useState(() => {
-    try { return Number(localStorage.getItem('caseMioInventoryFullTableHeight') || '520') || 520 }
-    catch { return 520 }
-  })
-
   const [taskSubpartCompletions, setTaskSubpartCompletions] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('taskSubpartCompletions') || '{}')
@@ -2113,8 +1969,6 @@ function App() {
   function getMioCloudStateBindings() {
     return {
       caseMioPreferredSettingsTab: { setter: setSettingsTab, kind: 'string', fallback: 'options' },
-      caseMioInventorySettings: { setter: (value) => setInventorySettings({ ...DEFAULT_INVENTORY_SETTINGS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_INVENTORY_SETTINGS },
-      caseMioMatterInventories: { setter: setMatterInventories, kind: 'object', fallback: {} },
       caseMioLawFirmProfile: { setter: (value) => setLawFirmProfile({ firm_name: '', address: '', email: '', phone: '', ...(value || {}) }), kind: 'object', fallback: {} },
       caseMioWebsiteIdeas: { setter: setWebsiteIdeas, kind: 'array', fallback: [] },
       caseControllerDocuments: { setter: setDocuments, kind: 'array', fallback: [] },
@@ -2122,35 +1976,9 @@ function App() {
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
-      matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
-      caseControllerTags: { setter: (value) => {
-        const cloudTags = Array.isArray(value) ? value : []
-        let browserTags = []
-        try { browserTags = JSON.parse(window.localStorage.getItem('caseControllerTags') || '[]') } catch {}
-        setTags((prevTags) => {
-          const priorTags = Array.isArray(prevTags) ? prevTags : []
-          const merged = []
-          const seen = new Set()
-          ;[...cloudTags, ...(Array.isArray(browserTags) ? browserTags : []), ...priorTags].forEach((tag) => {
-            const id = String(tag?.id || '').trim()
-            const name = String(tag?.name || '').trim()
-            const parent = String(tag?.parent_id || tag?.parentId || '')
-            const key = id || `name:${name.toLowerCase()}:${parent}`
-            if (!name && !id) return
-            if (seen.has(key)) return
-            seen.add(key)
-            merged.push(tag)
-          })
-          // Never let an empty cloud record wipe out a browser/session tag library.
-          const nextTags = merged.length ? merged : priorTags
-          if (nextTags.length && nextTags.length !== cloudTags.length) {
-            window.setTimeout(() => saveMioStateKey('caseControllerTags', JSON.stringify(nextTags)), 250)
-          }
-          return nextTags
-        })
-      }, kind: 'array', fallback: [] },
+      caseControllerTags: { setter: setTags, kind: 'array', fallback: [] },
       caseMioAiTagRuleDetails: { setter: setAiTagRuleDetails, kind: 'object', fallback: {} },
       caseMioDocumentEventRules: { setter: setDocumentEventRules, kind: 'array', fallback: [] },
       caseMioTagMetadataRules: { setter: setTagMetadataRules, kind: 'object', fallback: {} },
@@ -2160,31 +1988,7 @@ function App() {
       caseMioAiFeedbackRecords: { setter: setAiFeedbackRecords, kind: 'array', fallback: [] },
       caseMioCalculatedUserFields: { setter: setCalculatedUserFields, kind: 'array', fallback: [] },
       caseMioUserFieldDefaultInstructions: { setter: setUserFieldDefaultInstructions, kind: 'object', fallback: {} },
-      caseMioWorkflowItems: { setter: (value) => {
-        const cloudItems = Array.isArray(value) ? value : []
-        let browserItems = []
-        try { browserItems = JSON.parse(window.localStorage.getItem('caseMioWorkflowItems') || '[]') } catch {}
-        setWorkflowItems((prevItems) => {
-          const priorItems = Array.isArray(prevItems) ? prevItems : []
-          const merged = []
-          const seen = new Set()
-          ;[...cloudItems, ...(Array.isArray(browserItems) ? browserItems : []), ...priorItems].forEach((item) => {
-            const id = String(item?.id || '').trim()
-            const name = String(item?.name || '').trim()
-            const key = id || `workflow:${name.toLowerCase()}:${String(item?.parent_id || '')}`
-            if (!id && !name) return
-            if (seen.has(key)) return
-            seen.add(key)
-            merged.push(item)
-          })
-          const nextItems = merged.length ? merged : priorItems
-          if (nextItems.length && nextItems.length !== cloudItems.length) {
-            window.setTimeout(() => saveMioStateKey('caseMioWorkflowItems', JSON.stringify(nextItems)), 250)
-          }
-          return nextItems
-        })
-      }, kind: 'array', fallback: [] },
-      caseMioWorkflowDailyChecks: { setter: (value) => setWorkflowDailyChecks(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
+      caseMioWorkflowItems: { setter: setWorkflowItems, kind: 'array', fallback: [] },
       caseControllerElements: { setter: setElements, kind: 'array', fallback: [] },
       caseControllerPeople: { setter: setMatterPeople, kind: 'array', fallback: [] },
       caseControllerDiscoveryRequests: { setter: setDiscoveryRequests, kind: 'array', fallback: [] },
@@ -2212,12 +2016,11 @@ function App() {
       caseMioNeedToSetFirstSeenDates: { setter: setNeedToSetFirstSeenDates, kind: 'object', fallback: {} },
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
-      caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(Array.isArray(value) ? value.map(ensureRequestedReliefOptionShape) : defaultRequestedReliefOptions.map(ensureRequestedReliefOptionShape)), kind: 'array', fallback: defaultRequestedReliefOptions },
+      caseMioRequestedReliefOptions: { setter: setRequestedReliefOptions, kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: setRequestedReliefIssueSets, kind: 'array', fallback: [] },
       caseMioRequestedReliefTemplates: { setter: setRequestedReliefTemplates, kind: 'array', fallback: [] },
-      caseMioRequestedReliefTables: { setter: (value) => setRequestedReliefTables(Array.isArray(value) && value.length ? value.map(ensureRequestedReliefTableShape) : defaultRequestedReliefTables.map(ensureRequestedReliefTableShape)), kind: 'array', fallback: defaultRequestedReliefTables },
-      caseMioRequestedReliefMatrixTable: { setter: (value) => setRequestedReliefMatrixTable(ensureRequestedReliefMatrixShape(value)), kind: 'object', fallback: defaultRequestedReliefMatrixTable },
+      caseMioRequestedReliefTables: { setter: setRequestedReliefTables, kind: 'array', fallback: defaultRequestedReliefTables },
       caseMioRequestedReliefTableExpandedIds: { setter: setRequestedReliefTableExpandedIds, kind: 'array', fallback: [] },
       caseMioRequestedReliefComparisonOrder: { setter: setRequestedReliefComparisonOrder, kind: 'object', fallback: {} },
       caseMioRequestedReliefExpandedIds: { setter: setRequestedReliefExpandedIds, kind: 'array', fallback: [] },
@@ -2237,7 +2040,6 @@ function App() {
       caseMioChecklistMatterStatusFilter: { setter: setChecklistMatterStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistEventCategoryFilter: { setter: setChecklistEventCategoryFilter, kind: 'object', fallback: null },
       caseMioChecklistShowBlankDays: { setter: setChecklistShowBlankDays, kind: 'boolean', fallback: false },
-      caseMioChecklistViewMode: { setter: setChecklistViewMode, kind: 'string', fallback: 'table' },
       caseMioShowNeedToSetSteps: { setter: setShowNeedToSetSteps, kind: 'boolean', fallback: true },
       caseMioChecklistStepCompletions: { setter: setChecklistStepCompletions, kind: 'object', fallback: {} },
       caseMioChecklistCompletionDefaultTagId: { setter: setChecklistCompletionDefaultTagId, kind: 'string', fallback: '' },
@@ -2301,7 +2103,7 @@ function App() {
 
       mioCloudStateSkipSaveRef.current = true
       data.forEach((record) => applyMioCloudStateRecord(record))
-      window.setTimeout(() => { mioCloudStateSkipSaveRef.current = false }, 750)
+      window.setTimeout(() => { mioCloudStateSkipSaveRef.current = false }, 0)
     } finally {
       mioCloudStateLoadedRef.current = true
       mioCloudStateLoadingRef.current = false
@@ -2339,15 +2141,8 @@ function App() {
   }
 
   function saveMioStateKey(key, value) {
-    // Recovery-safe cloud sync: do not let initial default state overwrite Supabase before the cloud copy has loaded.
-    // This protects large custom settings like Requested Relief issue trees during version upgrades/reloads.
-    const rawValue = value === undefined || value === null ? '' : String(value)
-    if (session?.user?.id && !mioCloudStateLoadedRef.current) {
-      mioCloudStateLastValuesRef.current[key] = rawValue
-      return
-    }
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
-    mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
+    mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, value), 350)
   }
 
   function billingEntryFromRelationalRow(row) {
@@ -2521,18 +2316,6 @@ function App() {
     try { saveMioStateKey('caseMioPreferredSettingsTab', settingsTab) } catch {}
   }, [settingsTab])
 
-  useEffect(() => {
-    try { saveMioStateKey('caseMioInventorySettings', JSON.stringify(inventorySettings)) } catch {}
-  }, [inventorySettings])
-
-  useEffect(() => {
-    try { localStorage.setItem('caseMioInventoryFullTableHeight', String(inventoryFullTableHeight)) } catch {}
-  }, [inventoryFullTableHeight])
-
-  useEffect(() => {
-    try { saveMioStateKey('caseMioMatterInventories', JSON.stringify(matterInventories)) } catch {}
-  }, [matterInventories])
-
 
   useEffect(() => {
     try { saveMioStateKey('caseMioServiceEmailSources', JSON.stringify(serviceEmailSources)) } catch {}
@@ -2652,14 +2435,6 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetPausedRows', JSON.stringify(needToSetPausedRows)) } catch {}
   }, [needToSetPausedRows])
-
-  useEffect(() => {
-    try { saveMioStateKey('caseMioWithdrawalSteps', JSON.stringify(withdrawalSteps)) } catch {}
-  }, [withdrawalSteps])
-
-  useEffect(() => {
-    try { saveMioStateKey('caseMioWithdrawalStepChecks', JSON.stringify(withdrawalStepChecks)) } catch {}
-  }, [withdrawalStepChecks])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetFirstSeenDates', JSON.stringify(needToSetFirstSeenDates)) } catch {}
@@ -2857,12 +2632,11 @@ function App() {
 
 
   useEffect(() => {
-    if (!visibleMatterColumns.trial_date || !visibleMatterColumns.days_until_trial || !visibleMatterColumns.action) {
+    if (!visibleMatterColumns.trial_date || !visibleMatterColumns.days_until_trial) {
       const nextColumns = {
         ...visibleMatterColumns,
         trial_date: true,
-        days_until_trial: true,
-        action: true
+        days_until_trial: true
       }
       setVisibleMatterColumns(nextColumns)
       saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
@@ -2888,17 +2662,14 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
-    try { saveMioStateKey('caseControllerTags', JSON.stringify(tags)) } catch {}
   }, [tags])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioWorkflowItems', JSON.stringify(workflowItems))
-    try { saveMioStateKey('caseMioWorkflowItems', JSON.stringify(workflowItems)) } catch {}
   }, [workflowItems])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioWorkflowDailyChecks', JSON.stringify(workflowDailyChecks))
-    try { saveMioStateKey('caseMioWorkflowDailyChecks', JSON.stringify(workflowDailyChecks)) } catch {}
   }, [workflowDailyChecks])
 
   useEffect(() => {
@@ -3012,18 +2783,6 @@ function App() {
   }, [checklistShowBlankDays])
 
   useEffect(() => {
-    safeSetLocalStorage('caseMioChecklistViewMode', checklistViewMode || 'table')
-  }, [checklistViewMode])
-
-  useEffect(() => {
-    safeSetLocalStorage('caseMioChecklistDayGridShowEmptyDays', checklistDayGridShowEmptyDays ? 'true' : 'false')
-  }, [checklistDayGridShowEmptyDays])
-
-  useEffect(() => {
-    safeSetLocalStorage('caseMioChecklistDayGridRowHeight', String(checklistDayGridRowHeight || 96))
-  }, [checklistDayGridRowHeight])
-
-  useEffect(() => {
     safeSetLocalStorage('caseMioShowNeedToSetSteps', showNeedToSetSteps ? 'true' : 'false')
   }, [showNeedToSetSteps])
 
@@ -3124,7 +2883,7 @@ function App() {
     if (member.is_active === false) return []
 
     if (Array.isArray(member.page_access) && member.page_access.length > 0) {
-      return Array.from(new Set([...member.page_access, 'withdrawals', 'inventory', 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
+      return Array.from(new Set([...member.page_access, 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
     }
 
     return appPages.map((p) => p.value)
@@ -3134,7 +2893,7 @@ function App() {
     // Service Inbox is a newly added core page. Existing team-member page_access
     // records may not contain it yet, so keep it visible instead of letting the
     // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory') return true
+    if (pageName === 'service_inbox') return true
     return getAllowedPages().includes(pageName)
   }
 
@@ -3721,84 +3480,6 @@ function App() {
     })
   }
 
-  function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result || '')
-      reader.onerror = reject
-      reader.readAsDataURL(blob)
-    })
-  }
-
-  async function loadDocumentFileDataUrl(row = {}) {
-    if (row.file_data) return row.file_data
-    const filePath = row.file_path || row.filePath || row.storage_path || row.path || ''
-    if (!filePath) return ''
-    try {
-      const { data, error } = await supabase.storage.from(DOCUMENT_BUCKET).download(filePath)
-      if (!error && data) return await blobToDataUrl(data)
-      if (error) console.warn('Supabase storage download failed; trying public URL.', error)
-    } catch (error) {
-      console.warn('Supabase storage download threw; trying public URL.', error)
-    }
-    try {
-      const publicUrl = getDocumentPublicUrl(filePath)
-      if (!publicUrl) return ''
-      const res = await fetch(publicUrl)
-      if (!res.ok) throw new Error(`File fetch failed: ${res.status}`)
-      return await blobToDataUrl(await res.blob())
-    } catch (error) {
-      console.warn('Could not load stored document file for extraction.', error)
-      return ''
-    }
-  }
-
-
-  function sanitizeStorageFileName(name) {
-    return String(name || 'file')
-      .replace(/[^a-zA-Z0-9._-]+/g, '_')
-      .replace(/_+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'file'
-  }
-
-  function getDocumentPublicUrl(filePath) {
-    if (!filePath) return ''
-    try {
-      const { data } = supabase.storage.from(DOCUMENT_BUCKET).getPublicUrl(filePath)
-      return data?.publicUrl || ''
-    } catch (error) {
-      console.warn('Could not create Supabase public URL for document.', error)
-      return ''
-    }
-  }
-
-  async function uploadMioDocumentFile(file, docId, matterId = '') {
-    if (!file) return {}
-    const safeName = sanitizeStorageFileName(file.name || 'document')
-    const userPart = session?.user?.id || 'user'
-    const matterPart = matterId || 'unassigned'
-    const path = `${userPart}/${matterPart}/${docId}/${Date.now()}_${safeName}`
-    try {
-      const { error } = await supabase.storage
-        .from(DOCUMENT_BUCKET)
-        .upload(path, file, { upsert: true, contentType: file.type || 'application/octet-stream' })
-      if (error) throw error
-      return {
-        file_path: path,
-        file_name: file.name || safeName,
-        file_type: file.type || '',
-        file_size: Number(file.size || 0) || 0
-      }
-    } catch (error) {
-      const storageErrorMessage = error?.message || error?.error_description || error?.statusCode || JSON.stringify(error) || String(error)
-      window.__lastMioUploadError = storageErrorMessage
-      console.warn('Supabase document file upload failed. Keeping in-memory file data for this session only.', error)
-      const uploadErrorText = storageErrorMessage ? `\n\nStorage error: ${storageErrorMessage}` : ''
-      alert(`The document row was created, but the file could not be saved to Supabase Storage. Check that the case-documents bucket exists and that storage policies allow uploads. The file will not survive refresh until storage upload works.${uploadErrorText}`)
-      return {}
-    }
-  }
-
 
   function dataUrlToUint8Array(dataUrl = '') {
     const base64 = String(dataUrl || '').split(',')[1] || ''
@@ -3918,17 +3599,17 @@ function App() {
   }
 
   async function extractDocumentTextForAi(row = {}) {
-    const fileType = String(row.file_type || row.mime_type || '').toLowerCase()
-    const fileName = String(row.file_name || row.original_file_name || row.name || '').toLowerCase()
-    const fileData = row.file_data || await loadDocumentFileDataUrl(row)
+    const fileType = String(row.file_type || '').toLowerCase()
+    const fileName = String(row.file_name || row.name || '').toLowerCase()
+    const fileData = row.file_data || ''
 
     if (!fileData) {
       return {
         extracted_text: '',
-        extraction_method: 'no_file_data_or_storage_path',
+        extraction_method: 'no_file_data',
         text_quality: 'none',
         needs_ocr: false,
-        warnings: ['No file data or stored file path was available. Re-upload the document or open the document from Documents to confirm the file is attached.']
+        warnings: ['No file data was available for AI analysis.']
       }
     }
 
@@ -4816,110 +4497,6 @@ function App() {
   }
 
 
-  function checklistCategoryColumnLabels(eventsList = []) {
-    const labels = Array.from(new Set((eventsList || []).map((event) => checklistEventCategoryLabel(event) || 'Other')))
-    const preferred = ['Trial', 'Hearing', 'Mediation', 'Deadline', 'Conference', 'Other']
-    return labels.sort((a, b) => {
-      const ai = preferred.findIndex((item) => a.toLowerCase().includes(item.toLowerCase()))
-      const bi = preferred.findIndex((item) => b.toLowerCase().includes(item.toLowerCase()))
-      const av = ai === -1 ? 999 : ai
-      const bv = bi === -1 ? 999 : bi
-      return av - bv || a.localeCompare(b)
-    })
-  }
-
-  function renderChecklistEventMiniCard(event) {
-    const matter = checklistMatterForEvent(event)
-    return (
-      <div key={event.checklist_id || event.id} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 8, marginBottom: 8, background: checklistRowBackground(event) || '#fff' }}>
-        <div style={{ fontWeight: 800 }}>{event.checklist_title || event.title || '(No title)'}</div>
-        <div style={{ fontSize: 12, color: '#475569' }}>{formatChecklistDate(event)}{event.start_time ? ` ${formatEventTime(event.start_time)}` : ''}</div>
-        {matter ? <a href={`#matter_dashboard:${encodeURIComponent(matter.id)}`} onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); openMatterTaskTemplates(matter) }} style={{ fontSize: 12 }}>{checklistMatterLabel(event)}</a> : <div style={{ fontSize: 12 }}>{checklistMatterLabel(event)}</div>}
-      </div>
-    )
-  }
-
-  function renderChecklistColumnsView() {
-    const eventsList = filteredChecklistEvents(checklistTab)
-    const labels = checklistCategoryColumnLabels(eventsList)
-    const grouped = new Map(labels.map((label) => [label, []]))
-    eventsList.forEach((event) => {
-      const label = checklistEventCategoryLabel(event) || 'Other'
-      if (!grouped.has(label)) grouped.set(label, [])
-      grouped.get(label).push(event)
-    })
-    return (
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, labels.length)}, minmax(240px, 1fr))`, gap: 12, alignItems: 'start' }}>
-        {labels.map((label) => (
-          <div key={label} style={{ border: '1px solid #d5dce3', borderRadius: 10, background: '#f8fafc', padding: 10 }}>
-            <h3 style={{ margin: '0 0 10px' }}>{label}</h3>
-            {(grouped.get(label) || []).map(renderChecklistEventMiniCard)}
-            {!(grouped.get(label) || []).length && <div style={{ color: '#64748b', fontStyle: 'italic' }}>No events.</div>}
-          </div>
-        ))}
-        {!labels.length && <div style={{ color: '#64748b' }}>No events match this tab and filters.</div>}
-      </div>
-    )
-  }
-
-  function renderChecklistDayGridView() {
-    const eventsList = filteredChecklistEvents(checklistTab)
-    const labels = checklistCategoryColumnLabels(eventsList)
-    const byDay = new Map()
-    eventsList.forEach((event) => {
-      const dateObj = checklistDateObj(event)
-      if (!dateObj) return
-      const key = dateToInputValue(dateObj)
-      if (!byDay.has(key)) byDay.set(key, [])
-      byDay.get(key).push(event)
-    })
-    let dayKeys = Array.from(byDay.keys()).sort()
-    const fillEmptyDays = checklistShowBlankDays || checklistDayGridShowEmptyDays
-    if (fillEmptyDays && dayKeys.length > 0) {
-      const today = new Date()
-      today.setHours(0, 0, 0, 0)
-      const firstEventDate = new Date(`${dayKeys[0]}T00:00:00`)
-      const startDate = checklistDayGridShowEmptyDays && checklistTab === 'future' && today < firstEventDate ? today : firstEventDate
-      const end = new Date(`${dayKeys[dayKeys.length - 1]}T00:00:00`)
-      const filled = []
-      const cursor = new Date(startDate)
-      let guard = 0
-      while (cursor <= end && guard < 730) {
-        filled.push(dateToInputValue(cursor))
-        cursor.setDate(cursor.getDate() + 1)
-        guard += 1
-      }
-      dayKeys = filled
-    }
-    const emptyDayHint = checklistDayGridShowEmptyDays ? 'No events set.' : ''
-    return (
-      <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 8, background: '#fff' }}>
-        <table style={{ width: '100%', minWidth: Math.max(900, 180 + labels.length * 240), borderCollapse: 'collapse' }}>
-          <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8, width: 170 }}>Day</th>{labels.map((label) => <th key={label} style={{ textAlign: 'left', padding: 8 }}>{label}</th>)}</tr></thead>
-          <tbody>
-            {dayKeys.map((dayKey) => {
-              const dayEvents = byDay.get(dayKey) || []
-              const byLabel = new Map(labels.map((label) => [label, dayEvents.filter((event) => (checklistEventCategoryLabel(event) || 'Other') === label)]))
-              const isEmptyDay = dayEvents.length === 0
-              return (
-                <tr key={dayKey} style={{ borderTop: '1px solid #e2e8f0', background: isEmptyDay ? '#f8fafc' : '#fff', height: checklistDayGridRowHeight }}>
-                  <td style={{ padding: 8, verticalAlign: 'top', fontWeight: 800, height: checklistDayGridRowHeight }}>{formatChecklistBlankDay(new Date(`${dayKey}T00:00:00`))}</td>
-                  {labels.map((label) => (
-                    <td key={label} style={{ padding: 8, verticalAlign: 'top', height: checklistDayGridRowHeight }}>
-                      {(byLabel.get(label) || []).map(renderChecklistEventMiniCard)}
-                      {isEmptyDay && label === labels[0] && emptyDayHint && <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic' }}>{emptyDayHint}</div>}
-                    </td>
-                  ))}
-                </tr>
-              )
-            })}
-            {!dayKeys.length && <tr><td colSpan={labels.length + 1} style={{ padding: 16, color: '#64748b', textAlign: 'center' }}>No events match this tab and filters.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    )
-  }
-
   function SmartMatterSelect({ value, onChange, placeholder = 'Type to search matters', style = {}, activeOnly = false }) {
     const listId = useRef(`matter-smart-${Math.random().toString(36).slice(2)}`)
     const [text, setText] = useState('')
@@ -5051,168 +4628,9 @@ function App() {
     )
   }
 
-  function normalizeExternalUrl(url) {
-    const clean = String(url || '').trim()
-    if (!clean) return ''
-    if (/^https?:\/\//i.test(clean)) return clean
-    return `https://${clean}`
-  }
-
-  function openMatterEmailAddress(email) {
-    const clean = String(email || '').trim()
-    if (!clean) {
-      alert('No email address is saved for this contact yet.')
-      return
-    }
-    window.location.href = `mailto:${encodeURIComponent(clean)}`
-  }
-
-  function openMatterExternalLink(url) {
-    const clean = normalizeExternalUrl(url)
-    if (!clean) {
-      alert('No link is saved for this option yet.')
-      return
-    }
-    window.open(clean, '_blank', 'noopener,noreferrer')
-  }
-
-  function matterClientEmail(matter) {
-    return matter?.clients?.email || matter?.client_email || ''
-  }
-
-  function matterOpposingPartyEmail(matter) {
-    return matterPartyOne(matter?.id).email || ''
-  }
-
-  function matterOpposingCounselEmail(matter) {
-    return matterPartyOneCounsel(matter?.id).email || ''
-  }
-
-  function matterCourtCoordinatorEmail(matter) {
-    return matter?.courts?.court_coordinator_email || ''
-  }
-
-  function matterAssociateCoordinatorEmail(matter) {
-    return matter?.courts?.associate_coordinator_email || matter?.courts?.associate_court_coordinator_email || ''
-  }
-
-  function matterEmailOptions(matter) {
-    return [
-      { key: 'client', label: 'Email client', email: matterClientEmail(matter) },
-      { key: 'opposing_counsel', label: 'Email opposing counsel', email: matterOpposingCounselEmail(matter) },
-      { key: 'opposing_party', label: 'Email opposing party', email: matterOpposingPartyEmail(matter) },
-      { key: 'court_coordinator', label: 'Email court coordinator', email: matterCourtCoordinatorEmail(matter) },
-      { key: 'associate_coordinator', label: 'Email associate judge coordinator', email: matterAssociateCoordinatorEmail(matter) }
-    ]
-  }
-
-  function matterLinkOptions(matter) {
-    return [
-      { key: 'court_docket', label: 'Open court docket', url: matter?.courts?.court_docket || '' },
-      { key: 'efile', label: 'Open eFile website', url: matterExternalEfileUrl },
-      { key: 'court_website', label: 'Open court website', url: matter?.courts?.court_website || '' }
-    ]
-  }
-
-  function MatterHoverMenu({ icon, title, options, optionType = 'email' }) {
-    const hasAny = (options || []).some((option) => String(option.email || option.url || '').trim())
-    const anchorRef = useRef(null)
-    const [panelPosition, setPanelPosition] = useState({ left: 8, top: 8 })
-
-    function updateMatterHoverPanelPosition() {
-      const rect = anchorRef.current?.getBoundingClientRect?.()
-      if (!rect) return
-      const panelWidth = 260
-      const estimatedPanelHeight = Math.min(320, Math.max(96, ((options || []).length * 34) + 18))
-      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024
-      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768
-      const margin = 8
-      const left = Math.max(margin, Math.min(rect.left, viewportWidth - panelWidth - margin))
-      const hasRoomBelow = (viewportHeight - rect.bottom) >= (estimatedPanelHeight + margin)
-      const topCandidate = hasRoomBelow ? rect.bottom + 6 : rect.top - estimatedPanelHeight - 6
-      const top = Math.max(margin, Math.min(topCandidate, viewportHeight - estimatedPanelHeight - margin))
-      setPanelPosition({ left, top })
-    }
-
-    return (
-      <span
-        ref={anchorRef}
-        className="matter-hover-menu"
-        onMouseEnter={updateMatterHoverPanelPosition}
-        onFocus={updateMatterHoverPanelPosition}
-        style={{ position: 'relative', display: 'inline-block' }}
-      >
-        <style>{`.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}`}</style>
-        <button
-          type="button"
-          title={title}
-          style={{ border: '1px solid #cbd5e1', background: hasAny ? '#fff' : '#f8fafc', borderRadius: 999, cursor: 'pointer', padding: '2px 6px', lineHeight: '16px' }}
-        >
-          {icon}
-        </button>
-        <span
-          className="matter-hover-menu-panel"
-          style={{ display: 'none', position: 'fixed', left: panelPosition.left, top: panelPosition.top, zIndex: 999999, minWidth: 220, width: 260, maxWidth: 'calc(100vw - 16px)', maxHeight: 'min(320px, calc(100vh - 16px))', overflowY: 'auto', padding: 6, border: '1px solid #94a3b8', borderRadius: 8, background: 'white', boxShadow: '0 8px 20px rgba(15,23,42,0.18)' }}
-        >
-          {(options || []).map((option) => {
-            const value = option.email || option.url || ''
-            return (
-              <button
-                key={option.key}
-                type="button"
-                disabled={!String(value).trim()}
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  optionType === 'link' ? openMatterExternalLink(value) : openMatterEmailAddress(value)
-                }}
-                title={String(value).trim() || 'Not saved yet'}
-                style={{ display: 'block', width: '100%', textAlign: 'left', margin: '2px 0', padding: '5px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: String(value).trim() ? '#fff' : '#f1f5f9', color: String(value).trim() ? '#0f172a' : '#94a3b8', cursor: String(value).trim() ? 'pointer' : 'not-allowed' }}
-              >
-                {option.label}
-              </button>
-            )
-          })}
-        </span>
-      </span>
-    )
-  }
-
-  function MatterQuickLinkIcons({ matter }) {
-    return (
-      <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
-        <MatterHoverMenu icon="✉️" title="Email links" options={matterEmailOptions(matter)} />
-        <MatterHoverMenu icon="🔗" title="Court / filing links" options={matterLinkOptions(matter)} optionType="link" />
-      </span>
-    )
-  }
-
-  function MatterEmailTextButton({ email, children, title }) {
-    return (
-      <button
-        type="button"
-        onClick={() => openMatterEmailAddress(email)}
-        title={email ? (title || `Email ${email}`) : 'No email saved yet'}
-        style={{ border: 'none', background: 'transparent', padding: 0, margin: 0, color: email ? '#1d4ed8' : 'inherit', textDecoration: email ? 'underline' : 'none', cursor: email ? 'pointer' : 'default', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-      >
-        {children || ''}
-      </button>
-    )
-  }
-
-  function MatterLinkTextHover({ matter, children, option = 'links' }) {
-    const options = option === 'court_email' ? matterEmailOptions(matter).filter((item) => ['court_coordinator', 'associate_coordinator'].includes(item.key)) : matterLinkOptions(matter)
-    return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%' }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{children || ''}</span>
-        <MatterHoverMenu icon={option === 'court_email' ? '✉️' : '🔗'} title={option === 'court_email' ? 'Court coordinator email options' : 'Court / filing links'} options={options} optionType={option === 'court_email' ? 'email' : 'link'} />
-      </span>
-    )
-  }
-
   function MatterEditableClientCell({ matter, columnKey, displayValue }) {
     if (!matterPageFieldsEditable) {
-      return <MatterEmailTextButton email={matterClientEmail(matter)} title="Email client">{displayValue}</MatterEmailTextButton>
+      return <MatterTextDisplay>{displayValue}</MatterTextDisplay>
     }
 
     return (
@@ -7468,228 +6886,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return discoveryTypeColumnKey(type) === 'production'
   }
 
-  function normalizeDiscoveryExtractionText(rawText = '') {
-    return String(rawText || '')
-      .replace(/\r/g, '\n')
-      .replace(/Electronically\s+Served\s+\d{1,2}\/\d{1,2}\/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?/gi, '\n')
-      .replace(/\bPage\s+\d+\s+of\s+\d+\b/gi, '\n')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-  }
-
-
-  function extractExhibitANumberedRequests(rawText = '', type = '') {
-    const clean = normalizeDiscoveryExtractionText(rawText)
-    if (!clean) return []
-    const typeKey = discoveryTypeColumnKey(type)
-
-    // RFPs and interrogatories frequently contain numbered General Instructions before the
-    // actual questions. The actual requests normally start at the last Exhibit A / Please
-    // produce / Please answer section. This parser starts there and then extracts the best
-    // consecutive 1,2,3... request sequence, preserving subparts inside each request.
-    const startPatterns = []
-    if (typeKey === 'production') {
-      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Please\s+produce\s+the\s+following\s*:?)?/gi)
-      startPatterns.push(/Please\s+produce\s+the\s+following\s*:?/gi)
-    } else if (typeKey === 'interrogatories') {
-      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Interrogator(?:y|ies)\s*:?)?/gi)
-      startPatterns.push(/Interrogator(?:y|ies)\s*(?:to\s+be\s+answered\s*)?:?/gi)
-    } else if (typeKey === 'admissions') {
-      startPatterns.push(/Exhibit\s+A\s*(?:\n|\s)*(?:Requests?\s+for\s+Admissions?\s*:?)?/gi)
-      startPatterns.push(/(?:Please\s+admit|Requests?\s+for\s+Admissions?)\s*:?/gi)
-    } else {
-      return []
-    }
-
-    let bestEnd = -1
-    for (const pattern of startPatterns) {
-      let match
-      while ((match = pattern.exec(clean))) {
-        if (match.index + match[0].length > bestEnd) bestEnd = match.index + match[0].length
-      }
-    }
-    let body = bestEnd >= 0 ? clean.slice(bestEnd).trim() : clean
-
-    // If the heading was flattened oddly, prefer the text after the last literal Exhibit A.
-    if (bestEnd < 0) {
-      const exhibitMatches = [...clean.matchAll(/Exhibit\s+A\b/gi)]
-      if (exhibitMatches.length) body = clean.slice(exhibitMatches[exhibitMatches.length - 1].index + exhibitMatches[exhibitMatches.length - 1][0].length).trim()
-    }
-
-    const rawMatches = []
-    const re = /(?:^|\n|\s)([1-9]|[1-9][0-9])\.\s+(?=[A-Z(])/g
-    let m
-    while ((m = re.exec(body))) {
-      const n = Number(m[1])
-      if (!Number.isFinite(n)) continue
-      rawMatches.push({ index: m.index + (body[m.index] && /\s/.test(body[m.index]) ? 1 : 0), end: re.lastIndex, number: String(n), n })
-    }
-    if (!rawMatches.length) return []
-
-    let bestSequence = []
-    for (let i = 0; i < rawMatches.length; i += 1) {
-      if (rawMatches[i].n !== 1) continue
-      const seq = [rawMatches[i]]
-      let expected = 2
-      for (let j = i + 1; j < rawMatches.length; j += 1) {
-        if (rawMatches[j].n === expected) {
-          seq.push(rawMatches[j])
-          expected += 1
-          continue
-        }
-        if (rawMatches[j].n > expected) break
-      }
-      if (seq.length > bestSequence.length) bestSequence = seq
-    }
-    const source = bestSequence.length >= 2 ? bestSequence : rawMatches
-
-    return source.map((match, index) => {
-      const start = match.end
-      const end = index + 1 < source.length ? source[index + 1].index : body.length
-      let requestText = body.slice(start, end).trim()
-      requestText = requestText
-        .replace(/^[:.)\-\s]+/, '')
-        .replace(/\s*Electronically\s+Served\s+.*$/i, '')
-        .trim()
-      return { request_number: match.number, request_text: requestText, confidence: 0.93 }
-    }).filter((item) => item.request_text.length > 8)
-  }
-
-  function extractNumberedDisclosureRequests(rawText = '') {
-    const clean = normalizeDiscoveryExtractionText(rawText)
-    if (!clean) return []
-
-    // Requests for Disclosure are often preceded by captions, Rule 194a/Family Code intro
-    // language, certificates of service, and notices. Start at the LAST real disclosure-list
-    // heading and then parse the sequential numbered list. Do not use party names or this
-    // case's exact request text; this is structure-based.
-    const startPatterns = [
-      /Requests?\s+for\s+Disclosures?\s*\n?\s*Disclose\s+the\s+following\s*:?/gi,
-      /Disclose\s+the\s+following\s*:?/gi,
-      /Requests?\s+for\s+Disclosures?\s*:?/gi
-    ]
-    let bestStart = -1
-    let bestEnd = 0
-    for (const pattern of startPatterns) {
-      let match
-      while ((match = pattern.exec(clean))) {
-        if (match.index >= bestStart) {
-          bestStart = match.index
-          bestEnd = match.index + match[0].length
-        }
-      }
-    }
-    let body = bestStart >= 0 ? clean.slice(bestEnd).trim() : clean
-
-    // If the PDF extractor flattened the heading, cut away everything before the first
-    // consecutive numbered request sequence beginning with 1.
-    const firstOne = /(?:^|[\n\s])1\.\s+(?=[A-Z(])/g.exec(body)
-    if (firstOne && bestStart < 0) body = body.slice(firstOne.index).trim()
-
-    const rawMatches = []
-    const re = /(?:^|[\n\s])([1-9]|[1-4][0-9]|50)\.\s+(?=[A-Z(])/g
-    let m
-    while ((m = re.exec(body))) {
-      const n = Number(m[1])
-      if (!Number.isFinite(n)) continue
-      rawMatches.push({ index: m.index + (body[m.index] && /\s/.test(body[m.index]) ? 1 : 0), end: re.lastIndex, number: String(n), n })
-    }
-    if (!rawMatches.length) return []
-
-    // Find the best consecutive sequence 1,2,3... This avoids treating Rule 194a/301.052
-    // citations, dates, page numbers, or certificate numbers as discovery requests.
-    let bestSequence = []
-    for (let i = 0; i < rawMatches.length; i += 1) {
-      if (rawMatches[i].n !== 1) continue
-      const seq = [rawMatches[i]]
-      let expected = 2
-      for (let j = i + 1; j < rawMatches.length; j += 1) {
-        if (rawMatches[j].n === expected) {
-          seq.push(rawMatches[j])
-          expected += 1
-          continue
-        }
-        if (rawMatches[j].n > expected) break
-      }
-      if (seq.length > bestSequence.length) bestSequence = seq
-    }
-    const source = bestSequence.length >= 2 ? bestSequence : rawMatches
-
-    return source.map((match, index) => {
-      const start = match.end
-      const end = index + 1 < source.length ? source[index + 1].index : body.length
-      let requestText = body.slice(start, end).trim()
-      requestText = requestText
-        .replace(/^[:.)\-\s]+/, '')
-        .replace(/\s*Electronically\s+Served\s+.*$/i, '')
-        .trim()
-      return { request_number: match.number, request_text: requestText, confidence: 0.92 }
-    }).filter((item) => item.request_text.length > 8)
-  }
-
   function localExtractRespondingDiscoveryRequests(rawText = '', type = '') {
-    const original = String(rawText || '').replace(/\r/g, '\n')
-    const clean = normalizeDiscoveryExtractionText(original)
+    const clean = String(rawText || '').replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim()
     if (!clean) return []
-
-    const typeKey = discoveryTypeColumnKey(type)
-    if (typeKey === 'disclosures') {
-      const disclosureRequests = extractNumberedDisclosureRequests(clean)
-      if (disclosureRequests.length >= 2) return disclosureRequests
-    }
-    if (typeKey === 'production' || typeKey === 'interrogatories' || typeKey === 'admissions') {
-      const exhibitRequests = extractExhibitANumberedRequests(clean, type)
-      if (exhibitRequests.length >= 2) return exhibitRequests
-    }
-
     const matches = []
-    const addMatches = (re) => {
-      let m
-      while ((m = re.exec(clean))) {
-        const number = m[1] || m[2] || m[3] || ''
-        if (!number) continue
-        const before = clean.slice(Math.max(0, m.index - 24), m.index).toLowerCase()
-        if (/\b(page|p\.|section|rule|exhibit|date)\s*$/.test(before)) continue
-        matches.push({ index: m.index, number: String(number), end: re.lastIndex })
-      }
-    }
-
-    // Handles common Texas discovery captions after PDF text extraction, including:
-    // "REQUEST FOR PRODUCTION NO. 1:", "Request for Production 1", "RFP No 1",
-    // "INTERROGATORY NO. 3", and variants without punctuation after the number.
-    addMatches(/(?:^|\n|\s{2,})\s*(?:request\s+(?:for\s+)?(?:production|admission|admissions|disclosure|disclosures)|interrogatory|interrogatories|rog(?:g)?s?|rfa|rfp|rfd)\s*(?:no\.?|number|#)?\s*(\d{1,3})\b\s*[\).:\-]?/gi)
-
-    // Some forms use generic "Request No. 1" headings after the type appears in the title.
-    if (!matches.length || matches.length === 1) {
-      addMatches(/(?:^|\n|\s{2,})\s*request\s*(?:no\.?|number|#)\s*(\d{1,3})\b\s*[\).:\-]?/gi)
-    }
-
-    // Last-resort numbered paragraph parser. Keep this conservative so dates/page numbers do not become requests.
-    if (!matches.length) {
-      addMatches(/(?:^|\n)\s*(\d{1,3})\s*[\).]\s+(?=[A-Z][\s\S]{20,})/g)
-    }
-
-    const uniqueMatches = []
-    const seen = new Set()
-    matches
-      .sort((a, b) => a.index - b.index || Number(a.number) - Number(b.number))
-      .forEach((match) => {
-        const key = `${match.index}-${match.number}`
-        if (!seen.has(key)) {
-          seen.add(key)
-          uniqueMatches.push(match)
-        }
-      })
-
+    const re = /(?:^|\n)\s*(?:(?:request\s*(?:for\s*(?:production|admission|disclosure|disclosures))?)|interrogatory|rog|rfa|rfp|rfd)\s*(?:no\.?|number|#)?\s*(\d{1,3})\s*[\).:-]\s*/gi
+    let m
+    while ((m = re.exec(clean))) matches.push({ index: m.index, number: m[1], end: re.lastIndex })
     const requests = []
-    for (let index = 0; index < uniqueMatches.length; index += 1) {
-      const start = uniqueMatches[index].end
-      const end = index + 1 < uniqueMatches.length ? uniqueMatches[index + 1].index : clean.length
-      let requestText = clean.slice(start, end).trim()
-      requestText = requestText.replace(/^[:.)\-\s]+/, '').trim()
+    for (let index = 0; index < matches.length; index += 1) {
+      const start = matches[index].end
+      const end = index + 1 < matches.length ? matches[index + 1].index : clean.length
+      const requestText = clean.slice(start, end).trim()
       if (requestText.length < 10) continue
-      requests.push({ request_number: String(uniqueMatches[index].number || requests.length + 1), request_text: requestText, confidence: 0.6 })
+      requests.push({ request_number: String(matches[index].number || requests.length + 1), request_text: requestText, confidence: 0.55 })
     }
     if (requests.length) return requests
     return clean
@@ -7712,20 +6922,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (error) throw error
       const list = Array.isArray(data?.requests) ? data.requests : (Array.isArray(data?.items) ? data.items : [])
       if (!list.length) throw new Error('Extraction endpoint did not return requests.')
-      const apiItems = list
+      return list
         .map((item, index) => ({
           request_number: String(item.request_number || item.number || index + 1),
           request_text: String(item.request_text || item.text || item.request || '').trim(),
           confidence: Number(item.confidence || 0) || null
         }))
         .filter((item) => item.request_text)
-      const localItems = localExtractRespondingDiscoveryRequests(rawText, type)
-      // Prefer the browser parser when it found the actual numbered list. For Texas RFD,
-      // RFP, Roggs, and RFA documents, the API can mistake instructions/definitions for
-      // requests. The local parser starts at the true list heading, such as Exhibit A.
-      const key = discoveryTypeColumnKey(type)
-      if (localItems.length >= 2 && (localItems.length >= apiItems.length || ['disclosures', 'production', 'interrogatories', 'admissions'].includes(key))) return localItems
-      return apiItems
     } catch (error) {
       console.warn('Discovery extraction API unavailable; using browser fallback.', error)
       return localExtractRespondingDiscoveryRequests(rawText, type)
@@ -7819,92 +7022,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return lines.join('\n')
   }
 
-  function respondingDiscoveryRequestsPlainText(set) {
-    const lines = []
-    lines.push(set.title || discoveryTypeShortLabel(set.discovery_type))
-    lines.push(`Matter: ${matterLabelById(set.matter_id)}`)
-    lines.push(`Received: ${discoveryDateDisplay(set.date_received)} | Client due: ${discoveryDateDisplay(set.client_response_due)}`)
-    lines.push('')
-    ;(set.requests || []).forEach((request, index) => {
-      lines.push(`${discoveryTypeShortLabel(set.discovery_type)} ${request.request_number || index + 1}`)
-      lines.push(request.request_text || '')
-      lines.push('')
-    })
-    return lines.join('\n')
-  }
-
-  function downloadRespondingDiscoveryRequests(set) {
-    if (!set) return
-    const blob = new Blob([respondingDiscoveryRequestsPlainText(set)], { type: 'text/plain;charset=utf-8' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = `${(set.title || 'discovery-requests').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '')}-requests.txt`
-    link.click()
-    URL.revokeObjectURL(link.href)
-  }
-
-  function ordinalWord(number) {
-    const value = Number(number || 1)
-    if (value === 1) return 'First'
-    if (value === 2) return 'Second'
-    if (value === 3) return 'Third'
-    return `${value}th`
-  }
-
-  function responsePhaseLabel(phase = 'original') {
-    const text = String(phase || 'original')
-    if (text === 'original') return 'Original Response'
-    const supplemental = text.match(/^supplemental-(\d+)$/)
-    if (supplemental) return `${ordinalWord(supplemental[1])} Supplemental Response`
-    const amended = text.match(/^amended-(\d+)$/)
-    if (amended) return `${ordinalWord(amended[1])} Amended Response`
-    return text
-  }
-
-  function responsePhaseList(set) {
-    const phases = Array.isArray(set?.response_phases) && set.response_phases.length ? set.response_phases : [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: set?.created_at || new Date().toISOString() }]
-    return phases.some((phase) => phase.key === 'original') ? phases : [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: set?.created_at || new Date().toISOString() }, ...phases]
-  }
-
-  function nextResponsePhase(set, kind = 'supplemental') {
-    const phases = responsePhaseList(set).filter((phase) => phase.kind === kind)
-    const number = phases.length + 1
-    const key = `${kind}-${number}`
-    return { key, label: kind === 'amended' ? `${ordinalWord(number)} Amended Response` : `${ordinalWord(number)} Supplemental Response`, kind, number, created_at: new Date().toISOString() }
-  }
-
-  function addRespondingDiscoveryResponsePhase(setId, kind = 'supplemental') {
-    let created = null
-    setRespondingDiscoverySets((current) => (current || []).map((set) => {
-      if (String(set.id) !== String(setId)) return set
-      const phase = nextResponsePhase(set, kind)
-      created = phase
-      return { ...set, response_phases: [...responsePhaseList(set), phase], active_response_phase: phase.key }
-    }))
-    return created
-  }
-
-  function updateRespondingDiscoveryResponseVersion(setId, requestId, phaseKey, patch) {
-    setRespondingDiscoverySets((current) => (current || []).map((set) => {
-      if (String(set.id) !== String(setId)) return set
-      return {
-        ...set,
-        requests: (set.requests || []).map((request) => {
-          if (String(request.id) !== String(requestId)) return request
-          if (phaseKey === 'original') return { ...request, ...patch }
-          const versions = { ...(request.response_versions || {}) }
-          versions[phaseKey] = { ...(versions[phaseKey] || {}), ...patch }
-          return { ...request, response_versions: versions }
-        })
-      }
-    }))
-  }
-
-  function requestResponseForPhase(request = {}, phaseKey = 'original') {
-    if (phaseKey === 'original') return request
-    return { ...request, ...(request.response_versions?.[phaseKey] || {}) }
-  }
-
   function downloadRespondingDiscoveryText(set, includeAttorneyNotes = true) {
     const blob = new Blob([respondingDiscoveryPlainText(set, { includeAttorneyNotes })], { type: 'text/plain;charset=utf-8' })
     const link = document.createElement('a')
@@ -7919,39 +7036,17 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const set = (respondingDiscoverySets || []).find((item) => String(item.id) === String(setId))
       if (set) downloadRespondingDiscoveryText(set, includeAttorneyNotes)
     }
-    window.downloadRespondingDiscoveryRequests = (setId) => {
-      const set = (respondingDiscoverySets || []).find((item) => String(item.id) === String(setId))
-      if (set) downloadRespondingDiscoveryRequests(set)
-    }
-    window.updateRespondingDiscoveryResponseVersion = updateRespondingDiscoveryResponseVersion
-    window.addRespondingDiscoveryResponsePhase = addRespondingDiscoveryResponsePhase
   }
 
   function openRespondingDiscoveryResponsesWindow(set) {
     if (!set) return
-    const latestSet = (respondingDiscoverySets || []).find((item) => String(item.id) === String(set.id)) || set
-    const win = window.open('', '_blank', 'width=900,height=760,scrollbars=yes,resizable=yes')
+    const win = window.open('', '_blank', 'width=620,height=620,scrollbars=yes,resizable=yes')
     if (!win) { alert('Please allow popups to open response downloads.'); return }
-    const safeSetId = String(latestSet.id).replace(/'/g, "\\'")
-    const rfpMode = isProductionDiscoveryType(latestSet.discovery_type)
-    const filesHtml = (latestSet.requests || []).flatMap((request) => (request.uploaded_files || []).map((file) => `<div class="file"><strong>${escapeHtmlForRulesReport(file.file_name || 'Uploaded file')}</strong><br><span class="hint">${escapeHtmlForRulesReport(request.request_number || '')}: ${escapeHtmlForRulesReport(String(request.request_text || '').slice(0, 120))}</span></div>`)).join('') || '<p class="hint">No uploaded documents yet.</p>'
-    const logPreview = JSON.stringify(respondingDiscoveryPlainText(latestSet, { includeAttorneyNotes: true }).slice(0, 4000))
-    const phaseButtons = responsePhaseList(latestSet).map((phase) => `<button class="tab" onclick="showPhase('${escapeHtmlForRulesReport(phase.key)}')" id="tab_${escapeHtmlForRulesReport(phase.key)}">${escapeHtmlForRulesReport(phase.label)}</button>`).join('')
-    const responseOptionsHtml = DISCOVERY_RFP_RESPONSE_OPTIONS.map((option) => `<option value="${escapeHtmlForRulesReport(option)}">${escapeHtmlForRulesReport(option)}</option>`).join('')
-    const requestCardsHtml = (latestSet.requests || []).map((req, index) => {
-      const title = `${discoveryTypeShortLabel(latestSet.discovery_type)} ${req.request_number || index + 1}`
-      const requestBody = escapeHtmlForRulesReport(req.request_text || '').replace(/\n/g, '<br>')
-      const notes = escapeHtmlForRulesReport(req.attorney_comments || 'None').replace(/\n/g, '<br>')
-      const responseControls = req.client_must_respond === false
-        ? '<p class="hint"><b>No response required.</b></p>'
-        : (rfpMode
-          ? `<label>Response option<select data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="rfp_status"><option value="">Choose response...</option>${responseOptionsHtml}</select></label><label>Comment/questions<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_comments">${escapeHtmlForRulesReport(req.client_comments || '')}</textarea></label>`
-          : `<label>Answer<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_answer">${escapeHtmlForRulesReport(req.client_answer || '')}</textarea></label><label>Comment/questions<textarea data-request-id="${escapeHtmlForRulesReport(req.id)}" data-field="client_comments">${escapeHtmlForRulesReport(req.client_comments || '')}</textarea></label>`)
-      return `<div class="req" data-req-card="${escapeHtmlForRulesReport(req.id)}"><h3>${escapeHtmlForRulesReport(title)}</h3><p>${requestBody}</p><p><b>Attorney comments:</b><br>${notes}</p>${responseControls}</div>`
-    }).join('') || '<p class="hint">No requests were found in this discovery set. Delete this set and re-extract the document.</p>'
+    const safeSetId = String(set.id).replace(/'/g, "\\'")
+    const filesHtml = (set.requests || []).flatMap((request) => (request.uploaded_files || []).map((file) => `<div class="file"><strong>${escapeHtmlForRulesReport(file.file_name || 'Uploaded file')}</strong><br><span class="hint">${escapeHtmlForRulesReport(request.request_number || '')}: ${escapeHtmlForRulesReport(String(request.request_text || '').slice(0, 120))}</span></div>`)).join('') || '<p class="hint">No uploaded documents yet.</p>'
+    const logPreview = JSON.stringify(respondingDiscoveryPlainText(set, { includeAttorneyNotes: true }).slice(0, 4000))
     win.document.open()
-    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}label{display:block;font-weight:700;margin:8px 0}h3{margin-bottom:6px}.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}
-  </style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(latestSet.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0">Original Response</div><div id="requestHost">${requestCardsHtml}</div><script>let active='original';function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=tab?tab.textContent:p;document.querySelectorAll('[data-field]').forEach(el=>{el.value='';});}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key);}}}function saveField(el){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion){const patch={};patch[el.dataset.field]=el.value;window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',el.dataset.requestId,active,patch);}}document.querySelectorAll('[data-field]').forEach(el=>{el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>saveField(el));});showPhase('original');</script></body></html>`)
+    win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}button{display:block;width:100%;text-align:left;border:1px solid #d8e2ef;border-radius:10px;background:white;padding:12px;margin:10px 0;font-weight:700;cursor:pointer}.hint{color:#64748b}.file{border:1px solid #e2e8f0;border-radius:8px;padding:8px;margin:6px 0}</style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(set.title || '')}</p><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></body></html>`)
     win.document.close()
   }
 
@@ -7983,8 +7078,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         document_id: respondingDiscoveryForm.document_id || '',
         client_instructions: respondingDiscoveryForm.client_instructions || defaultDiscoveryInstructionsForType(setType),
         created_at: new Date().toISOString(),
-        response_phases: [{ key: 'original', label: 'Original Response', kind: 'original', number: 0, created_at: new Date().toISOString() }],
-        active_response_phase: 'original',
         requests
       }
       setRespondingDiscoverySets((current) => [nextSet, ...(current || [])])
@@ -8054,20 +7147,16 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const visibleMatterDocs = documents.filter((doc) => !effectiveMatterId || String(doc.matter_id) === String(effectiveMatterId))
     const summary = respondingDiscoverySummary(effectiveMatterId)
     const columnCell = (sets) => sets.length ? (
-      <div style={{ display: 'grid', gap: 6 }}>
+      <div style={{ display: 'grid', gap: 4 }}>
         {sets.slice(0, 4).map((set) => (
-          <div key={set.id} style={{ display: 'grid', gap: 3, justifyItems: 'center' }}>
-            <button
-              type="button"
-              onClick={() => { setRespondingDiscoverySelectedSetId(set.id); setRespondingDiscoveryMatterId(set.matter_id || '') }}
-              style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer' }}
-            >
-              {set.title || discoveryTypeShortLabel(set.discovery_type)}
-            </button>
-            <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(set)} style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Respond to Discovery</button>
-            <button type="button" onClick={() => downloadRespondingDiscoveryRequests(set)} style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Download discovery requests</button>
-            <button type="button" onClick={() => deleteRespondingDiscoverySet(set.id)} style={{ border: '0', background: 'transparent', color: '#991b1b', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer', fontSize: 12 }}>Delete</button>
-          </div>
+          <button
+            key={set.id}
+            type="button"
+            onClick={() => { setRespondingDiscoverySelectedSetId(set.id); setRespondingDiscoveryMatterId(set.matter_id || '') }}
+            style={{ border: '0', background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            {set.title || discoveryTypeShortLabel(set.discovery_type)}
+          </button>
         ))}
       </div>
     ) : <span style={{ color: '#94a3b8' }}>—</span>
@@ -8196,8 +7285,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                     <textarea value={activeSet.client_instructions || ''} onChange={(e) => updateRespondingDiscoverySet(activeSet.id, { client_instructions: e.target.value })} style={{ width: '100%', minHeight: 54 }} />
                   </LabeledField>
                   <button type="button" onClick={() => addRespondingDiscoveryRequest(activeSet.id)}>+ Add request</button>
-                  <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(activeSet)} style={{ marginLeft: 8 }}>Respond / Downloads</button>
-                  <button type="button" onClick={() => downloadRespondingDiscoveryRequests(activeSet)} style={{ marginLeft: 8 }}>Download discovery requests</button>
+                  <button type="button" onClick={() => openRespondingDiscoveryResponsesWindow(activeSet)} style={{ marginLeft: 8 }}>Responses / Downloads</button>
                   <button type="button" onClick={() => downloadRespondingDiscoveryText(activeSet, true)} style={{ marginLeft: 8 }}>Download with notes</button>
                   <button type="button" onClick={() => downloadRespondingDiscoveryText(activeSet, false)} style={{ marginLeft: 8 }}>Download no notes</button>
                   <button type="button" onClick={() => deleteRespondingDiscoverySet(activeSet.id)} style={{ marginLeft: 8, color: '#991b1b' }}>Delete set</button>
@@ -9325,13 +8413,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         parent_id: parentId,
         notes: workflowForm.notes || '',
         color: workflowForm.color || '#4c6783',
-        link_label: (workflowForm.link_label || '').trim(),
-        link_url: (workflowForm.link_url || '').trim(),
         sort_order: current.filter((item) => (item.parent_id || '') === parentId).length + 1,
         created_at: new Date().toISOString()
       }
     ])
-    setWorkflowForm({ name: '', parent_id: '', notes: '', color: '#4c6783', link_label: '', link_url: '' })
+    setWorkflowForm({ name: '', parent_id: '', notes: '', color: '#4c6783' })
     if (parentId) setCollapsedWorkflowIds((current) => current.filter((id) => id !== parentId))
   }
 
@@ -9348,8 +8434,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         parent_id: parentId,
         notes: '',
         color: parentItem.color || '#4c6783',
-        link_label: '',
-        link_url: '',
         sort_order: current.filter((item) => (item.parent_id || '') === parentId).length + 1,
         created_at: new Date().toISOString()
       }
@@ -9444,88 +8528,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setWorkflowDailyChecks((current) => ({ ...current, [dayKey]: {} }))
   }
 
-  function openMioPageInNewTab(pageName) {
-    const base = `${window.location.origin}${window.location.pathname}`
-    window.open(`${base}#${pageName}`, '_blank', 'noopener,noreferrer')
-  }
-
-  function openWorkflowCustomLink(linkUrl = '') {
-    const trimmed = String(linkUrl || '').trim()
-    if (!trimmed) return
-    if (/^https?:\/\//i.test(trimmed) || /^mailto:/i.test(trimmed) || /^tel:/i.test(trimmed)) {
-      window.open(trimmed, '_blank', 'noopener,noreferrer')
-      return
-    }
-    if (trimmed.startsWith('#')) {
-      const base = `${window.location.origin}${window.location.pathname}`
-      window.open(`${base}${trimmed}`, '_blank', 'noopener,noreferrer')
-      return
-    }
-    if (/^[a-z0-9_-]+$/i.test(trimmed) && !trimmed.includes(' ')) {
-      openMioPageInNewTab(trimmed)
-      return
-    }
-    if (trimmed.startsWith('/')) {
-      window.open(`${window.location.origin}${trimmed}`, '_blank', 'noopener,noreferrer')
-      return
-    }
-    window.open(trimmed, '_blank', 'noopener,noreferrer')
-  }
-
-  function workflowLinkForItem(item = {}) {
-    if ((item?.link_url || '').trim()) return { label: (item?.link_label || '').trim() || 'Open Link', url: (item.link_url || '').trim(), custom: true }
-    const text = `${workflowItemPath(item.id) || ''} ${item.name || ''}`.toLowerCase()
-    if (text.includes('matter timeline')) return { label: 'Open Matter Timelines', page: 'matter_timelines' }
-    if (text.includes('email')) return { label: 'Open Email Tab', page: 'service_inbox' }
-    if (text.includes('tomorrow')) return { label: 'Open Calendar', page: 'calendar' }
-    if (text.includes('folder')) return { label: 'Open Calendar', page: 'calendar' }
-    if (text.includes('served')) return { label: 'Open Matters', page: 'matters' }
-    if (text.includes('need to set')) return { label: 'Open Need to Set', page: 'checklist' }
-    return null
-  }
-
-  function openWorkflowItemLink(item = {}) {
-    const link = workflowLinkForItem(item)
-    if (!link) return
-    if (link.custom && link.url) {
-      openWorkflowCustomLink(link.url)
-      return
-    }
-    if (link.page) {
-      openMioPageInNewTab(link.page)
-    }
-  }
-
-  function currentWorkflowViewUrl() {
-    return window.location.href
-  }
-
-  function saveCurrentViewToWorkflowItem(itemId, urlOverride = '') {
-    const targetId = String(itemId || '').trim()
-    if (!targetId) {
-      alert('Select a workflow row first.')
-      return
-    }
-    const urlToSave = String(urlOverride || currentWorkflowViewUrl() || '').trim()
-    if (!urlToSave) {
-      alert('There is no URL to save.')
-      return
-    }
-    setWorkflowItems((current) => current.map((item) => {
-      if (item.id !== targetId) return item
-      return {
-        ...item,
-        link_label: item.link_label || `Open ${item.name || 'Link'}`,
-        link_url: urlToSave
-      }
-    }))
-    alert('Saved this URL to the selected workflow row.')
-  }
-
-  function saveWorkflowItemCurrentUrl(itemId) {
-    saveCurrentViewToWorkflowItem(itemId, window.location.href)
-  }
-
   function openDocumentEditWindow(doc) {
     if (!doc) return
     setEditingDocumentId(doc.id)
@@ -9595,31 +8597,29 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setSelectedDocumentIds([])
   }
 
-  async function downloadDocument(doc) {
-    const dataUrl = await loadDocumentFileDataUrl(doc)
-    if (!dataUrl) {
-      alert('No file is attached to this document. Re-upload it once so Mio can save the file to Supabase Storage.')
+  function downloadDocument(doc) {
+    if (!doc.file_data) {
+      alert('No file is attached to this document.')
       return
     }
     const link = document.createElement('a')
-    link.href = dataUrl
-    link.download = doc.file_name || doc.original_file_name || doc.name || 'document'
+    link.href = doc.file_data
+    link.download = doc.file_name || doc.name || 'document'
     link.click()
   }
 
-  async function viewDocument(doc) {
-    const dataUrl = await loadDocumentFileDataUrl(doc)
-    if (!dataUrl) {
-      alert('No file is attached to this document. Re-upload it once so Mio can save the file to Supabase Storage.')
+  function viewDocument(doc) {
+    if (!doc.file_data) {
+      alert('No file is attached to this document.')
       return
     }
     const docWindow = window.open('', '_blank')
     if (!docWindow) {
-      window.open(dataUrl, '_blank')
+      window.open(doc.file_data, '_blank')
       return
     }
     const safeTitle = String(doc.name || doc.file_name || 'Document').replace(/[<>]/g, '')
-    docWindow.document.write(`<!doctype html><html><head><title>${safeTitle}</title></head><body style="margin:0"><iframe src="${dataUrl}" title="${safeTitle}" style="border:0;width:100vw;height:100vh"></iframe></body></html>`)
+    docWindow.document.write(`<!doctype html><html><head><title>${safeTitle}</title></head><body style="margin:0"><iframe src="${doc.file_data}" title="${safeTitle}" style="border:0;width:100vw;height:100vh"></iframe></body></html>`)
     docWindow.document.close()
   }
 
@@ -9638,13 +8638,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert('Select the matter the document is being added to.')
       return
     }
-    const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const tempFilePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
-    const storedFilePayload = documentForm.file ? await uploadMioDocumentFile(documentForm.file, docId, matterIdForDocument) : {}
+    const filePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
     setDocuments([
       ...documents,
       {
-        id: docId,
+        id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         matter_id: matterIdForDocument,
         name: documentForm.name.trim(),
         date: documentForm.date || '',
@@ -9654,8 +8652,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         document_field_values: documentForm.document_field_values || {},
         upload_date: dateToInputValue(new Date()),
         ...emptyDocumentAiReview,
-        ...tempFilePayload,
-        ...storedFilePayload
+        ...filePayload
       }
     ])
     setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
@@ -9675,7 +8672,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       tag_ids: tagAndParentIds(defaultTagIds),
       document_field_values: {},
       ...emptyDocumentAiReview,
-      file,
       ...(await readFileAsDataUrl(file))
     })))
     setBulkDocumentRows([...bulkDocumentRows, ...prepared])
@@ -9701,27 +8697,21 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setBulkDocumentRows(bulkDocumentRows.filter((row) => !row.selected))
   }
 
-  async function commitBulkRows(rowsToCommit = []) {
+  function commitBulkRows(rowsToCommit = []) {
     const rows = rowsToCommit.filter((row) => row.name.trim() && row.matter_id)
     if (rows.length === 0) {
       alert('Choose at least one bulk document row with a matter and a name.')
       return false
     }
     const committedIds = new Set(rows.map((row) => row.id))
-    const savedRows = []
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index]
-      const docId = `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
-      const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, row.matter_id) : {}
-      const { file, ...rowWithoutFile } = row
-      savedRows.push(withEmptyDocumentAiReview({
-        ...rowWithoutFile,
-        ...storedFilePayload,
-        id: docId,
+    setDocuments([
+      ...documents,
+      ...rows.map((row, index) => withEmptyDocumentAiReview({
+        ...row,
+        id: `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
         upload_date: dateToInputValue(new Date())
       }))
-    }
-    setDocuments([...documents, ...savedRows])
+    ])
     setBulkDocumentRows(bulkDocumentRows.filter((row) => !committedIds.has(row.id)))
     return true
   }
@@ -9741,46 +8731,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   function updateDocumentCell(docId, field, value) {
     setDocuments(documents.map((doc) => doc.id === docId ? { ...doc, [field]: value } : doc))
-  }
-
-  function documentSortValue(doc, key) {
-    if (key === 'matter') return matterLabel(doc.matter_id)
-    if (key === 'document') return doc.name || doc.file_name || ''
-    if (key === 'upload_date') return doc.upload_date || doc.date || doc.doc_date || doc.created_at || ''
-    if (key === 'description') return doc.description || ''
-    if (key === 'tags') return (doc.tag_ids || []).map(tagFullName).join(' ')
-    if (key === 'ai') return aiStatusLabel(doc.ai_status)
-    if (key === 'file') return doc.file_name || doc.original_file_name || ''
-    return doc[key] || ''
-  }
-
-  function sortDocumentsForDisplay(rows = []) {
-    const key = documentSort?.key || 'upload_date'
-    const direction = documentSort?.direction === 'asc' ? 1 : -1
-    return [...rows].sort((a, b) => {
-      const av = documentSortValue(a, key)
-      const bv = documentSortValue(b, key)
-      const ad = key.includes('date') ? new Date(av || 0).getTime() : NaN
-      const bd = key.includes('date') ? new Date(bv || 0).getTime() : NaN
-      if (!Number.isNaN(ad) || !Number.isNaN(bd)) return ((ad || 0) - (bd || 0)) * direction
-      return String(av || '').localeCompare(String(bv || ''), undefined, { numeric: true, sensitivity: 'base' }) * direction
-    })
-  }
-
-  function toggleDocumentSort(key) {
-    setDocumentSort((current) => ({
-      key,
-      direction: current?.key === key && current?.direction === 'asc' ? 'desc' : 'asc'
-    }))
-  }
-
-  function renderDocumentSortHeader(label, key) {
-    const active = documentSort?.key === key
-    return (
-      <button type="button" onClick={() => toggleDocumentSort(key)} style={{ border: 0, background: 'transparent', padding: 0, fontWeight: 'bold', cursor: 'pointer' }}>
-        {label}{active ? (documentSort.direction === 'asc' ? ' ▲' : ' ▼') : ' ↕'}
-      </button>
-    )
   }
 
   function filteredDocuments(matterId = '') {
@@ -11122,7 +10072,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
 
   function renderDocumentRepository({ matterId = '', showBulkReview = false } = {}) {
-    const shownDocuments = sortDocumentsForDisplay(filteredDocuments(matterId))
+    const shownDocuments = filteredDocuments(matterId)
     const shownDocumentIds = shownDocuments.map((doc) => doc.id)
     const allShownDocumentsSelected = shownDocumentIds.length > 0 && shownDocumentIds.every((id) => selectedDocumentIds.includes(id))
     const selectAllShownDocuments = () => setSelectedDocumentIds(Array.from(new Set([...selectedDocumentIds, ...shownDocumentIds])))
@@ -11180,15 +10130,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <summary><strong>Filters</strong></summary>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
             {!matterId && (
-              <div style={{ minWidth: 320 }}>
-                <SmartMatterSelect
-                  value={documentFilters.matter_id === 'all' ? '' : documentFilters.matter_id}
-                  onChange={(value) => setDocumentFilters({ ...documentFilters, matter_id: value || 'all' })}
-                  placeholder="Type to filter matters"
-                  style={{ width: '100%' }}
-                />
-                <button type="button" onClick={() => setDocumentFilters({ ...documentFilters, matter_id: 'all' })} style={{ marginTop: 4, padding: '4px 8px', fontSize: 12 }}>All matters</button>
-              </div>
+              <select value={documentFilters.matter_id} onChange={(e) => setDocumentFilters({ ...documentFilters, matter_id: e.target.value })}>
+                <option value="all">All matters</option>
+                {matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
+              </select>
             )}
             <input placeholder="Name" value={documentFilters.name} onChange={(e) => setDocumentFilters({ ...documentFilters, name: e.target.value })} />
             <input placeholder="Description" value={documentFilters.description} onChange={(e) => setDocumentFilters({ ...documentFilters, description: e.target.value })} />
@@ -11274,7 +10219,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
         <div style={{ overflow: 'auto', marginTop: 16, border: '1px solid #d5dce3' }}>
           <table cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse', minWidth: matterId ? 1050 : 1250 }}>
-            <thead><tr><th><label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={allShownDocumentsSelected} onChange={toggleAllShownDocuments} /> Pick</label></th>{!matterId && <th>{renderDocumentSortHeader('Matter', 'matter')}</th>}<th>{renderDocumentSortHeader('Document', 'document')}</th><th>{renderDocumentSortHeader('Upload Date', 'upload_date')}</th><th>{renderDocumentSortHeader('Description', 'description')}</th><th>{renderDocumentSortHeader('Tags', 'tags')}</th><th>{renderDocumentSortHeader('AI', 'ai')}</th><th>{renderDocumentSortHeader('File', 'file')}</th></tr></thead>
+            <thead><tr><th><label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={allShownDocumentsSelected} onChange={toggleAllShownDocuments} /> Pick</label></th>{!matterId && <th>Matter</th>}<th>Document</th><th>Upload Date</th><th>Description</th><th>Tags</th><th>AI</th><th>File</th></tr></thead>
             <tbody>
               {shownDocuments.map((doc) => (
                 <Fragment key={doc.id}>
@@ -11477,17 +10422,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const normalizedSelectedIds = tagAndParentIds(selectedIds || [])
     const [open, setOpen] = useState(false)
     const [expandedTagIds, setExpandedTagIds] = useState([])
-    const [tagSearch, setTagSearch] = useState('')
     const hoverTimersRef = useRef({})
     const pickerRef = useRef(null)
 
-    const indentedPickerTags = allTagsIndented()
-    const pickerBaseTags = indentedPickerTags.length ? indentedPickerTags : tags.map((tag) => ({ ...tag, level: 0 }))
-    const matterFilteredPickerTags = pickerBaseTags.filter((tag) => isTagAvailableForMatter(tag.id, matterId))
-    const visiblePickerTags = matterFilteredPickerTags.length ? matterFilteredPickerTags : pickerBaseTags
-    const tagSearchText = String(tagSearch || '').toLowerCase().trim()
-    const searchedTagIds = new Set(!tagSearchText ? visiblePickerTags.map((tag) => tag.id) : visiblePickerTags.filter((tag) => `${tag.name || ''} ${tagFullName(tag.id)}`.toLowerCase().includes(tagSearchText)).flatMap((tag) => tagAndParentIds([tag.id])))
-    const availableTagIds = new Set(visiblePickerTags.filter((tag) => searchedTagIds.has(tag.id)).map((tag) => tag.id))
+    const availableTagIds = new Set(allTagsIndented().filter((tag) => isTagAvailableForMatter(tag.id, matterId)).map((tag) => tag.id))
 
     useEffect(() => {
       const ancestorIds = new Set()
@@ -11522,7 +10460,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const directChildren = childTags(parentId).filter((tag) => availableTagIds.has(tag.id))
       if (parentId) return directChildren
       const directIds = new Set(directChildren.map((tag) => tag.id))
-      const orphanedVisibleTags = pickerBaseTags
+      const orphanedVisibleTags = allTagsIndented()
         .filter((tag) => availableTagIds.has(tag.id) && (tag.parent_id || '') && !availableTagIds.has(tag.parent_id) && !directIds.has(tag.id))
         .sort((a, b) => String(tagFullName(a.id) || a.name || '').localeCompare(String(tagFullName(b.id) || b.name || '')))
       return [...directChildren, ...orphanedVisibleTags]
@@ -11610,9 +10548,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
         {open && (
           <div style={{ position: 'absolute', zIndex: 50, top: 'calc(100% + 4px)', left: 0, width: 340, maxHeight: 360, overflow: 'auto', padding: 8, border: '1px solid #cbd5e1', borderRadius: 10, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)' }}>
-            <input value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} placeholder="Predictive search tags" style={{ width: '100%', marginBottom: 8, padding: '6px 8px' }} />
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Hover over a parent tag for 0.5 seconds, or click ▸, to show child tags.</div>
-            {childrenForPicker('').length ? renderTagBranch('') : <div style={{ color: '#666' }}>{tags.length ? 'No matching tags for this search.' : 'No tags available.'}</div>}
+            {childrenForPicker('').length ? renderTagBranch('') : <div style={{ color: '#666' }}>No tags available.</div>}
             <div style={{ marginTop: 8, borderTop: '1px solid #e5e7eb', paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
               <button type="button" onClick={() => setOpen(false)}>Done</button>
               {normalizedSelectedIds.length > 0 && <button type="button" onClick={() => selectedTerminalTagIds(normalizedSelectedIds).forEach((tagId) => onToggle(tagId))}>Clear</button>}
@@ -13445,20 +12382,13 @@ async function updateTeamCell(memberId, field, value) {
   ]
 
   function shownMatterColumns() {
-    return matterPageColumns.filter((column) => column.key === 'action' || visibleMatterColumns[column.key])
+    return matterPageColumns.filter((column) => visibleMatterColumns[column.key])
   }
 
   function toggleMatterColumn(columnKey) {
-    if (columnKey === 'action') {
-      const next = { ...visibleMatterColumns, action: true }
-      setVisibleMatterColumns(next)
-      saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
-      return
-    }
     const next = {
       ...visibleMatterColumns,
-      [columnKey]: !visibleMatterColumns[columnKey],
-      action: true
+      [columnKey]: !visibleMatterColumns[columnKey]
     }
     setVisibleMatterColumns(next)
     saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
@@ -13659,7 +12589,7 @@ async function updateTeamCell(memberId, field, value) {
   function MatterPageHeaderRow() {
     return (
       <tr>
-        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Link</th>
+        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 92 }}>Time</th>
         {shownMatterColumns().map((column) => (
           <th
             key={column.key}
@@ -13737,8 +12667,7 @@ async function updateTeamCell(memberId, field, value) {
     return (
       <>
         <td style={{ ...matterDataCellStyle('action'), textAlign: 'center', minWidth: 116 }}>
-          <MatterQuickLinkIcons matter={matter} />
-          <div style={{ marginTop: 4 }}><MatterBillingButtons matter={matter} /></div>
+          <MatterBillingButtons matter={matter} />
           <div style={{ marginTop: 5 }}>
             <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} disabled={!showMatterStepsOnMatterPage || matterStepsForMatter(matter).length === 0}>
               {matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Show steps'}
@@ -13759,11 +12688,7 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.cause_number && (
           <td style={matterDataCellStyle('cause_number')}>
-            {matterPageFieldsEditable ? (
-              <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
-            ) : (
-              <MatterLinkTextHover matter={matter}>{matter.cause_number}</MatterLinkTextHover>
-            )}
+            <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
           </td>
         )}
 
@@ -13856,20 +12781,14 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.court && (
           <td style={matterDataCellStyle('court')}>
-            {matterPageFieldsEditable ? (
-              <MatterEditableSelectCell matter={matter} field="court_id" columnKey="court" displayValue={matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}>
-                <option value="">No court</option>
-                {courts.map((court) => (
-                  <option key={court.id} value={court.id}>
-                    {court.court_name} {court.county ? `- ${court.county}` : ''}
-                  </option>
-                ))}
-              </MatterEditableSelectCell>
-            ) : (
-              <MatterLinkTextHover matter={matter} option="court_email">
-                {matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}
-              </MatterLinkTextHover>
-            )}
+            <MatterEditableSelectCell matter={matter} field="court_id" columnKey="court" displayValue={matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}>
+              <option value="">No court</option>
+              {courts.map((court) => (
+                <option key={court.id} value={court.id}>
+                  {court.court_name} {court.county ? `- ${court.county}` : ''}
+                </option>
+              ))}
+            </MatterEditableSelectCell>
           </td>
         )}
 
@@ -13892,31 +12811,23 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.opposing_party_1 && (
           <td style={matterDataCellStyle('opposing_party_1')}>
-            {matterPageFieldsEditable ? (
-              <MatterExtraEditableTextCell
-                matter={matter}
-                columnKey="opposing_party_1"
-                value={matterPartyOne(matter.id).name}
-                onSave={(value) => updateMatterPartyOneField(matter.id, 'name', value)}
-              />
-            ) : (
-              <MatterEmailTextButton email={matterOpposingPartyEmail(matter)} title="Email opposing party">{matterPartyOne(matter.id).name}</MatterEmailTextButton>
-            )}
+            <MatterExtraEditableTextCell
+              matter={matter}
+              columnKey="opposing_party_1"
+              value={matterPartyOne(matter.id).name}
+              onSave={(value) => updateMatterPartyOneField(matter.id, 'name', value)}
+            />
           </td>
         )}
 
         {visibleMatterColumns.opposing_party_1_counsel && (
           <td style={matterDataCellStyle('opposing_party_1_counsel')}>
-            {matterPageFieldsEditable ? (
-              <MatterExtraEditableTextCell
-                matter={matter}
-                columnKey="opposing_party_1_counsel"
-                value={matterPartyOneCounsel(matter.id).name}
-                onSave={(value) => updateMatterPartyOneCounselField(matter.id, 'name', value)}
-              />
-            ) : (
-              <MatterEmailTextButton email={matterOpposingCounselEmail(matter)} title="Email opposing counsel">{matterPartyOneCounsel(matter.id).name}</MatterEmailTextButton>
-            )}
+            <MatterExtraEditableTextCell
+              matter={matter}
+              columnKey="opposing_party_1_counsel"
+              value={matterPartyOneCounsel(matter.id).name}
+              onSave={(value) => updateMatterPartyOneCounselField(matter.id, 'name', value)}
+            />
           </td>
         )}
 
@@ -13937,12 +12848,14 @@ async function updateTeamCell(memberId, field, value) {
           </td>
         )}
 
-        <td style={matterDataCellStyle('action')}>
-          <button onClick={() => openMatterTaskTemplates(matter)}>Matter Dashboard</button>
-          <button onClick={() => openRequestedReliefForMatter(matter.id)} style={{ marginLeft: 8 }}>Requested Relief</button>
-          <button onClick={() => editMatter(matter)} style={{ marginLeft: 8 }}>Edit Matter</button>
-          <button onClick={() => deleteRow('matters', matter.id, fetchMatters, 'matter')} style={{ marginLeft: 8 }}>Delete</button>
-        </td>
+        {visibleMatterColumns.action && (
+          <td style={matterDataCellStyle('action')}>
+            <button onClick={() => openMatterTaskTemplates(matter)}>Matter Dashboard</button>
+            <button onClick={() => openRequestedReliefForMatter(matter.id)} style={{ marginLeft: 8 }}>Requested Relief</button>
+            <button onClick={() => editMatter(matter)} style={{ marginLeft: 8 }}>Edit Matter</button>
+            <button onClick={() => deleteRow('matters', matter.id, fetchMatters, 'matter')} style={{ marginLeft: 8 }}>Delete</button>
+          </td>
+        )}
       </>
     )
   }
@@ -14164,10 +13077,7 @@ async function updateTeamCell(memberId, field, value) {
                   <div style={{ marginTop: 8, fontWeight: 'normal', color: completed ? '#94a3b8' : '#334155' }}>
                     <div><strong>For:</strong> {step.parent_name} / {step.default_pages?.client_status || 'Any party type'}</div>
                     {completion?.completed_at && <div><strong>Completed:</strong> {new Date(completion.completed_at).toLocaleString()}</div>}
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <MatterQuickLinkIcons matter={matter} />
-                      <MatterBillingButtons matter={matter} stepName={step.name} />
-                    </div>
+                    <div style={{ marginTop: 6 }}><MatterBillingButtons matter={matter} stepName={step.name} /></div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
                       <button type="button" onClick={() => openStepDetail({ type: 'matter', matter, matterId: matter.id, step, stepName: step.name, billingStepName: step.name, taskId: `matter-step-${matter.id}-${step.id}` })}>Open step</button>
                       <button type="button" onClick={() => openSettingWorkspace({ type: 'matter', matter, matterId: matter.id, step, stepName: step.name, billingStepName: step.name, taskId: `matter-step-${matter.id}-${step.id}` })}>Open task</button>
@@ -14275,8 +13185,7 @@ async function updateTeamCell(memberId, field, value) {
                   <div style={{ marginTop: 8, fontWeight: 'normal', color: completed ? '#94a3b8' : '#334155' }}>
                     <div><strong>For:</strong> {step.parent_name}</div>
                     {completion?.completed_at && <div><strong>Completed:</strong> {new Date(completion.completed_at).toLocaleString()}</div>}
-                    <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {stepContext.matter && <MatterQuickLinkIcons matter={stepContext.matter} />}
+                    <div style={{ marginTop: 6 }}>
                       <button type="button" onClick={() => openChecklistStepBilling(event, step.name)} title={`Add time for ${step.name}`} style={{ border: '1px solid #86efac', borderRadius: 999, padding: '3px 8px', background: '#f0fdf4' }}>◴ Time</button>
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
@@ -14386,177 +13295,6 @@ async function updateTeamCell(memberId, field, value) {
   const matterStatusSections = showUnpopulatedMatterStatuses
     ? allMatterStatusSections
     : allMatterStatusSections.filter((section) => section.matters.length > 0)
-
-
-  const withdrawalMatters = sortRows(
-    matters.filter((matter) => {
-      const statusText = [matter.case_status, matter.matter_status, matter.notes].filter(Boolean).join(' ').toLowerCase()
-      return statusText.includes('withdraw') || statusText.includes('withdrawing')
-    }),
-    mattersSort
-  )
-
-  const withdrawalStatusCounts = withdrawalMatters.reduce((acc, matter) => {
-    const key = matter.matter_status || matter.case_status || 'No status'
-    acc[key] = (acc[key] || 0) + 1
-    return acc
-  }, {})
-
-  function markMatterForWithdrawal(matterId) {
-    updateMatterCell(matterId, 'case_status', 'Open- Withdrawing')
-  }
-
-  function addWithdrawalStep() {
-    const name = withdrawalStepDraft.trim()
-    if (!name) return
-    setWithdrawalSteps((current) => [...current, { id: `withdraw-step-${Date.now()}-${Math.random().toString(36).slice(2)}`, name }])
-    setWithdrawalStepDraft('')
-  }
-
-  function updateWithdrawalStep(stepId, patch) {
-    setWithdrawalSteps((current) => current.map((step) => step.id === stepId ? { ...step, ...patch } : step))
-  }
-
-  function deleteWithdrawalStep(stepId) {
-    if (!confirm('Delete this withdrawal step from the checklist?')) return
-    setWithdrawalSteps((current) => current.filter((step) => step.id !== stepId))
-    setWithdrawalStepChecks((current) => {
-      const next = { ...current }
-      Object.keys(next).forEach((matterId) => {
-        if (next[matterId]?.[stepId]) next[matterId] = { ...next[matterId], [stepId]: false }
-      })
-      return next
-    })
-  }
-
-  function toggleWithdrawalStep(matterId, stepId) {
-    setWithdrawalStepChecks((current) => {
-      const matterMap = current[matterId] || {}
-      return { ...current, [matterId]: { ...matterMap, [stepId]: !matterMap[stepId] } }
-    })
-  }
-
-  function withdrawalProgress(matterId) {
-    const checks = withdrawalStepChecks[matterId] || {}
-    const total = withdrawalSteps.length
-    const done = withdrawalSteps.filter((step) => checks[step.id]).length
-    return { done, total, pct: total ? Math.round((done / total) * 100) : 0 }
-  }
-
-  function renderWithdrawalsPage() {
-    const maxWithdrawalCount = Math.max(1, ...Object.values(withdrawalStatusCounts))
-    return (
-      <>
-        <h1>Withdrawals</h1>
-        <p style={{ marginTop: -8, color: '#64748b' }}>Cases marked for withdrawal. A matter appears here when its case status, matter status, or notes include “withdraw” or “withdrawing”.</p>
-
-        <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
-          <h2 style={{ marginTop: 0 }}>Withdrawal Graph</h2>
-          {Object.keys(withdrawalStatusCounts).length === 0 ? (
-            <div style={{ color: '#64748b' }}>No matters are currently marked for withdrawal.</div>
-          ) : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {Object.entries(withdrawalStatusCounts).map(([status, count]) => (
-                <div key={status} style={{ display: 'grid', gridTemplateColumns: '220px 1fr 40px', alignItems: 'center', gap: 8 }}>
-                  <div style={{ fontWeight: 700 }}>{status}</div>
-                  <div style={{ background: '#e2e8f0', borderRadius: 999, height: 18, overflow: 'hidden' }}>
-                    <div style={{ width: `${Math.max(8, (count / maxWithdrawalCount) * 100)}%`, height: '100%', background: '#94a3b8' }} />
-                  </div>
-                  <div>{count}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <details open style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: 'white', marginBottom: 14 }}>
-          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Withdrawal Step Settings</summary>
-          <p style={{ color: '#64748b', marginBottom: 8 }}>These steps appear on every withdrawing matter. Completed steps turn grey on the matter row.</p>
-          <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
-            {withdrawalSteps.map((step, index) => (
-              <div key={step.id} style={{ display: 'grid', gridTemplateColumns: '32px 1fr auto', gap: 8, alignItems: 'center' }}>
-                <strong>{index + 1}.</strong>
-                <input value={step.name || ''} onChange={(e) => updateWithdrawalStep(step.id, { name: e.target.value })} />
-                <button type="button" onClick={() => deleteWithdrawalStep(step.id)}>Delete</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input value={withdrawalStepDraft} onChange={(e) => setWithdrawalStepDraft(e.target.value)} placeholder="Add withdrawal step" style={{ minWidth: 280 }} />
-            <button type="button" onClick={addWithdrawalStep}>Add Step</button>
-          </div>
-        </details>
-
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" onClick={() => setPage('matters')}>Back to Matters</button>
-          <span style={{ color: '#64748b' }}>{withdrawalMatters.length} matter{withdrawalMatters.length === 1 ? '' : 's'} marked for withdrawal</span>
-        </div>
-
-        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', width: '100%', background: 'white' }}>
-          <thead>
-            <tr style={{ background: '#f1f5f9' }}>
-              <th>Link</th>
-              <th>Matter</th>
-              <th>Client</th>
-              <th>Cause #</th>
-              <th>Status</th>
-              <th>Withdrawal Steps</th>
-              <th>Court</th>
-              <th>Opposing Counsel</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {withdrawalMatters.length === 0 && (
-              <tr>
-                <td colSpan="9" style={{ textAlign: 'center', color: '#64748b', padding: 14 }}>No withdrawal matters yet.</td>
-              </tr>
-            )}
-            {withdrawalMatters.map((matter) => {
-              const clientName = `${matter.clients?.first_name || ''} ${matter.clients?.last_name || ''}`.trim()
-              const counsel = matterPartyOneCounsel(matter.id)
-              const progress = withdrawalProgress(matter.id)
-              const checks = withdrawalStepChecks[matter.id] || {}
-              return (
-                <tr key={matter.id}>
-                  <td style={{ textAlign: 'center' }}><MatterQuickLinkIcons matter={matter} /></td>
-                  <td>{matter.name || ''}</td>
-                  <td>{clientName}</td>
-                  <td>{matter.cause_number || ''}</td>
-                  <td><div>{matter.case_status || ''}</div><div style={{ color: '#64748b', fontSize: 12 }}>{matter.matter_status || ''}</div></td>
-                  <td style={{ minWidth: 360 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <strong>{progress.done}/{progress.total}</strong>
-                      <div style={{ flex: 1, background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden' }}>
-                        <div style={{ width: `${progress.pct}%`, background: '#64748b', height: '100%' }} />
-                      </div>
-                    </div>
-                    <div style={{ display: 'grid', gap: 4 }}>
-                      {withdrawalSteps.map((step, index) => {
-                        const done = !!checks[step.id]
-                        return (
-                          <label key={step.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 6, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 6, padding: '5px 7px', background: done ? '#e5e7eb' : '#fff', color: done ? '#64748b' : '#0f172a', textDecoration: done ? 'line-through' : 'none' }}>
-                            <input type="checkbox" checked={done} onChange={() => toggleWithdrawalStep(matter.id, step.id)} />
-                            <span>{index + 1}. {step.name}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </td>
-                  <td>{matter.courts?.court_name || ''}{matter.courts?.county ? ` - ${matter.courts.county}` : ''}</td>
-                  <td>{counsel?.name || ''}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button type="button" onClick={() => markMatterForWithdrawal(matter.id)}>Mark Open- Withdrawing</button>
-                    <button type="button" onClick={() => { setSelectedTemplateMatterId(matter.id); setPage('tasks') }} style={{ marginLeft: 6 }}>Open dashboard</button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </>
-    )
-  }
 
   const settingsMatterTableRows = sortRows(
     matters.filter((matter) => {
@@ -22136,441 +20874,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (event) => setter(event.currentTarget.innerHTML)
   }
 
-
-  function money(value) {
-    const number = Number(value || 0)
-    if (!Number.isFinite(number)) return '$0'
-    return number.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
-  }
-
-  function inventoryNumber(value) {
-    const cleaned = String(value ?? '').replace(/[^0-9.-]/g, '')
-    const number = Number(cleaned)
-    return Number.isFinite(number) ? number : 0
-  }
-
-  function inventoryScenario(matterId, scenarioId = '') {
-    const record = matterInventories[String(matterId)] || {}
-    const scenarios = Array.isArray(record.scenarios) ? record.scenarios : []
-    if (!scenarios.length) return null
-    return scenarios.find((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId)) || scenarios[0]
-  }
-
-  function inventoryScenariosForMatter(matterId) {
-    const record = matterInventories[String(matterId)] || {}
-    return Array.isArray(record.scenarios) ? record.scenarios : []
-  }
-
-  function defaultInventoryScenario(matter = {}) {
-    const now = new Date().toISOString()
-    return { id: `scenario-${Date.now()}`, name: 'Working Inventory', status: 'Attorney Review', items: [], clientItems: [], created_at: now, updated_at: now }
-  }
-
-  function ensureInventoryForMatter(matter) {
-    if (!matter?.id) return
-    setMatterInventories((current) => {
-      const key = String(matter.id)
-      const existing = current[key]
-      if (existing?.scenarios?.length) return current
-      const scenario = defaultInventoryScenario(matter)
-      return { ...current, [key]: { activeScenarioId: scenario.id, scenarios: [scenario] } }
-    })
-  }
-
-  function setMatterInventoryRecord(matterId, updater) {
-    const key = String(matterId)
-    setMatterInventories((current) => {
-      const existing = current[key] || { activeScenarioId: '', scenarios: [] }
-      const next = updater(existing)
-      return { ...current, [key]: next }
-    })
-  }
-
-  function addInventoryScenario(matter) {
-    if (!matter?.id) return
-    const now = new Date().toISOString()
-    const scenario = { id: `scenario-${Date.now()}`, name: `Scenario ${inventoryScenariosForMatter(matter.id).length + 1}`, status: 'Attorney Review', items: [], clientItems: [], created_at: now, updated_at: now }
-    setMatterInventoryRecord(matter.id, (record) => ({ ...record, activeScenarioId: scenario.id, scenarios: [...(record.scenarios || []), scenario] }))
-    setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: scenario.id }))
-  }
-
-  function duplicateInventoryScenario(matterId, sourceScenarioId) {
-    const source = inventoryScenario(matterId, sourceScenarioId)
-    if (!source) return
-    const now = new Date().toISOString()
-    const copy = { ...source, id: `scenario-${Date.now()}`, name: `${source.name || 'Scenario'} Copy`, items: (source.items || []).map((item) => ({ ...item, id: `item-${Date.now()}-${Math.random().toString(16).slice(2)}` })), created_at: now, updated_at: now }
-    setMatterInventoryRecord(matterId, (record) => ({ ...record, activeScenarioId: copy.id, scenarios: [...(record.scenarios || []), copy] }))
-    setInventoryScenarioByMatter((current) => ({ ...current, [matterId]: copy.id }))
-  }
-
-  function updateInventoryScenario(matterId, scenarioId, patch) {
-    setMatterInventoryRecord(matterId, (record) => ({
-      ...record,
-      activeScenarioId: scenarioId || record.activeScenarioId,
-      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId) ? { ...scenario, ...patch, updated_at: new Date().toISOString() } : scenario)
-    }))
-  }
-
-  function addInventoryItem(matterId, scenarioId, type = 'asset') {
-    const now = new Date().toISOString()
-    const item = {
-      id: `inv-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      type,
-      category: type === 'asset' ? 'Real Estate' : 'Secured Debt',
-      subcategory: '',
-      item_name: type === 'asset' ? 'New Asset' : 'New Debt',
-      description: '',
-      estate: 'community',
-      characterization: type === 'asset' ? 'Community' : 'Community',
-      date_acquired: '',
-      manner_acquired: '',
-      location: '',
-      value: '',
-      valuation_date: '',
-      valuation_source: '',
-      paid_off_status: type === 'asset' ? 'Unknown' : '',
-      has_secured_debt: false,
-      linked_debt_id: '',
-      debt_type: type === 'liability' ? 'secured' : '',
-      creditor: '',
-      balance_date: '',
-      liable_party: '',
-      possession: '',
-      proposed_award: '',
-      proposed_payor: '',
-      agreement_status: 'Unknown',
-      opposing_value: '',
-      opposing_award: '',
-      opposing_notes: '',
-      attorney_notes: '',
-      client_notes: '',
-      year: '',
-      make: '',
-      model: '',
-      vin: '',
-      mileage: '',
-      address: '',
-      created_at: now,
-      updated_at: now
-    }
-    setMatterInventoryRecord(matterId, (record) => ({
-      ...record,
-      activeScenarioId: scenarioId || record.activeScenarioId,
-      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? { ...scenario, items: [...(scenario.items || []), item], updated_at: now } : scenario)
-    }))
-  }
-
-  function updateInventoryItem(matterId, scenarioId, itemId, field, value) {
-    setMatterInventoryRecord(matterId, (record) => ({
-      ...record,
-      activeScenarioId: scenarioId || record.activeScenarioId,
-      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? {
-        ...scenario,
-        items: (scenario.items || []).map((item) => String(item.id) === String(itemId) ? { ...item, [field]: value, updated_at: new Date().toISOString() } : item),
-        updated_at: new Date().toISOString()
-      } : scenario)
-    }))
-  }
-
-  function deleteInventoryItem(matterId, scenarioId, itemId) {
-    if (!window.confirm('Delete this inventory item?')) return
-    setMatterInventoryRecord(matterId, (record) => ({
-      ...record,
-      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? { ...scenario, items: (scenario.items || []).filter((item) => String(item.id) !== String(itemId)), updated_at: new Date().toISOString() } : scenario)
-    }))
-  }
-
-  function inventoryTotalsForItems(items = []) {
-    const base = {}
-    INVENTORY_ESTATE_BUCKETS.forEach((bucket) => { base[bucket.id] = { total_assets: 0, total_secured_debt: 0, total_unsecured_debt: 0, total_net: 0 } })
-    ;(items || []).forEach((item) => {
-      const estate = base[item.estate] ? item.estate : 'community'
-      const amount = Math.abs(inventoryNumber(item.value))
-      if (item.type === 'asset') base[estate].total_assets += amount
-      if (item.type === 'liability') {
-        if (item.debt_type === 'unsecured' || /unsecured/i.test(item.category || '')) base[estate].total_unsecured_debt += amount
-        else base[estate].total_secured_debt += amount
-      }
-    })
-    Object.keys(base).forEach((key) => {
-      base[key].total_net = base[key].total_assets - base[key].total_secured_debt - base[key].total_unsecured_debt
-    })
-    return base
-  }
-
-  function inventoryMatterSummary(matterId) {
-    const scenario = inventoryScenario(matterId, inventoryScenarioByMatter[matterId])
-    const totals = inventoryTotalsForItems(scenario?.items || [])
-    const all = Object.values(totals).reduce((sum, row) => ({
-      total_assets: sum.total_assets + row.total_assets,
-      total_secured_debt: sum.total_secured_debt + row.total_secured_debt,
-      total_unsecured_debt: sum.total_unsecured_debt + row.total_unsecured_debt,
-      total_net: sum.total_net + row.total_net
-    }), { total_assets: 0, total_secured_debt: 0, total_unsecured_debt: 0, total_net: 0 })
-    return { scenario, totals, all }
-  }
-
-  function inventoryCategoryOptions(type) {
-    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
-    return (groups || []).map((group) => group.name)
-  }
-
-  function inventorySubcategoryOptions(type, categoryName) {
-    const groups = type === 'liability' ? inventorySettings.liabilityCategories : inventorySettings.assetCategories
-    const group = (groups || []).find((entry) => entry.name === categoryName)
-    return Array.isArray(group?.subcategories) ? group.subcategories : []
-  }
-
-  function renderInventoryTotalsGrid(totals) {
-    return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(220px, 1fr))', gap: 12, margin: '12px 0' }}>
-        {INVENTORY_ESTATE_BUCKETS.map((bucket) => {
-          const row = totals[bucket.id] || {}
-          return (
-            <div key={bucket.id} style={{ border: '1px solid #d5dce3', borderRadius: 8, background: 'white', padding: 12 }}>
-              <div style={{ fontWeight: 'bold', marginBottom: 8 }}>{bucket.label}</div>
-              <div>Total Assets: <strong style={{ color: '#166534' }}>{money(row.total_assets)}</strong></div>
-              <div>Secured Debt: <strong style={{ color: '#991b1b' }}>{money(row.total_secured_debt)}</strong></div>
-              <div>Unsecured Debt: <strong style={{ color: '#991b1b' }}>{money(row.total_unsecured_debt)}</strong></div>
-              <div>Net: <strong style={{ color: '#1d4ed8' }}>{money(row.total_net)}</strong></div>
-            </div>
-          )
-        })}
-      </div>
-    )
-  }
-
-  function inventoryColumnDefinitions(matter, selectedScenarioId) {
-    return {
-      type: { render: (item) => <select value={item.type || 'asset'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'type', e.target.value)}><option value="asset">Asset</option><option value="liability">Liability</option></select> },
-      estate: { render: (item) => <select value={item.estate || 'community'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'estate', e.target.value)}>{INVENTORY_ESTATE_BUCKETS.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</select> },
-      category: { render: (item) => <select value={item.category || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'category', e.target.value)}>{inventoryCategoryOptions(item.type).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      subcategory: { render: (item) => <select value={item.subcategory || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'subcategory', e.target.value)}><option value="">--</option>{inventorySubcategoryOptions(item.type, item.category).map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      item_name: { render: (item) => <input value={item.item_name || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'item_name', e.target.value)} /> },
-      description: { render: (item) => <textarea value={item.description || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'description', e.target.value)} rows={1} /> },
-      characterization: { render: (item) => <select value={item.characterization || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'characterization', e.target.value)}>{INVENTORY_CHARACTERIZATIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      date_acquired: { render: (item) => <input type="date" value={item.date_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'date_acquired', e.target.value)} /> },
-      manner_acquired: { render: (item) => <select value={item.manner_acquired || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'manner_acquired', e.target.value)}><option value="">--</option>{INVENTORY_ACQUISITION_MANNERS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      location: { render: (item) => <input value={item.address || item.location || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'location', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value) }} /> },
-      value: { render: (item) => <input style={{ width: 90 }} value={item.value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'value', e.target.value)} /> },
-      valuation_date: { render: (item) => <input type="date" value={item.valuation_date || item.balance_date || ''} onChange={(e) => { updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_date', e.target.value); updateInventoryItem(matter.id, selectedScenarioId, item.id, 'balance_date', e.target.value) }} /> },
-      valuation_source: { render: (item) => <input value={item.valuation_source || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'valuation_source', e.target.value)} /> },
-      possession: { render: (item) => <select value={item.possession || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'possession', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      award: { render: (item) => <select value={item.type === 'liability' ? (item.proposed_payor || '') : (item.proposed_award || '')} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, item.type === 'liability' ? 'proposed_payor' : 'proposed_award', e.target.value)}><option value="">--</option>{INVENTORY_AWARD_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      debt_type: { render: (item) => <select value={item.debt_type || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'debt_type', e.target.value)}><option value="">--</option><option value="secured">Secured</option><option value="unsecured">Unsecured</option></select> },
-      creditor: { render: (item) => <input value={item.creditor || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'creditor', e.target.value)} /> },
-      liable_party: { render: (item) => <select value={item.liable_party || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'liable_party', e.target.value)}><option value="">--</option>{INVENTORY_PARTY_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      agreement_status: { render: (item) => <select value={item.agreement_status || 'Unknown'} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'agreement_status', e.target.value)}>{INVENTORY_AGREEMENT_STATUSES.map((name) => <option key={name} value={name}>{name}</option>)}</select> },
-      opposing_value: { render: (item) => <input style={{ width: 90 }} value={item.opposing_value || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_value', e.target.value)} /> },
-      opposing_award: { render: (item) => <input value={item.opposing_award || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_award', e.target.value)} /> },
-      opposing_notes: { render: (item) => <textarea value={item.opposing_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'opposing_notes', e.target.value)} rows={1} /> },
-      vin: { render: (item) => <input value={item.vin || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'vin', e.target.value)} /> },
-      year: { render: (item) => <input style={{ width: 70 }} value={item.year || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'year', e.target.value)} /> },
-      make: { render: (item) => <input value={item.make || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'make', e.target.value)} /> },
-      model: { render: (item) => <input value={item.model || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'model', e.target.value)} /> },
-      mileage: { render: (item) => <input style={{ width: 90 }} value={item.mileage || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'mileage', e.target.value)} /> },
-      address: { render: (item) => <input value={item.address || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'address', e.target.value)} /> },
-      attorney_notes: { render: (item) => <textarea value={item.attorney_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'attorney_notes', e.target.value)} rows={1} /> },
-      client_notes: { render: (item) => <textarea value={item.client_notes || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, 'client_notes', e.target.value)} rows={1} /> }
-    }
-  }
-
-  function visibleInventoryColumns() {
-    const stored = Array.isArray(inventorySettings.columns) && inventorySettings.columns.length ? inventorySettings.columns : DEFAULT_INVENTORY_SETTINGS.columns
-    const columns = mergeInventoryColumns(stored)
-    return columns.filter((column) => column.visible !== false)
-  }
-
-  function renderInventorySettings() {
-    const renderGroupEditor = (kind, title) => {
-      const key = kind === 'asset' ? 'assetCategories' : 'liabilityCategories'
-      const groups = inventorySettings[key] || []
-      return (
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <h3 style={{ margin: 0 }}>{title}</h3>
-            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, [key]: [...(current[key] || []), { id: `inv-cat-${Date.now()}`, name: 'New Category', subcategories: ['Other'] }] }))}>Add Category</button>
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
-            <thead><tr><th style={{ textAlign: 'left' }}>Category</th><th style={{ textAlign: 'left' }}>Subcategories comma-separated</th><th></th></tr></thead>
-            <tbody>
-              {groups.map((group, index) => (
-                <tr key={group.id || index}>
-                  <td><input value={group.name || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).map((row, i) => i === index ? { ...row, name: e.target.value } : row) }))} /></td>
-                  <td><input style={{ width: '100%' }} value={(group.subcategories || []).join(', ')} onChange={(e) => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).map((row, i) => i === index ? { ...row, subcategories: e.target.value.split(',').map((part) => part.trim()).filter(Boolean) } : row) }))} /></td>
-                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, [key]: (current[key] || []).filter((_, i) => i !== index) }))}>Delete</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )
-    }
-    return (
-      <div>
-        <h2>Inventory Settings</h2>
-        <p style={{ color: '#64748b' }}>Set the asset, liability, category, subcategory, and visible table columns used by all matter inventories.</p>
-        {renderGroupEditor('asset', 'Asset Categories')}
-        {renderGroupEditor('liability', 'Liability Categories')}
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff', marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-            <h3 style={{ margin: 0 }}>Inventory Columns</h3>
-            <button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: [...mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns), { id: `custom_${Date.now()}`, label: 'New Column', visible: true, custom: true }] }))}>Add Column</button><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: DEFAULT_INVENTORY_SETTINGS.columns }))}>Reset to Full Default Table</button>
-          </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
-            <thead><tr><th style={{ textAlign: 'left' }}>Show</th><th style={{ textAlign: 'left' }}>Column Heading</th><th style={{ textAlign: 'left' }}>Column ID</th><th></th></tr></thead>
-            <tbody>
-              {mergeInventoryColumns(inventorySettings.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((column, index) => (
-                <tr key={column.id || index}>
-                  <td><input type="checkbox" checked={column.visible !== false} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, visible: e.target.checked } : row) }))} /></td>
-                  <td><input value={column.label || ''} onChange={(e) => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).map((row, i) => i === index ? { ...row, label: e.target.value } : row) }))} /></td>
-                  <td style={{ color: '#64748b' }}>{column.id}</td>
-                  <td><button type="button" onClick={() => setInventorySettings((current) => ({ ...current, columns: mergeInventoryColumns(current.columns || DEFAULT_INVENTORY_SETTINGS.columns).filter((_, i) => i !== index) }))}>Delete</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    )
-  }
-
-  function renderMatterInventoryPanel(matter) {
-    if (!matter?.id) return null
-    const scenarios = inventoryScenariosForMatter(matter.id)
-    const selectedScenarioId = inventoryScenarioByMatter[matter.id] || (matterInventories[matter.id]?.activeScenarioId) || scenarios[0]?.id || ''
-    const scenario = inventoryScenario(matter.id, selectedScenarioId)
-    const compareScenarioId = inventoryCompareScenarioByMatter[matter.id] || scenarios.find((row) => row.id !== selectedScenarioId)?.id || ''
-    const compareScenario = inventoryScenario(matter.id, compareScenarioId)
-    const viewMode = inventoryViewModeByMatter[matter.id] || 'working'
-    const totals = inventoryTotalsForItems(scenario?.items || [])
-    const items = scenario?.items || []
-    if (!scenario) {
-      return <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 16, background: 'white' }}><button type="button" onClick={() => ensureInventoryForMatter(matter)}>Create Inventory for this Matter</button></div>
-    }
-    const filteredItems = items
-    return (
-      <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fafc', width: '100%' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div>
-            <h3 style={{ margin: 0 }}>Inventory</h3>
-            <div style={{ color: '#64748b' }}>Attorney working inventory, client intake, scenarios, and opposing counsel comparison.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => addInventoryScenario(matter)}>New Scenario</button>
-            <button type="button" onClick={() => duplicateInventoryScenario(matter.id, selectedScenarioId)}>Duplicate Scenario</button>
-            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')}>Add Asset</button>
-            <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')}>Add Liability</button>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
-          <label>Scenario: <select value={selectedScenarioId} onChange={(e) => setInventoryScenarioByMatter((current) => ({ ...current, [matter.id]: e.target.value }))}>{scenarios.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-          <label>Name: <input value={scenario.name || ''} onChange={(e) => updateInventoryScenario(matter.id, selectedScenarioId, { name: e.target.value })} /></label>
-          <label>Status: <input value={scenario.status || ''} onChange={(e) => updateInventoryScenario(matter.id, selectedScenarioId, { status: e.target.value })} /></label>
-          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'working' }))} style={{ fontWeight: viewMode === 'working' ? 'bold' : 'normal' }}>Working Table</button>
-          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'client' }))} style={{ fontWeight: viewMode === 'client' ? 'bold' : 'normal' }}>Client Intake Preview</button>
-          <button type="button" onClick={() => setInventoryViewModeByMatter((current) => ({ ...current, [matter.id]: 'compare' }))} style={{ fontWeight: viewMode === 'compare' ? 'bold' : 'normal' }}>Side-by-Side</button>
-        </div>
-
-        {renderInventoryTotalsGrid(totals)}
-
-        {viewMode === 'client' && (
-          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 14 }}>
-            <h3>Client Intake Version</h3>
-            <p style={{ color: '#64748b' }}>This is the version to send to the client. Client answers can be accepted into the attorney working inventory; attorney notes and scenario strategy remain hidden.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(180px, 1fr))', gap: 12 }}>
-              {(inventorySettings.assetCategories || []).map((cat) => <button key={cat.id || cat.name} type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')} style={{ padding: 14, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc', textAlign: 'left' }}><strong>{cat.name}</strong><br /><span style={{ color: '#64748b' }}>Add property, value, date acquired, possession, and documents.</span></button>)}
-              <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')} style={{ padding: 14, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff7ed', textAlign: 'left' }}><strong>Debts</strong><br /><span style={{ color: '#64748b' }}>Add secured or unsecured liabilities and who is responsible.</span></button>
-            </div>
-          </div>
-        )}
-
-        {viewMode === 'compare' && (
-          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 14 }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0 }}>Side-by-Side Differences</h3>
-              <label>Compare scenario: <select value={compareScenarioId} onChange={(e) => setInventoryCompareScenarioByMatter((current) => ({ ...current, [matter.id]: e.target.value }))}><option value="">Opposing Counsel Position Fields</option>{scenarios.filter((row) => row.id !== selectedScenarioId).map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12, fontSize: 13 }}>
-              <thead><tr><th style={{ textAlign: 'left' }}>Item</th><th>Our Value</th><th>Opposing / Compared Value</th><th>Our Proposed Award</th><th>Opposing / Compared Award</th><th>Status</th><th>Notes</th></tr></thead>
-              <tbody>
-                {items.map((item) => {
-                  const matched = compareScenario?.items?.find((other) => (other.item_name || '').toLowerCase() === (item.item_name || '').toLowerCase())
-                  return <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0', background: item.agreement_status === 'Opposed' ? '#fff7ed' : 'white' }}>
-                    <td>{item.item_name}</td><td style={{ textAlign: 'right' }}>{money(item.value)}</td><td style={{ textAlign: 'right' }}>{money(matched ? matched.value : item.opposing_value)}</td><td>{item.proposed_award || item.proposed_payor}</td><td>{matched ? (matched.proposed_award || matched.proposed_payor) : item.opposing_award}</td><td>{item.agreement_status}</td><td>{item.opposing_notes}</td>
-                  </tr>
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {viewMode === 'working' && (
-          <div style={{ background: 'white', border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-              <div>
-                <strong>Full Inventory Table</strong>
-                <div style={{ color: '#64748b', fontSize: 12 }}>All visible inventory columns are shown below. Use Settings &gt; Inventory Settings to add, rename, hide, or delete columns and property categories.</div>
-              </div>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Table height
-                <input type="range" min="260" max="900" step="20" value={inventoryFullTableHeight} onChange={(e) => setInventoryFullTableHeight(Number(e.target.value) || 520)} />
-                <span>{inventoryFullTableHeight}px</span>
-              </label>
-            </div>
-            <div style={{ overflow: 'auto', maxHeight: inventoryFullTableHeight, border: '1px solid #e2e8f0', borderRadius: 8 }}>
-              <table style={{ minWidth: `${Math.max(2400, visibleInventoryColumns().length * 150)}px`, width: 'max-content', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead><tr style={{ background: '#eef2f7' }}>{visibleInventoryColumns().map((column) => <th key={column.id} style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1', borderRight: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{column.label}</th>)}<th style={{ position: 'sticky', top: 0, zIndex: 2, background: '#eef2f7', textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Action</th></tr></thead>
-                <tbody>
-                  {filteredItems.map((item) => {
-                    const columnDefinitions = inventoryColumnDefinitions(matter, selectedScenarioId)
-                    return (
-                      <tr key={item.id} style={{ borderTop: '1px solid #e2e8f0', background: item.type === 'liability' ? '#fff7ed' : 'white' }}>
-                        {visibleInventoryColumns().map((column) => (
-                          <td key={column.id} style={{ minWidth: 140, maxWidth: 260, padding: 4, borderRight: '1px solid #eef2f7', verticalAlign: 'top' }}>{columnDefinitions[column.id]?.render ? columnDefinitions[column.id].render(item) : <input value={item[column.id] || ''} onChange={(e) => updateInventoryItem(matter.id, selectedScenarioId, item.id, column.id, e.target.value)} />}</td>
-                        ))}
-                        <td style={{ padding: 4, verticalAlign: 'top' }}><button type="button" onClick={() => deleteInventoryItem(matter.id, selectedScenarioId, item.id)}>Delete</button></td>
-                      </tr>
-                    )
-                  })}
-                  {!filteredItems.length && <tr><td colSpan={visibleInventoryColumns().length + 1} style={{ padding: 18, color: '#64748b', textAlign: 'center' }}>No inventory items yet. Use Add Asset or Add Liability above to create a full editable row.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  function renderInventoryPage() {
-    const rows = matters.filter((matter) => {
-      const text = `${matter.name || ''} ${matter.cause_number || ''} ${matterClientName(matter) || ''}`.toLowerCase()
-      return !inventoryMasterFilter || text.includes(inventoryMasterFilter.toLowerCase())
-    })
-    return (
-      <>
-        <h1>Inventory</h1>
-        <p style={{ color: '#64748b' }}>Master list of matter inventories. Each matter can have multiple scenarios and a private attorney working version separate from the client intake version.</p>
-        <input placeholder="Search matters..." value={inventoryMasterFilter} onChange={(e) => setInventoryMasterFilter(e.target.value)} style={{ marginBottom: 12, width: 320 }} />
-        <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
-          <thead><tr style={{ background: '#eef2f7' }}><th style={{ textAlign: 'left', padding: 8 }}>Matter</th><th>Scenario</th><th>Total Assets</th><th>Secured Debt</th><th>Unsecured Debt</th><th>Net</th><th>Status</th><th>Last Updated</th><th></th></tr></thead>
-          <tbody>
-            {rows.map((matter) => {
-              const summary = inventoryMatterSummary(matter.id)
-              const scenario = summary.scenario
-              return <tr key={matter.id} style={{ borderTop: '1px solid #e2e8f0' }}>
-                <td style={{ padding: 8 }}><strong>{matter.name}</strong><div style={{ color: '#64748b' }}>{matterClientName(matter)} {matter.cause_number ? `| ${matter.cause_number}` : ''}</div></td>
-                <td>{scenario?.name || 'No inventory yet'}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_assets)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_secured_debt)}</td><td style={{ textAlign: 'right' }}>{money(summary.all.total_unsecured_debt)}</td><td style={{ textAlign: 'right' }}><strong>{money(summary.all.total_net)}</strong></td><td>{scenario?.status || '--'}</td><td>{scenario?.updated_at ? new Date(scenario.updated_at).toLocaleDateString() : '--'}</td>
-                <td><button type="button" onClick={() => { ensureInventoryForMatter(matter); setSelectedTemplateMatterId(matter.id); setClientDashboardTab('inventory'); setPageState('tasks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matter.id)}?tab=inventory`) }}>Open</button></td>
-              </tr>
-            })}
-          </tbody>
-        </table>
-      </>
-    )
-  }
-
   function matterDashboardUrl(matter) {
     return matter?.id ? `#matter_dashboard:${encodeURIComponent(matter.id)}` : ''
   }
@@ -25820,31 +24123,6 @@ ${choices}`, '1'))
     })
   }
 
-  function runRequestedReliefRichTextCommand(command, value = null) {
-    try {
-      document.execCommand(command, false, value)
-    } catch (error) {
-      console.warn('Requested relief rich text command failed:', command, error)
-    }
-  }
-
-  function renderRequestedReliefRichTextToolbar() {
-    const buttons = [
-      ['bold', 'B'],
-      ['italic', 'I'],
-      ['underline', 'U'],
-      ['insertOrderedList', '1.'],
-      ['insertUnorderedList', '•']
-    ]
-    return (
-      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
-        {buttons.map(([command, label]) => (
-          <button key={command} type="button" onMouseDown={(e) => { e.preventDefault(); runRequestedReliefRichTextCommand(command) }} style={{ padding: '3px 7px', borderRadius: 6, fontSize: 12, fontWeight: 800 }}>{label}</button>
-        ))}
-      </div>
-    )
-  }
-
   function renderRequestedReliefMatrixTable({ title = 'Requested Relief Table', maxHeight = 620, compact = false } = {}) {
     const shaped = ensureRequestedReliefMatrixShape(requestedReliefMatrixTable)
     const columns = shaped.columns
@@ -25897,15 +24175,11 @@ ${choices}`, '1'))
                       const inheritedOnly = own === undefined && isOption && inherited
                       return (
                         <td key={`${row.id}-${column.id}`} style={{ border: '1px solid #e2e8f0', padding: 6, verticalAlign: 'top', background: inheritedOnly ? '#f8fafc' : '#fff' }}>
-                          {renderRequestedReliefRichTextToolbar()}
-                          <div
-                            contentEditable
-                            suppressContentEditableWarning
-                            onBlur={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.currentTarget.innerHTML)}
-                            onInput={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.currentTarget.innerHTML)}
-                            data-placeholder={isOption ? 'Inherits from parent issue unless edited' : 'Add text for this issue'}
-                            style={{ width: '100%', minHeight: compact ? 42 : 62, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6, fontSize: 12, background: inheritedOnly ? '#f8fafc' : '#fff', outline: 'none', whiteSpace: 'normal' }}
-                            dangerouslySetInnerHTML={{ __html: value || '' }}
+                          <textarea
+                            value={value}
+                            onChange={(e) => updateRequestedReliefMatrixCell(row.id, column.id, e.target.value)}
+                            placeholder={isOption ? 'Inherits from parent issue unless edited' : 'Add text for this issue'}
+                            style={{ width: '100%', minHeight: compact ? 42 : 62, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6, fontSize: 12, background: inheritedOnly ? '#f8fafc' : '#fff' }}
                           />
                           {inheritedOnly && <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>Inherited from parent issue. Edit to override.</div>}
                         </td>
@@ -26587,35 +24861,9 @@ ${choices}`, '1'))
 
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) auto', gap: 12, alignItems: 'end', marginBottom: 14 }}>
               <LabeledField label="Matter">
-                <input
-                  placeholder="Type to filter matters..."
-                  list="requested-relief-matter-suggestions"
-                  value={requestedReliefMatterSearchText || (requestedReliefMatterFilter === 'all' ? '' : (matterName(requestedReliefMatterFilter) || ''))}
-                  onChange={(e) => {
-                    const typed = e.target.value
-                    setRequestedReliefMatterSearchText(typed)
-                    if (!typed) { handleMatterFilterChange('all'); return }
-                    const exact = matters.find((matter) => String(matterName(matter.id) || '').toLowerCase() === typed.toLowerCase())
-                    if (exact) { handleMatterFilterChange(exact.id); setRequestedReliefMatterSearchText('') }
-                  }}
-                  onBlur={(e) => {
-                    const typed = e.target.value
-                    const exact = matters.find((matter) => String(matterName(matter.id) || '').toLowerCase() === typed.toLowerCase())
-                    if (exact) { handleMatterFilterChange(exact.id); setRequestedReliefMatterSearchText('') }
-                  }}
-                  style={{ width: '100%' }}
-                />
-                <datalist id="requested-relief-matter-suggestions">
-                  {matters
-                    .filter((matter) => !requestedReliefMatterSearchText || matchesSmartSearch(requestedReliefMatterSearchText, matterName(matter.id)))
-                    .slice(0, 30)
-                    .map((matter) => <option key={matter.id} value={matterName(matter.id)} />)}
-                </datalist>
-                <select value={requestedReliefMatterFilter} onChange={(e) => { setRequestedReliefMatterSearchText(''); handleMatterFilterChange(e.target.value) }} style={{ marginTop: 6 }}>
+                <select value={requestedReliefMatterFilter} onChange={(e) => handleMatterFilterChange(e.target.value)}>
                   <option value="all">All matters</option>
-                  {matters
-                    .filter((matter) => !requestedReliefMatterSearchText || matchesSmartSearch(requestedReliefMatterSearchText, matterName(matter.id)))
-                    .map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
+                  {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
                 </select>
               </LabeledField>
               {selectedMatterId ? <button type="button" style={pageButton} onClick={() => openMatterRequestedReliefDashboardInNewTab(selectedMatterId)}>Open Matter Page</button> : <button type="button" style={disabledButton} disabled>Open Matter Page</button>}
@@ -29261,18 +27509,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </a>
         )}
 
-        {canOpenPage('withdrawals') && (
-          <a href="#withdrawals" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('withdrawals') }} style={{ display: 'block', marginBottom: 10 }}>
-            Withdrawals
-          </a>
-        )}
-
-        {canOpenPage('inventory') && (
-          <a href="#inventory" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('inventory') }} style={{ display: 'block', marginBottom: 10 }}>
-            Inventory
-          </a>
-        )}
-
         {canOpenPage('matter_timelines') && (
           <a href="#matter_timelines" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('matter_timelines') }} style={{ display: 'block', marginBottom: 10 }}>
             Matter Timelines
@@ -29402,17 +27638,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         >
           💡
         </button>
-
-        {page !== 'workflow' && workflowItems.length > 0 && (
-          <div style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 55, border: '1px solid #cbd5e1', borderRadius: 14, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 'min(560px, 94vw)' }}>
-            <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>Save view to workflow:</span>
-            <select value={workflowQuickLinkTargetId} onChange={(e) => setWorkflowQuickLinkTargetId(e.target.value)} style={{ maxWidth: 260 }}>
-              <option value="">Choose row...</option>
-              {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
-            </select>
-            <button type="button" onClick={() => saveCurrentViewToWorkflowItem(workflowQuickLinkTargetId)}>Save current URL</button>
-          </div>
-        )}
 
         {screenSaverRunning && (
           <div style={{ position: 'sticky', top: 0, zIndex: 20, background: '#ecfdf5', border: '1px solid #86efac', borderRadius: 8, padding: 10, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
@@ -30058,9 +28283,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <label key={column.key}>
                       <input
                         type="checkbox"
-                        checked={column.key === 'action' ? true : !!visibleMatterColumns[column.key]}
-                        disabled={column.key === 'action'}
-                        title={column.key === 'action' ? 'Action buttons stay visible so Matter Dashboard and Edit Matter are always available.' : ''}
+                        checked={!!visibleMatterColumns[column.key]}
                         onChange={() => toggleMatterColumn(column.key)}
                       />
                       {' '}
@@ -30134,10 +28357,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </>
         )}
 
-        {page === 'withdrawals' && canOpenPage('withdrawals') && renderWithdrawalsPage()}
-
-        {page === 'inventory' && canOpenPage('inventory') && renderInventoryPage()}
-
         {page === 'matter_timelines' && canOpenPage('matter_timelines') && renderMatterTimelinesPage()}
 
         {page === 'tasks' && canOpenPage('tasks') && (
@@ -30200,13 +28419,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
-                    onClick={() => { ensureInventoryForMatter(selectedTemplateMatter()); setClientDashboardTab('inventory') }}
-                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'inventory' ? '#2f6584' : 'white', color: clientDashboardTab === 'inventory' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'inventory' ? 'bold' : 'normal' }}
-                  >
-                    Inventory
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setClientDashboardTab('settings')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'settings' ? '#2f6584' : 'white', color: clientDashboardTab === 'settings' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'settings' ? 'bold' : 'normal' }}
                   >
@@ -30253,8 +28465,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
                 {clientDashboardTab === 'discovery' && renderRespondingDiscoveryDashboard({ matterId: selectedTemplateMatter().id })}
-
-                {clientDashboardTab === 'inventory' && renderMatterInventoryPanel(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'settings' && (
                   <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff' }}>
@@ -31434,27 +29644,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               ))}
             </div>
 
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-              <strong>View:</strong>
-              <button type="button" onClick={() => setChecklistViewMode('table')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'table' ? '#2f6584' : '#fff', color: checklistViewMode === 'table' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'table' ? 'bold' : 'normal' }}>Table</button>
-              <button type="button" onClick={() => setChecklistViewMode('columns')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'columns' ? '#2f6584' : '#fff', color: checklistViewMode === 'columns' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'columns' ? 'bold' : 'normal' }}>Category columns</button>
-              <button type="button" onClick={() => setChecklistViewMode('day_grid')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'day_grid' ? '#2f6584' : '#fff', color: checklistViewMode === 'day_grid' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'day_grid' ? 'bold' : 'normal' }}>Day grid</button>
-              {checklistViewMode === 'day_grid' && (
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}>
-                  <input type="checkbox" checked={checklistDayGridShowEmptyDays} onChange={(e) => setChecklistDayGridShowEmptyDays(e.target.checked)} />
-                  Show empty days from today
-                </label>
-              )}
-              {checklistViewMode === 'day_grid' && (
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}>
-                  Row height
-                  <input type="range" min="44" max="260" step="4" value={checklistDayGridRowHeight} onChange={(e) => setChecklistDayGridRowHeight(Number(e.target.value))} style={{ width: 140 }} />
-                  <span style={{ color: '#64748b', fontSize: 12, minWidth: 42 }}>{checklistDayGridRowHeight}px</span>
-                </label>
-              )}
-              {checklistTab !== 'future' && checklistViewMode !== 'table' && <span style={{ color: '#64748b', fontSize: 12 }}>Alternative views work for the selected tab, but are most useful under Upcoming.</span>}
-            </div>
-
             {checklistTab === 'need_date' && pausedNeedToSetEvents().length > 0 && (
               <button
                 type="button"
@@ -31466,7 +29655,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
             )}
 
-            {checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : (
             <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 6 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
                 <thead>
@@ -31593,7 +29781,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </tbody>
               </table>
             </div>
-            )}
           </>
         )}
 
@@ -32158,128 +30345,32 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             </div>
 
             {workflowActiveTab === 'daily' && (
-              <div style={{ display: 'grid', gap: 16 }}>
+              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                  <h2 style={{ margin: 0 }}>Daily Workflow Checklist</h2>
+                  <label style={{ marginLeft: 'auto' }}>Date:{' '}<input type="date" value={workflowDailyDate} onChange={(e) => setWorkflowDailyDate(e.target.value)} /></label>
+                  <button type="button" onClick={resetWorkflowDailyChecks}>Reset this day</button>
+                  <button type="button" onClick={() => setWorkflowActiveTab('settings')}>Edit workflow settings</button>
+                </div>
                 {(() => {
                   const rows = allWorkflowItemsIndented()
-                  const rootItems = childWorkflowItems('')
                   const checkedMap = workflowDailyCheckedMap()
                   const checkedCount = rows.filter((item) => checkedMap[item.id]).length
-                  const completionPct = rows.length ? Math.round((checkedCount / rows.length) * 100) : 0
-                  const renderChecklistRow = (item) => {
-                    const link = workflowLinkForItem(item)
-                    const isChecked = !!checkedMap[item.id]
-                    return (
-                      <div
-                        key={item.id}
-                        style={{
-                          marginLeft: Math.max(0, item.level - 1) * 26,
-                          display: 'grid',
-                          gridTemplateColumns: 'auto minmax(220px, 1fr) auto',
-                          gap: 12,
-                          alignItems: 'start',
-                          border: '1px solid #dbe4ee',
-                          borderRadius: 16,
-                          padding: 14,
-                          background: isChecked ? '#f1f5f9' : 'white',
-                          boxShadow: isChecked ? 'none' : '0 6px 18px rgba(15, 23, 42, 0.05)'
-                        }}
-                      >
-                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginTop: 2, cursor: 'pointer' }}>
-                          <input type="checkbox" checked={isChecked} onChange={() => toggleWorkflowDailyCheck(item.id)} />
-                          <span style={{ width: 12, height: 12, borderRadius: 999, background: item.color || '#4c6783', border: '1px solid rgba(15,23,42,0.12)' }} />
-                        </label>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                            <strong style={{ fontSize: 16, color: isChecked ? '#64748b' : '#0f172a', textDecoration: isChecked ? 'line-through' : 'none' }}>{item.name}</strong>
-                            {isChecked && <span style={{ fontSize: 12, fontWeight: 700, color: '#475569', background: '#e2e8f0', borderRadius: 999, padding: '3px 8px' }}>Done</span>}
-                          </div>
-                          {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.notes}</div>}
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-                          {link && (
-                            <button
-                              type="button"
-                              onClick={() => openWorkflowItemLink(item)}
-                              style={{ whiteSpace: 'nowrap', borderRadius: 999, border: '1px solid #cbd5e1', background: '#f8fafc', padding: '8px 12px', fontWeight: 600 }}
-                            >
-                              {link.label}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  }
                   return (
                     <>
-                      <div style={{ border: '1px solid #d5dce3', borderRadius: 22, padding: 18, background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)', boxShadow: '0 10px 32px rgba(15, 23, 42, 0.06)' }}>
-                        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-                          <div>
-                            <h2 style={{ margin: 0, fontSize: 30 }}>Daily Workflow Checklist</h2>
-                            <div style={{ color: '#64748b', marginTop: 4 }}>Check off completed work and use the action buttons to jump into the right page.</div>
-                          </div>
-                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>Date
-                              <input type="date" value={workflowDailyDate} onChange={(e) => setWorkflowDailyDate(e.target.value)} />
-                            </label>
-                            <button type="button" onClick={resetWorkflowDailyChecks}>Reset this day</button>
-                            <button type="button" onClick={() => setWorkflowActiveTab('settings')}>Edit workflow settings</button>
-                          </div>
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 18, alignItems: 'center' }}>
-                          <div style={{ border: '1px solid #dbe4ee', borderRadius: 18, padding: 16, background: 'white' }}>
-                            <div style={{ color: '#64748b', fontSize: 13, marginBottom: 6 }}>Today's progress</div>
-                            <div style={{ fontSize: 28, fontWeight: 800, color: '#0f172a' }}>{checkedCount} / {rows.length}</div>
-                            <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>{completionPct}% complete for {workflowDailyKey()}.</div>
-                          </div>
-                          <div>
-                            <div style={{ height: 14, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
-                              <div style={{ width: `${completionPct}%`, height: '100%', background: 'linear-gradient(90deg, #2563eb 0%, #38bdf8 100%)' }} />
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, color: '#64748b', fontSize: 13 }}>
-                              <span>{checkedCount} activities checked</span>
-                              <span>{Math.max(0, rows.length - checkedCount)} remaining</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ display: 'grid', gap: 16 }}>
-                        {rootItems.map((root) => {
-                          const branchRows = allWorkflowItemsIndented(root.id, 1)
-                          const link = workflowLinkForItem(root)
-                          const rootCheckedCount = branchRows.length
-                            ? branchRows.filter((item) => checkedMap[item.id]).length
-                            : (checkedMap[root.id] ? 1 : 0)
-                          const rootTotal = branchRows.length || 1
-                          if (!branchRows.length) return renderChecklistRow({ ...root, level: 0 })
-                          return (
-                            <section key={root.id} style={{ border: '1px solid #d5dce3', borderRadius: 20, padding: 16, background: 'white', boxShadow: '0 8px 24px rgba(15, 23, 42, 0.05)', maxWidth: 1120 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-                                <div style={{ width: 14, height: 14, borderRadius: 4, background: root.color || '#4c6783', border: '1px solid rgba(15,23,42,0.12)' }} />
-                                <div>
-                                  <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a' }}>{root.name}</div>
-                                  {root.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{root.notes}</div>}
-                                </div>
-                                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: 13, color: '#64748b', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 999, padding: '5px 10px' }}>{rootCheckedCount} of {rootTotal} complete</span>
-                                  {link && (
-                                    <button
-                                      type="button"
-                                      onClick={() => openWorkflowItemLink(root)}
-                                      style={{ whiteSpace: 'nowrap', borderRadius: 999, border: '1px solid #cbd5e1', background: '#f8fafc', padding: '8px 12px', fontWeight: 700 }}
-                                    >
-                                      {link.label}
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                              <div style={{ display: 'grid', gap: 10 }}>
-                                {branchRows.map((item) => renderChecklistRow(item))}
-                              </div>
-                            </section>
-                          )
-                        })}
-                        {!rows.length && <p style={{ margin: 0, padding: 18, border: '1px dashed #cbd5e1', borderRadius: 16, background: 'white', color: '#64748b' }}>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
+                      <div style={{ marginBottom: 10, color: '#475569' }}>{checkedCount} of {rows.length} activities checked for {workflowDailyKey()}.</div>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {rows.map((item) => (
+                          <label key={item.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 10, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: checkedMap[item.id] ? '#f0fdf4' : 'white', marginLeft: item.level * 24 }}>
+                            <input type="checkbox" checked={!!checkedMap[item.id]} onChange={() => toggleWorkflowDailyCheck(item.id)} style={{ marginTop: 3 }} />
+                            <span>
+                              <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 3, border: '1px solid #94a3b8', background: item.color || '#4c6783', marginRight: 6, verticalAlign: 'middle' }} />
+                              <strong style={{ textDecoration: checkedMap[item.id] ? 'line-through' : 'none' }}>{workflowItemPath(item.id) || item.name}</strong>
+                              {item.notes && <div style={{ color: '#64748b', fontSize: 13, marginTop: 3 }}>{item.notes}</div>}
+                            </span>
+                          </label>
+                        ))}
+                        {!rows.length && <p>No workflow activities have been created yet. Open Settings on this page to add them.</p>}
                       </div>
                     </>
                   )
@@ -32297,15 +30388,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
                   </select>
                   <textarea placeholder="Notes or instructions for this work area" value={workflowForm.notes} onChange={(e) => setWorkflowForm({ ...workflowForm, notes: e.target.value })} rows={4} />
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    <input placeholder="Button label for this row (optional)" value={workflowForm.link_label || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_label: e.target.value })} />
-                    <input placeholder="Link or Mio page for this row (optional)" value={workflowForm.link_url || ''} onChange={(e) => setWorkflowForm({ ...workflowForm, link_url: e.target.value })} />
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <button type="button" onClick={() => setWorkflowForm({ ...workflowForm, link_url: window.location.href })}>Use current URL</button>
-                      {workflowForm.link_url && <button type="button" onClick={() => openWorkflowCustomLink(workflowForm.link_url)}>Test link</button>}
-                    </div>
-                    <div style={{ color: '#64748b', fontSize: 12 }}>Examples: <code>matter_timelines</code>, <code>#calendar</code>, or a full URL. For filtered pages, open the page, set the filters, copy/paste or save that exact URL.</div>
-                  </div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     Color:{' '}
                     <input type="color" value={workflowForm.color || '#4c6783'} onChange={(e) => setWorkflowForm({ ...workflowForm, color: e.target.value })} />
@@ -32321,12 +30403,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       placeholder="Filter workflow"
                       value={workflowFilter}
                       onChange={(e) => setWorkflowFilter(e.target.value)}
-                      list="workflow-filter-suggestions"
                       style={{ minWidth: 240, flex: '1 1 260px', padding: 6 }}
                     />
-                    <datalist id="workflow-filter-suggestions">
-                      {workflowItems.map((item) => <option key={item.id} value={workflowItemPath(item.id) || item.name || ''} />)}
-                    </datalist>
                     <button type="button" onClick={collapseAllWorkflowFamilies}>Collapse all</button>
                     <button type="button" onClick={expandAllWorkflowFamilies}>Expand all</button>
                   </div>
@@ -32369,12 +30447,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             <div>
                               <input value={item.name || ''} onChange={(e) => updateWorkflowItem(item.id, { name: e.target.value })} style={{ fontWeight: 700, width: '100%', minWidth: 180 }} />
                               <textarea value={item.notes || ''} onChange={(e) => updateWorkflowItem(item.id, { notes: e.target.value })} placeholder="Notes" rows={2} style={{ width: '100%', marginTop: 4 }} />
-                              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) 1fr auto auto', gap: 6, marginTop: 6 }}>
-                                <input value={item.link_label || ''} onChange={(e) => updateWorkflowItem(item.id, { link_label: e.target.value })} placeholder="Button label" />
-                                <input value={item.link_url || ''} onChange={(e) => updateWorkflowItem(item.id, { link_url: e.target.value })} placeholder="Link or Mio page to open in a new window" />
-                                <button type="button" onClick={() => saveWorkflowItemCurrentUrl(item.id)} title="Save the current browser URL to this workflow row">Save current URL</button>
-                                {item.link_url && <button type="button" onClick={() => openWorkflowItemLink(item)} title="Open/test this link">Open</button>}
-                              </div>
                             </div>
                             <input type="color" value={item.color || '#4c6783'} onChange={(e) => updateWorkflowItem(item.id, { color: e.target.value })} title="Workflow color" />
                             <select value={item.parent_id || ''} onChange={(e) => moveWorkflowItem(item.id, e.target.value)}>
@@ -32602,13 +30674,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
 
               <button
-                onClick={() => setSettingsTab('external_links')}
-                style={{ marginRight: 10, fontWeight: settingsTab === 'external_links' ? 'bold' : 'normal' }}
-              >
-                External Links
-              </button>
-
-              <button
                 onClick={() => {
                   setSettingsTab('team_members')
                   setEditingSettingId(null)
@@ -32662,15 +30727,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
 
 
-              <button onClick={() => setSettingsTab('inventory')} style={{ marginRight: 10, fontWeight: settingsTab === 'inventory' ? 'bold' : 'normal', marginRight: 10 }}>
-                Inventory
-              </button>
               <button onClick={() => setSettingsTab('requested_relief')} style={{ marginRight: 10, fontWeight: settingsTab === 'requested_relief' ? 'bold' : 'normal' }}>
                 Requested Relief
-              </button>
-
-              <button onClick={() => setSettingsTab('discovery_instructions')} style={{ marginRight: 10, fontWeight: settingsTab === 'discovery_instructions' ? 'bold' : 'normal' }}>
-                Discovery Instructions
               </button>
 
               <button onClick={() => setSettingsTab('ai_documents')} style={{ marginRight: 10, fontWeight: settingsTab === 'ai_documents' ? 'bold' : 'normal' }}>
@@ -32709,39 +30767,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'email_signature' && renderEmailSignatureSettings()}
             {settingsTab === 'need_to_set_colors' && renderNeedToSetColorSettings()}
             {settingsTab === 'requested_relief' && renderRequestedReliefSettings()}
-            {settingsTab === 'inventory' && renderInventorySettings()}
-            {settingsTab === 'discovery_instructions' && (
-              <div style={{ border: '1px solid #d8e2ef', borderRadius: 12, padding: 16, background: '#fff' }}>
-                <h2>Discovery Instructions</h2>
-                <p style={{ color: '#64748b' }}>These are global default instructions for all matters. When you create a discovery set, Mio copies the matching instructions into that matter-level set. You can still revise the copied instructions on the individual matter discovery page.</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-                  <LabeledField label="Requests for Disclosure instructions"><textarea value={discoveryInstructionSettings.disclosures || ''} onChange={(e) => updateDiscoveryInstructionSetting('disclosures', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
-                  <LabeledField label="Requests for Production instructions"><textarea value={discoveryInstructionSettings.production || ''} onChange={(e) => updateDiscoveryInstructionSetting('production', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
-                  <LabeledField label="Interrogatories instructions"><textarea value={discoveryInstructionSettings.interrogatories || ''} onChange={(e) => updateDiscoveryInstructionSetting('interrogatories', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
-                  <LabeledField label="Requests for Admissions instructions"><textarea value={discoveryInstructionSettings.admissions || ''} onChange={(e) => updateDiscoveryInstructionSetting('admissions', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
-                </div>
-              </div>
-            )}
-
-            {settingsTab === 'external_links' && (
-              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, marginBottom: 20, background: '#fff' }}>
-                <h2>Matter Page External Links</h2>
-                <p style={{ color: '#64748b', marginTop: 0 }}>
-                  These links power the link icon on the Matters page and on checklist steps. Court docket and court website links come from the Court table. The eFile link below is global.
-                </p>
-                <LabeledField label="eFile website URL">
-                  <input
-                    value={matterExternalEfileUrl}
-                    onChange={(e) => {
-                      setMatterExternalEfileUrl(e.target.value)
-                      saveMioStateKey('matterExternalEfileUrl', e.target.value)
-                    }}
-                    placeholder="https://efile.txcourts.gov/"
-                    style={{ maxWidth: 720 }}
-                  />
-                </LabeledField>
-              </div>
-            )}
 
             {settingsTab === 'options' && (
               <>
