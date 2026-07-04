@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V93'
+const MIO_APP_VERSION = 'Mio V94'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -19260,13 +19260,30 @@ useEffect(() => {
     return source ? source.read_folder_name : 'Read'
   }
 
+  function resolveServiceEmailMatterId(row) {
+    if (!row) return ''
+    if (row.suggested_matter_id) return row.suggested_matter_id
+    if (row.matter_id) return row.matter_id
+    try {
+      const inferred = inferServiceEmailMatter({
+        subject: row.subject || row.email_subject || '',
+        bodyPreview: row.body_preview || row.preview || row.snippet || '',
+        body: { content: row.body_html || row.body || row.extracted_text || '' }
+      })
+      if (inferred) return inferred
+    } catch {}
+    return ''
+  }
+
   function serviceEmailKnownMatterPath(row) {
-    if (!row?.suggested_matter_id) return ''
-    return matterEfileFolders[row.suggested_matter_id] || ''
+    const matterId = resolveServiceEmailMatterId(row)
+    if (!matterId) return ''
+    return matterEfileFolders[matterId] || ''
   }
 
   function sanitizeServiceEfilePath(value = '', row = null) {
-    const matterName = row?.suggested_matter_id ? matterLabel(row.suggested_matter_id) : '{Matter}'
+    const matterId = resolveServiceEmailMatterId(row)
+    const matterName = matterId ? matterLabel(matterId) : '{Matter}'
     return String(value || '')
       .replace(/\$\{handle\.name\}/g, '')
       .replace(/\{handle\.name\}/g, '')
@@ -19278,11 +19295,26 @@ useEffect(() => {
       .trim()
   }
 
+  function serviceEmailRowHasGenericTemplatePath(row) {
+    const raw = String(row?.suggested_save_path || '')
+    return /\{Matter\}|\{matter\}|\$\{handle\.name\}|\{handle\.name\}/.test(raw)
+  }
+
+  function serviceEmailSavePathSource(row) {
+    const matterId = resolveServiceEmailMatterId(row)
+    if (matterId && matterEfileFolders[matterId]) return 'matter_table'
+    if (row?.suggested_save_path && !serviceEmailRowHasGenericTemplatePath(row)) return 'row'
+    if (row?.suggested_save_path) return 'row_template'
+    const source = serviceEmailSource(row?.source_id)
+    if (source?.default_onedrive_folder) return 'source_default'
+    return ''
+  }
+
   function serviceEmailSavePath(row) {
-    const source = serviceEmailSource(row.source_id)
+    const source = serviceEmailSource(row?.source_id)
     const matterPath = serviceEmailKnownMatterPath(row)
-    // A matter-specific path always wins over a generic row/source template.
-    const rawPath = matterPath || row.suggested_save_path || source?.default_onedrive_folder || ''
+    // The Matter Table efile_folder is the source of truth for accepted efile PDFs and notification-of-service PDFs.
+    const rawPath = matterPath || row?.suggested_save_path || source?.default_onedrive_folder || ''
     return sanitizeServiceEfilePath(rawPath, row)
   }
 
@@ -19386,34 +19418,35 @@ useEffect(() => {
   async function promptForMatterEfileFolder(rowId) {
     const row = serviceEmailRows.find((item) => item.id === rowId)
     if (!row) return
-    if (!row.suggested_matter_id) {
+    const matterId = resolveServiceEmailMatterId(row)
+    if (!matterId) {
       alert('Pick the matter first, then choose its efile folder path.')
       return
     }
-    const current = serviceEmailSavePath(row) || `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(row.suggested_matter_id)}\\efile`
+    const current = serviceEmailSavePath(row) || `C:\Users\bever\OneDrive - Beveridge Law Firm, PLLC\All Matters\1. Open Cases\${matterLabel(matterId)}\efile`
     let next = ''
 
     let selectedDirectoryHandle = null
     if (window.showDirectoryPicker) {
       try {
         selectedDirectoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
-        next = window.prompt(`Chrome confirmed you selected folder: ${selectedDirectoryHandle?.name || 'folder'}.\n\nFor security, Chrome does not reveal the full Windows path automatically. Paste or confirm the full OneDrive efile folder path for display/logging only. The app will save PDFs to the folder you just selected.\n\nMatter:\n${matterLabel(row.suggested_matter_id)}`, current) || current
+        next = window.prompt(`Chrome confirmed you selected folder: ${selectedDirectoryHandle?.name || 'folder'}.\n\nFor security, Chrome does not reveal the full Windows path automatically. Paste or confirm the full OneDrive efile folder path for display/logging only. The app will save PDFs to the folder you just selected.\n\nMatter:\n${matterLabel(matterId)}`, current) || current
       } catch (error) {
         if (error?.name === 'AbortError') return
       }
     }
 
     if (!next) {
-      next = window.prompt(`Paste or type the OneDrive efile folder path for:\n${matterLabel(row.suggested_matter_id)}`, current) || ''
+      next = window.prompt(`Paste or type the OneDrive efile folder path for:\n${matterLabel(matterId)}`, current) || ''
     }
-    next = sanitizeServiceEfilePath(next, row)
+    next = sanitizeServiceEfilePath(next, { ...row, suggested_matter_id: matterId })
     if (!next) return
-    setMatterEfileFolders((folders) => ({ ...folders, [row.suggested_matter_id]: next }))
+    setMatterEfileFolders((folders) => ({ ...folders, [matterId]: next }))
     if (selectedDirectoryHandle) {
-      rememberServiceEfileFolderHandle(row.suggested_matter_id, rowId, selectedDirectoryHandle)
+      rememberServiceEfileFolderHandle(matterId, rowId, selectedDirectoryHandle)
     }
-    setServiceEmailRows((rows) => rows.map((item) => item.id === rowId ? { ...item, suggested_save_path: next } : item))
-    setServiceEmailScanNote(`Saved efile folder for ${matterLabel(row.suggested_matter_id)}. PDFs will save to the selected folder you chose, not the Case Controller Mio app folder.`)
+    setServiceEmailRows((rows) => rows.map((item) => item.id === rowId ? { ...item, suggested_matter_id: matterId, suggested_save_path: next } : item))
+    setServiceEmailScanNote(`Saved efile folder for ${matterLabel(matterId)} in the Matter Table. Accepted efile PDFs and notification-of-service PDFs for this matter will use that folder.`)
   }
 
   function openServiceEmailInOutlook(row) {
@@ -19576,11 +19609,12 @@ useEffect(() => {
   }
 
   async function ensureServiceEmailDirectoryHandle(row) {
-    const matterHandleKey = row?.suggested_matter_id ? String(row.suggested_matter_id) : ''
+    const resolvedMatterIdForSave = resolveServiceEmailMatterId(row)
+    const matterHandleKey = resolvedMatterIdForSave ? String(resolvedMatterIdForSave) : ''
     const rowHandleKey = row?.id ? String(row.id) : ''
     let directoryHandle = (rowHandleKey && serviceEmailRowFolderHandlesRef.current[rowHandleKey])
       || (matterHandleKey && matterEfileFolderHandlesRef.current[matterHandleKey])
-      || (matterHandleKey && matterEfileFolderHandles[row.suggested_matter_id])
+      || (matterHandleKey && matterEfileFolderHandles[resolvedMatterIdForSave])
       || null
 
     const verifyHandle = async (handle) => {
@@ -19603,21 +19637,21 @@ useEffect(() => {
       throw new Error('Chrome did not provide folder access. Use Chrome or Edge and click Browse/set to choose the actual matter efile folder.')
     }
 
-    const displayPath = serviceEmailSavePath(row) || (row?.suggested_matter_id ? `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(row.suggested_matter_id)}\\efile` : '')
+    const displayPath = serviceEmailSavePath(row) || (resolvedMatterIdForSave ? `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(resolvedMatterIdForSave)}\\efile` : '')
     const shouldPick = window.confirm(`Choose the actual matter efile folder where this PDF should be saved.\n\nMatter:\n${row?.suggested_matter_id ? matterLabel(row.suggested_matter_id) : '(matter not selected)'}\n\nDisplay path:\n${displayPath || '(not set)'}`)
     if (!shouldPick) throw new Error('No matter efile folder was selected.')
     directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
-    rememberServiceEfileFolderHandle(row?.suggested_matter_id, row?.id, directoryHandle)
+    rememberServiceEfileFolderHandle(resolvedMatterIdForSave, row?.id, directoryHandle)
 
-    if (row?.suggested_matter_id) {
+    if (resolvedMatterIdForSave) {
       const nextPath = window.prompt(
         `Chrome allowed Case Controller to write to the selected folder: ${directoryHandle?.name || 'selected folder'}.\n\nFor the row display, settings, and log, paste or confirm the full Windows path for this matter efile folder. This text does not control where Chrome writes; the selected folder permission does.`,
         displayPath
       ) || displayPath
-      const cleanPath = sanitizeServiceEfilePath(nextPath, row)
+      const cleanPath = sanitizeServiceEfilePath(nextPath, { ...row, suggested_matter_id: resolvedMatterIdForSave })
       if (cleanPath) {
-        setMatterEfileFolders((folders) => ({ ...folders, [row.suggested_matter_id]: cleanPath }))
-        setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? { ...item, suggested_save_path: cleanPath } : item))
+        setMatterEfileFolders((folders) => ({ ...folders, [resolvedMatterIdForSave]: cleanPath }))
+        setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? { ...item, suggested_matter_id: resolvedMatterIdForSave, suggested_save_path: cleanPath } : item))
       }
     }
     return directoryHandle
@@ -19768,10 +19802,11 @@ useEffect(() => {
   function updateServiceEmailRowSavePath(rowId, value) {
     setServiceEmailRows((rows) => rows.map((row) => {
       if (row.id !== rowId) return row
-      if (row.suggested_matter_id && value) {
-        setMatterEfileFolders((folders) => ({ ...folders, [row.suggested_matter_id]: value }))
+      const matterId = resolveServiceEmailMatterId(row)
+      if (matterId && value) {
+        setMatterEfileFolders((folders) => ({ ...folders, [matterId]: value }))
       }
-      return { ...row, suggested_save_path: value }
+      return { ...row, suggested_save_path: value, suggested_matter_id: matterId || row.suggested_matter_id }
     }))
   }
 
@@ -20689,7 +20724,7 @@ Ben`) : (row.draft_response || '') })
           <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>
             Save PDFs and move emails to Read
           </button>
-          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Use Browse/set to remember the efile folder for that matter.</span>
+          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings > Matter Table for that matched matter. Use Browse/set only if the Matter Table path is missing or wrong.</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(520px, 1fr)', gap: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: '68vh' }}>
