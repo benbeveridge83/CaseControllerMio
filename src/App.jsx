@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V96'
+const MIO_APP_VERSION = 'Mio V97'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -19323,6 +19323,111 @@ useEffect(() => {
     return Boolean(path && !/\{Matter\}|\{matter\}|\$\{handle\.name\}|\{handle\.name\}/.test(path))
   }
 
+
+  function oneDrivePathFromMatterEfileFolder(pathValue = '') {
+    const raw = String(pathValue || '').trim()
+    if (!raw) return ''
+    let path = raw.replace(/\\/g, '/')
+    const marker = '/All Matters/'
+    const markerIndex = path.toLowerCase().indexOf(marker.toLowerCase())
+    if (markerIndex >= 0) path = path.slice(markerIndex)
+    if (!path.startsWith('/')) path = `/${path}`
+    path = path.replace(/\/+/g, '/')
+    return path
+  }
+
+  async function uploadServicePdfToOneDriveFolder(row, fileName, blob) {
+    if (!blob || !fileName) return null
+    const savePath = serviceEmailSavePath(row)
+    const oneDriveFolderPath = oneDrivePathFromMatterEfileFolder(savePath)
+    if (!oneDriveFolderPath || !oneDriveFolderPath.toLowerCase().includes('/all matters/')) return null
+    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) return null
+    const cleanName = String(fileName || 'efile-document.pdf').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
+    const uploadPath = `${oneDriveFolderPath}/${cleanName}`.replace(/\/+/g, '/')
+    const encoded = oneDriveEncodePath(uploadPath)
+    const result = await graphFetch(`/me/drive/root:/${encoded}:/content`, {
+      method: 'PUT',
+      body: blob,
+      allowInteractive: true,
+      headers: { 'Content-Type': blob.type || 'application/pdf' }
+    })
+    return {
+      ok: true,
+      fileName: cleanName,
+      savedPath: savePath ? `${savePath}\\${cleanName}` : uploadPath,
+      oneDrivePath: uploadPath,
+      webUrl: result?.webUrl || '',
+      driveItemId: result?.id || ''
+    }
+  }
+
+  function servicePdfMatchScore(row, file) {
+    const name = String(file?.name || '').toLowerCase()
+    const candidates = [
+      row?.suggested_document_name,
+      row?.extracted_pdf_name,
+      safeServiceDocumentNameFromLink(primaryServiceFilingLink(row) || {}),
+      row?.subject
+    ].filter(Boolean).map((value) => cleanServicePdfBaseName(String(value)).toLowerCase().replace(/\.pdf$/i, ''))
+    let score = 0
+    candidates.forEach((candidate) => {
+      if (!candidate) return
+      if (name.includes(candidate)) score = Math.max(score, candidate.length + 50)
+      candidate.split(/\s+/).filter((part) => part.length >= 4).forEach((part) => {
+        if (name.includes(part)) score += 2
+      })
+    })
+    return score
+  }
+
+  async function chooseBulkDownloadedServicePdfs(rows = []) {
+    const needsSource = rows.filter((row) => {
+      const attachment = primaryServicePdfAttachment(row)
+      return !attachment?.blob && !attachment?.file && !attachment?.content_url && primaryServiceFilingLink(row)
+    })
+    if (!needsSource.length || !window.showOpenFilePicker) return {}
+    const useBulkPicker = window.confirm(`${needsSource.length} filing/service email(s) have eFile PDF links that Chrome may block Case Controller from reading directly.\n\nIf you already opened/downloaded those PDFs from the eFile links, click OK to select all downloaded PDFs at once. Case Controller will match them to the rows, rename them, save them to the Matter Table efile folder in OneDrive, and then move the emails to Read.\n\nClick Cancel to let Mio try direct download first.`)
+    if (!useBulkPicker) return {}
+    try {
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
+        startIn: 'downloads',
+        types: [{ description: 'PDF files', accept: { 'application/pdf': ['.pdf'] } }]
+      })
+      const files = []
+      for (const handle of handles) files.push(await handle.getFile())
+      const byRow = {}
+      const unused = [...files]
+      needsSource.forEach((row, index) => {
+        let bestIndex = -1
+        let bestScore = 0
+        unused.forEach((file, fileIndex) => {
+          const score = servicePdfMatchScore(row, file)
+          if (score > bestScore) { bestScore = score; bestIndex = fileIndex }
+        })
+        if (bestIndex < 0 && unused[index]) bestIndex = index
+        if (bestIndex >= 0 && unused[bestIndex]) {
+          const file = unused.splice(bestIndex, 1)[0]
+          byRow[row.id] = {
+            id: `bulk-local-${row.id}-${Date.now()}`,
+            name: file.name,
+            content_type: file.type || 'application/pdf',
+            size: file.size || 0,
+            is_inline: false,
+            content_url: URL.createObjectURL(file),
+            content_loaded: true,
+            blob: file
+          }
+        }
+      })
+      setServiceEmailScanNote(`Selected ${files.length} downloaded PDF source file(s). Mio will match them to visible filing rows and save them to the Matter Table efile folders.`)
+      return byRow
+    } catch (error) {
+      if (error?.name !== 'AbortError') setServiceEmailScanNote(`Could not select downloaded PDFs: ${error.message || error}`)
+      return {}
+    }
+  }
+
   async function dataUrlToBlob(dataUrl = '') {
     if (!dataUrl) return null
     const response = await fetch(dataUrl)
@@ -19734,16 +19839,27 @@ useEffect(() => {
     }
 
     try {
-      const directoryHandle = await ensureServiceEmailDirectoryHandle(currentRow)
-      if (!directoryHandle?.getFileHandle) throw new Error('No folder permission was available after Browse/set.')
+      let savedInfo = null
+      try {
+        savedInfo = await uploadServicePdfToOneDriveFolder(currentRow, fileName, blob)
+      } catch (oneDriveError) {
+        console.warn('OneDrive upload from service email failed, falling back to browser folder handle:', oneDriveError)
+        setServiceEmailScanNote(`OneDrive upload failed for ${fileName}: ${oneDriveError.message || oneDriveError}. Mio will try browser folder access next.`)
+      }
 
-      // IMPORTANT: Do not use Chrome's Save As dialog here. It ignores/changes the target folder
-      // too often and confuses the filename. We already have permission to the selected efile
-      // folder, so write the PDF directly there with the exact row filename.
-      const targetHandle = await directoryHandle.getFileHandle(fileName, { create: true })
-      const writable = await targetHandle.createWritable()
-      await writable.write(blob)
-      await writable.close()
+      if (!savedInfo) {
+        const directoryHandle = await ensureServiceEmailDirectoryHandle(currentRow)
+        if (!directoryHandle?.getFileHandle) throw new Error('No folder permission was available after Browse/set.')
+
+        // IMPORTANT: Do not use Chrome's Save As dialog here. It ignores/changes the target folder
+        // too often and confuses the filename. We already have permission to the selected efile
+        // folder, so write the PDF directly there with the exact row filename.
+        const targetHandle = await directoryHandle.getFileHandle(fileName, { create: true })
+        const writable = await targetHandle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+        savedInfo = { ok: true, fileName, savedPath: `${serviceEmailSavePath(currentRow)}\${fileName}` }
+      }
 
       await createServiceEmailDocumentRecord({
         ...currentRow,
@@ -19758,11 +19874,14 @@ useEffect(() => {
         suggested_document_name: fileName,
         saved_pdf_name: fileName,
         saved_pdf_at: new Date().toISOString(),
+        saved_pdf_path: savedInfo?.savedPath || '',
+        saved_pdf_onedrive_path: savedInfo?.oneDrivePath || '',
+        saved_pdf_web_url: savedInfo?.webUrl || '',
         has_attachments: true,
         attachments: [attachment, ...((item.attachments || []).filter((att) => (att.id || att.name) !== (attachment.id || attachment.name)))]
       } : item))
-      setServiceEmailScanNote(`Saved ${fileName} to the selected matter efile folder and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
-      return true
+      setServiceEmailScanNote(`Saved ${fileName} to ${savedInfo?.oneDrivePath ? 'OneDrive' : 'the selected matter efile folder'} and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
+      return { ok: true, fileName, savedPath: savedInfo?.savedPath || '', oneDrivePath: savedInfo?.oneDrivePath || '', webUrl: savedInfo?.webUrl || '' }
     } catch (error) {
       if (error?.name !== 'AbortError') setServiceEmailScanNote(`Could not save PDF to the selected matter folder: ${error.message || error}`)
       return false
@@ -20647,6 +20766,7 @@ Ben`) : (row.draft_response || '') })
     const total = rows.length
 
     try {
+      const bulkSourcePdfsByRowId = await chooseBulkDownloadedServicePdfs(rows)
       for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index]
         const category = serviceEmailRowCategory(row)
@@ -20658,7 +20778,7 @@ Ben`) : (row.draft_response || '') })
           // Online version: use Microsoft Graph/browser folder access instead of the old
           // local Node helper. Do not use Chrome's Save As dialog; write directly to
           // the selected matter efile folder with the row's Document name.
-          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+          const savedPdf = await saveDownloadedServicePdf(row, bulkSourcePdfsByRowId[row.id] || null, { tryDirectDownload: true, allowPick: !bulkSourcePdfsByRowId[row.id] })
           if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
@@ -20724,7 +20844,7 @@ Ben`) : (row.draft_response || '') })
           <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>
             Save PDFs and move emails to Read
           </button>
-          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings &gt; Matter Table for that matched matter. Use Browse/set only if the Matter Table path is missing or wrong.</span>
+          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings &gt; Matter Table for that matched matter. Mio first tries to save directly to OneDrive. If Tyler/eFile blocks the PDF link, download/open the PDF link first, then select the downloaded PDFs when prompted.</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(520px, 1fr)', gap: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: '68vh' }}>
