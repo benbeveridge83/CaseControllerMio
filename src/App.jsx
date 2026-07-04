@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V94'
+const MIO_APP_VERSION = 'Mio V95'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -20724,7 +20724,7 @@ Ben`) : (row.draft_response || '') })
           <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>
             Save PDFs and move emails to Read
           </button>
-          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings > Matter Table for that matched matter. Use Browse/set only if the Matter Table path is missing or wrong.</span>
+          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings &gt; Matter Table for that matched matter. Use Browse/set only if the Matter Table path is missing or wrong.</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(520px, 1fr)', gap: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: '68vh' }}>
