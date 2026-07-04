@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V98'
+const MIO_APP_VERSION = 'Mio V99'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -19609,6 +19609,47 @@ useEffect(() => {
     }
   }
 
+  function base64ToServiceBlob(base64 = '', contentType = 'application/pdf') {
+    const clean = String(base64 || '').replace(/^data:[^,]+,/, '').replace(/\s/g, '')
+    if (!clean) return null
+    const binary = atob(clean)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return new Blob([bytes], { type: contentType || 'application/pdf' })
+  }
+
+  async function downloadServiceFilingLinkThroughEdgeFunction(row, link, safeName) {
+    if (!link?.url || !supabase?.functions?.invoke) return null
+    try {
+      const { data, error } = await supabase.functions.invoke('download-efile-pdf', {
+        body: {
+          url: link.url,
+          file_name: safeName,
+          expected_content_type: 'application/pdf'
+        }
+      })
+      if (error) throw error
+      const base64 = data?.file_base64 || data?.content_base64 || data?.base64 || data?.body_base64 || ''
+      const blob = base64ToServiceBlob(base64, data?.content_type || data?.mime_type || 'application/pdf')
+      if (!blob || blob.size < 20) throw new Error(data?.message || 'Edge function returned no PDF bytes.')
+      const returnedName = cleanServicePdfBaseName(data?.file_name || data?.filename || safeName)
+      const objectUrl = URL.createObjectURL(blob)
+      return {
+        id: `edge-downloaded-${Date.now()}`,
+        name: returnedName,
+        content_type: blob.type || 'application/pdf',
+        size: blob.size,
+        is_inline: false,
+        content_url: objectUrl,
+        content_loaded: true,
+        blob
+      }
+    } catch (error) {
+      console.warn('Could not download eFile PDF through Supabase Edge Function:', error)
+      return null
+    }
+  }
+
   async function downloadServiceFilingLink(row, options = {}) {
     const link = primaryServiceFilingLink(row)
     if (!link?.url) {
@@ -19617,44 +19658,50 @@ useEffect(() => {
     }
     const guessedName = row.extracted_pdf_name || safeServiceDocumentNameFromLink(link) || link.fileName || link.name || 'efile-document.pdf'
     const safeName = cleanServicePdfBaseName(guessedName)
-    try {
-      const response = await fetch(link.url, { credentials: 'include' })
-      if (!response.ok) throw new Error(`Download returned ${response.status}`)
-      const blob = await response.blob()
-      const type = blob.type || 'application/pdf'
-      const objectUrl = URL.createObjectURL(blob)
-      const attachment = {
-        id: `downloaded-${Date.now()}`,
-        name: safeName,
-        content_type: type,
-        size: blob.size,
-        is_inline: false,
-        content_url: objectUrl,
-        content_loaded: true,
-        blob
+
+    let attachment = await downloadServiceFilingLinkThroughEdgeFunction(row, link, safeName)
+
+    if (!attachment) {
+      try {
+        // Browser fallback. Tyler/eFile usually blocks this with CORS in production, so the
+        // Supabase Edge Function above is the real automatic path for hosted Mio.
+        const response = await fetch(link.url, { credentials: 'include' })
+        if (!response.ok) throw new Error(`Download returned ${response.status}`)
+        const blob = await response.blob()
+        const type = blob.type || 'application/pdf'
+        const objectUrl = URL.createObjectURL(blob)
+        attachment = {
+          id: `downloaded-${Date.now()}`,
+          name: safeName,
+          content_type: type,
+          size: blob.size,
+          is_inline: false,
+          content_url: objectUrl,
+          content_loaded: true,
+          blob
+        }
+      } catch (error) {
+        console.warn('Could not fetch eFile link directly:', error)
+        if (options.openOnFail !== false) {
+          window.open(link.url, '_blank', 'noopener,noreferrer')
+        }
+        setServiceEmailScanNote('Mio could not automatically download the Tyler/eFile PDF from the browser because Tyler blocks cross-site browser fetches. Deploy the Supabase Edge Function named download-efile-pdf so Mio can download it server-side, then click Save PDFs and move emails to Read again.')
+        return null
       }
-      const docName = makeServicePdfDocumentName(row, safeName)
-      setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? {
-        ...item,
-        has_attachments: true,
-        attachments: [attachment, ...((item.attachments || []).filter((att) => att.id !== attachment.id && att.name !== attachment.name))],
-        extracted_pdf_name: safeName,
-        suggested_document_name: docName || item.suggested_document_name
-      } : item))
-      setSelectedPdfPreviewName(safeName)
-      setSelectedPdfPreviewUrl(objectUrl)
-      setServiceEmailScanNote(`Downloaded ${safeName}. Review it, then save/process it.`)
-      return attachment
-    } catch (error) {
-      console.warn('Could not fetch eFile link directly:', error)
-      if (options.openOnFail !== false) {
-        window.open(link.url, '_blank', 'noopener,noreferrer')
-        setServiceEmailScanNote(`Opened the eFile link in a new window because the browser blocked direct download here (${error.message || error}). If you manually save from that window, Chrome controls the Save As folder. To let Case Controller save directly, use Browse/set and a link that can be fetched by the browser or add a backend download helper later.`)
-      } else {
-        setServiceEmailScanNote(`Could not download the eFile PDF directly from the link: ${error.message || error}. The app did not open Save As because that would save to Chrome's default folder.`)
-      }
-      return null
     }
+
+    const docName = makeServicePdfDocumentName(row, attachment.name || safeName)
+    setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? {
+      ...item,
+      has_attachments: true,
+      attachments: [attachment, ...((item.attachments || []).filter((att) => att.id !== attachment.id && att.name !== attachment.name))],
+      extracted_pdf_name: attachment.name || safeName,
+      suggested_document_name: docName || item.suggested_document_name
+    } : item))
+    setSelectedPdfPreviewName(attachment.name || safeName)
+    setSelectedPdfPreviewUrl(attachment.content_url || '')
+    setServiceEmailScanNote(`Downloaded ${attachment.name || safeName}. Review it, then save/process it.`)
+    return attachment
   }
 
   async function pickLocalServicePdfAttachment(row) {
