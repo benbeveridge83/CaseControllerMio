@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V95'
+const MIO_APP_VERSION = 'Mio V96'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -19423,7 +19423,7 @@ useEffect(() => {
       alert('Pick the matter first, then choose its efile folder path.')
       return
     }
-    const current = serviceEmailSavePath(row) || `C:\Users\bever\OneDrive - Beveridge Law Firm, PLLC\All Matters\1. Open Cases\${matterLabel(matterId)}\efile`
+    const current = serviceEmailSavePath(row) || `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(matterId)}\\efile`
     let next = ''
 
     let selectedDirectoryHandle = null
