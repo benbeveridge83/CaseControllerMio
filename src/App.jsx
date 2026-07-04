@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V91'
+const MIO_APP_VERSION = 'Mio V92'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -12534,6 +12534,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       'case_status',
       'matter_status',
       'court_name',
+      'efile_folder',
       'matter_notes',
       'matter_active'
     ]
@@ -12638,6 +12639,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       case_status: matter.case_status || '',
       matter_status: matter.matter_status || '',
       court_name: matter.courts?.court_name || '',
+      efile_folder: matterEfileFolders[matter.id] || '',
       matter_notes: matter.notes || '',
       matter_active: matter.is_active ? 'TRUE' : 'FALSE'
     }))
@@ -12904,6 +12906,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           ...(current || {}),
           [String(newMatter.id)]: { ...((current || {})[String(newMatter.id)] || {}), __matter_default__: Number(importedMatterRate) }
         }))
+      }
+
+      const importedEfileFolder = String(row.efile_folder || row['Efile Folder'] || row['E-File Folder'] || row['eFile Folder'] || row['Matter Efile Folder'] || '').trim()
+      if (importedEfileFolder && newMatter?.id) {
+        setMatterEfileFolders((current) => ({ ...(current || {}), [String(newMatter.id)]: importedEfileFolder }))
       }
 
       imported += 1
@@ -13576,6 +13583,7 @@ async function updateTeamCell(memberId, field, value) {
       'Case Status',
       'Matter Status',
       'Court',
+      'Efile Folder',
       'Opposing/Addl Party 1',
       'Party 1 Counsel',
       'Party 1 Counsel Firm',
@@ -14223,7 +14231,7 @@ async function updateTeamCell(memberId, field, value) {
   function settingsMatterColumnWidth(index) {
     const widths = [
       160, 160, 220, 160, 220, 150, 90, 100,
-      240, 160, 160, 140, 180, 180, 180, 170, 190, 240, 220, 220, 240, 260, 120
+      240, 160, 160, 140, 180, 180, 180, 170, 190, 240, 320, 220, 220, 240, 260, 120
     ]
 
     return widths[index] || 160
@@ -14795,6 +14803,7 @@ async function updateTeamCell(memberId, field, value) {
     'case_status',
     'matter_status',
     'court_name',
+    null,
     'opposing_party_1',
     'opposing_party_1_counsel',
     'opposing_party_1_counsel_firm',
@@ -33854,7 +33863,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 <h2>Matter Table</h2>
                 <p>
                   This is an editable Excel-style table with one row per matter. Client fields save to the client record.
-                  Matter fields save to the matter record. Dropdowns use the options from Settings.
+                  Matter fields save to the matter record. Dropdowns use the options from Settings. The Efile Folder column saves to Mio/Supabase state and is used by Service Inbox accepted efile downloads.
                 </p>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
@@ -33908,7 +33917,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     borderBottom: 0
                   }}
                 >
-                  <div style={{ width: 3400, height: 1 }} />
+                  <div style={{ width: 3720, height: 1 }} />
                 </div>
 
                 <div
@@ -33916,7 +33925,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   onScroll={() => syncMatterTableScroll('body')}
                   style={{ overflow: 'auto', width: '100%', maxHeight: '72vh', border: '1px solid #aaa' }}
                 >
-                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 3400, width: 'max-content' }}>
+                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 3720, width: 'max-content' }}>
                     <thead>
                       <tr>
                         {matterTableHeaders().map((header, index) => {
@@ -34112,6 +34121,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                                 </option>
                               ))}
                             </EditableSelectCell>
+                          </td>
+
+                          <td>
+                            <input
+                              value={matterEfileFolders[matter.id] || ''}
+                              onChange={(e) => setMatterEfileFolders((folders) => ({ ...(folders || {}), [matter.id]: e.target.value }))}
+                              placeholder={'C:\Users\bever\OneDrive - Beveridge Law Firm, PLLC\All Matters\1. Open Cases\{Matter}\efile'}
+                              style={{ width: 300, border: '1px solid #ccc', padding: 4 }}
+                            />
                           </td>
 
                           <td>
