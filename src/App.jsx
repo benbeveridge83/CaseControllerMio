@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V92'
+const MIO_APP_VERSION = 'Mio V93'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2033,6 +2033,8 @@ function App() {
   const [inventoryCompareScenarioByMatter, setInventoryCompareScenarioByMatter] = useState({})
   const [inventoryViewModeByMatter, setInventoryViewModeByMatter] = useState({})
   const [inventoryCollapsedGroupsByMatter, setInventoryCollapsedGroupsByMatter] = useState({})
+  const [inventoryAiImportBusy, setInventoryAiImportBusy] = useState(false)
+  const [inventoryAiImportNote, setInventoryAiImportNote] = useState('')
   const [inventoryFullTableHeight, setInventoryFullTableHeight] = useState(() => {
     try { return Number(localStorage.getItem('caseMioInventoryFullTableHeight') || '520') || 520 }
     catch { return 520 }
@@ -17982,6 +17984,52 @@ useEffect(() => {
     return matters.find((matter) => matterFolderCandidates(matter).some((candidate) => candidate && (folderNorm.includes(candidate) || candidate.includes(folderNorm)))) || null
   }
 
+
+  function oneDriveJoinPath(...parts) {
+    return `/${parts.map((part) => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')}`.replace(/\/+/, '/')
+  }
+
+  function defaultOpenCaseFolderPath() {
+    return '/All Matters/1. Open Cases'
+  }
+
+  async function autofillMatterEfileFoldersFromOneDrive() {
+    if (!confirm('Scan OneDrive /All Matters/1. Open Cases for matter folders and fill each matched matter efile folder path? Existing efile folder paths will not be overwritten unless you confirm again.')) return
+    const overwriteExisting = confirm('Overwrite existing efile folder values if a matching OneDrive folder is found? Click Cancel to fill blanks only.')
+    setOneDriveBusy(true)
+    try {
+      const rootPath = defaultOpenCaseFolderPath()
+      const openChildren = await graphFetch(`/me/drive/root:/${oneDriveEncodePath(rootPath)}:/children?$top=200`, { allowInteractive: true })
+      const matterFolders = (openChildren?.value || []).filter((item) => item.folder)
+      const updates = {}
+      const notes = []
+      for (const folder of matterFolders) {
+        const matter = matchMatterForFolderName(folder.name)
+        if (!matter?.id) continue
+        if (!overwriteExisting && matterEfileFolders[matter.id]) continue
+        let efileFolderName = 'efile'
+        try {
+          const children = await graphFetch(`/me/drive/items/${encodeURIComponent(folder.id)}/children?$top=200`, { allowInteractive: true })
+          const efileFolder = (children?.value || []).find((child) => child.folder && /^e[-_ ]?file$/i.test(String(child.name || '').trim()))
+          if (efileFolder?.name) efileFolderName = efileFolder.name
+        } catch {}
+        updates[matter.id] = oneDriveJoinPath(rootPath, folder.name, efileFolderName)
+        notes.push(`${matterLabel(matter.id) || matter.name || folder.name} -> ${updates[matter.id]}`)
+      }
+      if (!Object.keys(updates).length) {
+        alert('No matching matter efile folders were found. Load/connect OneDrive first and confirm the matter folder names resemble Mio matter names.')
+      } else {
+        setMatterEfileFolders((current) => ({ ...(current || {}), ...updates }))
+        alert(`Filled ${Object.keys(updates).length} efile folder path(s).`)
+      }
+      setOneDriveNote(notes.length ? `Efile folder autofill: ${notes.slice(0, 5).join(' | ')}${notes.length > 5 ? ` | +${notes.length - 5} more` : ''}` : 'Efile folder autofill found no matches.')
+    } catch (error) {
+      alert(`Could not scan OneDrive for efile folders: ${error.message || error}`)
+    } finally {
+      setOneDriveBusy(false)
+    }
+  }
+
   async function syncOneDriveCaseFoldersByMatterStatus() {
     if (!confirm('Move OneDrive matter folders between 1. Open Cases and 4. Closed Cases based on Mio case/matter status? Test on a small set first if you are unsure.')) return
     setOneDriveBusy(true)
@@ -22610,6 +22658,159 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
+
+  function inventoryCategoryFromText(text = '') {
+    const value = String(text || '').toLowerCase()
+    if (/house|residence|real estate|property|homestead|land|lot|acre|rental/.test(value)) return { type: 'asset', category: 'Real Estate', subcategory: 'Residence' }
+    if (/vehicle|car|truck|boat|rv|trailer|toyota|ford|chevy|tesla|honda|nissan/.test(value)) return { type: 'asset', category: 'Vehicles', subcategory: 'Car' }
+    if (/401|ira|retirement|pension|trs|tcdrs/.test(value)) return { type: 'asset', category: 'Retirement', subcategory: '401(k)' }
+    if (/bank|checking|savings|account|cash|venmo|paypal/.test(value)) return { type: 'asset', category: 'Financial Accounts', subcategory: 'Checking' }
+    if (/business|llc|corp|partnership|sole proprietorship/.test(value)) return { type: 'asset', category: 'Business Interests', subcategory: 'LLC' }
+    if (/credit card|visa|mastercard|amex|personal loan|student loan|irs|medical debt|attorney fee/.test(value)) return { type: 'liability', category: 'Unsecured Debt', subcategory: 'Credit Card', debt_type: 'unsecured' }
+    if (/mortgage|heloc|tax lien|judgment lien|secured debt|lien|loan balance/.test(value)) return { type: 'asset', category: 'Secured Debt', subcategory: 'Mortgage', debt_type: 'secured' }
+    return { type: 'asset', category: 'Personal Property', subcategory: 'Household Goods' }
+  }
+
+  function inventoryEstateFromText(text = '') {
+    const value = String(text || '').toLowerCase()
+    if (/wife|w\b|wife's|wifes/.test(value)) return 'wife_separate'
+    if (/husband|h\b|husband's|husbands/.test(value)) return 'husband_separate'
+    if (/joint|community|both/.test(value)) return 'community'
+    return 'community'
+  }
+
+  function parseInventoryTextToItems(rawText = '') {
+    const lines = String(rawText || '').split(/\n+/).map((line) => line.replace(/\s+/g, ' ').trim()).filter((line) => line.length > 2)
+    const items = []
+    for (const line of lines) {
+      if (!/[a-z]/i.test(line)) continue
+      const moneyMatch = line.match(/\$?\s*(-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|-?\d+(?:\.\d{2})?)\b/g)
+      const amount = moneyMatch?.length ? moneyMatch[moneyMatch.length - 1] : ''
+      if (!amount && line.length < 18) continue
+      const cat = inventoryCategoryFromText(line)
+      const nameText = line.replace(/\$?\s*-?\d{1,3}(?:,\d{3})*(?:\.\d{2})?/g, '').replace(/\b(value|amount|balance|total)\b/ig, '').trim()
+      items.push({
+        type: cat.type,
+        category: cat.category,
+        subcategory: cat.subcategory || '',
+        debt_type: cat.debt_type || (cat.type === 'liability' ? 'unsecured' : ''),
+        item_name: nameText.slice(0, 80) || cat.category,
+        description: line,
+        estate: inventoryEstateFromText(line),
+        characterization: inventoryEstateFromText(line) === 'community' ? 'Community' : 'Separate',
+        value: amount || '',
+        valuation_source: 'AI/import review',
+        possession: '',
+        proposed_award: ''
+      })
+      if (items.length >= 80) break
+    }
+    return items
+  }
+
+  function importInventoryRowsToMatter(matterId, scenarioId, rows = []) {
+    const imported = (rows || []).map((row) => {
+      const text = Object.values(row || {}).join(' ')
+      const cat = inventoryCategoryFromText(text)
+      const amount = excelCell(row, ['value', 'Value', 'amount', 'Amount', 'balance', 'Balance', 'Current Value', 'Debt Balance'], '')
+      return {
+        type: String(excelCell(row, ['type', 'Type'], cat.type)).toLowerCase().includes('debt') ? 'liability' : cat.type,
+        category: excelCell(row, ['category', 'Category'], cat.category),
+        subcategory: excelCell(row, ['subcategory', 'Subcategory'], cat.subcategory || ''),
+        item_name: excelCell(row, ['item_name', 'Item', 'item', 'Asset', 'asset', 'Description', 'description'], '').toString().slice(0, 100) || cat.category,
+        description: excelCell(row, ['description', 'Description', 'Notes', 'notes'], text).toString(),
+        estate: excelCell(row, ['estate', 'Estate', 'Owner', 'owner'], inventoryEstateFromText(text)),
+        characterization: excelCell(row, ['characterization', 'Characterization'], inventoryEstateFromText(text) === 'community' ? 'Community' : 'Separate'),
+        value: amount,
+        valuation_date: excelCell(row, ['valuation_date', 'Valuation Date'], ''),
+        valuation_source: excelCell(row, ['valuation_source', 'Valuation Source'], 'AI/import review'),
+        possession: excelCell(row, ['possession', 'Possession'], ''),
+        proposed_award: excelCell(row, ['proposed_award', 'Proposed Award'], ''),
+        debt_type: String(excelCell(row, ['debt_type', 'Debt Type'], cat.debt_type || '')).toLowerCase()
+      }
+    }).filter((item) => item.item_name || item.description)
+    addParsedInventoryItems(matterId, scenarioId, imported)
+  }
+
+  function addParsedInventoryItems(matterId, scenarioId, parsedItems = []) {
+    const now = new Date().toISOString()
+    const newItems = (parsedItems || []).map((defaults) => ({
+      id: `inv-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type: defaults.type || 'asset',
+      category: defaults.category || 'Personal Property',
+      subcategory: defaults.subcategory || '',
+      item_name: defaults.item_name || defaults.category || 'Imported Item',
+      description: defaults.description || '',
+      estate: defaults.estate || 'community',
+      characterization: defaults.characterization || 'Community',
+      date_acquired: defaults.date_acquired || '',
+      manner_acquired: defaults.manner_acquired || '',
+      location: defaults.location || '',
+      value: defaults.value || '',
+      valuation_date: defaults.valuation_date || '',
+      valuation_source: defaults.valuation_source || 'AI/import review',
+      paid_off_status: defaults.type === 'asset' ? 'Unknown' : '',
+      has_secured_debt: false,
+      linked_debt_id: '',
+      debt_type: defaults.debt_type || (defaults.type === 'liability' ? 'unsecured' : ''),
+      creditor: defaults.creditor || '',
+      balance_date: defaults.balance_date || '',
+      liable_party: defaults.liable_party || '',
+      possession: defaults.possession || '',
+      proposed_award: defaults.proposed_award || '',
+      proposed_payor: defaults.proposed_payor || '',
+      agreement_status: 'Unknown',
+      opposing_value: '',
+      opposing_award: '',
+      opposing_notes: '',
+      attorney_notes: 'Imported by AI inventory builder. Review/edit before relying on this item.',
+      client_notes: '',
+      year: defaults.year || '',
+      make: defaults.make || '',
+      model: defaults.model || '',
+      vin: defaults.vin || '',
+      mileage: defaults.mileage || '',
+      address: defaults.address || '',
+      created_at: now,
+      updated_at: now
+    }))
+    if (!newItems.length) return
+    setMatterInventoryRecord(matterId, (record) => ({
+      ...record,
+      activeScenarioId: scenarioId || record.activeScenarioId,
+      scenarios: (record.scenarios || []).map((scenario) => String(scenario.id) === String(scenarioId || record.activeScenarioId) ? { ...scenario, items: [...(scenario.items || []), ...newItems], updated_at: now } : scenario)
+    }))
+  }
+
+  async function handleInventoryAiUpload(matter, scenarioId, file) {
+    if (!matter?.id || !file) return
+    setInventoryAiImportBusy(true)
+    setInventoryAiImportNote(`Reading ${file.name}...`)
+    try {
+      if (/\.xlsx?$|\.csv$/i.test(file.name || '')) {
+        readExcelFile(file, (rows) => {
+          importInventoryRowsToMatter(matter.id, scenarioId, rows)
+          setInventoryAiImportNote(`Imported ${rows.length} spreadsheet row(s). Review the new inventory items and edit as needed.`)
+          setInventoryAiImportBusy(false)
+        })
+        return
+      }
+      const dataUrl = await fileToDataUrl(file)
+      const extraction = await extractDocumentTextForAi({ file_name: file.name, file_type: file.type, file_data: dataUrl })
+      const parsed = parseInventoryTextToItems(extraction.extracted_text || '')
+      if (!parsed.length) {
+        setInventoryAiImportNote('No inventory-like rows were found. Try a searchable PDF, Word-exported text, or spreadsheet.')
+      } else {
+        addParsedInventoryItems(matter.id, scenarioId, parsed)
+        setInventoryAiImportNote(`AI/import builder added ${parsed.length} item(s). Review category, estate, values, and debts before relying on them.`)
+      }
+    } catch (error) {
+      setInventoryAiImportNote(`Inventory AI import failed: ${error.message || error}`)
+    } finally {
+      if (!/\.xlsx?$|\.csv$/i.test(file.name || '')) setInventoryAiImportBusy(false)
+    }
+  }
+
   function renderInventoryGroupedWorkingTable(matter, selectedScenarioId, items = []) {
     const groupRows = inventoryCategoryRowsForFullTable()
     const collapsedMap = inventoryCollapsedGroupsByMatter[String(matter.id)] || {}
@@ -22625,12 +22826,27 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <div style={{ color: '#64748b', fontSize: 12 }}>Assets and secured debts are grouped together. Use H/W/Joint on a category row to add directly without scrolling a giant table.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #bfdbfe', borderRadius: 999, padding: '6px 10px', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, cursor: 'pointer' }}>
+              AI build inventory from file
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.csv"
+                style={{ display: 'none' }}
+                disabled={inventoryAiImportBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) handleInventoryAiUpload(matter, selectedScenarioId, file)
+                  e.target.value = ''
+                }}
+              />
+            </label>
             <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Expand all</button>
             <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (!collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Collapse all</button>
             <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')}>+ Add Asset</button>
             <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'liability')}>+ Add Unsecured Debt</button>
           </div>
         </div>
+        {inventoryAiImportNote && <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, padding: 10, background: '#eff6ff', color: '#1e3a8a' }}>{inventoryAiImportNote}</div>}
         <div style={{ border: '1px solid #d5dce3', borderRadius: 12, overflow: 'hidden', background: 'white' }}>
           {groupRows.map((categoryRow) => {
             const key = inventoryGroupKey(categoryRow)
@@ -33903,6 +34119,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       }}
                     />
                   </label>
+                  <button type="button" onClick={autofillMatterEfileFoldersFromOneDrive} disabled={oneDriveBusy}>Fill efile folders from OneDrive</button>
                 </div>
 
                 <div
@@ -33917,7 +34134,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     borderBottom: 0
                   }}
                 >
-                  <div style={{ width: 3720, height: 1 }} />
+                  <div style={{ width: 4020, height: 1 }} />
                 </div>
 
                 <div
@@ -33925,7 +34142,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   onScroll={() => syncMatterTableScroll('body')}
                   style={{ overflow: 'auto', width: '100%', maxHeight: '72vh', border: '1px solid #aaa' }}
                 >
-                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 3720, width: 'max-content' }}>
+                  <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 4020, width: 'max-content' }}>
                     <thead>
                       <tr>
                         {matterTableHeaders().map((header, index) => {
@@ -34127,7 +34344,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             <input
                               value={matterEfileFolders[matter.id] || ''}
                               onChange={(e) => setMatterEfileFolders((folders) => ({ ...(folders || {}), [matter.id]: e.target.value }))}
-                              placeholder={'C:\Users\bever\OneDrive - Beveridge Law Firm, PLLC\All Matters\1. Open Cases\{Matter}\efile'}
+                              placeholder={'C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\{Matter}\\efile'}
                               style={{ width: 300, border: '1px solid #ccc', padding: 4 }}
                             />
                           </td>
