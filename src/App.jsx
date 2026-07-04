@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V97'
+const MIO_APP_VERSION = 'Mio V98'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -19858,7 +19858,7 @@ useEffect(() => {
         const writable = await targetHandle.createWritable()
         await writable.write(blob)
         await writable.close()
-        savedInfo = { ok: true, fileName, savedPath: `${serviceEmailSavePath(currentRow)}\${fileName}` }
+        savedInfo = { ok: true, fileName, savedPath: `${serviceEmailSavePath(currentRow)}\\${fileName}` }
       }
 
       await createServiceEmailDocumentRecord({
@@ -20215,7 +20215,7 @@ useEffect(() => {
     setServiceGraphBusy(true)
     try {
       setServiceEmailScanNote(`Saving PDF for ${row.subject || 'email'} using Microsoft Graph/browser folder access...`)
-      const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+      const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
       if (!savedPdf) throw new Error('The PDF was not saved. Confirm the matter efile folder, allow folder access when prompted, and choose the PDF if the browser cannot fetch it automatically.')
       const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
       const billingEntry = maybeCreateServiceEmailBillingEntry(row, serviceEmailRowCategory(row) === 'accepted' ? 'Accepted e-filing review' : 'Notification of service review')
@@ -20415,7 +20415,7 @@ useEffect(() => {
           // Online version: use Microsoft Graph/browser folder access instead of the old
           // local Node helper. The browser writes directly to the selected matter efile
           // folder with the row's Document name after the user grants folder access.
-          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })
+          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
           if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
@@ -20603,7 +20603,7 @@ Ben`) : (row.draft_response || '') })
                 </div>
                 {!compact && <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {primaryServiceFilingLink(row) && <button type="button" onClick={() => downloadServiceFilingLink(row)} style={{ fontSize: 12 }}>Preview/open eFile PDF</button>}
-                  <button type="button" onClick={() => saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true })} style={{ fontSize: 12 }}>Save PDF to row folder</button>
+                  <button type="button" onClick={() => saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })} style={{ fontSize: 12 }}>Save PDF to row folder</button>
                   <span style={{ fontSize: 12, color: '#64748b' }}>No helper needed; uses Microsoft Graph/browser folder access and the row document name.</span>
                 </div>}
                 {!compact && (serviceEmailPathIsKnown(row)
@@ -20766,7 +20766,10 @@ Ben`) : (row.draft_response || '') })
     const total = rows.length
 
     try {
-      const bulkSourcePdfsByRowId = await chooseBulkDownloadedServicePdfs(rows)
+      // V98 restores the prior automatic workflow: try the row's existing attachment,
+      // the eFile/Tyler PDF link, and OneDrive save path first. Do not ask the user to
+      // bulk-pick downloaded PDFs before attempting the automatic save.
+      const bulkSourcePdfsByRowId = {}
       for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index]
         const category = serviceEmailRowCategory(row)
@@ -20778,7 +20781,7 @@ Ben`) : (row.draft_response || '') })
           // Online version: use Microsoft Graph/browser folder access instead of the old
           // local Node helper. Do not use Chrome's Save As dialog; write directly to
           // the selected matter efile folder with the row's Document name.
-          const savedPdf = await saveDownloadedServicePdf(row, bulkSourcePdfsByRowId[row.id] || null, { tryDirectDownload: true, allowPick: !bulkSourcePdfsByRowId[row.id] })
+          const savedPdf = await saveDownloadedServicePdf(row, bulkSourcePdfsByRowId[row.id] || null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
           if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
