@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V101'
+const MIO_APP_VERSION = 'Mio V102'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2058,6 +2058,10 @@ function App() {
     } catch { return 'matter_information' }
   })
   const [matterFilingsTab, setMatterFilingsTab] = useState('trial')
+  const [matterFilingImportRows, setMatterFilingImportRows] = useState([])
+  const [matterFilingImportNote, setMatterFilingImportNote] = useState('')
+  const [matterFilingPreviewUrl, setMatterFilingPreviewUrl] = useState('')
+  const [matterFilingPreviewName, setMatterFilingPreviewName] = useState('')
 
   const [timelineRangeDays, setTimelineRangeDays] = useState(() => {
     try { return Number(localStorage.getItem('caseControllerTimelineCompression') || '60') || 60 }
@@ -9392,7 +9396,47 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (current.parent_id === tagId) return
       current = tags.find((tag) => tag.id === current.parent_id)
     }
-    setTags(tags.map((tag) => tag.id === tagId ? { ...tag, parent_id: nextParentId || '' } : tag))
+    const siblingOrders = childTags(nextParentId || '')
+    setTags(tags.map((tag) => tag.id === tagId ? { ...tag, parent_id: nextParentId || '', sort_order: siblingOrders.length + 1 } : tag))
+  }
+
+  function updateTag(tagId, patch = {}) {
+    setTags((current) => current.map((tag) => tag.id === tagId ? { ...tag, ...patch } : tag))
+  }
+
+  function reorderTag(tagId, direction) {
+    const tag = tags.find((item) => item.id === tagId)
+    if (!tag) return
+    const siblings = childTags(tag.parent_id || '')
+    const index = siblings.findIndex((item) => item.id === tagId)
+    const swapWith = index + direction
+    if (index < 0 || swapWith < 0 || swapWith >= siblings.length) return
+    const first = siblings[index]
+    const second = siblings[swapWith]
+    const firstOrder = first.sort_order ?? index
+    const secondOrder = second.sort_order ?? swapWith
+    setTags(tags.map((item) => {
+      if (item.id === first.id) return { ...item, sort_order: secondOrder }
+      if (item.id === second.id) return { ...item, sort_order: firstOrder }
+      return item
+    }))
+  }
+
+  function indentTag(tagId) {
+    const tag = tags.find((item) => item.id === tagId)
+    if (!tag) return
+    const siblings = childTags(tag.parent_id || '')
+    const index = siblings.findIndex((item) => item.id === tagId)
+    if (index <= 0) return
+    const previousSibling = siblings[index - 1]
+    if (previousSibling) moveTag(tagId, previousSibling.id)
+  }
+
+  function outdentTag(tagId) {
+    const tag = tags.find((item) => item.id === tagId)
+    if (!tag?.parent_id) return
+    const parent = tags.find((item) => item.id === tag.parent_id)
+    moveTag(tagId, parent?.parent_id || '')
   }
 
 
@@ -21411,6 +21455,166 @@ Ben`) : (row.draft_response || '') })
     )
   }
 
+
+  function inferFilingDateForDocument(row = {}) {
+    const text = `${row.filing_date || ''} ${row.date || ''} ${row.received_at || ''} ${row.file_name || ''} ${row.name || ''} ${row.description || ''}`
+    const iso = text.match(/(20\d{2})[-.\/](\d{1,2})[-.\/](\d{1,2})/)
+    if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`
+    const dotted = text.match(/(\d{2})[.\-](\d{2})[.\-](\d{2})/)
+    if (dotted) return `20${dotted[1]}-${dotted[2]}-${dotted[3]}`
+    const slash = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})/)
+    if (slash) return `${slash[3].length === 2 ? '20' + slash[3] : slash[3]}-${String(slash[1]).padStart(2, '0')}-${String(slash[2]).padStart(2, '0')}`
+    if (row.received_at) {
+      const date = new Date(row.received_at)
+      if (!Number.isNaN(date.getTime())) return dateToInputValue(date)
+    }
+    return ''
+  }
+
+  function fillAssociatedDocumentFields(row = {}) {
+    const tagIds = tagAndParentIds(row.tag_ids || [])
+    const fields = documentFieldsForTags(tagIds)
+    const nextValues = { ...(row.document_field_values || {}) }
+    const filingDate = inferFilingDateForDocument(row)
+    fields.forEach((field) => {
+      const keyLabel = `${field.field_key || ''} ${field.label || ''}`.toLowerCase()
+      const currentValue = nextValues[field.field_key]
+      const hasValue = Array.isArray(currentValue) ? currentValue.some(Boolean) : Boolean(currentValue)
+      if (!hasValue && filingDate && /(filing|filed).*date|date.*(filing|filed)/.test(keyLabel)) {
+        nextValues[field.field_key] = field.allow_multiple ? [filingDate] : filingDate
+      }
+    })
+    return applyCalculatedDocumentFieldValues(fields, nextValues)
+  }
+
+  async function prepareMatterFilingImportFiles(fileList, matterId) {
+    const files = Array.from(fileList || [])
+    if (!matterId) {
+      alert('Open a matter first.')
+      return
+    }
+    const workingTags = ensureAcceptedServiceTags()
+    const defaultIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours').length
+      ? tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours')
+      : []
+    const rows = []
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index]
+      // eslint-disable-next-line no-await-in-loop
+      const data = await readFileAsDataUrl(file)
+      const base = {
+        id: `filing-import-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+        selected: true,
+        matter_id: matterId,
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        file_name: file.name,
+        date: inferFilingDateForDocument({ file_name: file.name }),
+        description: 'Imported from matter efile folder for filing review.',
+        status: 'Neither',
+        tag_ids: tagAndParentIds(defaultIds),
+        document_field_values: {},
+        ...emptyDocumentAiReview,
+        file,
+        ...data
+      }
+      rows.push({ ...base, document_field_values: fillAssociatedDocumentFields(base) })
+    }
+    setMatterFilingImportRows((current) => [...current, ...rows])
+    setMatterFilingImportNote(`${rows.length} filing document(s) loaded. Click Analyze with AI to read content, suggest tags, and fill tag fields such as Filing Date.`)
+  }
+
+  function updateMatterFilingImportRow(rowId, patch = {}) {
+    setMatterFilingImportRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row
+      const next = { ...row, ...patch }
+      if (patch.tag_ids || patch.date || patch.filing_date) next.document_field_values = fillAssociatedDocumentFields(next)
+      return next
+    }))
+  }
+
+  function updateMatterFilingImportTag(rowId, tagId) {
+    setMatterFilingImportRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row
+      const next = { ...row, tag_ids: tagId ? tagAndParentIds([tagId]) : [] }
+      return { ...next, document_field_values: fillAssociatedDocumentFields(next) }
+    }))
+  }
+
+  function updateMatterFilingImportFieldValue(rowId, fieldKey, value) {
+    setMatterFilingImportRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row
+      const nextRawValues = { ...(row.document_field_values || {}), [fieldKey]: value }
+      return { ...row, document_field_values: applyCalculatedDocumentFieldValues(documentFieldsForTags(row.tag_ids || []), nextRawValues) }
+    }))
+  }
+
+  function analyzeMatterFilingImportRow(rowId, matterId) {
+    const row = matterFilingImportRows.find((item) => item.id === rowId)
+    if (!row) return
+    analyzeDocumentWithAi(row, (patchOrUpdater) => {
+      setMatterFilingImportRows((current) => current.map((item) => {
+        if (item.id !== rowId) return item
+        const next = typeof patchOrUpdater === 'function' ? patchOrUpdater(item) : { ...item, ...patchOrUpdater }
+        return { ...next, document_field_values: fillAssociatedDocumentFields(next) }
+      }))
+    }, { lockedMatterId: matterId || row.matter_id })
+  }
+
+  async function analyzeMatterFilingImportRows(matterId) {
+    const rows = matterFilingImportRows.filter((row) => String(row.matter_id || '') === String(matterId || '') && row.selected)
+    if (!rows.length) {
+      alert('Select at least one filing import row to analyze.')
+      return
+    }
+    setMatterFilingImportNote(`Analyzing ${rows.length} filing document(s)...`)
+    for (let index = 0; index < rows.length; index += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await analyzeDocumentWithAi(rows[index], (patchOrUpdater) => {
+        setMatterFilingImportRows((current) => current.map((item) => {
+          if (item.id !== rows[index].id) return item
+          const next = typeof patchOrUpdater === 'function' ? patchOrUpdater(item) : { ...item, ...patchOrUpdater }
+          return { ...next, document_field_values: fillAssociatedDocumentFields(next) }
+        }))
+      }, { lockedMatterId: matterId })
+    }
+    setMatterFilingImportNote('AI review complete. Verify the TOC tags and fields, then save selected rows as Documents.')
+  }
+
+  function previewMatterFilingImportRow(row) {
+    setMatterFilingPreviewName(row.name || row.file_name || 'Filing document')
+    setMatterFilingPreviewUrl(row.file_data_url || row.file_data || '')
+  }
+
+  async function saveMatterFilingImportRows(matterId) {
+    const rows = matterFilingImportRows.filter((row) => String(row.matter_id || '') === String(matterId || '') && row.selected && row.name)
+    if (!rows.length) {
+      alert('Select at least one filing row with a name.')
+      return
+    }
+    const savedRows = []
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = { ...rows[index], document_field_values: fillAssociatedDocumentFields(rows[index]) }
+      const docId = `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
+      // eslint-disable-next-line no-await-in-loop
+      const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, matterId) : {}
+      const { file, selected, ...rowWithoutFile } = row
+      savedRows.push(withEmptyDocumentAiReview({
+        ...rowWithoutFile,
+        ...storedFilePayload,
+        id: docId,
+        matter_id: matterId,
+        tag_ids: tagAndParentIds(row.tag_ids || []),
+        filing_date: inferFilingDateForDocument(row),
+        date: row.date || inferFilingDateForDocument(row),
+        upload_date: dateToInputValue(new Date())
+      }))
+    }
+    setDocuments((current) => [...current, ...savedRows])
+    const savedIds = new Set(rows.map((row) => row.id))
+    setMatterFilingImportRows((current) => current.filter((row) => !savedIds.has(row.id)))
+    setMatterFilingImportNote(`Saved ${savedRows.length} filing document(s) to Documents with their tags, filing date, and tag fields.`)
+  }
+
   function renderMatterFilingsPanel(matter) {
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter?.id || ''))
     const textForDoc = (doc) => `${doc.name || ''} ${doc.file_name || ''} ${doc.description || ''} ${(doc.tag_ids || []).map((id) => tagFullName(id)).join(' ')}`.toLowerCase()
@@ -21443,6 +21647,61 @@ Ben`) : (row.draft_response || '') })
       <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff' }}>
         <h3 style={{ marginTop: 0 }}>Filings</h3>
         <p style={{ color: '#64748b' }}>This collects saved efile/service documents for this matter and groups them by trial, hearings, our discovery, and their discovery.</p>
+        <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, marginBottom: 14, background: '#f8fafc' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <strong>One-matter efile import / AI filing sorter</strong>
+            <label style={{ marginLeft: 'auto' }}>
+              <input type="file" multiple accept=".pdf,.doc,.docx,.txt,.rtf,.xlsx,.xls" onChange={(e) => prepareMatterFilingImportFiles(e.target.files, matter?.id)} />
+            </label>
+            <button type="button" onClick={() => analyzeMatterFilingImportRows(matter?.id)}>Analyze selected with AI</button>
+            <button type="button" onClick={() => saveMatterFilingImportRows(matter?.id)} style={{ fontWeight: 800 }}>Save selected as Documents</button>
+            <button type="button" onClick={() => setMatterFilingImportRows((rows) => rows.filter((row) => String(row.matter_id || '') !== String(matter?.id || '') || !row.selected))}>Remove selected</button>
+          </div>
+          <div style={{ color: '#64748b', fontSize: 13, marginBottom: 8 }}>
+            Upload one matter's efile folder first. Mio reads the file name and document content, suggests the best tag, fills fields tied to that tag, and saves the verified rows as normal Documents with filing dates.
+          </div>
+          {matterFilingImportNote && <div style={{ color: '#1e3a8a', fontWeight: 700, marginBottom: 8 }}>{matterFilingImportNote}</div>}
+          {matterFilingImportRows.filter((row) => String(row.matter_id || '') === String(matter?.id || '')).length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(320px, 420px)', gap: 12 }}>
+              <div style={{ minHeight: 500, border: '1px solid #dbe4ee', borderRadius: 8, background: 'white', overflow: 'hidden' }}>
+                {matterFilingPreviewUrl
+                  ? <iframe title={matterFilingPreviewName || 'Filing preview'} src={matterFilingPreviewUrl} style={{ width: '100%', height: 560, border: 0 }} />
+                  : <div style={{ padding: 28, color: '#64748b', textAlign: 'center' }}>Select a document from the TOC to preview it here.</div>}
+              </div>
+              <div style={{ maxHeight: 560, overflow: 'auto', border: '1px solid #dbe4ee', borderRadius: 8, background: 'white', padding: 10 }}>
+                <h4 style={{ marginTop: 0 }}>TOC / verify tags and fields</h4>
+                {matterFilingImportRows.filter((row) => String(row.matter_id || '') === String(matter?.id || '')).map((row, index) => {
+                  const fields = documentFieldsForTags(row.tag_ids || [])
+                  return (
+                    <section key={row.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 9, background: row.selected ? '#f8fbff' : '#fff' }}>
+                      <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input type="checkbox" checked={!!row.selected} onChange={(e) => updateMatterFilingImportRow(row.id, { selected: e.target.checked })} />
+                        <button type="button" onClick={() => previewMatterFilingImportRow(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 800 }}>{index + 1}. {row.name || row.file_name}</button>
+                      </label>
+                      <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                        <input value={row.name || ''} onChange={(e) => updateMatterFilingImportRow(row.id, { name: e.target.value })} placeholder="Document name" />
+                        <label>Filing date <input type="date" value={row.date || inferFilingDateForDocument(row)} onChange={(e) => updateMatterFilingImportRow(row.id, { date: e.target.value, filing_date: e.target.value })} /></label>
+                        <select value={deepestSelectedTagIds(row.tag_ids || [])[0] || ''} onChange={(e) => updateMatterFilingImportTag(row.id, e.target.value)}>
+                          <option value="">No tag</option>
+                          {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
+                        </select>
+                        <div style={{ color: '#64748b', fontSize: 12 }}>{(row.tag_ids || []).map((id) => tagFullName(id)).filter(Boolean).join(' > ')}</div>
+                        {renderDocumentFieldsForRow(row, (fieldKey, value) => updateMatterFilingImportFieldValue(row.id, fieldKey, value))}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <button type="button" onClick={() => analyzeMatterFilingImportRow(row.id, matter?.id)}>Analyze with AI</button>
+                          <button type="button" onClick={() => previewMatterFilingImportRow(row)}>Preview</button>
+                        </div>
+                        {row.ai_status && <div style={{ fontSize: 12, color: row.ai_status === 'failed' ? '#b91c1c' : '#64748b' }}>AI: {aiStatusLabel(row.ai_status)}</div>}
+                        {(row.ai_warnings || []).length > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>{(row.ai_warnings || []).join(' ')}</div>}
+                        {fields.length === 0 && <div style={{ fontSize: 12, color: '#64748b' }}>No fields are associated with the selected tag yet.</div>}
+                      </div>
+                    </section>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </section>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           {tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setMatterFilingsTab(tab.id)} style={{ padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: active.id === tab.id ? '#1d4ed8' : '#fff', color: active.id === tab.id ? '#fff' : '#1e293b', fontWeight: 800 }}>{tab.label} ({tab.docs.length})</button>)}
         </div>
@@ -21457,7 +21716,7 @@ Ben`) : (row.draft_response || '') })
                     <td>{doc.filing_date || doc.date || doc.upload_date || ''}</td>
                     <td><strong>{doc.name || doc.file_name}</strong><div style={{ color: '#64748b', fontSize: 12 }}>{doc.description || ''}</div></td>
                     <td style={{ color: '#64748b', fontSize: 12 }}>{(doc.tag_ids || []).map((id) => tagFullName(id)).filter(Boolean).join(' > ')}</td>
-                    <td style={{ textAlign: 'center' }}>{doc.file_data_url || doc.file_data ? <button type="button" onClick={() => viewDocumentFile(doc)}>View</button> : <span style={{ color: '#94a3b8' }}>No file</span>}</td>
+                    <td style={{ textAlign: 'center' }}>{doc.file_data_url || doc.file_data ? <button type="button" onClick={() => viewDocument(doc)}>View</button> : <span style={{ color: '#94a3b8' }}>No file</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -34239,7 +34498,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
                           </button>
                           {tag.icon_data ? <img src={tag.icon_data} alt="" style={{ width: 22, height: 22, objectFit: 'cover' }} /> : <span style={{ width: 22 }}>🏷️</span>}
-                          <strong>{tag.name}</strong>
+                          <input value={tag.name || ''} onChange={(e) => updateTag(tag.id, { name: e.target.value })} style={{ fontWeight: 800, minWidth: 180, flex: '1 1 220px' }} title="Edit tag name" />
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
                             <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: tag.color || '#4c6783', display: 'inline-block' }} />
                             <input type="color" value={tag.color || '#4c6783'} onChange={(e) => updateTagColor(tag.id, e.target.value)} title="Tag timeline color" />
@@ -34249,6 +34508,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             <option value="">Top-level</option>
                             {allTagsIndented().filter((item) => item.id !== tag.id && !descendantTagIds(tag.id).includes(item.id)).map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
                           </select>
+                          <button type="button" onClick={() => reorderTag(tag.id, -1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag up">↑</button>
+                          <button type="button" onClick={() => reorderTag(tag.id, 1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) >= childTags(tag.parent_id || '').length - 1} title="Move tag down">↓</button>
+                          <button type="button" onClick={() => outdentTag(tag.id)} disabled={!tag.parent_id} title="Move tag out one level">Outdent</button>
+                          <button type="button" onClick={() => indentTag(tag.id)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag under prior sibling">Indent</button>
                           <button type="button" onClick={() => openChildTagWindow(tag)}>+ Child</button>
                           <button type="button" onClick={() => deleteTag(tag.id)}>Delete</button>
                         </div>
