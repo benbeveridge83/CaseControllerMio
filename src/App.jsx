@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V100'
+const MIO_APP_VERSION = 'Mio V101'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2057,6 +2057,8 @@ function App() {
       return params.get('tab') || 'matter_information'
     } catch { return 'matter_information' }
   })
+  const [matterFilingsTab, setMatterFilingsTab] = useState('trial')
+
   const [timelineRangeDays, setTimelineRangeDays] = useState(() => {
     try { return Number(localStorage.getItem('caseControllerTimelineCompression') || '60') || 60 }
     catch { return 60 }
@@ -18701,7 +18703,102 @@ useEffect(() => {
     return makeServicePdfDocumentName(message, baseName).slice(0, 190)
   }
 
-  function serviceEmailFilingTagIds() {
+  function acceptedServiceRequiredTagPaths() {
+    return [
+      'efiled',
+      'efiled > Ours',
+      'efiled > Ours > filing',
+      'efiled > Ours > filing > Pleading/Petition/Answer',
+      'efiled > Ours > filing > Motion',
+      'efiled > Ours > filing > Notice',
+      'efiled > Ours > filing > Proposed Order',
+      'efiled > Ours > Discovery',
+      'efiled > Ours > Discovery > Request',
+      'efiled > Ours > Discovery > Request > RFP',
+      'efiled > Ours > Discovery > Request > RFD',
+      'efiled > Ours > Discovery > Request > RFA',
+      'efiled > Ours > Discovery > Request > Roggs',
+      'efiled > Ours > Discovery > Response',
+      'efiled > Ours > Discovery > Response > RFP',
+      'efiled > Ours > Discovery > Response > RFD',
+      'efiled > Ours > Discovery > Response > RFA',
+      'efiled > Ours > Discovery > Response > Roggs',
+      'efiled > Ours > Proposed Order',
+      'efiled > Ours > Other'
+    ]
+  }
+
+  function safeAcceptedTagId(path = '') {
+    return `tag-accepted-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
+  }
+
+  function ensureAcceptedServiceTags() {
+    let working = [...tags]
+    let changed = false
+    const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
+    acceptedServiceRequiredTagPaths().forEach((path) => {
+      if (findPath(path)) return
+      const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
+      let parentId = ''
+      const built = []
+      parts.forEach((part) => {
+        built.push(part)
+        const currentPath = built.join(' > ')
+        let existing = findPath(currentPath)
+        if (!existing) {
+          existing = {
+            id: safeAcceptedTagId(currentPath),
+            name: part,
+            parent_id: parentId,
+            scope: 'all',
+            matter_ids: [],
+            color: '#334155',
+            icon_data: '',
+            icon_name: ''
+          }
+          working.push(existing)
+          changed = true
+        }
+        parentId = existing.id
+      })
+    })
+    if (changed) {
+      setTags(working)
+      try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
+    }
+    return working
+  }
+
+  function acceptedServiceDocumentType(row = {}) {
+    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''}`.toLowerCase()
+    if (/proposed order|proposed/.test(text)) return 'Proposed Order'
+    if (/order/.test(text)) return 'Proposed Order'
+    if (/interrogator|rogg/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > Roggs'
+    if (/request for production|rfp/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFP'
+    if (/request for disclosure|disclosure|rfd/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFD'
+    if (/request for admission|admission|rfa/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFA'
+    if (/request for production|rfp|production/.test(text)) return 'Discovery > Request > RFP'
+    if (/request for disclosure|disclosure|rfd/.test(text)) return 'Discovery > Request > RFD'
+    if (/request for admission|admission|rfa/.test(text)) return 'Discovery > Request > RFA'
+    if (/interrogator|rogg/.test(text)) return 'Discovery > Request > Roggs'
+    if (/notice|hearing|trial|setting|conference/.test(text)) return 'filing > Notice'
+    if (/motion|temporary order|compel|enforce|withdraw|continuance|sanction|petition to enforce/.test(text)) return 'filing > Motion'
+    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition/.test(text)) return 'filing > Pleading/Petition/Answer'
+    return 'Other'
+  }
+
+  function acceptedServiceTagPathForRow(row = {}) {
+    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
+    if (String(type).startsWith('filing >')) return `efiled > Ours > ${type}`
+    if (String(type).startsWith('Discovery >')) return `efiled > Ours > ${type}`
+    if (type === 'Proposed Order') return 'efiled > Ours > filing > Proposed Order'
+    return `efiled > Ours > ${type}`
+  }
+
+  function serviceEmailFilingTagIds(row = null, options = {}) {
+    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
+    const typed = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row || {}))
+    if (typed.length) return typed
     const normalized = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()
     const exact = tags.find((tag) => normalized(tagFullName(tag.id)) === 'filings > ours')
     if (exact) return tagAndParentIds([exact.id])
@@ -18859,7 +18956,7 @@ useEffect(() => {
   function serviceEmailDocumentTagIds(row = null) {
     if (Array.isArray(row?.document_tag_ids) && row.document_tag_ids.length) return row.document_tag_ids
     if (serviceEmailRowCategory(row) === 'notification_service') return noticeServiceTagIdsForRow(row, { ensure: false })
-    return serviceEmailFilingTagIds()
+    return serviceEmailFilingTagIds(row, { ensure: false })
   }
 
   function serviceEmailDocumentTagLabel(row = null) {
@@ -18898,18 +18995,18 @@ useEffect(() => {
       name: fileName.replace(/\.pdf$/i, ''),
       date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
       description: `Saved from Service Inbox: ${row.subject || ''}`,
-      status: 'Ours',
+      status: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
       tag_ids: Array.isArray(row.document_tag_ids) && row.document_tag_ids.length ? tagAndParentIds(row.document_tag_ids) : serviceEmailDocumentTagIds(row),
       document_field_values: {
         filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
-        notice_service_source: row.notice_service_source || noticeServiceDocumentSource(row),
-        notice_service_type: row.notice_service_type || noticeServiceDocumentType(row),
+        notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
+        notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
         source_email_subject: row.subject || '',
         source_email_from: row.from_email || row.from_name || ''
       },
       filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
-      notice_service_source: row.notice_service_source || noticeServiceDocumentSource(row),
-      notice_service_type: row.notice_service_type || noticeServiceDocumentType(row),
+      notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
+      notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
       upload_date: dateToInputValue(new Date()),
       file_name: fileName,
       file_type: 'application/pdf',
@@ -21066,6 +21163,18 @@ Ben`) : (row.draft_response || '') })
     }))
   }
 
+  function updateAcceptedServiceRowClassification(rowId, patch) {
+    setServiceEmailRows((rows) => rows.map((row) => {
+      if (row.id !== rowId) return row
+      const next = { ...row, ...patch }
+      if (patch.accepted_service_type) {
+        const workingTags = ensureAcceptedServiceTags()
+        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(next))
+      }
+      return next
+    }))
+  }
+
   async function saveSingleNoticeServicePdf(row) {
     const saved = await saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
     if (saved) setServiceEmailScanNote(`Saved notice-of-service document ${saved.fileName || row.suggested_document_name || ''} with tag ${serviceEmailDocumentTagLabel(row)}.`)
@@ -21218,76 +21327,145 @@ Ben`) : (row.draft_response || '') })
 
   function renderAcceptedExtractionWindow() {
     if (serviceInboxPhase === 'notification_service') return renderNoticeServiceReviewWindow()
-    const filingRows = serviceEmailRowsForCurrentView().filter((row) => ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
+    const acceptedRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === 'accepted')
+    const typeOptions = [
+      'filing > Pleading/Petition/Answer',
+      'filing > Motion',
+      'filing > Notice',
+      'filing > Proposed Order',
+      'Discovery > Request > RFP',
+      'Discovery > Request > RFD',
+      'Discovery > Request > RFA',
+      'Discovery > Request > Roggs',
+      'Discovery > Response > RFP',
+      'Discovery > Response > RFD',
+      'Discovery > Response > RFA',
+      'Discovery > Response > Roggs',
+      'Proposed Order',
+      'Other'
+    ]
     return (
-      <Modal title="Review e-service PDFs before saving" onClose={() => setShowAcceptedExtractionWindow(false)}>
+      <Modal title="Accepted e-filed document review" onClose={() => setShowAcceptedExtractionWindow(false)}>
         <p style={{ color: '#475569' }}>
-          Review the PDF name, matter match, and efile folder before saving. Accepted filings use the PDF name from the eFileTexas Document Details row, for example: 26.06.04 Sanchez - Appoint Rec.pdf.
+          These are filings accepted by eFileTexas for this office. Use the viewer to review each downloaded PDF, confirm the matter, confirm the document name, apply the correct efiled/Ours tag, then save the PDFs and move the emails to Read.
         </p>
-        <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>
-            Save PDFs and move emails to Read
-          </button>
-          <span style={{ color: '#64748b' }}>Click a PDF name/link to download or preview it. Uses the Efile Folder saved on Settings &gt; Matter Table for that matched matter. Mio first tries to save directly to OneDrive. If Tyler/eFile blocks the PDF link, download/open the PDF link first, then select the downloaded PDFs when prompted.</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Save accepted PDFs and move emails to Read</button>
+          <button type="button" onClick={() => { ensureAcceptedServiceTags(); setServiceEmailScanNote('Accepted efiled/Ours tag library installed/refreshed.') }}>Install / refresh accepted filing tags</button>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(520px, 1fr)', gap: 14 }}>
-          <div style={{ overflowX: 'auto', maxHeight: '68vh' }}>
-            <table cellPadding="7" style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1800 }}>
-              <thead>
-                <tr style={{ background: '#f1f5f9' }}>
-                  <th>Email</th>
-                  <th>Matter</th>
-                  <th style={{ minWidth: 320 }}>Document name</th>
-                  <th style={{ minWidth: 980 }}>Matter efile folder</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filingRows.map((row) => (
-                  <tr key={row.id} style={{ borderTop: '1px solid #e5e7eb' }} onMouseEnter={() => { setSelectedPdfPreviewName(row.suggested_document_name || row.extracted_pdf_name || row.subject); setSelectedPdfPreviewUrl(primaryServicePdfAttachment(row)?.content_url || '') }}>
-                    <td>
-                      <div><strong>{serviceEmailPhaseLabel(row.action_group)}</strong></div>
-                      <button type="button" onClick={() => openServiceEmailInOutlook(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left' }}>{row.subject}</button>
-                      <div><small>{row.from_name} - {new Date(row.received_at || Date.now()).toLocaleString()}</small></div>
-                    </td>
-                    <td>
-                      <select value={row.suggested_matter_id || ''} onChange={(e) => updateServiceEmailRowMatter(row.id, e.target.value)} style={{ width: '100%' }}>
-                        <option value="">Needs matter match</option>
-                        {matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <input value={row.suggested_document_name || ''} placeholder="yy.mm.dd PDF name" onChange={(e) => updateServiceEmailRow(row.id, { suggested_document_name: e.target.value })} style={{ width: '100%' }} />
-                      <div style={{ marginTop: 4 }}>
-                        <button type="button" onClick={() => openServiceRowPdf(row)} style={{ fontSize: 12 }}>Preview/download PDF</button>
-                      </div>
-                      <div style={{ marginTop: 4, fontSize: 12 }}>
-                        {(row.filing_links || []).map((link) => (
-                          <button key={link.id || link.url} type="button" onMouseEnter={() => { setSelectedPdfPreviewName(row.suggested_document_name || link.name || link.label); setSelectedPdfPreviewUrl('') }} onClick={() => downloadServiceFilingLink({ ...row, filing_links: [link] })} style={{ marginRight: 6, border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer' }}>{link.name || link.label || 'Open filing link'}</button>
-                        ))}
-                      </div>
-                      {row.has_attachments && <div style={{ marginTop: 4, fontSize: 12 }}>{(row.attachments || []).filter((item) => !item.is_inline).map((attachment) => <button key={attachment.id || attachment.name} type="button" onMouseEnter={() => { setSelectedPdfPreviewName(attachment.name); setSelectedPdfPreviewUrl(attachment.content_url || '') }} onClick={() => openServiceAttachmentPreview(row.id, attachment)} style={{ marginRight: 6 }}>{attachment.name}</button>)}</div>}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <input value={serviceEmailSavePath(row)} placeholder="Set matter efile folder" onChange={(e) => updateServiceEmailRowSavePath(row.id, e.target.value)} style={{ width: '100%', minWidth: 980 }} />
-                        <button type="button" onClick={() => promptForMatterEfileFolder(row.id)}>Browse/set</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!filingRows.length && <tr><td colSpan="4" style={{ padding: 14, textAlign: 'center', color: '#64748b' }}>No accepted/notification emails match the current filters.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc', minHeight: 560 }}>
-            <h3 style={{ marginTop: 0 }}>Document viewer</h3>
-            <div style={{ fontWeight: 700 }}>{selectedPdfPreviewName || 'Hover/click a PDF name'}</div>
-            <div style={{ marginTop: 12, border: '1px dashed #94a3b8', borderRadius: 8, padding: 10, textAlign: 'center', color: '#64748b', minHeight: 560 }}>
-              {selectedPdfPreviewUrl ? <iframe title="PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 560, border: 0 }} /> : 'PDF preview will appear here after the PDF attachment is downloaded from Microsoft Graph or the eFile link can be fetched by the browser.'}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 460px', gap: 14, alignItems: 'start' }}>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', minHeight: 650 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>Document viewer</h3>
+              <span style={{ color: '#64748b', fontSize: 12 }}>Click a document in the TOC to preview it.</span>
             </div>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || 'No document selected'}</div>
+            <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, background: 'white', minHeight: 610, overflow: 'hidden' }}>
+              {selectedPdfPreviewUrl
+                ? <iframe title="Accepted filing PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 610, border: 0 }} />
+                : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Select a document on the right. Mio will use Microsoft Graph, the Supabase Edge Function, or the saved attachment data to load the preview.</div>}
+            </div>
+          </div>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#fff', maxHeight: '72vh', overflow: 'auto' }}>
+            <h3 style={{ marginTop: 0 }}>TOC / accepted filing tags</h3>
+            {acceptedRows.map((row, index) => {
+              const typeValue = row.accepted_service_type || acceptedServiceDocumentType(row)
+              const rowTags = serviceEmailDocumentTagIds(row)
+              return (
+                <section key={row.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 10, background: index % 2 ? '#fff' : '#f8fafc' }}>
+                  <button type="button" onClick={() => previewNoticeServiceRow(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 800 }}>{row.suggested_document_name || row.extracted_pdf_name || row.subject}</button>
+                  <div style={{ color: '#64748b', fontSize: 12 }}>{row.from_name || row.from_email} · {row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div>
+                  <label style={{ display: 'block', marginTop: 8 }}>Matter<br />
+                    <select value={row.suggested_matter_id || ''} onChange={(e) => updateServiceEmailRowMatter(row.id, e.target.value)} style={{ width: '100%' }}>
+                      <option value="">Needs matter match</option>
+                      {matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: 'block', marginTop: 8 }}>Document name<br />
+                    <input value={row.suggested_document_name || ''} placeholder="yy.mm.dd PDF name" onChange={(e) => updateServiceEmailRow(row.id, { suggested_document_name: e.target.value })} style={{ width: '100%' }} />
+                  </label>
+                  <label style={{ display: 'block', marginTop: 8 }}>Accepted filing category<br />
+                    <select value={typeValue} onChange={(e) => updateAcceptedServiceRowClassification(row.id, { accepted_service_type: e.target.value })} style={{ width: '100%' }}>
+                      {typeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: 'block', marginTop: 8 }}>Tag<br />
+                    <select value={serviceEmailDocumentLeafTagId({ ...row, document_tag_ids: rowTags })} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
+                      <option value="">No tag</option>
+                      {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                    </select>
+                  </label>
+                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{rowTags.map((tagId) => tagFullName(tagId)).filter(Boolean).join(' > ')}</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                    <button type="button" onClick={() => saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })}>Save PDF</button>
+                    <button type="button" onClick={() => previewNoticeServiceRow(row)}>Preview</button>
+                    <button type="button" onClick={() => openServiceEmailInOutlook(row)}>Open email</button>
+                  </div>
+                </section>
+              )
+            })}
+            {!acceptedRows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 18 }}>No accepted e-file emails match the current filters.</div>}
           </div>
         </div>
       </Modal>
+    )
+  }
+
+  function renderMatterFilingsPanel(matter) {
+    const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter?.id || ''))
+    const textForDoc = (doc) => `${doc.name || ''} ${doc.file_name || ''} ${doc.description || ''} ${(doc.tag_ids || []).map((id) => tagFullName(id)).join(' ')}`.toLowerCase()
+    const isOurs = (doc) => /efiled.*ours|filings > ours|\bours\b/.test(textForDoc(doc)) || String(doc.status || '').toLowerCase() === 'ours'
+    const isTheirs = (doc) => /opposing|their|served on this office/.test(textForDoc(doc)) || String(doc.status || '').toLowerCase().includes('opposing')
+    const discoveryKind = (doc) => /discovery|request for production|request for disclosure|request for admission|interrogator|rfp|rfd|rfa|rogg/.test(textForDoc(doc))
+    const trialKind = (doc) => /trial|petition|answer|proposed order|final order|notice of trial/.test(textForDoc(doc)) && !discoveryKind(doc)
+    const hearingKind = (doc) => /hearing|motion|notice|order|temporary|compel|enforce|withdraw|continuance/.test(textForDoc(doc)) && !trialKind(doc) && !discoveryKind(doc)
+    const tabs = [
+      { id: 'trial', label: 'Trial', docs: matterDocs.filter(trialKind) },
+      { id: 'hearings', label: 'Hearings', docs: matterDocs.filter(hearingKind) },
+      { id: 'our_discovery', label: 'Our discovery requests', docs: matterDocs.filter((doc) => discoveryKind(doc) && isOurs(doc)) },
+      { id: 'their_discovery', label: 'Their discovery requests', docs: matterDocs.filter((doc) => discoveryKind(doc) && isTheirs(doc)) }
+    ]
+    const active = tabs.find((tab) => tab.id === matterFilingsTab) || tabs[0]
+    const grouped = active.docs.reduce((acc, doc) => {
+      const text = textForDoc(doc)
+      const bucket = /petition|answer/.test(text) ? 'Petitions / answers'
+        : /notice/.test(text) ? 'Notices'
+          : /motion/.test(text) ? 'Motions'
+            : /order/.test(text) ? 'Orders / proposed orders'
+              : /response|answer to|answers to/.test(text) ? 'Responses'
+                : /request/.test(text) ? 'Requests'
+                  : 'Other filings'
+      if (!acc[bucket]) acc[bucket] = []
+      acc[bucket].push(doc)
+      return acc
+    }, {})
+    return (
+      <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#fff' }}>
+        <h3 style={{ marginTop: 0 }}>Filings</h3>
+        <p style={{ color: '#64748b' }}>This collects saved efile/service documents for this matter and groups them by trial, hearings, our discovery, and their discovery.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setMatterFilingsTab(tab.id)} style={{ padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: active.id === tab.id ? '#1d4ed8' : '#fff', color: active.id === tab.id ? '#fff' : '#1e293b', fontWeight: 800 }}>{tab.label} ({tab.docs.length})</button>)}
+        </div>
+        {Object.keys(grouped).map((group) => (
+          <section key={group} style={{ border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 10, overflow: 'hidden' }}>
+            <div style={{ background: '#f1f5f9', padding: '8px 10px', fontWeight: 800 }}>{group}</div>
+            <table cellPadding="7" style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left' }}>Date</th><th style={{ textAlign: 'left' }}>Document</th><th style={{ textAlign: 'left' }}>Tags</th><th>File</th></tr></thead>
+              <tbody>
+                {grouped[group].map((doc) => (
+                  <tr key={doc.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                    <td>{doc.filing_date || doc.date || doc.upload_date || ''}</td>
+                    <td><strong>{doc.name || doc.file_name}</strong><div style={{ color: '#64748b', fontSize: 12 }}>{doc.description || ''}</div></td>
+                    <td style={{ color: '#64748b', fontSize: 12 }}>{(doc.tag_ids || []).map((id) => tagFullName(id)).filter(Boolean).join(' > ')}</td>
+                    <td style={{ textAlign: 'center' }}>{doc.file_data_url || doc.file_data ? <button type="button" onClick={() => viewDocumentFile(doc)}>View</button> : <span style={{ color: '#94a3b8' }}>No file</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        ))}
+        {!active.docs.length && <div style={{ color: '#64748b', padding: 18, textAlign: 'center', border: '1px dashed #cbd5e1', borderRadius: 8 }}>No documents in this filing subtab yet. Save accepted filings and notices of service to Documents first.</div>}
+      </div>
     )
   }
 
@@ -31747,6 +31925,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('filings')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'filings' ? '#2f6584' : 'white', color: clientDashboardTab === 'filings' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'filings' ? 'bold' : 'normal' }}
+                  >
+                    Filings
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('requested_relief')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'requested_relief' ? '#2f6584' : 'white', color: clientDashboardTab === 'requested_relief' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'requested_relief' ? 'bold' : 'normal' }}
                   >
@@ -31810,6 +31995,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'timeline' && renderClientTimeline(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'documents' && renderDocumentRepository({ matterId: selectedTemplateMatter().id, showBulkReview: true })}
+
+                {clientDashboardTab === 'filings' && renderMatterFilingsPanel(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
