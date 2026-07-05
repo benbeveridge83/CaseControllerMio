@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V99'
+const MIO_APP_VERSION = 'Mio V100'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -18711,8 +18711,154 @@ useEffect(() => {
     return ours ? tagAndParentIds([ours.id]) : []
   }
 
+  function noticeServiceRequiredTagPaths() {
+    return [
+      'Opposing Party',
+      'Opposing Party > Petition / Answer',
+      'Opposing Party > Notice',
+      'Opposing Party > Motion',
+      'Opposing Party > Discovery',
+      'Opposing Party > Discovery > Requests',
+      'Opposing Party > Discovery > Requests > Request for Production',
+      'Opposing Party > Discovery > Requests > Request for Disclosure',
+      'Opposing Party > Discovery > Requests > Request for Admission',
+      'Opposing Party > Discovery > Requests > Interrogatories',
+      'Opposing Party > Discovery > Responses',
+      'Opposing Party > Discovery > Responses > Response to Request for Production',
+      'Opposing Party > Discovery > Responses > Response to Request for Disclosure',
+      'Opposing Party > Discovery > Responses > Response to Request for Admission',
+      'Opposing Party > Discovery > Responses > Answers to Interrogatories',
+      'Opposing Party > Third Party Discovery',
+      'Opposing Party > Third Party Discovery > Subpoena',
+      'Opposing Party > Third Party Discovery > Deposition',
+      'Opposing Party > Third Party Discovery > Records',
+      'Court',
+      'Court > Notice',
+      'Court > Order',
+      'Court > Setting',
+      'Court > Other'
+    ]
+  }
+
+  function tagPathFromWorkingTags(workingTags, tagId) {
+    const tag = workingTags.find((item) => item.id === tagId)
+    if (!tag) return ''
+    const parents = []
+    let current = tag
+    let guard = 0
+    while (current?.parent_id && guard < 25) {
+      const parent = workingTags.find((item) => item.id === current.parent_id)
+      if (!parent) break
+      parents.unshift(parent.name)
+      current = parent
+      guard += 1
+    }
+    return [...parents, tag.name].join(' > ')
+  }
+
+  function safeNoticeTagId(path = '') {
+    return `tag-notice-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
+  }
+
+  function ensureNoticeServiceTags() {
+    let working = [...tags]
+    let changed = false
+    const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
+    noticeServiceRequiredTagPaths().forEach((path) => {
+      if (findPath(path)) return
+      const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
+      let parentId = ''
+      const built = []
+      parts.forEach((part) => {
+        built.push(part)
+        const currentPath = built.join(' > ')
+        let existing = findPath(currentPath)
+        if (!existing) {
+          existing = {
+            id: safeNoticeTagId(currentPath),
+            name: part,
+            parent_id: parentId,
+            scope: 'all',
+            matter_ids: [],
+            color: built[0] === 'Court' ? '#7c3aed' : '#dc2626',
+            icon_data: '',
+            icon_name: ''
+          }
+          working.push(existing)
+          changed = true
+        }
+        parentId = existing.id
+      })
+    })
+    if (changed) {
+      setTags(working)
+      try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
+    }
+    return working
+  }
+
+  function noticeServiceDocumentSource(row = {}) {
+    const text = `${row.from_name || ''} ${row.from_email || ''} ${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''}`.toLowerCase()
+    if (/court|clerk|coordinator|judge|district|county|justice|txcourts|brazoria|galveston|harris|fort bend/.test(text)) return 'Court'
+    return 'Opposing Party'
+  }
+
+  function noticeServiceDocumentType(row = {}) {
+    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''}`.toLowerCase()
+    if (/interrogator|rogg/.test(text) && /answer|response/.test(text)) return 'Responses > Answers to Interrogatories'
+    if (/request for production|rfp/.test(text) && /response|answer/.test(text)) return 'Responses > Response to Request for Production'
+    if (/request for disclosure|disclosure|rfd/.test(text) && /response|answer/.test(text)) return 'Responses > Response to Request for Disclosure'
+    if (/request for admission|admission|rfa/.test(text) && /response|answer/.test(text)) return 'Responses > Response to Request for Admission'
+    if (/request for production|rfp|production/.test(text)) return 'Requests > Request for Production'
+    if (/request for disclosure|disclosure|rfd/.test(text)) return 'Requests > Request for Disclosure'
+    if (/request for admission|admission|rfa/.test(text)) return 'Requests > Request for Admission'
+    if (/interrogator|rogg/.test(text)) return 'Requests > Interrogatories'
+    if (/subpoena|records deposition|business records|third[- ]party|third party/.test(text)) return 'Third Party Discovery > Subpoena'
+    if (/deposition|depo/.test(text)) return 'Notice'
+    if (/notice|hearing|trial|setting|conference/.test(text)) return 'Notice'
+    if (/motion|movant|temporary order|compel|enforce|withdraw|continuance|sanction/.test(text)) return 'Motion'
+    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition/.test(text)) return 'Petition / Answer'
+    if (/order|signed|ruling/.test(text)) return 'Order'
+    return 'Other'
+  }
+
+  function noticeServiceTagPathForRow(row = {}) {
+    const source = noticeServiceDocumentSource(row)
+    const type = noticeServiceDocumentType(row)
+    if (source === 'Court') {
+      if (type === 'Notice') return 'Court > Notice'
+      if (type === 'Order') return 'Court > Order'
+      if (type === 'Other') return 'Court > Other'
+      return 'Court > Setting'
+    }
+    if (type.startsWith('Requests >')) return `Opposing Party > Discovery > ${type}`
+    if (type.startsWith('Responses >')) return `Opposing Party > Discovery > ${type}`
+    if (type.startsWith('Third Party Discovery')) return `Opposing Party > ${type}`
+    return `Opposing Party > ${type}`
+  }
+
+  function tagIdsForPathFromWorkingTags(workingTags, path = '') {
+    const target = workingTags.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag.id)) === normalizeTagLookupValue(path))
+    if (!target) return []
+    const ids = []
+    let current = target
+    let guard = 0
+    while (current && guard < 25) {
+      ids.unshift(current.id)
+      current = current.parent_id ? workingTags.find((tag) => tag.id === current.parent_id) : null
+      guard += 1
+    }
+    return ids
+  }
+
+  function noticeServiceTagIdsForRow(row = {}, options = {}) {
+    const workingTags = options.ensure === false ? tags : ensureNoticeServiceTags()
+    return tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
+  }
+
   function serviceEmailDocumentTagIds(row = null) {
     if (Array.isArray(row?.document_tag_ids) && row.document_tag_ids.length) return row.document_tag_ids
+    if (serviceEmailRowCategory(row) === 'notification_service') return noticeServiceTagIdsForRow(row, { ensure: false })
     return serviceEmailFilingTagIds()
   }
 
@@ -18753,8 +18899,17 @@ useEffect(() => {
       date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
       description: `Saved from Service Inbox: ${row.subject || ''}`,
       status: 'Ours',
-      tag_ids: Array.isArray(row.document_tag_ids) && row.document_tag_ids.length ? tagAndParentIds(row.document_tag_ids) : serviceEmailFilingTagIds(),
-      document_field_values: {},
+      tag_ids: Array.isArray(row.document_tag_ids) && row.document_tag_ids.length ? tagAndParentIds(row.document_tag_ids) : serviceEmailDocumentTagIds(row),
+      document_field_values: {
+        filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
+        notice_service_source: row.notice_service_source || noticeServiceDocumentSource(row),
+        notice_service_type: row.notice_service_type || noticeServiceDocumentType(row),
+        source_email_subject: row.subject || '',
+        source_email_from: row.from_email || row.from_name || ''
+      },
+      filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
+      notice_service_source: row.notice_service_source || noticeServiceDocumentSource(row),
+      notice_service_type: row.notice_service_type || noticeServiceDocumentType(row),
       upload_date: dateToInputValue(new Date()),
       file_name: fileName,
       file_type: 'application/pdf',
@@ -18877,6 +19032,9 @@ useEffect(() => {
       suggested_document_name: docName,
       suggested_save_path: suggestedMatterId && matterEfileFolders[suggestedMatterId] ? matterEfileFolders[suggestedMatterId] : '',
       extracted_pdf_name: docName ? docName.replace(/^\d{2}\.\d{2}\.\d{2}\s+/, '') : (extractAcceptedPdfNameFromEmailHtml(bodyContent || bodyPreview || '') || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || ''),
+      document_tag_ids: actionGroup === 'notification_service' ? noticeServiceTagIdsForRow({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : [],
+      notice_service_source: actionGroup === 'notification_service' ? noticeServiceDocumentSource({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
+      notice_service_type: actionGroup === 'notification_service' ? noticeServiceDocumentType({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
       confidence: suggestedMatterId ? Math.max(confidence, 88) : confidence,
       status: 'needs_review',
       moved_to_read: false,
@@ -20163,6 +20321,7 @@ useEffect(() => {
 
   function openAcceptedExtractionReview(actionGroup = 'accepted') {
     const normalized = normalizedServiceEmailActionGroup(actionGroup)
+    if (normalized === 'notification_service') ensureNoticeServiceTags()
     const rows = selectedRowsForCategory(normalized).length ? selectedRowsForCategory(normalized) : serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === normalized)
     if (!rows.length) {
       setServiceEmailScanNote(`No ${serviceEmailPhaseLabel(normalized)} emails to review for PDFs.`)
@@ -20883,7 +21042,182 @@ Ben`) : (row.draft_response || '') })
     }
   }
 
+  function updateNoticeServiceRowClassification(rowId, patch) {
+    setServiceEmailRows((rows) => rows.map((row) => {
+      if (row.id !== rowId) return row
+      const next = { ...row, ...patch }
+      if (patch.notice_service_source || patch.notice_service_type) {
+        const source = patch.notice_service_source || next.notice_service_source || noticeServiceDocumentSource(next)
+        const type = patch.notice_service_type || next.notice_service_type || noticeServiceDocumentType(next)
+        let path = source === 'Court' ? 'Court > Other' : 'Opposing Party > Other'
+        if (source === 'Court') {
+          path = type === 'Notice' ? 'Court > Notice' : type === 'Order' ? 'Court > Order' : type === 'Setting' ? 'Court > Setting' : 'Court > Other'
+        } else if (String(type).startsWith('Requests >') || String(type).startsWith('Responses >')) {
+          path = `Opposing Party > Discovery > ${type}`
+        } else if (String(type).startsWith('Third Party Discovery')) {
+          path = `Opposing Party > ${type}`
+        } else {
+          path = `Opposing Party > ${type}`
+        }
+        const workingTags = ensureNoticeServiceTags()
+        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, path)
+      }
+      return next
+    }))
+  }
+
+  async function saveSingleNoticeServicePdf(row) {
+    const saved = await saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
+    if (saved) setServiceEmailScanNote(`Saved notice-of-service document ${saved.fileName || row.suggested_document_name || ''} with tag ${serviceEmailDocumentTagLabel(row)}.`)
+    return saved
+  }
+
+  function addNoticeServiceRowToCalendar(row) {
+    const filingDate = row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())
+    setEditingEventId(null)
+    setEventForm({
+      ...emptyEventForm,
+      matter_id: row?.suggested_matter_id || '',
+      event_category: 'Notice',
+      event_subcategory: noticeServiceDocumentType(row),
+      title: row?.suggested_document_name || row?.subject || 'Notice of service',
+      description: `Created from Notice of Service email. Review PDF for exact hearing/deadline date.\n\nFrom: ${row?.from_name || row?.from_email || ''}\nSubject: ${row?.subject || ''}`,
+      start_date: filingDate,
+      end_date: filingDate,
+      start_time: '09:00',
+      end_time: '09:30',
+      is_active: true
+    })
+    setShowEventWindow(true)
+    setServiceEmailScanNote('Calendar event draft opened. Review the notice PDF, correct the date/time, then save the event.')
+  }
+
+  function addNoticeServiceRowToDiscovery(row) {
+    const typeText = `${row?.subject || ''} ${row?.suggested_document_name || ''} ${row?.body_preview || ''}`.toLowerCase()
+    const discoveryType = /admission|rfa/.test(typeText) ? 'admissions'
+      : /interrogator|rogg/.test(typeText) ? 'interrogatories'
+        : /disclosure|rfd/.test(typeText) ? 'disclosures'
+          : 'production'
+    setDiscoveryPageMode('responding')
+    setRespondingDiscoveryForm((current) => ({
+      ...current,
+      matter_id: row?.suggested_matter_id || current.matter_id || '',
+      discovery_type: discoveryType,
+      document_name: row?.suggested_document_name || row?.subject || current.document_name || '',
+      date_received: row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : current.date_received,
+      client_response_due: current.client_response_due || '',
+      client_instructions: defaultDiscoveryInstructionsForType(discoveryType)
+    }))
+    setPage('discovery')
+    setServiceEmailScanNote('Discovery response setup opened. Extract the saved PDF from Documents or paste extracted requests to build the client response page.')
+  }
+
+  async function previewNoticeServiceRow(row) {
+    if (!row) return
+    setSelectedPdfPreviewName(row.suggested_document_name || row.extracted_pdf_name || row.subject || 'Notice document')
+    let attachment = primaryServicePdfAttachment(row)
+    if (!attachment?.content_url) attachment = await ensureAcceptedRowPdf(row.id)
+    if (!attachment?.content_url && primaryServiceFilingLink(row)) attachment = await downloadServiceFilingLink(row, { openOnFail: false })
+    if (attachment?.content_url) {
+      setSelectedPdfPreviewName(row.suggested_document_name || attachment.name || row.subject || 'Notice document')
+      setSelectedPdfPreviewUrl(attachment.content_url)
+    } else {
+      setSelectedPdfPreviewUrl('')
+      setServiceEmailScanNote('Mio found the notice/service row but could not preview the PDF yet. Save/process it or click the eFile link to load the PDF.')
+    }
+  }
+
+  function renderNoticeServiceReviewWindow() {
+    const noticeRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === 'notification_service')
+    const typeOptions = [
+      'Petition / Answer',
+      'Notice',
+      'Motion',
+      'Requests > Request for Production',
+      'Requests > Request for Disclosure',
+      'Requests > Request for Admission',
+      'Requests > Interrogatories',
+      'Responses > Response to Request for Production',
+      'Responses > Response to Request for Disclosure',
+      'Responses > Response to Request for Admission',
+      'Responses > Answers to Interrogatories',
+      'Third Party Discovery > Subpoena',
+      'Third Party Discovery > Deposition',
+      'Third Party Discovery > Records',
+      'Order',
+      'Setting',
+      'Other'
+    ]
+    return (
+      <Modal title="Notice of Service review" onClose={() => setShowAcceptedExtractionWindow(false)}>
+        <p style={{ color: '#475569' }}>
+          These are documents served on this office. Save them to the matter efile folder, review them in the viewer, categorize each filing, and push notices/discovery to the right Mio page.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Save visible notice PDFs and move emails to Read</button>
+          <button type="button" onClick={() => { ensureNoticeServiceTags(); setServiceEmailScanNote('Notice-of-service tag library installed/refreshed.') }}>Install / refresh notice tags</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 430px', gap: 14, alignItems: 'start' }}>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', minHeight: 650 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>Document viewer</h3>
+              <span style={{ color: '#64748b', fontSize: 12 }}>Click a document in the TOC to preview it.</span>
+            </div>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || 'No document selected'}</div>
+            <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, background: 'white', minHeight: 610, overflow: 'hidden' }}>
+              {selectedPdfPreviewUrl
+                ? <iframe title="Notice service PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 610, border: 0 }} />
+                : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Select a document on the right. If the PDF has not loaded yet, Mio will use the Supabase Edge Function/eFile link to fetch it.</div>}
+            </div>
+          </div>
+          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#fff', maxHeight: '72vh', overflow: 'auto' }}>
+            <h3 style={{ marginTop: 0 }}>TOC / categorization</h3>
+            {noticeRows.map((row, index) => {
+              const typeValue = row.notice_service_type || noticeServiceDocumentType(row)
+              const sourceValue = row.notice_service_source || noticeServiceDocumentSource(row)
+              const rowTags = serviceEmailDocumentTagIds(row)
+              const isNotice = /notice|setting|hearing|trial/i.test(typeValue + ' ' + row.subject + ' ' + row.suggested_document_name)
+              const isDiscovery = /discovery|request|production|disclosure|admission|interrogator|subpoena|deposition|response/i.test(typeValue)
+              return (
+                <section key={row.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 10, background: index % 2 ? '#fff' : '#f8fafc' }}>
+                  <button type="button" onClick={() => previewNoticeServiceRow(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 800 }}>{row.suggested_document_name || row.extracted_pdf_name || row.subject}</button>
+                  <div style={{ color: '#64748b', fontSize: 12 }}>{row.from_name || row.from_email} · {row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div>
+                  <label style={{ display: 'block', marginTop: 8 }}>Filed by / source<br />
+                    <select value={sourceValue} onChange={(e) => updateNoticeServiceRowClassification(row.id, { notice_service_source: e.target.value })} style={{ width: '100%' }}>
+                      <option value="Opposing Party">Opposing party / opposing counsel</option>
+                      <option value="Court">Court</option>
+                    </select>
+                  </label>
+                  <label style={{ display: 'block', marginTop: 8 }}>Document category<br />
+                    <select value={typeValue} onChange={(e) => updateNoticeServiceRowClassification(row.id, { notice_service_type: e.target.value })} style={{ width: '100%' }}>
+                      {typeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: 'block', marginTop: 8 }}>Tag<br />
+                    <select value={serviceEmailDocumentLeafTagId({ ...row, document_tag_ids: rowTags })} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
+                      <option value="">No tag</option>
+                      {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                    </select>
+                  </label>
+                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{rowTags.map((tagId) => tagFullName(tagId)).filter(Boolean).join(' > ')}</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                    <button type="button" onClick={() => saveSingleNoticeServicePdf(row)}>Save PDF</button>
+                    {isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(row)}>Add to calendar</button>}
+                    {isDiscovery && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(row)}>Add to discovery</button>}
+                    <button type="button" onClick={() => openServiceEmailInOutlook(row)}>Open email</button>
+                  </div>
+                </section>
+              )
+            })}
+            {!noticeRows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 18 }}>No notification-of-service emails match the current filters.</div>}
+          </div>
+        </div>
+      </Modal>
+    )
+  }
+
   function renderAcceptedExtractionWindow() {
+    if (serviceInboxPhase === 'notification_service') return renderNoticeServiceReviewWindow()
     const filingRows = serviceEmailRowsForCurrentView().filter((row) => ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
     return (
       <Modal title="Review e-service PDFs before saving" onClose={() => setShowAcceptedExtractionWindow(false)}>
