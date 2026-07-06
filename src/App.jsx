@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V102'
+const MIO_APP_VERSION = 'Mio V103'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -721,10 +721,12 @@ function LabeledField({ label, children }) {
 
 
 const billingImportantFieldStyle = {
-  border: '3px solid #000',
+  border: '3px solid #dc2626',
   borderRadius: 6,
   padding: '7px 8px',
-  boxShadow: '0 0 0 1px #000 inset',
+  boxShadow: '0 0 0 1px #dc2626 inset',
+  color: '#dc2626',
+  fontWeight: 800,
   background: '#fff'
 }
 
@@ -1878,6 +1880,7 @@ function App() {
       matter_type: true,
       matter_subtype: true,
       client_status: true,
+      withdrawal_status: true,
       case_status: true,
       matter_status: true,
       court: true,
@@ -1969,9 +1972,23 @@ function App() {
   const [matterTimelineViewportWidth, setMatterTimelineViewportWidth] = useState(1400)
 
   const [matterPageSearch, setMatterPageSearch] = useState(() => localStorage.getItem('matterPageSearch') || '')
-  const [matterPageFilterCaseStatus, setMatterPageFilterCaseStatus] = useState(() => localStorage.getItem('matterPageFilterCaseStatus') || 'all')
-  const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => localStorage.getItem('matterPageFilterMatterStatus') || 'all')
-  const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => localStorage.getItem('matterPageFilterCaseType') || 'all')
+  function initialMatterPageMultiFilter(key) {
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw || raw === 'all') return null
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+      if (typeof parsed === 'string') return parsed === 'all' ? null : [parsed]
+      return null
+    } catch {
+      const raw = localStorage.getItem(key) || 'all'
+      return raw === 'all' ? null : [raw]
+    }
+  }
+
+  const [matterPageFilterCaseStatus, setMatterPageFilterCaseStatus] = useState(() => initialMatterPageMultiFilter('matterPageFilterCaseStatus'))
+  const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => initialMatterPageMultiFilter('matterPageFilterMatterStatus'))
+  const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => initialMatterPageMultiFilter('matterPageFilterCaseType'))
   const [matterExternalEfileUrl, setMatterExternalEfileUrl] = useState(() => localStorage.getItem('matterExternalEfileUrl') || 'https://efile.txcourts.gov/')
   const [matterColumnWidths, setMatterColumnWidths] = useState(() => {
     try {
@@ -2309,9 +2326,9 @@ function App() {
       caseMioChecklistStepCompletions: { setter: setChecklistStepCompletions, kind: 'object', fallback: {} },
       caseMioChecklistCompletionDefaultTagId: { setter: setChecklistCompletionDefaultTagId, kind: 'string', fallback: '' },
       matterPageSearch: { setter: setMatterPageSearch, kind: 'string', fallback: '' },
-      matterPageFilterCaseStatus: { setter: setMatterPageFilterCaseStatus, kind: 'string', fallback: 'all' },
-      matterPageFilterMatterStatus: { setter: setMatterPageFilterMatterStatus, kind: 'string', fallback: 'all' },
-      matterPageFilterCaseType: { setter: setMatterPageFilterCaseType, kind: 'string', fallback: 'all' },
+      matterPageFilterCaseStatus: { setter: setMatterPageFilterCaseStatus, kind: 'array', fallback: null },
+      matterPageFilterMatterStatus: { setter: setMatterPageFilterMatterStatus, kind: 'array', fallback: null },
+      matterPageFilterCaseType: { setter: setMatterPageFilterCaseType, kind: 'array', fallback: null },
       matterColumnWidths: { setter: setMatterColumnWidths, kind: 'object', fallback: {} },
       taskSubpartCompletions: { setter: setTaskSubpartCompletions, kind: 'object', fallback: {} },
       caseControllerTimelineCompression: { setter: setTimelineRangeDays, kind: 'number', fallback: 60 },
@@ -2331,6 +2348,9 @@ function App() {
     const parsed = parseMioStoredValue(record, binding.fallback)
     const value = coerceMioStoredValue(parsed, binding.kind, binding.fallback)
     binding.setter(value)
+    try {
+      window.localStorage.setItem(record.key, typeof value === 'string' ? value : JSON.stringify(value))
+    } catch {}
   }
 
   async function migrateExistingLocalStateToSupabase(userId) {
@@ -4921,7 +4941,7 @@ function App() {
         if (needToSetPausedRows[rowId]) pausedRows.push(row)
         else activeRows.push(row)
       })
-      return [...activeRows, ...pausedRows]
+      return pausedRows.length ? [...activeRows, { type: 'paused_divider', key: 'need-date-paused-divider' }, ...pausedRows] : activeRows
     }
     if (!checklistShowBlankDays || eventRows.length < 2) return eventRows
     const rows = []
@@ -5383,10 +5403,6 @@ function App() {
     const commonProps = {
       key: event.id,
       type: 'button',
-      onMouseEnter: () => startEventHoverEdit(event),
-      onMouseLeave: cancelEventHoverEdit,
-      onFocus: () => startEventHoverEdit(event),
-      onBlur: cancelEventHoverEdit,
       onClick: () => editEvent(event),
       title: formatEventCalendarTitle(event)
     }
@@ -13227,6 +13243,23 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return matterPartyOne(matterId).counsel || {}
   }
 
+  function matterWithdrawalStatus(matterOrId) {
+    const matterId = typeof matterOrId === 'object' ? matterOrId?.id : matterOrId
+    const matter = typeof matterOrId === 'object' ? matterOrId : matters.find((item) => String(item.id) === String(matterId))
+    const saved = matterExtraFor(matterId).withdrawal_status
+    if (saved === 'withdrawing') return 'withdrawing'
+    if (saved === 'not_withdrawing') return 'not_withdrawing'
+    const statusText = [matter?.case_status, matter?.matter_status, matter?.notes].filter(Boolean).join(' ').toLowerCase()
+    return statusText.includes('withdraw') || statusText.includes('withdrawing') ? 'withdrawing' : 'not_withdrawing'
+  }
+
+  function updateMatterWithdrawalStatus(matterId, value) {
+    if (!matterId) return
+    const nextValue = value === 'withdrawing' ? 'withdrawing' : 'not_withdrawing'
+    const current = cloneMatterExtraInfo(matterExtraInfoById[matterId] || {})
+    setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, withdrawal_status: nextValue } })
+  }
+
   function updateMatterPartyOneField(matterId, field, value) {
     if (!matterId) return
     const current = cloneMatterExtraInfo(matterExtraInfoById[matterId] || {})
@@ -13670,6 +13703,7 @@ async function updateTeamCell(memberId, field, value) {
     { key: 'days_until_trial', label: 'Days Until Trial', width: 150 },
     { key: 'matter_type', label: 'Case Type', width: 230 },
     { key: 'client_status', label: 'Client Status', width: 160 },
+    { key: 'withdrawal_status', label: 'Withdrawal', width: 160 },
     { key: 'case_status', label: 'Case Status', width: 150 },
     { key: 'matter_status', label: 'Matter Status', width: 170 },
     { key: 'court', label: 'Court', width: 180 },
@@ -13774,20 +13808,54 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function updateMatterPageFilter(key, value) {
+    const saveValue = value === null ? 'all' : JSON.stringify(value)
     if (key === 'case_status') {
       setMatterPageFilterCaseStatus(value)
-      saveMioStateKey('matterPageFilterCaseStatus', value)
+      saveMioStateKey('matterPageFilterCaseStatus', saveValue)
     }
 
     if (key === 'matter_status') {
       setMatterPageFilterMatterStatus(value)
-      saveMioStateKey('matterPageFilterMatterStatus', value)
+      saveMioStateKey('matterPageFilterMatterStatus', saveValue)
     }
 
     if (key === 'case_type') {
       setMatterPageFilterCaseType(value)
-      saveMioStateKey('matterPageFilterCaseType', value)
+      saveMioStateKey('matterPageFilterCaseType', saveValue)
     }
+  }
+
+  function toggleMatterPageFilterValue(key, optionValue, currentValue, allValues) {
+    const selected = currentValue === null ? allValues.map((item) => (typeof item === 'string' ? item : item.value)) : [...(Array.isArray(currentValue) ? currentValue : [])]
+    const exists = selected.includes(optionValue)
+    const next = exists ? selected.filter((value) => value !== optionValue) : [...selected, optionValue]
+    updateMatterPageFilter(key, next)
+  }
+
+  function MatterPageCheckboxFilter({ title, filterKey, value, optionsList }) {
+    const allValues = optionsList.map((item) => item.value)
+    const selectedCount = value === null ? allValues.length : (Array.isArray(value) ? value.length : 0)
+    return (
+      <details style={{ border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', padding: '5px 8px' }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700 }}>{title}: {value === null ? 'All' : `${selectedCount} selected`}</summary>
+        <div style={{ display: 'flex', gap: 6, margin: '8px 0', flexWrap: 'wrap' }}>
+          <button type="button" onClick={() => updateMatterPageFilter(filterKey, null)}>All</button>
+          <button type="button" onClick={() => updateMatterPageFilter(filterKey, [])}>None</button>
+        </div>
+        <div style={{ display: 'grid', gap: 5, maxHeight: 220, overflowY: 'auto', minWidth: 190 }}>
+          {optionsList.map((option) => (
+            <label key={option.value} style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 500 }}>
+              <input
+                type="checkbox"
+                checked={value === null || (Array.isArray(value) && value.includes(option.value))}
+                onChange={() => toggleMatterPageFilterValue(filterKey, option.value, value, allValues)}
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
+      </details>
+    )
   }
 
   function toggleShowUnpopulatedMatterStatuses() {
@@ -14092,6 +14160,19 @@ async function updateTeamCell(memberId, field, value) {
                 <option key={option.id} value={option.name}>{option.name}</option>
               ))}
             </MatterEditableSelectCell>
+          </td>
+        )}
+
+        {visibleMatterColumns.withdrawal_status && (
+          <td style={matterDataCellStyle('withdrawal_status')}>
+            <select
+              value={matterWithdrawalStatus(matter)}
+              onChange={(e) => updateMatterWithdrawalStatus(matter.id, e.target.value)}
+              style={{ width: Math.max(130, matterColumnWidth('withdrawal_status') - 18), border: '1px solid #ccc', padding: 2, fontWeight: 700 }}
+            >
+              <option value="not_withdrawing">Not withdrawing</option>
+              <option value="withdrawing">Withdrawing</option>
+            </select>
           </td>
         )}
 
@@ -14571,18 +14652,19 @@ async function updateTeamCell(memberId, field, value) {
   const matterStatusOptions = options('matter_status')
   const matterStatusOptionKeys = new Set(matterStatusOptions.map((status) => normalizeMatterStatus(status.name)))
   const filteredSortedMatters = sortedMatters.filter((matter) => {
-    const caseStatusMatches =
-      matterPageFilterCaseStatus === 'all' ||
-      normalizeMatterStatus(matter.case_status) === normalizeMatterStatus(matterPageFilterCaseStatus)
+    const matterPageFilterMatches = (selectedValues, actualValue, blankToken = '') => {
+      if (selectedValues === null) return true
+      if (!Array.isArray(selectedValues)) return !selectedValues || selectedValues === 'all' || normalizeMatterStatus(actualValue) === normalizeMatterStatus(selectedValues)
+      if (selectedValues.length === 0) return false
+      const actual = normalizeMatterStatus(actualValue)
+      return selectedValues.some((value) => (value === blankToken && !actual) || normalizeMatterStatus(value) === actual)
+    }
 
-    const matterStatusMatches =
-      matterPageFilterMatterStatus === 'all' ||
-      (matterPageFilterMatterStatus === '__blank__' && !normalizeMatterStatus(matter.matter_status)) ||
-      normalizeMatterStatus(matter.matter_status) === normalizeMatterStatus(matterPageFilterMatterStatus)
+    const caseStatusMatches = matterPageFilterMatches(matterPageFilterCaseStatus, matter.case_status)
 
-    const caseTypeMatches =
-      matterPageFilterCaseType === 'all' ||
-      normalizeMatterStatus(matter.matter_type) === normalizeMatterStatus(matterPageFilterCaseType)
+    const matterStatusMatches = matterPageFilterMatches(matterPageFilterMatterStatus, matter.matter_status, '__blank__')
+
+    const caseTypeMatches = matterPageFilterMatches(matterPageFilterCaseType, matter.matter_type)
 
     const searchText = normalizeMatterStatus(matterPageSearch)
     const searchableMatterText = [
@@ -14652,10 +14734,7 @@ async function updateTeamCell(memberId, field, value) {
 
 
   const withdrawalMatters = sortRows(
-    matters.filter((matter) => {
-      const statusText = [matter.case_status, matter.matter_status, matter.notes].filter(Boolean).join(' ').toLowerCase()
-      return statusText.includes('withdraw') || statusText.includes('withdrawing')
-    }),
+    matters.filter((matter) => matterWithdrawalStatus(matter) === 'withdrawing'),
     mattersSort
   )
 
@@ -14666,7 +14745,7 @@ async function updateTeamCell(memberId, field, value) {
   }, {})
 
   function markMatterForWithdrawal(matterId) {
-    updateMatterCell(matterId, 'case_status', 'Open- Withdrawing')
+    updateMatterWithdrawalStatus(matterId, 'withdrawing')
   }
 
   function addWithdrawalStep() {
@@ -14711,7 +14790,7 @@ async function updateTeamCell(memberId, field, value) {
     return (
       <>
         <h1>Withdrawals</h1>
-        <p style={{ marginTop: -8, color: '#64748b' }}>Cases marked for withdrawal. A matter appears here when its case status, matter status, or notes include “withdraw” or “withdrawing”.</p>
+        <p style={{ marginTop: -8, color: '#64748b' }}>Cases marked for withdrawal using the Withdrawal dropdown.</p>
 
         <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 14 }}>
           <h2 style={{ marginTop: 0 }}>Withdrawal Graph</h2>
@@ -14809,7 +14888,7 @@ async function updateTeamCell(memberId, field, value) {
                   <td>{matter.courts?.court_name || ''}{matter.courts?.county ? ` - ${matter.courts.county}` : ''}</td>
                   <td>{counsel?.name || ''}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    <button type="button" onClick={() => markMatterForWithdrawal(matter.id)}>Mark Open- Withdrawing</button>
+                    <button type="button" onClick={() => markMatterForWithdrawal(matter.id)}>Mark Withdrawing</button>
                     <button type="button" onClick={() => { setSelectedTemplateMatterId(matter.id); setPage('tasks') }} style={{ marginLeft: 6 }}>Open dashboard</button>
                   </td>
                 </tr>
@@ -25359,10 +25438,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function renderNeedToSetCardDashboard() {
-    const rows = checklistDisplayRows().filter((row) => row.type === 'event')
+    const rows = checklistDisplayRows()
     return (
       <div style={{ display: 'grid', gap: 14 }}>
         {rows.map((row) => {
+          if (row.type === 'paused_divider') {
+            return <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '6px 0 2px' }}><div style={{ height: 2, background: '#94a3b8', flex: 1 }} /><strong style={{ color: '#334155', background: '#e0f2fe', border: '2px solid #1d4ed8', borderRadius: 999, padding: '5px 14px' }}>Paused</strong><div style={{ height: 2, background: '#94a3b8', flex: 1 }} /></div>
+          }
           const event = row.event
           const matter = checklistMatterForEvent(event)
           const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
@@ -31939,6 +32021,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       </select>
                     </LabeledField>
 
+                    <LabeledField label="Withdrawal">
+                      <select value={matterExtraDraft.withdrawal_status || matterWithdrawalStatus(editingMatterId)} onChange={(e) => setMatterExtraDraft({ ...matterExtraDraft, withdrawal_status: e.target.value })}>
+                        <option value="not_withdrawing">Not withdrawing</option>
+                        <option value="withdrawing">Withdrawing</option>
+                      </select>
+                    </LabeledField>
+
                     <LabeledField label="Notes">
                       <textarea value={matterForm.notes} onChange={(e) => setMatterForm({ ...matterForm, notes: e.target.value })} />
                     </LabeledField>
@@ -32013,36 +32102,26 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 />
               </label>
 
-              <label>
-                Case Status:{' '}
-                <select value={matterPageFilterCaseStatus} onChange={(e) => updateMatterPageFilter('case_status', e.target.value)}>
-                  <option value="all">All</option>
-                  {options('case_status').map((option) => (
-                    <option key={option.id} value={option.name}>{option.name}</option>
-                  ))}
-                </select>
-              </label>
+              <MatterPageCheckboxFilter
+                title="Case Status"
+                filterKey="case_status"
+                value={matterPageFilterCaseStatus}
+                optionsList={options('case_status').map((option) => ({ value: option.name, label: option.name }))}
+              />
 
-              <label>
-                Matter Status:{' '}
-                <select value={matterPageFilterMatterStatus} onChange={(e) => updateMatterPageFilter('matter_status', e.target.value)}>
-                  <option value="all">All</option>
-                  <option value="__blank__">No Matter Status</option>
-                  {options('matter_status').map((option) => (
-                    <option key={option.id} value={option.name}>{option.name}</option>
-                  ))}
-                </select>
-              </label>
+              <MatterPageCheckboxFilter
+                title="Matter Status"
+                filterKey="matter_status"
+                value={matterPageFilterMatterStatus}
+                optionsList={[{ value: '__blank__', label: 'No Matter Status' }, ...options('matter_status').map((option) => ({ value: option.name, label: option.name }))]}
+              />
 
-              <label>
-                Case Type:{' '}
-                <select value={matterPageFilterCaseType} onChange={(e) => updateMatterPageFilter('case_type', e.target.value)}>
-                  <option value="all">All</option>
-                  {options('matter_type').map((option) => (
-                    <option key={option.id} value={option.name}>{option.name}</option>
-                  ))}
-                </select>
-              </label>
+              <MatterPageCheckboxFilter
+                title="Case Type"
+                filterKey="case_type"
+                value={matterPageFilterCaseType}
+                optionsList={options('matter_type').map((option) => ({ value: option.name, label: option.name }))}
+              />
 
               <span style={{ fontSize: 13 }}>Matter headings repeat under each status section. Use Column Width to adjust widths. Choices save automatically.</span>
             </div>
@@ -32731,6 +32810,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <tr key={week}>
                       {calendarMonthDays().slice(week * 7, week * 7 + 7).map((day) => {
                         const isCurrentMonth = day.getMonth() === calendarDate.getMonth()
+                        const isToday = dateToInputValue(day) === dateToInputValue(new Date())
                         const dayEvents = eventsForDate(day)
 
                         return (
@@ -32740,9 +32820,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             style={{
                               height: 130,
                               verticalAlign: 'top',
-                              background: isCurrentMonth ? 'white' : '#f2f2f2',
-                              border: isCurrentMonth ? '1px solid #e5e7eb' : '1px solid #cbd5e1',
-                              boxShadow: isCurrentMonth ? 'none' : 'inset 0 0 0 1px #cbd5e1',
+                              background: isToday ? '#dbeafe' : (isCurrentMonth ? 'white' : '#f2f2f2'),
+                              border: isToday ? '3px solid #1d4ed8' : (isCurrentMonth ? '1px solid #e5e7eb' : '1px solid #cbd5e1'),
+                              boxShadow: isToday ? 'inset 0 0 0 2px #1d4ed8' : (isCurrentMonth ? 'none' : 'inset 0 0 0 1px #cbd5e1'),
                               cursor: 'pointer'
                             }}
                           >
@@ -32751,8 +32831,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             {dayEvents.map((event) => (
                               <div
                                 key={event.id}
-                                onMouseEnter={() => startEventHoverEdit(event)}
-                                onMouseLeave={cancelEventHoverEdit}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   editEvent(event)
@@ -32768,7 +32846,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                                   whiteSpace: 'nowrap',
                                   textOverflow: 'ellipsis'
                                 }}
-                                title="Hover or click to edit event"
+                                title="Click to edit event"
                               >
                                 {formatEventCalendarTitle(event)}
                               </div>
@@ -33489,6 +33567,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </thead>
                 <tbody>
                   {checklistDisplayRows().map((row) => {
+                    if (row.type === 'paused_divider') {
+                      return (
+                        <tr key={row.key} style={{ background: '#e0f2fe' }}>
+                          <td colSpan={checklistTab === 'need_date' ? 7 : 5} style={{ padding: '8px 10px', borderTop: '3px solid #1d4ed8', borderBottom: '3px solid #1d4ed8', color: '#1d4ed8', fontWeight: 900, textAlign: 'center', textTransform: 'uppercase' }}>Paused</td>
+                        </tr>
+                      )
+                    }
                     if (row.type === 'blank_day') {
                       return (
                         <tr key={row.key} style={{ background: '#f8fafc' }}>
