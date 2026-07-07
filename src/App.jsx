@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V107'
+const MIO_APP_VERSION = 'Mio V108'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1804,6 +1804,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepBillingNotes') || '{}') }
     catch { return {} }
   })
+  const [needToSetTocCollapsed, setNeedToSetTocCollapsed] = useState(() => {
+    try { return localStorage.getItem('caseMioNeedToSetTocCollapsed') === 'true' }
+    catch { return false }
+  })
   const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioWithdrawalSteps') || 'null')
@@ -2949,6 +2953,9 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetStepBillingNotes', JSON.stringify(needToSetStepBillingNotes)) } catch {}
   }, [needToSetStepBillingNotes])
+  useEffect(() => {
+    try { localStorage.setItem('caseMioNeedToSetTocCollapsed', needToSetTocCollapsed ? 'true' : 'false') } catch {}
+  }, [needToSetTocCollapsed])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioWithdrawalSteps', JSON.stringify(withdrawalSteps)) } catch {}
@@ -4821,6 +4828,38 @@ function App() {
   function colorForNeedToSetAge(days) {
     const index = Math.min(Math.max(Number(days) || 0, 0), 8)
     return needToSetAgeColors[index]?.color || defaultNeedToSetAgeColors[index]?.color || '#ffffff'
+  }
+
+  function colorForNeedToSetAgeSoft(days) {
+    const index = Math.min(Math.max(Number(days) || 0, 0), 8)
+    const softColors = ['#ffffff', '#fee2e2', '#ffedd5', '#fef9c3', '#dcfce7', '#e0f2fe', '#dbeafe', '#ede9fe', '#e5e7eb']
+    return softColors[index] || '#ffffff'
+  }
+
+  function needToSetDomSafe(value = '') {
+    return String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item'
+  }
+
+  function needToSetRowDomId(event = {}) {
+    return `need-row-${needToSetDomSafe(checklistNeedToSetRowId(event) || event?.id || event?.checklist_source_id || 'row')}`
+  }
+
+  function needToSetStepDomId(event = {}, step = {}, stepIndex = 0) {
+    return `${needToSetRowDomId(event)}-step-${needToSetDomSafe(step?.id || step?.name || stepIndex)}`
+  }
+
+  function renderNeedToSetAgeLegend() {
+    const labels = ['0', '1', '2', '3', '4', '5', '6', '7', '8+']
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', fontSize: 10, color: '#475569', marginTop: 2 }}>
+        <strong style={{ fontSize: 10, color: '#334155', marginRight: 2 }}>Days:</strong>
+        {labels.map((label, index) => (
+          <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, border: '1px solid #cbd5e1', background: colorForNeedToSetAgeSoft(index) }} />{label}
+          </span>
+        ))}
+      </div>
+    )
   }
 
   function needToSetStepTiming(context = {}, step = {}, stepIndex = 0, steps = []) {
@@ -25874,11 +25913,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function needToSetMetricBox(label, value, days) {
-    const fill = colorForNeedToSetAge(days)
+    const fill = colorForNeedToSetAgeSoft(days)
     return (
-      <div style={{ border: '2px solid #0f172a', borderRadius: 10, background: fill, color: '#000', padding: '8px 10px', fontWeight: 800, boxShadow: '0 1px 2px rgba(15,23,42,.12)' }}>
-        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.02em' }}>{label}</div>
-        <div style={{ marginTop: 4 }}>{value}</div>
+      <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, background: fill, color: '#000', padding: '4px 8px', fontWeight: 800, boxShadow: '0 1px 2px rgba(15,23,42,.08)', maxWidth: 150, minHeight: 38 }}>
+        <div style={{ fontSize: 9, textTransform: 'uppercase', letterSpacing: '.02em', lineHeight: 1.1 }}>{label}</div>
+        <div style={{ marginTop: 2, fontSize: 12, lineHeight: 1.15 }}>{value}</div>
       </div>
     )
   }
@@ -25920,7 +25959,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const roleLabels = [...new Set(stepEmails.map(needToSetEmailRoleLabel).filter(Boolean))]
     const stepContext = needToSetStepContext(event, step, stepIndex)
     return (
-      <div key={step.id} style={{ display: 'grid', justifyItems: 'center', gap: 5, minWidth: 92 }}>
+      <div id={needToSetStepDomId(event, step, stepIndex)} key={step.id} style={{ display: 'grid', justifyItems: 'center', gap: 5, minWidth: 92, scrollMarginTop: 110 }}>
         <button
           type="button"
           onClick={() => openStepDetail(stepContext)}
@@ -25941,7 +25980,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             {unreadCount > 0 && <span style={{ position: 'absolute', top: -8, right: -8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 5px', fontSize: 10, fontWeight: 800 }}>{unreadCount}</span>}
           </button>
         )}
-        <button type="button" onClick={openMioCalendarWindow} title="Open calendar in a new window" style={{ border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '4px 8px', fontSize: 11, fontWeight: 800 }}>Calendar ↗</button>
       </div>
     )
   }
@@ -26017,9 +26055,54 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
   }
 
+
+  function renderNeedToSetFloatingToc(rows = []) {
+    const items = rows.filter((row) => row.type !== 'paused_divider' && row.event).map((row) => {
+      const event = row.event
+      const needRowId = checklistNeedToSetRowId(event)
+      const paused = Boolean(needToSetPausedRows[needRowId])
+      const status = currentNeedToSetStatus(event)
+      const bg = colorForNeedToSetAgeSoft(status?.timeDays ?? 8)
+      return { event, paused, status, bg, steps: checklistStepsForEvent(event) }
+    })
+    if (!items.length) return null
+    if (needToSetTocCollapsed) {
+      return (
+        <button type="button" onClick={() => setNeedToSetTocCollapsed(false)} title="Show Need to Set step TOC" style={{ position: 'fixed', right: 12, top: 160, zIndex: 80, border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '8px 10px', fontWeight: 900, boxShadow: '0 10px 24px rgba(15,23,42,.18)' }}>Steps ☰</button>
+      )
+    }
+    return (
+      <aside style={{ position: 'fixed', right: 12, top: 150, zIndex: 80, width: 260, maxHeight: '70vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 14, background: 'rgba(255,255,255,.96)', boxShadow: '0 16px 36px rgba(15,23,42,.18)', padding: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <strong style={{ color: '#0f172a' }}>Need to Set Steps</strong>
+          <button type="button" onClick={() => setNeedToSetTocCollapsed(true)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, background: '#fff', padding: '3px 8px', fontSize: 11, fontWeight: 800 }}>Collapse</button>
+        </div>
+        {items.map(({ event, paused, status, bg, steps }) => (
+          <div key={checklistNeedToSetRowId(event)} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 7, marginBottom: 8, background: bg }}>
+            <button type="button" onClick={() => document.getElementById(needToSetRowDomId(event))?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'block', width: '100%', textAlign: 'left', border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 900, cursor: 'pointer' }}>
+              {checklistMatterLabel(event)} {paused ? <span style={{ color: '#92400e', fontSize: 11 }}>(Paused)</span> : null}
+            </button>
+            <div style={{ display: 'grid', gap: 3, marginTop: 5 }}>
+              {steps.map((step, stepIndex) => {
+                const completion = checklistStepCompletion(event?.id || event?.checklist_source_id || event?.checklist_id || '', step.id)
+                return (
+                  <button key={step.id} type="button" onClick={() => document.getElementById(needToSetStepDomId(event, step, stepIndex))?.scrollIntoView({ behavior: 'smooth', block: 'center' })} style={{ textAlign: 'left', border: '1px solid rgba(148,163,184,.55)', borderRadius: 7, background: completion?.completed ? 'rgba(255,255,255,.45)' : 'rgba(255,255,255,.78)', padding: '3px 5px', fontSize: 11, color: completion?.completed ? '#64748b' : '#0f172a', cursor: 'pointer' }}>
+                    {stepIndex + 1}. {step.name}{completion?.completed ? ' ✓' : ''}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </aside>
+    )
+  }
+
   function renderNeedToSetCardDashboard() {
     const rows = checklistDisplayRows()
     return (
+      <>
+      {renderNeedToSetFloatingToc(rows)}
       <div style={{ display: 'grid', gap: 14 }}>
         {rows.map((row) => {
           if (row.type === 'paused_divider') {
@@ -26035,8 +26118,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           const summary = needToSetEmailSummary(event)
           const accent = needPaused ? '#94a3b8' : (status?.rowColor || '#2563eb')
           return (
-            <section key={eventId || needRowId} data-need-paused-row={needPaused ? 'true' : undefined} draggable onDragStart={() => setDraggedNeedToSetRowId(needRowId)} onDragOver={(dragEvent) => dragEvent.preventDefault()} onDrop={() => moveNeedToSetRow(draggedNeedToSetRowId, needRowId)} style={{ border: '1px solid #dbe4ee', borderLeft: `6px solid ${accent}`, borderRadius: 18, background: needPaused ? '#f1f5f9' : '#fff', boxShadow: '0 10px 28px rgba(15,23,42,.06)', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, .9fr) minmax(220px, .75fr) minmax(420px, 1.6fr) 140px', gap: 16, padding: 16, alignItems: 'start' }}>
+            <section id={needToSetRowDomId(event)} key={eventId || needRowId} data-need-paused-row={needPaused ? 'true' : undefined} draggable onDragStart={() => setDraggedNeedToSetRowId(needRowId)} onDragOver={(dragEvent) => dragEvent.preventDefault()} onDrop={() => moveNeedToSetRow(draggedNeedToSetRowId, needRowId)} style={{ border: '1px solid #dbe4ee', borderLeft: `6px solid ${accent}`, borderRadius: 18, background: needPaused ? '#f1f5f9' : '#fff', boxShadow: '0 10px 28px rgba(15,23,42,.06)', overflow: 'hidden' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, .9fr) minmax(155px, .45fr) minmax(420px, 1.6fr) 140px', gap: 16, padding: 16, alignItems: 'start' }}>
                 <div>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                     <div style={{ width: 42, height: 42, borderRadius: 12, background: '#eff6ff', display: 'grid', placeItems: 'center', fontSize: 22 }}>⚖</div>
@@ -26046,6 +26129,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                     <div><strong>Event Type:</strong> {checklistEventCategoryLabel(event)}</div>
                     <div><strong>Court:</strong> {checklistCourtWebsite(event) ? <a href={checklistCourtWebsite(event)} target="_blank" rel="noreferrer">{checklistCourtName(event) || 'Court'}</a> : (checklistCourtName(event) || 'No court listed')}</div>
                     <div><strong>Court Coordinator:</strong> {checklistCourtCoordinatorEmail(event) ? <a href={`mailto:${checklistCourtCoordinatorEmail(event)}`}>{checklistCourtCoordinatorEmail(event)}</a> : 'No email listed'}</div>
+                    <div><button type="button" onClick={openMioCalendarWindow} style={{ border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '4px 8px', fontSize: 11, fontWeight: 800 }}>Calendar ↗</button></div>
                   </div>
                   {summary.total > 0 && <button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))} style={{ marginTop: 14, border: '1px solid #dbe4ee', borderRadius: 999, background: '#f8fafc', padding: '6px 10px', color: '#334155' }}>✉ Email activity: {summary.unread} unread / {summary.total} total thread{summary.total === 1 ? '' : 's'}</button>}
                 </div>
@@ -26054,6 +26138,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   {needToSetMetricBox('Total Days Waiting', `${status.rowDays} days`, status.rowDays)}
                   {needToSetMetricBox('Current Step Age', status.stepDays === null || status.stepDays === undefined ? '—' : `${status.stepDays} days`, status.stepDays ?? 0)}
                   {needToSetMetricBox('Last Worked', status.lastTimeEntryAt ? needToSetShortDate(status.lastTimeEntryAt) : 'No time yet', status.timeDays ?? 8)}
+                  {renderNeedToSetAgeLegend()}
                 </div>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: 8 }}>
@@ -26085,6 +26170,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         })}
         {!rows.length && <div style={{ padding: 16, textAlign: 'center', color: '#64748b', border: '1px dashed #cbd5e1', borderRadius: 12 }}>No Need to Set rows match the current filters.</div>}
       </div>
+      </>
     )
   }
 
@@ -26328,7 +26414,6 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 </label>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button type="button" onClick={() => openStepDetail(stepContext)}>Open step</button>
-                  <button type="button" onClick={openMioCalendarWindow}>Open Calendar ↗</button>
                   <button type="button" onClick={() => openBillingWindow({ matter_id: matter?.id || '', matter_status: matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!matter?.id}>Add time</button>
                   <button type="button" onClick={() => context.type === 'checklist' ? toggleChecklistStepComplete(eventId, step.id) : toggleMatterStepComplete(matter?.id, step.id)} disabled={context.type !== 'checklist' && !matter?.id}>{completed ? 'Mark incomplete' : 'Mark complete'}</button>
                   <button type="button" onClick={() => addWorkspaceEmailForStep(context, stepContext, null, 'attach')}>Open existing email thread</button>
