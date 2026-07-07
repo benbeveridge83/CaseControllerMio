@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V106'
+const MIO_APP_VERSION = 'Mio V107'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -323,12 +323,16 @@ function normalizeScreenSaverRows(storedRows, defaultSeconds = defaultScreenSave
   const rows = screenSaverBasePages.map((base) => {
     const stored = storedByValue.get(base.value) || {}
     const seconds = parseDurationTextToSeconds(stored.draftTime || stored.seconds, defaultSeconds)
+    const zoomPercent = Math.max(50, Math.min(175, Number(stored.zoom_percent || 100) || 100))
     return {
       ...base,
       selected: Boolean(stored.selected),
       seconds,
       draftTime: stored.draftTime || secondsToDurationText(seconds),
-      trackSlider: stored.trackSlider !== false
+      trackSlider: stored.trackSlider !== false,
+      use_saved_view: Boolean(stored.use_saved_view),
+      saved_url: String(stored.saved_url || ''),
+      zoom_percent: zoomPercent
     }
   })
   const order = Array.isArray(storedRows) ? storedRows.map((row) => row.value) : []
@@ -337,6 +341,49 @@ function normalizeScreenSaverRows(storedRows, defaultSeconds = defaultScreenSave
     const aIndex = order.indexOf(a.value)
     const bIndex = order.indexOf(b.value)
     return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex)
+  })
+}
+
+function workflowDuplicateKey(item = {}) {
+  const words = String(item.name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/emails?/g, 'email')
+    .replace(/timelines?/g, 'timeline')
+    .replace(/tomorrows/g, 'tomorrow')
+    .replace(/folders?/g, 'folder')
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word && !['check', 'open', 'for', 'the', 'a', 'an'].includes(word))
+  const normalizedName = words.sort().join(' ')
+  return `${String(item.parent_id || '')}::${normalizedName}`
+}
+
+function normalizeWorkflowItems(items = []) {
+  const source = Array.isArray(items) ? items : []
+  const seen = new Map()
+  const idRedirects = new Map()
+  const deduped = []
+  source.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return
+    const clean = { ...item, id: String(item.id || `workflow-recovered-${index}`), parent_id: String(item.parent_id || '') }
+    const key = workflowDuplicateKey(clean)
+    const existing = seen.get(key)
+    if (!existing) {
+      seen.set(key, clean)
+      deduped.push(clean)
+      return
+    }
+    idRedirects.set(clean.id, existing.id)
+    existing.notes = existing.notes || clean.notes || ''
+    existing.link_label = existing.link_label || clean.link_label || ''
+    existing.link_url = existing.link_url || clean.link_url || ''
+    existing.color = existing.color || clean.color || '#4c6783'
+    existing.sort_order = Math.min(Number(existing.sort_order) || index + 1, Number(clean.sort_order) || index + 1)
+  })
+  return deduped.map((item) => {
+    const redirectedParent = idRedirects.get(item.parent_id)
+    return redirectedParent ? { ...item, parent_id: redirectedParent } : item
   })
 }
 
@@ -1552,7 +1599,7 @@ function App() {
   const [editingAiTagRuleId, setEditingAiTagRuleId] = useState(null)
   const [draggedTagId, setDraggedTagId] = useState(null)
   const [workflowItems, setWorkflowItems] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('caseMioWorkflowItems') || '[]') }
+    try { return normalizeWorkflowItems(JSON.parse(localStorage.getItem('caseMioWorkflowItems') || '[]')) }
     catch { return [] }
   })
   const [workflowForm, setWorkflowForm] = useState({ name: '', parent_id: '', notes: '', color: '#4c6783', link_label: '', link_url: '' })
@@ -1922,6 +1969,15 @@ function App() {
   const [screenSaverRunning, setScreenSaverRunning] = useState(false)
   const [screenSaverCurrentIndex, setScreenSaverCurrentIndex] = useState(0)
   const [screenSaverDraggedValue, setScreenSaverDraggedValue] = useState('')
+  const [screenSaverCaptureMode, setScreenSaverCaptureMode] = useState(() => {
+    try { return localStorage.getItem('caseMioScreenSaverCaptureMode') === 'true' }
+    catch { return false }
+  })
+  const [screenSaverCaptureTargetValue, setScreenSaverCaptureTargetValue] = useState('')
+  const [screenSaverCaptureZoomPercent, setScreenSaverCaptureZoomPercent] = useState(() => {
+    try { return Math.max(50, Math.min(175, Number(localStorage.getItem('caseMioScreenSaverCaptureZoomPercent') || '100') || 100)) }
+    catch { return 100 }
+  })
 
   const [visibleMatterColumns, setVisibleMatterColumns] = useState(() => {
     const defaults = {
@@ -2303,7 +2359,7 @@ function App() {
       caseMioWorkflowItems: { setter: (value) => {
         const cloudItems = Array.isArray(value) ? value : []
         let browserItems = []
-        try { browserItems = JSON.parse(window.localStorage.getItem('caseMioWorkflowItems') || '[]') } catch {}
+        try { browserItems = normalizeWorkflowItems(JSON.parse(window.localStorage.getItem('caseMioWorkflowItems') || '[]')) } catch {}
         setWorkflowItems((prevItems) => {
           const priorItems = Array.isArray(prevItems) ? prevItems : []
           const merged = []
@@ -3200,8 +3256,13 @@ function App() {
   }, [tags])
 
   useEffect(() => {
-    safeSetLocalStorage('caseMioWorkflowItems', JSON.stringify(workflowItems))
-    try { saveMioStateKey('caseMioWorkflowItems', JSON.stringify(workflowItems)) } catch {}
+    const normalized = normalizeWorkflowItems(workflowItems)
+    if (normalized.length !== workflowItems.length) {
+      setWorkflowItems(normalized)
+      return
+    }
+    safeSetLocalStorage('caseMioWorkflowItems', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioWorkflowItems', JSON.stringify(normalized)) } catch {}
   }, [workflowItems])
 
   useEffect(() => {
@@ -3251,11 +3312,21 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseMioScreenSaverDefaultSeconds', String(screenSaverDefaultSeconds))
+    try { saveMioStateKey('caseMioScreenSaverDefaultSeconds', String(screenSaverDefaultSeconds)) } catch {}
   }, [screenSaverDefaultSeconds])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioScreenSaverRows', JSON.stringify(screenSaverRows))
+    try { saveMioStateKey('caseMioScreenSaverRows', JSON.stringify(screenSaverRows)) } catch {}
   }, [screenSaverRows])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioScreenSaverCaptureMode', screenSaverCaptureMode ? 'true' : 'false')
+  }, [screenSaverCaptureMode])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioScreenSaverCaptureZoomPercent', String(screenSaverCaptureZoomPercent))
+  }, [screenSaverCaptureZoomPercent])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioDiscoverySideFilter', discoverySideFilter)
@@ -9617,7 +9688,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
 
   function childWorkflowItems(parentId = '') {
-    return workflowItems
+    return normalizeWorkflowItems(workflowItems)
       .filter((item) => (item.parent_id || '') === (parentId || ''))
       .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || (a.name || '').localeCompare(b.name || ''))
   }
@@ -22521,6 +22592,41 @@ Ben`) : (row.draft_response || '') })
   const visibleScreenSaverRows = screenSaverRows.filter((row) => row.page !== 'screensaver' && canOpenPage(row.page))
   const selectedScreenSaverRows = visibleScreenSaverRows.filter((row) => row.selected)
 
+  function currentScreenSaverViewUrl() {
+    return buildCurrentWorkflowViewUrl()
+  }
+
+  function applyMioPageZoom(percent = 100) {
+    const zoom = Math.max(50, Math.min(175, Number(percent) || 100))
+    try {
+      document.documentElement.style.setProperty('--mio-page-zoom', String(zoom / 100))
+      document.body.style.zoom = `${zoom}%`
+    } catch {}
+  }
+
+  function resetMioPageZoom() {
+    try {
+      document.documentElement.style.removeProperty('--mio-page-zoom')
+      document.body.style.zoom = ''
+    } catch {}
+  }
+
+  function saveCurrentViewToScreenSaverRow(value) {
+    const targetValue = String(value || screenSaverCaptureTargetValue || '').trim()
+    if (!targetValue) {
+      alert('Choose the screensaver page row to save this view to.')
+      return
+    }
+    const urlToSave = currentScreenSaverViewUrl()
+    setScreenSaverRows((rows) => rows.map((row) => row.value === targetValue ? {
+      ...row,
+      saved_url: urlToSave,
+      use_saved_view: true,
+      zoom_percent: screenSaverCaptureZoomPercent
+    } : row))
+    alert('Saved the current page filters and app zoom for that screensaver row.')
+  }
+
   function updateScreenSaverRow(value, patch) {
     setScreenSaverRows((rows) => rows.map((row) => row.value === value ? { ...row, ...patch } : row))
   }
@@ -22546,6 +22652,24 @@ Ben`) : (row.draft_response || '') })
 
   function goToScreenSaverRow(row) {
     if (!row) return
+    const zoomPercent = row.use_saved_view ? (row.zoom_percent || 100) : 100
+    applyMioPageZoom(zoomPercent)
+    if (row.use_saved_view && row.saved_url) {
+      try {
+        const savedUrl = new URL(row.saved_url, window.location.origin)
+        const savedHash = savedUrl.hash ? savedUrl.hash.replace(/^#\/?/, '') : ''
+        if (savedHash) {
+          setPage(savedHash)
+          return
+        }
+      } catch {
+        const savedHash = String(row.saved_url || '').replace(/^#\/?/, '')
+        if (savedHash) {
+          setPage(savedHash)
+          return
+        }
+      }
+    }
     if (row.discoverySide) setDiscoverySideFilter(row.discoverySide)
     setPage(row.page)
   }
@@ -22561,6 +22685,7 @@ Ben`) : (row.draft_response || '') })
   function stopScreenSaver() {
     setScreenSaverRunning(false)
     setScreenSaverCurrentIndex(0)
+    resetMioPageZoom()
   }
 
   useEffect(() => {
@@ -22617,14 +22742,37 @@ Ben`) : (row.draft_response || '') })
             {screenSaverRunning && <span style={{ color: '#166534', fontWeight: 600 }}>Running</span>}
           </div>
           <small style={{ color: '#64748b' }}>Pages with “track slider” checked update when the default slider changes. Manual edits turn tracking off for that page.</small>
+          <div style={{ marginTop: 12, borderTop: '1px solid #dbe4ee', paddingTop: 12, display: 'grid', gap: 10 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700 }}>
+              <input type="checkbox" checked={screenSaverCaptureMode} onChange={(event) => setScreenSaverCaptureMode(event.target.checked)} />
+              Turn on screensaver view capture
+            </label>
+            {screenSaverCaptureMode && (
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <select value={screenSaverCaptureTargetValue} onChange={(event) => setScreenSaverCaptureTargetValue(event.target.value)} style={{ minWidth: 260 }}>
+                  <option value="">Save current page view to...</option>
+                  {visibleScreenSaverRows.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
+                </select>
+                <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>App zoom
+                  <input type="number" min="50" max="175" step="5" value={screenSaverCaptureZoomPercent} onChange={(event) => setScreenSaverCaptureZoomPercent(Math.max(50, Math.min(175, Number(event.target.value) || 100)))} style={{ width: 82 }} />%
+                </label>
+                <button type="button" onClick={() => applyMioPageZoom(screenSaverCaptureZoomPercent)}>Preview zoom</button>
+                <button type="button" onClick={() => { resetMioPageZoom(); setScreenSaverCaptureZoomPercent(100) }}>Reset zoom</button>
+                <button type="button" onClick={() => saveCurrentViewToScreenSaverRow(screenSaverCaptureTargetValue)} style={{ fontWeight: 800 }}>Save current filters/page zoom</button>
+              </div>
+            )}
+          </div>
         </section>
 
-        <div style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'hidden', maxWidth: 1050 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr 150px 130px 80px', gap: 10, padding: '10px 12px', background: '#f1f5f9', fontWeight: 'bold', alignItems: 'center' }}>
+        <div style={{ border: '1px solid #ddd', borderRadius: 8, overflow: 'auto', maxWidth: 1250 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr 150px 130px 140px 100px 170px 80px', gap: 10, padding: '10px 12px', background: '#f1f5f9', fontWeight: 'bold', alignItems: 'center', minWidth: 1180 }}>
             <div>Use</div>
             <div>Page</div>
             <div>Time</div>
             <div>Track slider</div>
+            <div>Saved view</div>
+            <div>Zoom</div>
+            <div>Save</div>
             <div>Order</div>
           </div>
           {visibleScreenSaverRows.map((row, index) => (
@@ -22634,7 +22782,7 @@ Ben`) : (row.draft_response || '') })
               onDragStart={() => setScreenSaverDraggedValue(row.value)}
               onDragOver={(event) => event.preventDefault()}
               onDrop={() => moveScreenSaverRow(screenSaverDraggedValue, row.value)}
-              style={{ display: 'grid', gridTemplateColumns: '52px 1fr 150px 130px 80px', gap: 10, padding: '10px 12px', borderTop: '1px solid #e5e7eb', alignItems: 'center', background: row.selected ? '#ffffff' : '#fafafa' }}
+              style={{ display: 'grid', gridTemplateColumns: '52px 1fr 150px 130px 140px 100px 170px 80px', gap: 10, padding: '10px 12px', borderTop: '1px solid #e5e7eb', alignItems: 'center', background: row.selected ? '#ffffff' : '#fafafa', minWidth: 1180 }}
             >
               <input
                 type="checkbox"
@@ -22667,6 +22815,12 @@ Ben`) : (row.draft_response || '') })
                 />
                 Track slider
               </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title={row.saved_url ? row.saved_url : 'No saved view yet'}>
+                <input type="checkbox" checked={!!row.use_saved_view} onChange={(event) => updateScreenSaverRow(row.value, { use_saved_view: event.target.checked })} />
+                Use saved
+              </label>
+              <input type="number" min="50" max="175" step="5" value={row.zoom_percent || 100} onChange={(event) => updateScreenSaverRow(row.value, { zoom_percent: Math.max(50, Math.min(175, Number(event.target.value) || 100)) })} />
+              <button type="button" onClick={() => saveCurrentViewToScreenSaverRow(row.value)} title="Save the current page URL/filters and selected capture zoom to this screensaver row">Save current view</button>
               <span style={{ color: '#64748b', cursor: 'grab' }}>Drag {index + 1}</span>
             </div>
           ))}
@@ -31930,6 +32084,21 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               {allWorkflowItemsIndented().map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
             </select>
             <button type="button" onClick={() => saveCurrentViewToWorkflowItem(workflowQuickLinkTargetId)}>Save current URL</button>
+          </div>
+        )}
+
+        {screenSaverCaptureMode && page !== 'screensaver' && (
+          <div style={{ position: 'fixed', left: 18, bottom: 18, zIndex: 56, border: '1px solid #cbd5e1', borderRadius: 14, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 'min(760px, 94vw)', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>Screensaver view:</span>
+            <select value={screenSaverCaptureTargetValue} onChange={(e) => setScreenSaverCaptureTargetValue(e.target.value)} style={{ maxWidth: 260 }}>
+              <option value="">Choose page row...</option>
+              {visibleScreenSaverRows.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
+            </select>
+            <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>Zoom
+              <input type="number" min="50" max="175" step="5" value={screenSaverCaptureZoomPercent} onChange={(event) => setScreenSaverCaptureZoomPercent(Math.max(50, Math.min(175, Number(event.target.value) || 100)))} style={{ width: 70 }} />%
+            </label>
+            <button type="button" onClick={() => applyMioPageZoom(screenSaverCaptureZoomPercent)}>Preview</button>
+            <button type="button" onClick={() => saveCurrentViewToScreenSaverRow(screenSaverCaptureTargetValue)}>Save filters/zoom</button>
           </div>
         )}
 
