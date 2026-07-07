@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V103'
+const MIO_APP_VERSION = 'Mio V105'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -174,6 +174,7 @@ const appPages = [
   { value: 'checklist', label: 'Checklist' },
   { value: 'discovery', label: 'Discovery' },
   { value: 'documents', label: 'Documents' },
+  { value: 'drafting', label: 'Drafting' },
   { value: 'onedrive_files', label: 'OneDrive Files' },
   { value: 'elements', label: 'Elements' },
   { value: 'people', label: 'People' },
@@ -200,6 +201,7 @@ const screenSaverBasePages = [
   { value: 'discovery_their_requests', label: "Discovery - Their Requests", page: 'discovery', discoverySide: 'their' },
   { value: 'discovery_our_requests', label: 'Discovery - Our Requests', page: 'discovery', discoverySide: 'ours' },
   { value: 'documents', label: 'Documents', page: 'documents' },
+  { value: 'drafting', label: 'Drafting', page: 'drafting' },
   { value: 'onedrive_files', label: 'OneDrive Files', page: 'onedrive_files' },
   { value: 'elements', label: 'Elements', page: 'elements' },
   { value: 'people', label: 'People', page: 'people' },
@@ -456,6 +458,7 @@ const emptyPartyInfo = {
 
 const emptyMatterExtraInfo = {
   assigned_attorney_id: '',
+  mediator_email: '',
   opposing_parties: [{ ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }],
   prior_counsels: [{ ...emptyCounselInfo }],
   co_counsels: [{ ...emptyCounselInfo }]
@@ -524,6 +527,36 @@ const emptyDocumentFieldRuleForm = {
   tag_id: '',
   extraction_instructions: '',
   is_active: true
+}
+
+
+const emptyDraftingTemplateForm = {
+  id: '',
+  document_type: '',
+  name: '',
+  template_text: '',
+  files: [],
+  fields: [],
+  requirements: '',
+  ai_instructions: '',
+  tag_id: '',
+  is_active: true
+}
+
+function cleanDraftingTemplate(input = {}) {
+  return {
+    ...emptyDraftingTemplateForm,
+    ...input,
+    id: input.id || `draft-template-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    fields: Array.isArray(input.fields) ? input.fields.map((field) => ({
+      id: field.id || `draft-field-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      label: field.label || field.name || '',
+      key: field.key || String(field.label || field.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+      help: field.help || '',
+      required: !!field.required
+    })).filter((field) => field.label || field.key) : [],
+    files: Array.isArray(input.files) ? input.files : []
+  }
 }
 
 
@@ -899,6 +932,11 @@ function ensureRequestedReliefMatrixShape(table) {
   const cells = table?.cells && typeof table.cells === 'object' ? table.cells : {}
   return { columns, cells }
 }
+
+const defaultRequestedReliefMatrixTable = ensureRequestedReliefMatrixShape({
+  columns: [],
+  cells: {}
+})
 
 function ensureRequestedReliefOptionShape(option, index = 0) {
   return {
@@ -1334,6 +1372,18 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseControllerDocuments') || '[]') }
     catch { return [] }
   })
+
+  const [draftingTemplates, setDraftingTemplates] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioDraftingTemplates') || '[]')
+      return Array.isArray(stored) ? stored.map(cleanDraftingTemplate) : []
+    } catch { return [] }
+  })
+  const [draftingTemplateForm, setDraftingTemplateForm] = useState(emptyDraftingTemplateForm)
+  const [draftingTemplateUploadFiles, setDraftingTemplateUploadFiles] = useState([])
+  const [draftingSelection, setDraftingSelection] = useState({ matter_id: '', template_id: '', field_values: {} })
+  const [draftingOutput, setDraftingOutput] = useState('')
+  const [draftingStatus, setDraftingStatus] = useState('')
   const [serviceEmailSources, setServiceEmailSources] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioServiceEmailSources') || 'null')
@@ -1703,6 +1753,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetPausedRows') || '{}') }
     catch { return {} }
   })
+  const [needToSetStepBillingNotes, setNeedToSetStepBillingNotes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepBillingNotes') || '{}') }
+    catch { return {} }
+  })
   const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioWithdrawalSteps') || 'null')
@@ -1885,6 +1939,7 @@ function App() {
       matter_status: true,
       court: true,
       court_info: true,
+      mediator_email: true,
       opposing_party_1: true,
       opposing_party_1_counsel: true,
       opposing_party_1_counsel_firm: true,
@@ -2202,6 +2257,7 @@ function App() {
       caseMioLawFirmProfile: { setter: (value) => setLawFirmProfile({ firm_name: '', address: '', email: '', phone: '', ...(value || {}) }), kind: 'object', fallback: {} },
       caseMioWebsiteIdeas: { setter: setWebsiteIdeas, kind: 'array', fallback: [] },
       caseControllerDocuments: { setter: setDocuments, kind: 'array', fallback: [] },
+      caseMioDraftingTemplates: { setter: (value) => setDraftingTemplates(Array.isArray(value) ? value.map(cleanDraftingTemplate) : []), kind: 'array', fallback: [] },
       caseMioServiceEmailSources: { setter: setServiceEmailSources, kind: 'array', fallback: defaultServiceEmailSources },
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
@@ -2296,6 +2352,7 @@ function App() {
       caseMioNeedToSetFirstSeenDates: { setter: setNeedToSetFirstSeenDates, kind: 'object', fallback: {} },
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
+      caseMioNeedToSetStepBillingNotes: { setter: setNeedToSetStepBillingNotes, kind: 'object', fallback: {} },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
@@ -2742,6 +2799,10 @@ function App() {
   }, [needToSetPausedRows])
 
   useEffect(() => {
+    try { saveMioStateKey('caseMioNeedToSetStepBillingNotes', JSON.stringify(needToSetStepBillingNotes)) } catch {}
+  }, [needToSetStepBillingNotes])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioWithdrawalSteps', JSON.stringify(withdrawalSteps)) } catch {}
   }, [withdrawalSteps])
 
@@ -3033,6 +3094,13 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseControllerDocuments', JSON.stringify(stripLargeFileData(documents)))
   }, [documents])
+
+
+  useEffect(() => {
+    const safeTemplates = (draftingTemplates || []).map((template) => cleanDraftingTemplate(template))
+    safeSetLocalStorage('caseMioDraftingTemplates', JSON.stringify(safeTemplates))
+    try { saveMioStateKey('caseMioDraftingTemplates', JSON.stringify(safeTemplates)) } catch {}
+  }, [draftingTemplates])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
@@ -9905,6 +9973,154 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
   }
 
+
+  function draftingSelectedTemplate() {
+    return draftingTemplates.find((template) => String(template.id) === String(draftingSelection.template_id)) || null
+  }
+
+  function draftingSelectedMatter(lockedMatterId = '') {
+    const matterId = lockedMatterId || draftingSelection.matter_id
+    return matters.find((matter) => String(matter.id) === String(matterId)) || null
+  }
+
+  function draftingTemplateLabel(template) {
+    if (!template) return ''
+    return template.name || template.document_type || 'Drafting template'
+  }
+
+  function resetDraftingTemplateForm() {
+    setDraftingTemplateForm(emptyDraftingTemplateForm)
+    setDraftingTemplateUploadFiles([])
+  }
+
+  function editDraftingTemplate(template) {
+    setDraftingTemplateForm(cleanDraftingTemplate(template))
+    setDraftingTemplateUploadFiles([])
+  }
+
+  function updateDraftingTemplateField(fieldId, patch) {
+    setDraftingTemplateForm((current) => ({
+      ...current,
+      fields: (current.fields || []).map((field) => field.id === fieldId ? { ...field, ...patch } : field)
+    }))
+  }
+
+  function addDraftingTemplateField() {
+    const id = `draft-field-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setDraftingTemplateForm((current) => ({ ...current, fields: [...(current.fields || []), { id, label: '', key: '', help: '', required: false }] }))
+  }
+
+  function removeDraftingTemplateField(fieldId) {
+    setDraftingTemplateForm((current) => ({ ...current, fields: (current.fields || []).filter((field) => field.id !== fieldId) }))
+  }
+
+  function removeDraftingTemplateFile(fileName) {
+    setDraftingTemplateForm((current) => ({ ...current, files: (current.files || []).filter((file) => file.name !== fileName) }))
+  }
+
+  async function saveDraftingTemplate(e) {
+    e.preventDefault()
+    const cleanType = String(draftingTemplateForm.document_type || '').trim()
+    const cleanName = String(draftingTemplateForm.name || cleanType || '').trim()
+    if (!cleanType && !cleanName) { alert('Add a document type or template name before saving.'); return }
+    const uploadedFiles = await Promise.all(Array.from(draftingTemplateUploadFiles || []).map(async (file) => {
+      const payload = await readFileAsDataUrl(file)
+      return { name: file.name, type: file.type || '', size: file.size || 0, file_data: payload.file_data || '', original_file_name: file.name, uploaded_at: new Date().toISOString() }
+    }))
+    const fields = (draftingTemplateForm.fields || []).map((field) => {
+      const label = String(field.label || '').trim()
+      const key = String(field.key || label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')).trim()
+      return { ...field, label, key: key || `field_${Date.now()}`, help: field.help || '', required: !!field.required }
+    }).filter((field) => field.label || field.key)
+    const nextTemplate = cleanDraftingTemplate({ ...draftingTemplateForm, document_type: cleanType || cleanName, name: cleanName || cleanType, fields, files: [...(draftingTemplateForm.files || []), ...uploadedFiles], updated_at: new Date().toISOString() })
+    setDraftingTemplates((current) => current.some((template) => template.id === nextTemplate.id) ? current.map((template) => template.id === nextTemplate.id ? nextTemplate : template) : [...current, nextTemplate])
+    setDraftingSelection((current) => ({ ...current, template_id: nextTemplate.id }))
+    resetDraftingTemplateForm()
+  }
+
+  function deleteDraftingTemplate(templateId) {
+    if (!window.confirm('Delete this drafting template?')) return
+    setDraftingTemplates((current) => current.filter((template) => template.id !== templateId))
+    if (draftingSelection.template_id === templateId) setDraftingSelection((current) => ({ ...current, template_id: '', field_values: {} }))
+  }
+
+  function updateDraftingFieldValue(fieldKey, value) {
+    setDraftingSelection((current) => ({ ...current, field_values: { ...(current.field_values || {}), [fieldKey]: value } }))
+  }
+
+  function buildDraftingFallbackText({ template, matter, fieldValues, relatedDocuments }) {
+    const clientName = matter ? matterClientName(matter) : ''
+    const court = matter?.court_id ? (courts.find((item) => String(item.id) === String(matter.court_id))?.court_name || matter.court || '') : (matter?.court || '')
+    const fieldLines = Object.entries(fieldValues || {}).filter(([, value]) => String(value || '').trim()).map(([key, value]) => `${key}: ${value}`)
+    const docLines = (relatedDocuments || []).slice(0, 12).map((doc) => `- ${doc.name || doc.file_name || 'Document'}${doc.date ? ` (${doc.date})` : ''}${doc.description ? `: ${doc.description}` : ''}`)
+    return [
+      `${template.document_type || template.name || 'Draft Document'}`,
+      '',
+      `Matter: ${formatMatterOption(matter)}`,
+      `Client: ${clientName}`,
+      `Cause No.: ${matter?.cause_number || ''}`,
+      `Court: ${court}`,
+      '',
+      'User Fields:',
+      fieldLines.length ? fieldLines.join('\n') : 'No additional user fields were provided.',
+      '',
+      'Requirements / Reminders:',
+      template.requirements || 'None provided.',
+      '',
+      'AI Instructions:',
+      template.ai_instructions || 'Use the template and matter information to draft the filing for this matter.',
+      '',
+      'Template Text:',
+      template.template_text || '[Template file attached in settings. If this draft is incomplete, update the draft-document edge function to read DOC/DOCX/PDF template files.]',
+      '',
+      'Matter Documents Considered:',
+      docLines.length ? docLines.join('\n') : 'No matter documents were found in Mio Documents.',
+      '',
+      'Draft Notes:',
+      'Review all names, dates, service language, signatures, certificate of conference, hearing details, court requirements, and filing formatting before filing.'
+    ].join('\n')
+  }
+
+  async function generateDraftForMatter(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    if (!matter) { alert('Select a matter before drafting.'); return }
+    if (!template) { alert('Select a document type/template before drafting.'); return }
+    const fieldValues = draftingSelection.field_values || {}
+    const missingRequired = (template.fields || []).filter((field) => field.required && !String(fieldValues[field.key] || '').trim())
+    if (missingRequired.length) { alert(`Complete required field(s): ${missingRequired.map((field) => field.label || field.key).join(', ')}`); return }
+    setDraftingStatus('Preparing matter information and sending draft request...')
+    setDraftingOutput('')
+    const relatedDocuments = documents.filter((doc) => String(doc.matter_id || '') === String(matter.id))
+    const relatedDocumentContext = relatedDocuments.slice(0, 20).map((doc) => ({ id: doc.id, name: doc.name || doc.file_name || '', date: doc.date || '', description: doc.description || '', tags: (doc.tag_ids || []).map((tagId) => tagFullName(tagId)).filter(Boolean), extracted_text: String(doc.extracted_text || '').slice(0, 6000) }))
+    try {
+      if (session?.user?.id) {
+        const { data, error } = await supabase.functions.invoke('draft-document', { body: { user_id: session.user.id, matter, client_name: matterClientName(matter), court: matter.court_id ? courts.find((item) => String(item.id) === String(matter.court_id)) : null, document_type: template.document_type || template.name || '', template, field_values: fieldValues, requirements_reminders: template.requirements || '', ai_instructions: template.ai_instructions || '', related_documents: relatedDocumentContext } })
+        if (!error && (data?.draft_text || data?.text || data?.draft)) {
+          setDraftingOutput(data.draft_text || data.text || data.draft)
+          setDraftingStatus('AI draft generated. Review, edit, then save it to Documents.')
+          return
+        }
+        if (error) console.warn('draft-document edge function failed:', error)
+      }
+    } catch (error) { console.warn('draft-document edge function unavailable:', error) }
+    setDraftingOutput(buildDraftingFallbackText({ template, matter, fieldValues, relatedDocuments }))
+    setDraftingStatus('Draft created with local fallback. Update the draft-document edge function for full AI drafting from template files and matter documents.')
+  }
+
+  function saveCurrentDraftToDocuments(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    if (!matter || !template || !String(draftingOutput || '').trim()) { alert('Generate or enter draft text before saving.'); return }
+    const docId = `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const draftText = String(draftingOutput || '')
+    const fileName = `${template.document_type || template.name || 'Draft'} - ${matter.name || matter.cause_number || 'Matter'}.txt`.replace(/[\\/:*?"<>|]+/g, '-')
+    const encoded = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(draftText))) : ''
+    const tagIds = template.tag_id ? tagAndParentIds([template.tag_id]) : []
+    setDocuments((current) => [{ id: docId, matter_id: matter.id, name: fileName.replace(/\.txt$/i, ''), date: dateToInputValue(new Date()), description: `Draft generated from ${draftingTemplateLabel(template)}.`, status: 'Draft', tag_ids: tagIds, document_field_values: { ...(draftingSelection.field_values || {}), draft_type: template.document_type || template.name || '' }, upload_date: dateToInputValue(new Date()), file_name: fileName, original_file_name: fileName, file_type: 'text/plain', file_size: draftText.length, file_data: `data:text/plain;base64,${encoded}`, ...emptyDocumentAiReview }, ...current])
+    setDraftingStatus('Draft saved to the Documents page/tab with the template tag applied.')
+  }
+
   async function prepareBulkDocuments(fileList, forcedMatterId = '', options = {}) {
     const files = Array.from(fileList || [])
     const defaultTagIds = Array.isArray(options.defaultTagIds) ? options.defaultTagIds : []
@@ -13260,6 +13476,12 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, withdrawal_status: nextValue } })
   }
 
+  function updateMatterExtraField(matterId, field, value) {
+    if (!matterId || !field) return
+    const current = cloneMatterExtraInfo(matterExtraInfoById[matterId] || {})
+    setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, [field]: value } })
+  }
+
   function updateMatterPartyOneField(matterId, field, value) {
     if (!matterId) return
     const current = cloneMatterExtraInfo(matterExtraInfoById[matterId] || {})
@@ -13708,6 +13930,7 @@ async function updateTeamCell(memberId, field, value) {
     { key: 'matter_status', label: 'Matter Status', width: 170 },
     { key: 'court', label: 'Court', width: 180 },
     { key: 'court_info', label: 'Court Info', width: 280 },
+    { key: 'mediator_email', label: 'Mediator Email', width: 220 },
     { key: 'opposing_party_1', label: 'Opposing/Addl Party 1', width: 220 },
     { key: 'opposing_party_1_counsel', label: 'Party 1 Counsel', width: 220 },
     { key: 'opposing_party_1_counsel_firm', label: 'Party 1 Counsel Firm', width: 240 },
@@ -14230,6 +14453,21 @@ async function updateTeamCell(memberId, field, value) {
               }}>
                 <strong>{matter.courts.court_name}</strong> | {matter.courts.county} | {matter.courts.court_phone}
               </div>
+            )}
+          </td>
+        )}
+
+        {visibleMatterColumns.mediator_email && (
+          <td style={matterDataCellStyle('mediator_email')}>
+            {matterPageFieldsEditable ? (
+              <MatterExtraEditableTextCell
+                matter={matter}
+                columnKey="mediator_email"
+                value={matterExtraFor(matter.id).mediator_email || matter.mediator_email || ''}
+                onSave={(value) => updateMatterExtraField(matter.id, 'mediator_email', value)}
+              />
+            ) : (
+              <MatterEmailTextButton email={matterExtraFor(matter.id).mediator_email || matter.mediator_email || ''} title="Email mediator">{matterExtraFor(matter.id).mediator_email || matter.mediator_email || ''}</MatterEmailTextButton>
             )}
           </td>
         )}
@@ -21694,6 +21932,49 @@ Ben`) : (row.draft_response || '') })
     setMatterFilingImportNote(`Saved ${savedRows.length} filing document(s) to Documents with their tags, filing date, and tag fields.`)
   }
 
+
+  function renderDraftingSettings() {
+    const selectedTagName = draftingTemplateForm.tag_id ? tagFullName(draftingTemplateForm.tag_id) : ''
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
+        <form onSubmit={saveDraftingTemplate} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', display: 'grid', gap: 10 }}>
+          <h2>{draftingTemplateForm.id ? 'Edit Drafting Template' : 'Add Drafting Template'}</h2>
+          <LabeledField label="Document Type"><input value={draftingTemplateForm.document_type} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, document_type: e.target.value })} placeholder="Notice of Hearing, Motion to Withdraw, etc." /></LabeledField>
+          <LabeledField label="Template Name"><input value={draftingTemplateForm.name} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, name: e.target.value })} placeholder="Template display name" /></LabeledField>
+          <LabeledField label="Template Text / Notes"><textarea value={draftingTemplateForm.template_text} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, template_text: e.target.value })} rows={8} placeholder="Paste template text here if available. Uploaded templates are also saved below." /></LabeledField>
+          <LabeledField label="Upload Template File(s)"><input type="file" multiple onChange={(e) => setDraftingTemplateUploadFiles(Array.from(e.target.files || []))} /></LabeledField>
+          {(draftingTemplateForm.files || []).length > 0 && <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8 }}><strong>Saved template files</strong>{(draftingTemplateForm.files || []).map((file) => <div key={file.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 }}><span>{file.name}</span><button type="button" onClick={() => removeDraftingTemplateFile(file.name)}>Remove</button></div>)}</div>}
+          <LabeledField label="Requirements / Reminders"><textarea value={draftingTemplateForm.requirements} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, requirements: e.target.value })} rows={5} placeholder="Add reminders to review when drafting this document." /></LabeledField>
+          <LabeledField label="AI Instructions"><textarea value={draftingTemplateForm.ai_instructions} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, ai_instructions: e.target.value })} rows={5} placeholder="Instructions for the AI for this specific type of draft." /></LabeledField>
+          <LabeledField label="Document Tag Applied to Saved Drafts"><select value={draftingTemplateForm.tag_id} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, tag_id: e.target.value })}><option value="">No default tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{tag.label}</option>)}</select>{selectedTagName && <div style={{ fontSize: 12, color: '#475569' }}>Selected: {selectedTagName}</div>}</LabeledField>
+          <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>User fields for this draft</legend><p style={{ color: '#64748b', marginTop: 0 }}>Add fields the user must fill in before drafting, such as setting date, setting time, hearing location, or special relief.</p>{(draftingTemplateForm.fields || []).map((field) => <div key={field.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 6, marginBottom: 6, alignItems: 'center' }}><input value={field.label || ''} onChange={(e) => updateDraftingTemplateField(field.id, { label: e.target.value })} placeholder="Field label" /><input value={field.key || ''} onChange={(e) => updateDraftingTemplateField(field.id, { key: e.target.value })} placeholder="field_key" /><input value={field.help || ''} onChange={(e) => updateDraftingTemplateField(field.id, { help: e.target.value })} placeholder="Help text" /><label><input type="checkbox" checked={!!field.required} onChange={(e) => updateDraftingTemplateField(field.id, { required: e.target.checked })} /> Required</label><button type="button" onClick={() => removeDraftingTemplateField(field.id)}>Remove</button></div>)}<button type="button" onClick={addDraftingTemplateField}>+ Add Field</button></fieldset>
+          <label><input type="checkbox" checked={draftingTemplateForm.is_active !== false} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, is_active: e.target.checked })} /> Active</label>
+          <div style={{ display: 'flex', gap: 8 }}><button type="submit">Save Drafting Template</button><button type="button" onClick={resetDraftingTemplateForm}>Clear</button></div>
+        </form>
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2>Drafting Templates</h2>{draftingTemplates.length === 0 && <p>No drafting templates have been added yet.</p>}{draftingTemplates.map((template) => <div key={template.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, marginBottom: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><div><strong>{draftingTemplateLabel(template)}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{template.document_type || 'No document type'} {template.tag_id ? `| Tag: ${tagFullName(template.tag_id)}` : ''}</div><div style={{ fontSize: 12 }}>{(template.fields || []).length} user field(s); {(template.files || []).length} template file(s)</div></div><div><button type="button" onClick={() => editDraftingTemplate(template)}>Edit</button><button type="button" onClick={() => deleteDraftingTemplate(template.id)} style={{ marginLeft: 6 }}>Delete</button></div></div>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>)}</div>
+      </div>
+    )
+  }
+
+  function renderDraftingPage(options = {}) {
+    const lockedMatterId = options.lockedMatterId || ''
+    const embedded = !!options.embedded
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const activeTemplates = draftingTemplates.filter((template) => template.is_active !== false)
+    const template = draftingSelectedTemplate()
+    const matterId = lockedMatterId || draftingSelection.matter_id
+    const matterDrafts = documents.filter((doc) => String(doc.matter_id || '') === String(matterId || '') && (doc.status === 'Draft' || /draft generated from/i.test(doc.description || '')))
+    return (
+      <div style={{ display: 'grid', gap: 14 }}>
+        {!embedded && <h1>Drafting</h1>}
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Begin Drafting</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)', gap: 12 }}><LabeledField label="Matter">{lockedMatterId ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4 }}>{matter ? formatMatterOption(matter) : 'Matter not found'}</div> : <SmartMatterSelect value={draftingSelection.matter_id} onChange={(value) => setDraftingSelection({ ...draftingSelection, matter_id: value })} placeholder="Select matter" />}</LabeledField><LabeledField label="Document Type / Template"><select value={draftingSelection.template_id} onChange={(e) => setDraftingSelection({ ...draftingSelection, template_id: e.target.value, field_values: {} })}><option value="">Select drafting template</option>{activeTemplates.map((item) => <option key={item.id} value={item.id}>{draftingTemplateLabel(item)}</option>)}</select></LabeledField></div>
+          {template && <div style={{ marginTop: 12, display: 'grid', gap: 10 }}><div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, background: '#f8fafc' }}><strong>{draftingTemplateLabel(template)}</strong>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>{(template.fields || []).length > 0 && <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>Draft fields</legend><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 10 }}>{(template.fields || []).map((field) => <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}><input value={(draftingSelection.field_values || {})[field.key] || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.help || ''} /></LabeledField>)}</div></fieldset>}<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => generateDraftForMatter(lockedMatterId)}>Draft for Matter</button><button type="button" onClick={() => saveCurrentDraftToDocuments(lockedMatterId)} disabled={!draftingOutput}>Save Draft to Documents</button><button type="button" onClick={() => { setDraftingOutput(''); setDraftingStatus('') }}>Clear Draft</button></div>{draftingStatus && <div style={{ color: '#334155', fontWeight: 'bold' }}>{draftingStatus}</div>}<LabeledField label="Draft Text"><textarea value={draftingOutput} onChange={(e) => setDraftingOutput(e.target.value)} rows={20} placeholder="Generated draft will appear here and can be edited before saving to Documents." /></LabeledField></div>}
+        </div>
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Saved Drafts for This Matter</h2>{!matterId && <p>Select a matter to see saved drafts.</p>}{matterId && matterDrafts.length === 0 && <p>No drafts saved for this matter yet.</p>}{matterDrafts.map((doc) => <div key={doc.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><strong>{doc.name || doc.file_name}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{doc.date || doc.upload_date || ''} {doc.tag_ids?.length ? `| ${doc.tag_ids.map((tagId) => tagFullName(tagId)).filter(Boolean).join(', ')}` : ''}</div><div>{doc.description}</div></div><div><button type="button" onClick={() => viewDocument(doc)}>Open</button><button type="button" onClick={() => downloadDocument(doc)} style={{ marginLeft: 6 }}>Download</button></div></div>)}</div>
+      </div>
+    )
+  }
+
   function renderMatterFilingsPanel(matter) {
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter?.id || ''))
     const textForDoc = (doc) => `${doc.name || ''} ${doc.file_name || ''} ${doc.description || ''} ${(doc.tag_ids || []).map((id) => tagFullName(id)).join(' ')}`.toLowerCase()
@@ -25322,7 +25603,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
     if (!stepEmails.length) return
     const safe = (value = '') => escapeEmailHtml(value)
-    const popup = window.open('', '_blank', 'width=1100,height=780,noopener,noreferrer')
+    const popup = window.open('', '_blank', 'width=1100,height=780')
     if (!popup) { alert('Popup was blocked. Allow popups for Mio to open the email thread window.'); return }
     const rows = stepEmails.map((email, idx) => {
       const latest = latestIncomingWorkspaceMessage(email) || (Array.isArray(email.thread_messages) ? email.thread_messages[0] : null) || {}
@@ -25334,6 +25615,50 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     popup.document.write(`<!doctype html><html><head><title>Email threads - ${safe(stepLabelForContext(stepContext))}</title><style>body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#f6f8fb;color:#0f172a}.bar{background:#0f72c9;color:white;padding:14px 18px;font-size:18px;font-weight:800}.wrap{padding:18px}.panel{background:white;border:1px solid #dbe4ee;border-radius:16px;padding:14px;box-shadow:0 12px 32px rgba(15,23,42,.08)}.thread{display:grid;grid-template-columns:1fr auto;gap:12px;border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin:10px 0;background:#fff}.role{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:999px;padding:2px 8px;font-size:12px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:800}.note{color:#64748b;font-size:13px;margin-top:4px}.preview{margin-top:7px;color:#334155}button{border:1px solid #cbd5e1;background:#fff;border-radius:8px;padding:8px 10px}</style></head><body><div class="bar">Emails linked to ${safe(stepLabelForContext(stepContext))}</div><div class="wrap"><div class="panel"><div class="note">Matter: ${safe(matterForWorkspaceContext(stepContext)?.name || '')} • Event: ${safe(stepContext.settingType || '')}</div>${rows}</div></div></body></html>`)
     popup.document.close()
     markWorkspaceEmailReviewed(context, stepEmails[0])
+  }
+
+
+  function openMioCalendarWindow() {
+    try { window.open(`${window.location.origin}${window.location.pathname}#calendar`, '_blank', 'width=1400,height=900') } catch { window.open('#calendar', '_blank') }
+  }
+
+  function formatNeedToSetCompletedDate(completion) {
+    if (!completion?.completed_at) return ''
+    try { return new Date(completion.completed_at).toLocaleDateString() } catch { return '' }
+  }
+
+  function needToSetMetricBox(label, value, days) {
+    const fill = colorForNeedToSetAge(days)
+    return (
+      <div style={{ border: '2px solid #0f172a', borderRadius: 10, background: fill, color: '#000', padding: '8px 10px', fontWeight: 800, boxShadow: '0 1px 2px rgba(15,23,42,.12)' }}>
+        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.02em' }}>{label}</div>
+        <div style={{ marginTop: 4 }}>{value}</div>
+      </div>
+    )
+  }
+
+  function needToSetStepNoteKey(context = {}) {
+    const eventId = context.event?.id || context.event?.checklist_source_id || context.eventId || ''
+    const stepId = context.step?.id || context.stepId || context.stepName || ''
+    return `${eventId}::${stepId}`
+  }
+
+  function latestStepBillingDescription(context = {}) {
+    const entries = stepBillingEntries(context)
+      .slice()
+      .sort((a, b) => String(b.date || b.created_at || '').localeCompare(String(a.date || a.created_at || '')))
+    return entries[0]?.description || ''
+  }
+
+  function stepBillingNoteValue(context = {}) {
+    const key = needToSetStepNoteKey(context)
+    if (Object.prototype.hasOwnProperty.call(needToSetStepBillingNotes || {}, key)) return needToSetStepBillingNotes[key] || ''
+    return latestStepBillingDescription(context)
+  }
+
+  function updateStepBillingNoteValue(context = {}, value = '') {
+    const key = needToSetStepNoteKey(context)
+    setNeedToSetStepBillingNotes((current) => ({ ...(current || {}), [key]: value }))
   }
 
 
@@ -25370,6 +25695,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             {unreadCount > 0 && <span style={{ position: 'absolute', top: -8, right: -8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 5px', fontSize: 10, fontWeight: 800 }}>{unreadCount}</span>}
           </button>
         )}
+        <button type="button" onClick={openMioCalendarWindow} title="Open calendar in a new window" style={{ border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '4px 8px', fontSize: 11, fontWeight: 800 }}>Calendar ↗</button>
       </div>
     )
   }
@@ -25414,6 +25740,14 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr) minmax(280px, 1fr)', gap: 12 }}>
           <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
             <h3 style={{ marginTop: 0 }}>Prior Time Entries on This Step</h3>
+            <label style={{ display: 'block', marginBottom: 10, fontWeight: 800 }}>Last billing activity description
+              <textarea
+                value={stepBillingNoteValue(stepContext)}
+                onChange={(e) => updateStepBillingNoteValue(stepContext, e.target.value)}
+                placeholder="Last billing activity description for this step"
+                style={{ width: '100%', minHeight: 46, marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, fontWeight: 700 }}
+              />
+            </label>
             {stepBillingEntries(stepContext).slice(0, 4).map((entry) => <div key={entry.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 50px', gap: 8, padding: '6px 0', borderTop: '1px solid #e2e8f0' }}><span>{entry.date || ''}</span><span>{entry.description || ''}</span><strong>{entry.billing_time || ''}</strong></div>)}
             {!stepBillingEntries(stepContext).length && <p style={{ color: '#64748b' }}>No time entries have been saved for this exact step yet.</p>}
             <button type="button" onClick={() => openBillingWindow({ matter_id: stepContext.matterId || '', matter_status: stepContext.matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!stepContext.matterId}>Add time on this step</button>
@@ -25470,10 +25804,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   {summary.total > 0 && <button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))} style={{ marginTop: 14, border: '1px solid #dbe4ee', borderRadius: 999, background: '#f8fafc', padding: '6px 10px', color: '#334155' }}>✉ Email activity: {summary.unread} unread / {summary.total} total thread{summary.total === 1 ? '' : 's'}</button>}
                 </div>
                 <div style={{ display: 'grid', gap: 9, fontSize: 13 }}>
-                  <div><strong>Need to Set Since</strong><br /><span style={{ color: '#dc2626', fontWeight: 800 }}>{needToSetShortDate(needToSetCreatedAt(event))}</span></div>
-                  <div><strong>Total Days Waiting</strong><br /><span style={{ color: '#dc2626', fontWeight: 800 }}>{status.rowDays} days</span></div>
-                  <div><strong>Current Step Age</strong><br /><span style={{ color: '#7c3aed', fontWeight: 800 }}>{status.stepDays ?? '—'} days</span></div>
-                  <div><strong>Last Worked</strong><br /><span>{status.lastTimeEntryAt ? needToSetShortDate(status.lastTimeEntryAt) : 'No time yet'}</span></div>
+                  {needToSetMetricBox('Need to Set Since', needToSetShortDate(needToSetCreatedAt(event)), status.rowDays)}
+                  {needToSetMetricBox('Total Days Waiting', `${status.rowDays} days`, status.rowDays)}
+                  {needToSetMetricBox('Current Step Age', status.stepDays === null || status.stepDays === undefined ? '—' : `${status.stepDays} days`, status.stepDays ?? 0)}
+                  {needToSetMetricBox('Last Worked', status.lastTimeEntryAt ? needToSetShortDate(status.lastTimeEntryAt) : 'No time yet', status.timeDays ?? 8)}
                 </div>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: 8 }}>
@@ -25483,7 +25817,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   </div>
                   <div style={{ marginTop: 10, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc', padding: 10 }}>
                     <strong>Remaining Steps ({steps.filter((step) => !checklistStepCompletion(eventId, step.id)?.completed).length})</strong>
-                    <ol style={{ margin: '6px 0 0 22px', color: '#334155' }}>{steps.filter((step) => !checklistStepCompletion(eventId, step.id)?.completed).map((step) => <li key={step.id}>{step.name}</li>)}</ol>
+                    <ol style={{ margin: '6px 0 0 22px', color: '#334155' }}>{steps.map((step) => {
+                      const completion = checklistStepCompletion(eventId, step.id)
+                      const completedDate = formatNeedToSetCompletedDate(completion)
+                      return <li key={step.id} style={{ color: completion?.completed ? '#64748b' : '#0f172a' }}>{step.name}{completedDate ? <span style={{ marginLeft: 8, fontWeight: 800, color: '#166534' }}>completed {completedDate}</span> : null}</li>
+                    })}</ol>
                   </div>
                 </div>
                 <div style={{ display: 'grid', gap: 8 }}>
@@ -25734,8 +26072,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <div style={{ marginTop: 8 }}>
                 <div><strong>For:</strong> {step.parent_name}{step.default_pages?.client_status ? ` / ${step.default_pages.client_status}` : ''}</div>
                 {completion?.completed_at && <div><strong>Completed:</strong> {new Date(completion.completed_at).toLocaleString()}</div>}
+                <label style={{ display: 'block', marginTop: 8, fontWeight: 800 }}>Last billing activity description
+                  <textarea
+                    value={stepBillingNoteValue(stepContext)}
+                    onChange={(e) => updateStepBillingNoteValue(stepContext, e.target.value)}
+                    placeholder="Last billing activity description for this step"
+                    style={{ width: '100%', minHeight: 54, marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, fontWeight: 700 }}
+                  />
+                </label>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button type="button" onClick={() => openStepDetail(stepContext)}>Open step</button>
+                  <button type="button" onClick={openMioCalendarWindow}>Open Calendar ↗</button>
                   <button type="button" onClick={() => openBillingWindow({ matter_id: matter?.id || '', matter_status: matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!matter?.id}>Add time</button>
                   <button type="button" onClick={() => context.type === 'checklist' ? toggleChecklistStepComplete(eventId, step.id) : toggleMatterStepComplete(matter?.id, step.id)} disabled={context.type !== 'checklist' && !matter?.id}>{completed ? 'Mark incomplete' : 'Mark complete'}</button>
                   <button type="button" onClick={() => addWorkspaceEmailForStep(context, stepContext, null, 'attach')}>Open existing email thread</button>
@@ -32263,6 +32610,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('drafting')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'drafting' ? '#2f6584' : 'white', color: clientDashboardTab === 'drafting' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'drafting' ? 'bold' : 'normal' }}
+                  >
+                    Drafting
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('filings')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'filings' ? '#2f6584' : 'white', color: clientDashboardTab === 'filings' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'filings' ? 'bold' : 'normal' }}
                   >
@@ -32333,6 +32687,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'timeline' && renderClientTimeline(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'documents' && renderDocumentRepository({ matterId: selectedTemplateMatter().id, showBulkReview: true })}
+
+                {clientDashboardTab === 'drafting' && renderDraftingPage({ lockedMatterId: selectedTemplateMatter().id, embedded: true })}
 
                 {clientDashboardTab === 'filings' && renderMatterFilingsPanel(selectedTemplateMatter())}
 
@@ -34074,6 +34430,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </>
         )}
 
+        {page === 'drafting' && canOpenPage('drafting') && renderDraftingPage()}
+
         {page === 'onedrive_files' && canOpenPage('onedrive_files') && renderOneDriveFilesPage()}
 
         {page === 'documents' && canOpenPage('documents') && (
@@ -34769,6 +35127,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 Discovery Instructions
               </button>
 
+              <button onClick={() => setSettingsTab('drafting')} style={{ marginRight: 10, fontWeight: settingsTab === 'drafting' ? 'bold' : 'normal' }}>
+                Drafting
+              </button>
               <button onClick={() => setSettingsTab('ai_documents')} style={{ marginRight: 10, fontWeight: settingsTab === 'ai_documents' ? 'bold' : 'normal' }}>
                 AI Documents
               </button>
@@ -34796,6 +35157,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'timeline' && renderTimelineSettings()}
             {settingsTab === 'matter_timeline_options' && renderMatterTimelineOptionsSettings()}
             {settingsTab === 'matter_timelines' && renderMatterTimelineSettingsTable()}
+            {settingsTab === 'drafting' && renderDraftingSettings()}
             {settingsTab === 'ai_documents' && renderAiDocumentSettings()}
             {settingsTab === 'fields' && renderUserFieldsSettings()}
             {settingsTab === 'billing_rates' && renderBillingSettings()}
