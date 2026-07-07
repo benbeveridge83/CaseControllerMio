@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V105'
+const MIO_APP_VERSION = 'Mio V106'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2335,7 +2335,7 @@ function App() {
       caseMioDiscoveryPageMode: { setter: setDiscoveryPageMode, kind: 'string', fallback: 'tracking' },
       caseMioRespondingDiscoverySets: { setter: setRespondingDiscoverySets, kind: 'array', fallback: [] },
       caseControllerMatterExtraInfo: { setter: setMatterExtraInfoById, kind: 'object', fallback: {} },
-      caseMioBillingEntries: { setter: setBillingEntries, kind: 'array', fallback: [] },
+      caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioBillingRates: { setter: setBillingRates, kind: 'object', fallback: {} },
       caseMioMatterBillingRates: { setter: setMatterBillingRates, kind: 'object', fallback: {} },
       caseMioBillingPrivateNotes: { setter: setBillingPrivateNotes, kind: 'object', fallback: {} },
@@ -2545,6 +2545,89 @@ function App() {
     }
   }
 
+  function billingEntryMergeKey(entry) {
+    const id = String(entry?.id || '').trim()
+    if (id) return `id:${id}`
+    const matterId = String(entry?.matter_id || '')
+    const date = String(entry?.date || entry?.entry_date || '').slice(0, 10)
+    const description = String(entry?.description || '').trim().toLowerCase()
+    const time = String(entry?.billing_time || entry?.hours || '')
+    const created = String(entry?.created_at || '')
+    return `fallback:${matterId}:${date}:${description}:${time}:${created}`
+  }
+
+  function billingEntryCompletenessScore(entry) {
+    if (!entry || typeof entry !== 'object') return 0
+    return ['id', 'matter_id', 'client_id', 'user_id', 'date', 'description', 'matter_status', 'matter_step', 'billing_time', 'rate', 'amount', 'created_at']
+      .reduce((score, field) => {
+        const value = entry[field]
+        return score + (value !== undefined && value !== null && String(value).trim() !== '' ? 1 : 0)
+      }, 0)
+  }
+
+  function normalizeBillingEntryForState(entry) {
+    if (!entry || typeof entry !== 'object') return null
+    const normalized = { ...entry }
+    normalized.id = String(normalized.id || '').trim() || `billing-recovered-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    normalized.date = String(normalized.date || normalized.entry_date || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+    normalized.matter_id = normalized.matter_id ? String(normalized.matter_id) : ''
+    normalized.client_id = normalized.client_id ? String(normalized.client_id) : (normalized.matter_id ? billingMatterClientId(normalized.matter_id) : '')
+    normalized.cause_number = normalized.cause_number || billingMatterCauseNumber(normalized.matter_id) || ''
+    normalized.client_name = normalized.client_name || billingMatterClientName(normalized.matter_id) || ''
+    normalized.description = normalized.description || ''
+    normalized.matter_status = normalized.matter_status || billingMatterStatus(normalized.matter_id) || ''
+    normalized.matter_step = normalized.matter_step || ''
+    normalized.billing_time = Number.isFinite(Number(normalized.billing_time)) ? Number(normalized.billing_time) : (normalized.billing_time || '')
+    normalized.rate = Number.isFinite(Number(normalized.rate)) ? Number(normalized.rate) : (normalized.rate || '')
+    const doNotBill = Boolean(normalized.non_billable || normalized.do_not_bill)
+    normalized.non_billable = doNotBill
+    normalized.do_not_bill = doNotBill
+    if (doNotBill) normalized.amount = 0
+    else if (Number.isFinite(Number(normalized.amount))) normalized.amount = Number(normalized.amount)
+    else if (Number.isFinite(Number(normalized.billing_time)) && Number.isFinite(Number(normalized.rate))) normalized.amount = Number((Number(normalized.billing_time) * Number(normalized.rate)).toFixed(2))
+    else normalized.amount = normalized.amount || 0
+    return normalized
+  }
+
+  function mergeBillingEntriesForState(...entryGroups) {
+    const byKey = new Map()
+    const order = []
+    entryGroups.forEach((group) => {
+      ;(Array.isArray(group) ? group : []).forEach((rawEntry) => {
+        const entry = normalizeBillingEntryForState(rawEntry)
+        if (!entry) return
+        const key = billingEntryMergeKey(entry)
+        if (!byKey.has(key)) order.push(key)
+        const existing = byKey.get(key)
+        if (!existing) {
+          byKey.set(key, entry)
+          return
+        }
+        const merged = { ...existing, ...entry }
+        const existingScore = billingEntryCompletenessScore(existing)
+        const incomingScore = billingEntryCompletenessScore(entry)
+        byKey.set(key, incomingScore >= existingScore ? merged : { ...entry, ...existing })
+      })
+    })
+    return order
+      .map((key) => byKey.get(key))
+      .filter(Boolean)
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.created_at || '').localeCompare(String(a.created_at || '')))
+  }
+
+  function readBrowserBillingEntriesFallback() {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem('caseMioBillingEntries') || '[]')
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+
+  function mergeBillingEntriesIntoState(incomingEntries = []) {
+    setBillingEntries((current) => mergeBillingEntriesForState(incomingEntries, current, readBrowserBillingEntriesFallback()))
+  }
+
   function billingRateRowsToState(rows = []) {
     const defaults = {}
     const matterRates = {}
@@ -2580,7 +2663,10 @@ function App() {
         return entry
       })
       const { defaults, matterRates } = billingRateRowsToState(rateRows || [])
-      setBillingEntries(entries)
+      mergeBillingEntriesIntoState(entries)
+      if (entries.length) {
+        window.setTimeout(() => saveMioStateKey('caseMioBillingEntries', JSON.stringify(mergeBillingEntriesForState(entries, readBrowserBillingEntriesFallback()))), 250)
+      }
       setBillingPrivateNotes((current) => ({ ...current, ...privateNotes }))
       setBillingRates(defaults)
       setMatterBillingRates(matterRates)
@@ -2736,7 +2822,13 @@ function App() {
 
 
   useEffect(() => {
-    try { saveMioStateKey('caseMioBillingEntries', JSON.stringify(billingEntries)) } catch {}
+    try {
+      if (!Array.isArray(billingEntries) || !billingEntries.length) {
+        const browserEntries = readBrowserBillingEntriesFallback()
+        if (browserEntries.length) return
+      }
+      saveMioStateKey('caseMioBillingEntries', JSON.stringify(billingEntries))
+    } catch {}
   }, [billingEntries])
 
   useEffect(() => {
