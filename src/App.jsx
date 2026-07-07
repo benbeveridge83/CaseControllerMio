@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V108'
+const MIO_APP_VERSION = 'Mio V109'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1715,6 +1715,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioBillingEntries') || '[]') }
     catch { return [] }
   })
+  const billingEntriesRef = useRef([])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
     catch { return {} }
@@ -2248,6 +2249,7 @@ function App() {
   const mioCloudStateLastValuesRef = useRef({})
   const mioBillingRelationalLoadedRef = useRef('')
   const mioBillingRelationalSavingRef = useRef({})
+  const serviceEmailBillingRecoveryRanRef = useRef('')
 
   function parseMioStoredValue(record, fallback = null) {
     if (!record) return fallback
@@ -2832,6 +2834,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioServiceEmailRows', JSON.stringify(serviceEmailRows)) } catch {}
   }, [serviceEmailRows])
+
+  useEffect(() => {
+    billingEntriesRef.current = Array.isArray(billingEntries) ? billingEntries : []
+  }, [billingEntries])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioServiceEmailActionLog', JSON.stringify(serviceEmailActionLog.slice(0, 500))) } catch {}
@@ -19872,6 +19878,29 @@ useEffect(() => {
     return matter?.cause_number || matter?.cause || matter?.case_number || ''
   }
 
+  function serviceEmailStableBillingHash(value) {
+    const input = String(value || '')
+    let hash = 5381
+    for (let index = 0; index < input.length; index += 1) hash = ((hash << 5) + hash) + input.charCodeAt(index)
+    return Math.abs(hash >>> 0).toString(36)
+  }
+
+  function serviceEmailStableBillingId(row, sourceKey = '') {
+    const key = sourceKey || serviceEmailBillingSourceKey(row)
+    const normalized = String(key || row?.subject || row?.id || Date.now()).trim()
+    return `svc-email-billing-${serviceEmailStableBillingHash(normalized)}`
+  }
+
+  function entryMatchesServiceSource(entry, sourceKey, row = {}) {
+    if (!entry || !sourceKey) return false
+    return Boolean(
+      (entry.source_service_email_id && String(entry.source_service_email_id) === String(sourceKey)) ||
+      (entry.source_service_email_row_id && row?.id && String(entry.source_service_email_row_id) === String(row.id)) ||
+      (entry.source_outlook_message_id && row?.outlook_message_id && String(entry.source_outlook_message_id) === String(row.outlook_message_id)) ||
+      (entry.id && String(entry.id) === serviceEmailStableBillingId(row, sourceKey))
+    )
+  }
+
   function maybeCreateServiceEmailBillingEntry(row, descriptionPrefix = 'Service email review') {
     const minutes = Number(row?.billing_minutes || 0)
     if (!row?.suggested_matter_id || !minutes || minutes <= 0) return null
@@ -19880,7 +19909,7 @@ useEffect(() => {
     const hours = Number((minutes / 60).toFixed(2))
     const sourceKey = serviceEmailBillingSourceKey(row)
     const entry = {
-      id: crypto?.randomUUID ? crypto.randomUUID() : `billing-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      id: serviceEmailStableBillingId(row, sourceKey),
       matter_id: row.suggested_matter_id,
       task_id: '',
       user_id: userId,
@@ -19899,15 +19928,92 @@ useEffect(() => {
       cause_number: billingMatterCauseNumber(row.suggested_matter_id),
       created_at: new Date().toISOString()
     }
-    let shouldSaveRelational = false
-    setBillingEntries((current) => {
-      const alreadyLogged = current.some((item) => (item.source_service_email_id && item.source_service_email_id === sourceKey) || (row.outlook_message_id && item.source_outlook_message_id === row.outlook_message_id))
-      shouldSaveRelational = !alreadyLogged
-      return alreadyLogged ? current : [entry, ...current]
-    })
-    if (shouldSaveRelational) saveBillingEntryToRelational(entry)
-    return entry
+    const existingEntries = mergeBillingEntriesForState(billingEntriesRef.current, readBrowserBillingEntriesFallback())
+    const alreadyLogged = existingEntries.some((item) => entryMatchesServiceSource(item, sourceKey, row))
+    if (!alreadyLogged) {
+      setBillingEntries((current) => mergeBillingEntriesForState([entry], current, readBrowserBillingEntriesFallback()))
+      billingEntriesRef.current = mergeBillingEntriesForState([entry], billingEntriesRef.current, readBrowserBillingEntriesFallback())
+      saveBillingEntryToRelational(entry)
+    }
+    return alreadyLogged ? existingEntries.find((item) => entryMatchesServiceSource(item, sourceKey, row)) || entry : entry
   }
+
+  function resolveServiceActionMatterId(logEntry) {
+    if (logEntry?.matter_id) return String(logEntry.matter_id)
+    const label = String(logEntry?.matter || '').trim().toLowerCase()
+    if (!label) return ''
+    const found = matters.find((matter) => String(matterLabel(matter.id) || '').trim().toLowerCase() === label || String(matterLabelById(matter.id) || '').trim().toLowerCase() === label)
+    return found?.id || ''
+  }
+
+  function recoverServiceEmailBillingEntriesFromActionLog() {
+    const recoverableLogs = (Array.isArray(serviceEmailActionLog) ? serviceEmailActionLog : [])
+      .filter((entry) => {
+        const minutes = Number(entry?.billing_minutes || 0)
+        const action = String(entry?.action_type || '')
+        const notes = String(entry?.notes || '').toLowerCase()
+        const result = String(entry?.result || '').toLowerCase()
+        return minutes > 0 && action === 'bulk_save_pdf_and_move_to_read' && ['completed', 'already_removed'].includes(result || 'completed') && (notes.includes('added billing entry') || notes.includes('saved pdf') || notes.includes('already gone'))
+      })
+    if (!recoverableLogs.length) return 0
+    const currentEntries = mergeBillingEntriesForState(billingEntriesRef.current, readBrowserBillingEntriesFallback())
+    const recovered = []
+    recoverableLogs.forEach((logEntry) => {
+      const matterId = resolveServiceActionMatterId(logEntry)
+      if (!matterId) return
+      const minutes = Number(logEntry.billing_minutes || 0)
+      if (!minutes || minutes <= 0) return
+      const sourceKey = logEntry.id || `${logEntry.created_at || ''}:${logEntry.email_subject || ''}:${logEntry.document_name || ''}`
+      const stableId = `svc-action-billing-${serviceEmailStableBillingHash(sourceKey)}`
+      const entryDate = String(logEntry.created_at || '').slice(0, 10) || new Date().toISOString().slice(0, 10)
+      const subject = logEntry.email_subject || logEntry.document_name || 'service email'
+      const alreadyLogged = currentEntries.some((entry) => {
+        const sameStableId = String(entry.id || '') === stableId
+        const sameLog = entry.source_service_email_action_log_id && String(entry.source_service_email_action_log_id) === String(logEntry.id)
+        const sameMatterDateSubject = String(entry.matter_id || '') === String(matterId)
+          && String(entry.date || entry.entry_date || '').slice(0, 10) === entryDate
+          && String(entry.description || '').toLowerCase().includes(String(subject || '').toLowerCase().slice(0, 40))
+        return sameStableId || sameLog || sameMatterDateSubject
+      })
+      if (alreadyLogged) return
+      const userId = currentBillingUserId()
+      const rate = rateForBilling(userId, matterId)
+      const hours = Number((minutes / 60).toFixed(2))
+      recovered.push({
+        id: stableId,
+        matter_id: matterId,
+        task_id: '',
+        user_id: userId,
+        date: entryDate,
+        description: `${String(logEntry.category || '').toLowerCase().includes('notification') ? 'Notification of service review' : 'Accepted e-filing review'}: ${subject}`,
+        matter_status: billingMatterStatus(matterId),
+        matter_step: 'Service Inbox',
+        rate,
+        billing_time: hours,
+        amount: Number((hours * rate).toFixed(2)),
+        source_service_email_action_log_id: logEntry.id || '',
+        source_service_subject: logEntry.email_subject || '',
+        client_name: billingMatterClientName(matterId),
+        cause_number: billingMatterCauseNumber(matterId),
+        created_at: logEntry.created_at || new Date().toISOString()
+      })
+    })
+    if (!recovered.length) return 0
+    setBillingEntries((current) => mergeBillingEntriesForState(recovered, current, readBrowserBillingEntriesFallback()))
+    billingEntriesRef.current = mergeBillingEntriesForState(recovered, billingEntriesRef.current, readBrowserBillingEntriesFallback())
+    recovered.forEach((entry) => saveBillingEntryToRelational(entry))
+    console.warn(`Recovered ${recovered.length} service-email billing entr${recovered.length === 1 ? 'y' : 'ies'} from the action log.`)
+    return recovered.length
+  }
+
+
+  useEffect(() => {
+    if (!session?.user?.id || !matters.length || !serviceEmailActionLog.length) return
+    const runKey = `${session.user.id}:${serviceEmailActionLog.length}:${billingEntries.length}`
+    if (serviceEmailBillingRecoveryRanRef.current === runKey) return
+    serviceEmailBillingRecoveryRanRef.current = runKey
+    recoverServiceEmailBillingEntriesFromActionLog()
+  }, [session?.user?.id, matters.length, serviceEmailActionLog.length, billingEntries.length])
 
   async function markLiveRowRead(row) {
     if (!row?.outlook_message_id || String(row.outlook_message_id).startsWith('mock-')) return false
