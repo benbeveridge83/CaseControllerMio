@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V117'
+const MIO_APP_VERSION = 'Mio V118'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1476,6 +1476,7 @@ function App() {
   const [selectedFilingReviewRowId, setSelectedFilingReviewRowId] = useState('')
   const [savedFilingReviewRows, setSavedFilingReviewRows] = useState([])
   const [showSavedFilingReviewRows, setShowSavedFilingReviewRows] = useState(false)
+  const [serviceTagBuilder, setServiceTagBuilder] = useState({ open: false, rowId: '', name: '', parentId: '' })
   const [collapsedServiceInboxSections, setCollapsedServiceInboxSections] = useState({})
   const [serviceEmailScanNote, setServiceEmailScanNote] = useState('')
   const [serviceEmailActionLog, setServiceEmailActionLog] = useState(() => {
@@ -19595,7 +19596,7 @@ useEffect(() => {
   function serviceEmailDocumentLeafTagId(row = null) {
     const ids = serviceEmailDocumentTagIds(row)
     if (!ids.length) return ''
-    return ids[ids.length - 1]
+    return ids.slice().sort((a, b) => tagDepth(b) - tagDepth(a))[0] || ''
   }
 
   async function blobToDataUrl(blob) {
@@ -21934,24 +21935,33 @@ Ben`) : (row.draft_response || '') })
     setServiceEmailScanNote('Calendar event draft opened. Review the notice PDF, correct the date/time, then save the event.')
   }
 
-  function addNoticeServiceRowToDiscovery(row) {
-    const typeText = `${row?.subject || ''} ${row?.suggested_document_name || ''} ${row?.body_preview || ''}`.toLowerCase()
+  async function addNoticeServiceRowToDiscovery(row) {
+    const typeText = `${row?.subject || ''} ${row?.suggested_document_name || ''} ${row?.body_preview || ''} ${serviceEmailDocumentTagLabel(row)}`.toLowerCase()
     const discoveryType = /admission|rfa/.test(typeText) ? 'admissions'
       : /interrogator|rogg/.test(typeText) ? 'interrogatories'
         : /disclosure|rfd/.test(typeText) ? 'disclosures'
           : 'production'
+    let attachment = primaryServicePdfAttachment(row)
+    if (!attachment?.content_url) attachment = await ensureAcceptedRowPdf(row.id)
+    let blob = null
+    try { if (attachment?.content_url) blob = await (await fetch(attachment.content_url)).blob() } catch (error) { console.warn('Could not convert service PDF for discovery setup:', error) }
+    const fileName = row?.suggested_document_name || attachment?.name || row?.subject || 'Discovery request.pdf'
+    let doc = documents.find((item) => item.source_service_email_id === row.id)
+    if (!doc) doc = await createServiceEmailDocumentRecord({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, fileName, blob)
+    if (doc) setDocuments((current) => current.some((item) => item.id === doc.id) ? current : [doc, ...current])
     setDiscoveryPageMode('responding')
     setRespondingDiscoveryForm((current) => ({
       ...current,
       matter_id: row?.suggested_matter_id || current.matter_id || '',
       discovery_type: discoveryType,
-      document_name: row?.suggested_document_name || row?.subject || current.document_name || '',
-      date_received: row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : current.date_received,
-      client_response_due: current.client_response_due || '',
+      document_id: doc?.id || current.document_id || '',
+      document_name: fileName,
+      date_received: row?.document_field_values?.date_received || row?.document_field_values?.served_on_date || (row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : current.date_received),
+      client_response_due: row?.document_field_values?.response_date || row?.discovery_response_date || current.client_response_due || '',
       client_instructions: defaultDiscoveryInstructionsForType(discoveryType)
     }))
-    setPage('discovery')
-    setServiceEmailScanNote('Discovery response setup opened. Extract the saved PDF from Documents or paste extracted requests to build the client response page.')
+    window.open(`${window.location.origin}${window.location.pathname}#discovery`, '_blank', 'noopener,noreferrer')
+    setServiceEmailScanNote('The discovery request was added to Documents and loaded into Responding to Discovery with the matter, type, received date, and document selected.')
   }
 
   async function previewNoticeServiceRow(row) {
@@ -21970,10 +21980,13 @@ Ben`) : (row.draft_response || '') })
   }
 
   function createAndAttachServiceReviewTag(row) {
-    const name = String(window.prompt('New tag name:') || '').trim()
-    if (!name) return
-    const parentId = String(window.prompt('Optional parent tag name (leave blank for a top-level tag):') || '').trim()
-    const parent = parentId ? tags.find((tag) => String(tag.name || '').trim().toLowerCase() === parentId.toLowerCase()) : null
+    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId: serviceEmailDocumentLeafTagId(row) || '' })
+  }
+
+  function saveServiceReviewTag() {
+    const name = String(serviceTagBuilder.name || '').trim()
+    if (!name || !serviceTagBuilder.rowId) return
+    const parent = tags.find((tag) => tag.id === serviceTagBuilder.parentId) || null
     const newTag = {
       id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
@@ -21982,8 +21995,9 @@ Ben`) : (row.draft_response || '') })
       sort_order: tags.filter((tag) => String(tag.parent_id || '') === String(parent?.id || '')).length + 1
     }
     setTags((current) => [...current, newTag])
-    updateServiceEmailDocumentTag(row.id, newTag.id)
-    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${parent.name} > ` : ''}${name}`)
+    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIds([newTag.id]) } : row))
+    setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })
+    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${tagFullName(parent.id)} > ` : ''}${name}`)
   }
 
   function updateServiceReviewField(rowId, fieldKey, value) {
@@ -22017,6 +22031,7 @@ Ben`) : (row.draft_response || '') })
       }
     }
     return (
+      <>
       <Modal title={isNotice ? 'Notification of Service review' : 'Accepted e-filed document review'} onClose={() => setShowAcceptedExtractionWindow(false)} wide>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
           <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16 }}>Save and bill</button>
@@ -22035,7 +22050,7 @@ Ben`) : (row.draft_response || '') })
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button>{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Add to discovery</button>}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button>{isNotice && <button type="button" onClick={() => window.open(`${window.location.origin}${window.location.pathname}#calendar`, '_blank', 'noopener,noreferrer')}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add event draft</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
                 <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || active.suggested_document_name || active.subject}</div>
@@ -22050,6 +22065,23 @@ Ben`) : (row.draft_response || '') })
           </aside>
         </div>
       </Modal>
+
+        {serviceTagBuilder.open && (
+          <Modal title="Add a new tag" onClose={() => setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })}>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <LabeledField label="New tag name"><input autoFocus value={serviceTagBuilder.name} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, name: e.target.value }))} placeholder="Enter the new tag name" /></LabeledField>
+              <LabeledField label="Place under this tag">
+                <select value={serviceTagBuilder.parentId} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, parentId: e.target.value }))}>
+                  <option value="">Top-level tag</option>
+                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                </select>
+              </LabeledField>
+              <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}><strong>New location:</strong> {serviceTagBuilder.parentId ? `${tagFullName(serviceTagBuilder.parentId)} > ` : ''}{serviceTagBuilder.name || 'New tag'}</div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}><button type="button" onClick={() => setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })}>Cancel</button><button type="button" onClick={saveServiceReviewTag} disabled={!String(serviceTagBuilder.name || '').trim()}>Create and apply to document</button></div>
+            </div>
+          </Modal>
+        )}
+      </>
     )
   }
 
