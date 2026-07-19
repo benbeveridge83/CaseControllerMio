@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V109'
+const MIO_APP_VERSION = 'Mio V117'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -168,6 +168,7 @@ const appPages = [
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
+  { value: 'banking', label: 'Banking' },
   { value: 'service_inbox', label: 'Service Inbox' },
   { value: 'requested_relief', label: 'Requested Relief' },
   { value: 'calendar', label: 'Calendar' },
@@ -194,6 +195,7 @@ const screenSaverBasePages = [
   { value: 'matter_timelines', label: 'Matter Timelines', page: 'matter_timelines' },
   { value: 'tasks', label: 'Tasks', page: 'tasks' },
   { value: 'billing', label: 'Billing', page: 'billing' },
+  { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
@@ -1325,6 +1327,22 @@ function App() {
   }
 
   const [billingTab, setBillingTab] = useState('firm_billing')
+  const [bankAccounts, setBankAccounts] = useState([])
+  const [bankTransactions, setBankTransactions] = useState([])
+  const [bankConnections, setBankConnections] = useState([])
+  const [bankLoading, setBankLoading] = useState(false)
+  const [bankConnecting, setBankConnecting] = useState(false)
+  const [bankError, setBankError] = useState('')
+  const [bankLastSyncedAt, setBankLastSyncedAt] = useState(null)
+  const [bankAccountFilter, setBankAccountFilter] = useState('all')
+  const [bankSearch, setBankSearch] = useState('')
+  const [bankDateFrom, setBankDateFrom] = useState('')
+  const [bankDateTo, setBankDateTo] = useState('')
+  const [bankShowPending, setBankShowPending] = useState(true)
+  useEffect(() => {
+    if (page === 'banking' && session?.user?.id) loadBankingData()
+  }, [page, session?.user?.id])
+
   const [clioMatters, setClioMatters] = useState([])
   const [clioBillingLoading, setClioBillingLoading] = useState(false)
   const [clioBillingError, setClioBillingError] = useState('')
@@ -1450,11 +1468,14 @@ function App() {
   const [serviceInboxViewMode, setServiceInboxViewMode] = useState(() => hashParamValue('view', localStorage.getItem('serviceInboxViewMode') || 'grouped'))
   const [serviceInboxFolderFilter, setServiceInboxFolderFilter] = useState(() => hashParamValue('folder', localStorage.getItem('serviceInboxFolderFilter') || 'all'))
   const [serviceInboxSortMode, setServiceInboxSortMode] = useState(() => hashParamValue('sort', localStorage.getItem('serviceInboxSortMode') || 'folder_date'))
-  const [serviceInboxRowDensity, setServiceInboxRowDensity] = useState(() => hashParamValue('density', localStorage.getItem('serviceInboxRowDensity') || 'normal'))
+  const [serviceInboxRowDensity, setServiceInboxRowDensity] = useState(() => hashParamValue('density', localStorage.getItem('serviceInboxRowDensity') || 'compact'))
   const [serviceInboxPreviewMode, setServiceInboxPreviewMode] = useState(() => hashParamValue('preview', localStorage.getItem('serviceInboxPreviewMode') || 'bottom'))
   const [showAcceptedExtractionWindow, setShowAcceptedExtractionWindow] = useState(false)
   const [selectedPdfPreviewName, setSelectedPdfPreviewName] = useState('')
   const [selectedPdfPreviewUrl, setSelectedPdfPreviewUrl] = useState('')
+  const [selectedFilingReviewRowId, setSelectedFilingReviewRowId] = useState('')
+  const [savedFilingReviewRows, setSavedFilingReviewRows] = useState([])
+  const [showSavedFilingReviewRows, setShowSavedFilingReviewRows] = useState(false)
   const [collapsedServiceInboxSections, setCollapsedServiceInboxSections] = useState({})
   const [serviceEmailScanNote, setServiceEmailScanNote] = useState('')
   const [serviceEmailActionLog, setServiceEmailActionLog] = useState(() => {
@@ -1910,6 +1931,20 @@ function App() {
     catch { return [] }
   })
 
+  const [requestedReliefExhibits, setRequestedReliefExhibits] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefExhibits') || '{}') }
+    catch { return {} }
+  })
+  const [requestedReliefExhibitModal, setRequestedReliefExhibitModal] = useState(null)
+  const [requestedReliefExhibitUpload, setRequestedReliefExhibitUpload] = useState({ name: '', date: '', description: '', status: 'Our Exhibit', tag_ids: [], document_field_values: {}, file: null })
+  const [showHiddenRequestedReliefExhibitRows, setShowHiddenRequestedReliefExhibitRows] = useState(false)
+  const [requestedReliefExhibitLayout, setRequestedReliefExhibitLayout] = useState('multiple')
+  const [requestedReliefExhibitSplitIssueId, setRequestedReliefExhibitSplitIssueId] = useState('')
+  const [eventExhibitLists, setEventExhibitLists] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioEventExhibitLists') || '{}') }
+    catch { return {} }
+  })
+
 
   const [showTeamWindow, setShowTeamWindow] = useState(false)
   const [showClientWindow, setShowClientWindow] = useState(false)
@@ -2323,6 +2358,17 @@ function App() {
       caseMioServiceEmailSources: { setter: setServiceEmailSources, kind: 'array', fallback: defaultServiceEmailSources },
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
+      caseMioServiceInboxPreferences: { setter: (value) => {
+        const prefs = value || {}
+        if (prefs.status) setServiceInboxFilter(prefs.status)
+        if (prefs.mailbox) setServiceInboxMailboxFilter(prefs.mailbox)
+        if (prefs.phase) setServiceInboxPhase(prefs.phase)
+        if (prefs.view) setServiceInboxViewMode(prefs.view)
+        if (prefs.folder) setServiceInboxFolderFilter(prefs.folder)
+        if (prefs.sort) setServiceInboxSortMode(prefs.sort)
+        if (prefs.density) setServiceInboxRowDensity(prefs.density)
+        if (prefs.preview) setServiceInboxPreviewMode(prefs.preview)
+      }, kind: 'object', fallback: { status: 'needs_review', mailbox: 'all', phase: 'no_response', view: 'grouped', folder: 'all', sort: 'folder_date', density: 'compact', preview: 'bottom' } },
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
       matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
@@ -3045,6 +3091,15 @@ function App() {
     try { saveMioStateKey('caseMioRequestedReliefExpandedIds', JSON.stringify(requestedReliefExpandedIds)) } catch {}
   }, [requestedReliefExpandedIds])
 
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioRequestedReliefExhibits', JSON.stringify(requestedReliefExhibits)) } catch {}
+  }, [requestedReliefExhibits])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioEventExhibitLists', JSON.stringify(eventExhibitLists)) } catch {}
+  }, [eventExhibitLists])
+
   useEffect(() => {
     if (!requestedReliefTemplates.length || !requestedReliefOptions.length) return
     setRequestedReliefTemplates((current) => {
@@ -3149,7 +3204,7 @@ function App() {
       view: serviceInboxViewMode || 'grouped',
       folder: serviceInboxFolderFilter || 'all',
       sort: serviceInboxSortMode || 'folder_date',
-      density: serviceInboxRowDensity || 'normal',
+      density: serviceInboxRowDensity || 'compact',
       preview: serviceInboxPreviewMode || 'bottom'
     }
     try {
@@ -3162,6 +3217,7 @@ function App() {
       localStorage.setItem('serviceInboxRowDensity', serviceState.density)
       localStorage.setItem('serviceInboxPreviewMode', serviceState.preview)
     } catch {}
+    saveMioStateKey('caseMioServiceInboxPreferences', JSON.stringify(serviceState))
     if (page === 'service_inbox' && typeof window !== 'undefined') {
       const selectedFolder = selectedServiceInboxFolderSource()
       const params = new URLSearchParams(serviceState)
@@ -9970,7 +10026,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         view: serviceInboxViewMode || 'grouped',
         folder: serviceInboxFolderFilter || 'all',
         sort: serviceInboxSortMode || 'folder_date',
-        density: serviceInboxRowDensity || 'normal',
+        density: serviceInboxRowDensity || 'compact',
         preview: serviceInboxPreviewMode || 'bottom'
       })
       if (selectedFolder) {
@@ -18147,7 +18203,9 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function microsoftPopupRedirectUri() {
-    return serviceGraphRedirectUri()
+    // Keep popup authentication isolated from the main Case Controller tab.
+    // The popup returns to the same deployed app origin, while the main window remains on Service Inbox.
+    return `${window.location.origin}${window.location.pathname || '/'}`
   }
 
   function clearMicrosoftInteractionState() {
@@ -18300,13 +18358,9 @@ useEffect(() => {
         prompt: 'select_account'
       }))
     } catch (popupError) {
-      console.warn('Microsoft popup sign-in failed; falling back to redirect sign-in:', popupError)
-      await app.loginRedirect(microsoftAuthRequest({
-        redirectUri: serviceGraphRedirectUri(),
-        redirectStartPage: currentUrl,
-        prompt: 'select_account'
-      }))
-      return
+      console.warn('Microsoft popup sign-in failed:', popupError)
+      // Never replace the entire Case Controller tab with Microsoft's login page. The user can retry the popup.
+      throw new Error(`Microsoft popup sign-in did not finish. Please close any leftover Microsoft window and click Reconnect Microsoft again. ${popupError?.message || ''}`.trim())
     }
 
     const account = result?.account || app.getAllAccounts()[0]
@@ -21095,7 +21149,10 @@ useEffect(() => {
     }
     setServiceInboxPhase(normalized)
     setShowAcceptedExtractionWindow(true)
+    setShowSavedFilingReviewRows(false)
+    setSelectedFilingReviewRowId(rows[0]?.id || '')
     setSelectedPdfPreviewName(rows[0]?.suggested_document_name || rows[0]?.subject || '')
+    if (rows[0]) previewNoticeServiceRow(rows[0])
   }
 
   function updateServiceEmailAction(rowId, actionId, patch) {
@@ -21199,6 +21256,13 @@ useEffect(() => {
         document_name: savedInfo.fileName || row.suggested_document_name || row.extracted_pdf_name || '',
         save_path: savedInfo.savedPath || serviceEmailSavePath(row)
       })
+      setSavedFilingReviewRows((current) => [{
+        ...row,
+        saved_at: new Date().toISOString(),
+        saved_file_name: savedInfo.fileName || row.suggested_document_name || row.extracted_pdf_name || '',
+        saved_path: savedInfo.savedPath || serviceEmailSavePath(row),
+        billing_added: Boolean(billingEntry)
+      }, ...current.filter((item) => item.id !== row.id)])
       setServiceEmailRows((current) => current.filter((item) => item.id !== row.id))
       setServiceEmailScanNote(`${label}. Removed from this review queue.`)
       return true
@@ -21457,7 +21521,7 @@ useEffect(() => {
     setServiceInboxViewMode('grouped')
     setServiceInboxFolderFilter('all')
     setServiceInboxSortMode('folder_date')
-    setServiceInboxRowDensity('normal')
+    setServiceInboxRowDensity('compact')
     setCollapsedServiceInboxSections({})
     setServiceEmailScanNote('Reset to the mock Outlook review queue with three mailboxes and service-folder sections.')
   }
@@ -21905,179 +21969,96 @@ Ben`) : (row.draft_response || '') })
     }
   }
 
-  function renderNoticeServiceReviewWindow() {
-    const noticeRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === 'notification_service')
-    const typeOptions = [
-      'Petition / Answer',
-      'Notice',
-      'Motion',
-      'Requests > Request for Production',
-      'Requests > Request for Disclosure',
-      'Requests > Request for Admission',
-      'Requests > Interrogatories',
-      'Responses > Response to Request for Production',
-      'Responses > Response to Request for Disclosure',
-      'Responses > Response to Request for Admission',
-      'Responses > Answers to Interrogatories',
-      'Third Party Discovery > Subpoena',
-      'Third Party Discovery > Deposition',
-      'Third Party Discovery > Records',
-      'Order',
-      'Setting',
-      'Other'
-    ]
+  function createAndAttachServiceReviewTag(row) {
+    const name = String(window.prompt('New tag name:') || '').trim()
+    if (!name) return
+    const parentId = String(window.prompt('Optional parent tag name (leave blank for a top-level tag):') || '').trim()
+    const parent = parentId ? tags.find((tag) => String(tag.name || '').trim().toLowerCase() === parentId.toLowerCase()) : null
+    const newTag = {
+      id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      parent_id: parent?.id || '',
+      color: '#4c6783',
+      sort_order: tags.filter((tag) => String(tag.parent_id || '') === String(parent?.id || '')).length + 1
+    }
+    setTags((current) => [...current, newTag])
+    updateServiceEmailDocumentTag(row.id, newTag.id)
+    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${parent.name} > ` : ''}${name}`)
+  }
+
+  function updateServiceReviewField(rowId, fieldKey, value) {
+    setServiceEmailRows((rows) => rows.map((row) => row.id === rowId ? {
+      ...row,
+      document_field_values: { ...(row.document_field_values || {}), [fieldKey]: value }
+    } : row))
+  }
+
+  function renderFilingServiceReviewWindow(kind = 'accepted') {
+    const isNotice = kind === 'notification_service'
+    const liveRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === kind)
+    const rows = showSavedFilingReviewRows ? savedFilingReviewRows.filter((row) => serviceEmailRowCategory(row) === kind) : liveRows
+    let active = rows.find((row) => row.id === selectedFilingReviewRowId) || rows[0] || null
+    const tagIds = active ? serviceEmailDocumentTagIds(active) : []
+    const activeForFields = active ? { ...active, tag_ids: tagIds, document_field_values: active.document_field_values || {} } : null
+    const saveFolder = active ? serviceEmailSavePath(active) : ''
+    const selectRow = (row) => {
+      setSelectedFilingReviewRowId(row.id)
+      previewNoticeServiceRow(row)
+    }
+    const saveAndBill = async () => {
+      if (!active || showSavedFilingReviewRows) return
+      const currentIndex = liveRows.findIndex((row) => row.id === active.id)
+      const next = liveRows[currentIndex + 1] || liveRows[currentIndex - 1] || null
+      const ok = await processSingleFilingServiceEmail(active)
+      if (ok) {
+        setSelectedFilingReviewRowId(next?.id || '')
+        if (next) previewNoticeServiceRow(next)
+        else { setSelectedPdfPreviewUrl(''); setSelectedPdfPreviewName('') }
+      }
+    }
     return (
-      <Modal title="Notice of Service review" onClose={() => setShowAcceptedExtractionWindow(false)}>
-        <p style={{ color: '#475569' }}>
-          These are documents served on this office. Save them to the matter efile folder, review them in the viewer, categorize each filing, and push notices/discovery to the right Mio page.
-        </p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Save visible notice PDFs and move emails to Read</button>
-          <button type="button" onClick={() => { ensureNoticeServiceTags(); setServiceEmailScanNote('Notice-of-service tag library installed/refreshed.') }}>Install / refresh notice tags</button>
+      <Modal title={isNotice ? 'Notification of Service review' : 'Accepted e-filed document review'} onClose={() => setShowAcceptedExtractionWindow(false)} wide>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16 }}>Save and bill</button>
+          <button type="button" onClick={() => setShowSavedFilingReviewRows((value) => !value)}>{showSavedFilingReviewRows ? 'Return to unsaved emails' : `Saved emails (${savedFilingReviewRows.filter((row) => serviceEmailRowCategory(row) === kind).length})`}</button>
+          <span style={{ color: '#64748b' }}>{showSavedFilingReviewRows ? 'Showing documents saved during this session.' : 'Save and bill saves the PDF to OneDrive/the matter efile folder, adds it to Documents, bills the matter, moves the email to Read, and advances to the next email.'}</span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 430px', gap: 14, alignItems: 'start' }}>
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', minHeight: 650 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-              <h3 style={{ margin: 0 }}>Document viewer</h3>
-              <span style={{ color: '#64748b', fontSize: 12 }}>Click a document in the TOC to preview it.</span>
-            </div>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || 'No document selected'}</div>
-            <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, background: 'white', minHeight: 610, overflow: 'hidden' }}>
-              {selectedPdfPreviewUrl
-                ? <iframe title="Notice service PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 610, border: 0 }} />
-                : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Select a document on the right. If the PDF has not loaded yet, Mio will use the Supabase Edge Function/eFile link to fetch it.</div>}
-            </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 14, alignItems: 'start', minHeight: '78vh' }}>
+          <div style={{ minWidth: 0 }}>
+            {active ? <>
+              <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', marginBottom: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(340px, 1.4fr)', gap: 10 }}>
+                  <LabeledField label="Matter"><select value={active.suggested_matter_id || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRowMatter(active.id, e.target.value)}><option value="">Needs matter match</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}</select></LabeledField>
+                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} /></LabeledField>
+                  <LabeledField label="Document name"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
+                  <LabeledField label="Tag"><div style={{ display: 'flex', gap: 6 }}><select value={serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailDocumentTag(active.id, e.target.value)} style={{ flex: 1 }}><option value="">No tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>Add tag</button></div></LabeledField>
+                </div>
+                <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
+                {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button>{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Add to discovery</button>}</div>
+              </section>
+              <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || active.suggested_document_name || active.subject}</div>
+                <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, minHeight: 620, overflow: 'hidden' }}>{selectedPdfPreviewUrl ? <iframe title="Filing PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 620, border: 0 }} /> : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Loading or awaiting the PDF preview. Click Reload PDF preview if needed.</div>}</div>
+              </section>
+            </> : <div style={{ padding: 40, textAlign: 'center', color: '#64748b' }}>{showSavedFilingReviewRows ? 'No emails have been saved in this session.' : `No ${isNotice ? 'notification-of-service' : 'accepted'} emails remain in this review queue.`}</div>}
           </div>
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#fff', maxHeight: '72vh', overflow: 'auto' }}>
-            <h3 style={{ marginTop: 0 }}>TOC / categorization</h3>
-            {noticeRows.map((row, index) => {
-              const typeValue = row.notice_service_type || noticeServiceDocumentType(row)
-              const sourceValue = row.notice_service_source || noticeServiceDocumentSource(row)
-              const rowTags = serviceEmailDocumentTagIds(row)
-              const isNotice = /notice|setting|hearing|trial/i.test(typeValue + ' ' + row.subject + ' ' + row.suggested_document_name)
-              const isDiscovery = /discovery|request|production|disclosure|admission|interrogator|subpoena|deposition|response/i.test(typeValue)
-              return (
-                <section key={row.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 10, background: index % 2 ? '#fff' : '#f8fafc' }}>
-                  <button type="button" onClick={() => previewNoticeServiceRow(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 800 }}>{row.suggested_document_name || row.extracted_pdf_name || row.subject}</button>
-                  <div style={{ color: '#64748b', fontSize: 12 }}>{row.from_name || row.from_email} · {row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div>
-                  <label style={{ display: 'block', marginTop: 8 }}>Filed by / source<br />
-                    <select value={sourceValue} onChange={(e) => updateNoticeServiceRowClassification(row.id, { notice_service_source: e.target.value })} style={{ width: '100%' }}>
-                      <option value="Opposing Party">Opposing party / opposing counsel</option>
-                      <option value="Court">Court</option>
-                    </select>
-                  </label>
-                  <label style={{ display: 'block', marginTop: 8 }}>Document category<br />
-                    <select value={typeValue} onChange={(e) => updateNoticeServiceRowClassification(row.id, { notice_service_type: e.target.value })} style={{ width: '100%' }}>
-                      {typeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
-                  </label>
-                  <label style={{ display: 'block', marginTop: 8 }}>Tag<br />
-                    <select value={serviceEmailDocumentLeafTagId({ ...row, document_tag_ids: rowTags })} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
-                      <option value="">No tag</option>
-                      {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
-                    </select>
-                  </label>
-                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{rowTags.map((tagId) => tagFullName(tagId)).filter(Boolean).join(' > ')}</div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                    <button type="button" onClick={() => saveSingleNoticeServicePdf(row)}>Save PDF</button>
-                    {isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(row)}>Add to calendar</button>}
-                    {isDiscovery && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(row)}>Add to discovery</button>}
-                    <button type="button" onClick={() => openServiceEmailInOutlook(row)}>Open email</button>
-                  </div>
-                </section>
-              )
-            })}
-            {!noticeRows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 18 }}>No notification-of-service emails match the current filters.</div>}
-          </div>
+          <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', maxHeight: '82vh', overflow: 'auto', position: 'sticky', top: 0 }}>
+            <h3 style={{ marginTop: 0 }}>TOC</h3>
+            {rows.map((row) => <button key={row.id} type="button" onClick={() => selectRow(row)} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div><div style={{ fontWeight: 700 }}>{row.subject || row.suggested_document_name || 'Email'}</div></button>)}
+            {!rows.length && <div style={{ color: '#64748b', padding: 12, textAlign: 'center' }}>No emails to show.</div>}
+          </aside>
         </div>
       </Modal>
     )
   }
 
+  function renderNoticeServiceReviewWindow() {
+    return renderFilingServiceReviewWindow('notification_service')
+  }
+
   function renderAcceptedExtractionWindow() {
-    if (serviceInboxPhase === 'notification_service') return renderNoticeServiceReviewWindow()
-    const acceptedRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === 'accepted')
-    const typeOptions = [
-      'filing > Pleading/Petition/Answer',
-      'filing > Motion',
-      'filing > Notice',
-      'filing > Proposed Order',
-      'Discovery > Request > RFP',
-      'Discovery > Request > RFD',
-      'Discovery > Request > RFA',
-      'Discovery > Request > Roggs',
-      'Discovery > Response > RFP',
-      'Discovery > Response > RFD',
-      'Discovery > Response > RFA',
-      'Discovery > Response > Roggs',
-      'Proposed Order',
-      'Other'
-    ]
-    return (
-      <Modal title="Accepted e-filed document review" onClose={() => setShowAcceptedExtractionWindow(false)}>
-        <p style={{ color: '#475569' }}>
-          These are filings accepted by eFileTexas for this office. Use the viewer to review each downloaded PDF, confirm the matter, confirm the document name, apply the correct efiled/Ours tag, then save the PDFs and move the emails to Read.
-        </p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" onClick={saveVisibleFilingPdfsAndMoveToRead} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Save accepted PDFs and move emails to Read</button>
-          <button type="button" onClick={() => { ensureAcceptedServiceTags(); setServiceEmailScanNote('Accepted efiled/Ours tag library installed/refreshed.') }}>Install / refresh accepted filing tags</button>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 460px', gap: 14, alignItems: 'start' }}>
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', minHeight: 650 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-              <h3 style={{ margin: 0 }}>Document viewer</h3>
-              <span style={{ color: '#64748b', fontSize: 12 }}>Click a document in the TOC to preview it.</span>
-            </div>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || 'No document selected'}</div>
-            <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, background: 'white', minHeight: 610, overflow: 'hidden' }}>
-              {selectedPdfPreviewUrl
-                ? <iframe title="Accepted filing PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 610, border: 0 }} />
-                : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Select a document on the right. Mio will use Microsoft Graph, the Supabase Edge Function, or the saved attachment data to load the preview.</div>}
-            </div>
-          </div>
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#fff', maxHeight: '72vh', overflow: 'auto' }}>
-            <h3 style={{ marginTop: 0 }}>TOC / accepted filing tags</h3>
-            {acceptedRows.map((row, index) => {
-              const typeValue = row.accepted_service_type || acceptedServiceDocumentType(row)
-              const rowTags = serviceEmailDocumentTagIds(row)
-              return (
-                <section key={row.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 10, background: index % 2 ? '#fff' : '#f8fafc' }}>
-                  <button type="button" onClick={() => previewNoticeServiceRow(row)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 800 }}>{row.suggested_document_name || row.extracted_pdf_name || row.subject}</button>
-                  <div style={{ color: '#64748b', fontSize: 12 }}>{row.from_name || row.from_email} · {row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div>
-                  <label style={{ display: 'block', marginTop: 8 }}>Matter<br />
-                    <select value={row.suggested_matter_id || ''} onChange={(e) => updateServiceEmailRowMatter(row.id, e.target.value)} style={{ width: '100%' }}>
-                      <option value="">Needs matter match</option>
-                      {matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
-                    </select>
-                  </label>
-                  <label style={{ display: 'block', marginTop: 8 }}>Document name<br />
-                    <input value={row.suggested_document_name || ''} placeholder="yy.mm.dd PDF name" onChange={(e) => updateServiceEmailRow(row.id, { suggested_document_name: e.target.value })} style={{ width: '100%' }} />
-                  </label>
-                  <label style={{ display: 'block', marginTop: 8 }}>Accepted filing category<br />
-                    <select value={typeValue} onChange={(e) => updateAcceptedServiceRowClassification(row.id, { accepted_service_type: e.target.value })} style={{ width: '100%' }}>
-                      {typeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-                    </select>
-                  </label>
-                  <label style={{ display: 'block', marginTop: 8 }}>Tag<br />
-                    <select value={serviceEmailDocumentLeafTagId({ ...row, document_tag_ids: rowTags })} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
-                      <option value="">No tag</option>
-                      {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
-                    </select>
-                  </label>
-                  <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{rowTags.map((tagId) => tagFullName(tagId)).filter(Boolean).join(' > ')}</div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                    <button type="button" onClick={() => saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })}>Save PDF</button>
-                    <button type="button" onClick={() => previewNoticeServiceRow(row)}>Preview</button>
-                    <button type="button" onClick={() => openServiceEmailInOutlook(row)}>Open email</button>
-                  </div>
-                </section>
-              )
-            })}
-            {!acceptedRows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 18 }}>No accepted e-file emails match the current filters.</div>}
-          </div>
-        </div>
-      </Modal>
-    )
+    return renderFilingServiceReviewWindow(serviceInboxPhase === 'notification_service' ? 'notification_service' : 'accepted')
   }
 
 
@@ -22496,7 +22477,11 @@ Ben`) : (row.draft_response || '') })
               <button
                 key={phase}
                 type="button"
-                onClick={() => setServiceInboxPhase(phase)}
+                onClick={() => {
+                  setServiceInboxPhase(phase)
+                  if (phase === 'accepted') setServiceInboxFolderFilter((serviceEmailSources || []).find((source) => source.id === 'src-service-accepted')?.id || 'all')
+                  if (phase === 'notification_service') setServiceInboxFolderFilter((serviceEmailSources || []).find((source) => source.id === 'src-service-notice')?.id || 'all')
+                }}
                 style={{
                   border: serviceInboxPhase === phase ? '2px solid #1d4ed8' : '1px solid #cbd5e1',
                   background: serviceInboxPhase === phase ? '#dbeafe' : '#fff',
@@ -22521,7 +22506,7 @@ Ben`) : (row.draft_response || '') })
             <strong>Visible category actions</strong>
             {(serviceInboxPhase === 'no_response' || serviceInboxPhase === 'all') && <button type="button" onClick={moveSelectedServiceEmailsToRead} disabled={!noResponseActionCount} style={{ background: '#4b5563', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Mark/move {noResponseActionCount} no-response email(s) to Read</button>}
             {(serviceInboxPhase === 'response_mark_read' || serviceInboxPhase === 'all') && <button type="button" onClick={sendSelectedResponsesAndMoveToRead} disabled={!responseActionCount} style={{ background: '#166534', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Send/respond {responseActionCount} email(s) and mark Read</button>}
-            {(serviceInboxPhase === 'accepted' || serviceInboxPhase === 'notification_service' || serviceInboxPhase === 'all') && <button type="button" onClick={() => openAcceptedExtractionReview(serviceInboxPhase === 'notification_service' ? 'notification_service' : 'accepted')} disabled={!filingActionCount && serviceInboxPhase !== 'all'} style={{ background: '#1d4ed8', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Review PDFs / save paths</button>}
+            {(serviceInboxPhase === 'accepted' || serviceInboxPhase === 'notification_service' || serviceInboxPhase === 'all') && <button type="button" onClick={() => openAcceptedExtractionReview(serviceInboxPhase === 'notification_service' ? 'notification_service' : 'accepted')} disabled={!filingActionCount && serviceInboxPhase !== 'all'} style={{ background: '#1d4ed8', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Open review window</button>}
             {(serviceInboxPhase === 'accepted' || serviceInboxPhase === 'notification_service' || serviceInboxPhase === 'all') && <button type="button" onClick={approveSelectedFilingActions} disabled={!filingActionCount} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 5, padding: '8px 12px', fontWeight: 700 }}>Process {filingActionCount} filing/service email(s) and move to Read</button>}
             <span style={{ color: '#64748b' }}>Live version will perform Microsoft Graph, OneDrive, calendar, discovery, and billing actions only after approval.</span>
           </div>
@@ -24437,26 +24422,95 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function importInventoryRowsToMatter(matterId, scenarioId, rows = []) {
     const imported = (rows || []).map((row) => {
-      const text = Object.values(row || {}).join(' ')
-      const cat = inventoryCategoryFromText(text)
+      const rowText = Object.values(row || {}).join(' ')
+      const cat = inventoryCategoryFromText(rowText)
+      const rawType = String(excelCell(row, ['type', 'Type'], cat.type) || '').trim().toLowerCase()
+      const normalizedType = /debt|liabilit/.test(rawType) ? 'liability' : 'asset'
       const amount = excelCell(row, ['value', 'Value', 'amount', 'Amount', 'balance', 'Balance', 'Current Value', 'Debt Balance'], '')
+      const estateRaw = String(excelCell(row, ['estate', 'Estate', 'Owner', 'owner'], inventoryEstateFromText(rowText)) || '').trim().toLowerCase()
+      const estate = /wife/.test(estateRaw) ? 'wife_separate' : /husband/.test(estateRaw) ? 'husband_separate' : 'community'
       return {
-        type: String(excelCell(row, ['type', 'Type'], cat.type)).toLowerCase().includes('debt') ? 'liability' : cat.type,
-        category: excelCell(row, ['category', 'Category'], cat.category),
-        subcategory: excelCell(row, ['subcategory', 'Subcategory'], cat.subcategory || ''),
-        item_name: excelCell(row, ['item_name', 'Item', 'item', 'Asset', 'asset', 'Description', 'description'], '').toString().slice(0, 100) || cat.category,
-        description: excelCell(row, ['description', 'Description', 'Notes', 'notes'], text).toString(),
-        estate: excelCell(row, ['estate', 'Estate', 'Owner', 'owner'], inventoryEstateFromText(text)),
-        characterization: excelCell(row, ['characterization', 'Characterization'], inventoryEstateFromText(text) === 'community' ? 'Community' : 'Separate'),
+        type: normalizedType,
+        category: String(excelCell(row, ['category', 'Category'], cat.category) || cat.category).trim(),
+        subcategory: String(excelCell(row, ['subcategory', 'Subcategory'], cat.subcategory || '') || '').trim(),
+        item_name: String(excelCell(row, ['item_name', 'Item Name', 'Item', 'item', 'Asset', 'asset'], '') || '').trim().slice(0, 100),
+        description: String(excelCell(row, ['description', 'Description', 'Notes', 'notes'], '') || '').trim(),
+        estate,
+        characterization: String(excelCell(row, ['characterization', 'Characterization'], estate === 'community' ? 'Community' : 'Separate') || '').trim(),
         value: amount,
         valuation_date: excelCell(row, ['valuation_date', 'Valuation Date'], ''),
-        valuation_source: excelCell(row, ['valuation_source', 'Valuation Source'], 'AI/import review'),
-        possession: excelCell(row, ['possession', 'Possession'], ''),
-        proposed_award: excelCell(row, ['proposed_award', 'Proposed Award'], ''),
-        debt_type: String(excelCell(row, ['debt_type', 'Debt Type'], cat.debt_type || '')).toLowerCase()
+        valuation_source: String(excelCell(row, ['valuation_source', 'Valuation Source'], 'CSV import') || 'CSV import').trim(),
+        possession: String(excelCell(row, ['possession', 'Possession'], '') || '').trim(),
+        proposed_award: String(excelCell(row, ['proposed_award', 'Proposed Award'], '') || '').trim(),
+        debt_type: String(excelCell(row, ['debt_type', 'Debt Type'], normalizedType === 'liability' ? (cat.debt_type || 'unsecured') : '') || '').trim().toLowerCase(),
+        creditor: String(excelCell(row, ['creditor', 'Creditor'], '') || '').trim(),
+        liable_party: String(excelCell(row, ['liable_party', 'Liable Party'], '') || '').trim(),
+        proposed_payor: String(excelCell(row, ['proposed_payor', 'Proposed Payor'], '') || '').trim(),
+        address: String(excelCell(row, ['address', 'Address'], '') || '').trim(),
+        year: String(excelCell(row, ['year', 'Year'], '') || '').trim(),
+        make: String(excelCell(row, ['make', 'Make'], '') || '').trim(),
+        model: String(excelCell(row, ['model', 'Model'], '') || '').trim(),
+        vin: String(excelCell(row, ['vin', 'VIN'], '') || '').trim(),
+        mileage: String(excelCell(row, ['mileage', 'Mileage'], '') || '').trim()
       }
-    }).filter((item) => item.item_name || item.description)
+    }).filter((item) => item.item_name)
     addParsedInventoryItems(matterId, scenarioId, imported)
+    return imported.length
+  }
+
+  function downloadInventoryCsvTemplate() {
+    const headers = [
+      'type', 'category', 'subcategory', 'item_name', 'description', 'estate', 'characterization',
+      'value', 'valuation_date', 'valuation_source', 'possession', 'proposed_award', 'debt_type',
+      'creditor', 'liable_party', 'proposed_payor', 'address', 'year', 'make', 'model', 'vin', 'mileage'
+    ]
+    const examples = [
+      ['asset', 'Real Estate', 'Marital Residence', '123 Main Street', 'Marital residence', 'community', 'Community', '350000', '2026-07-13', 'Appraisal', 'Joint', 'Wife', '', '', '', '', '123 Main Street', '', '', '', '', ''],
+      ['liability', 'Unsecured Debt', 'Credit Card', 'Visa ending 1234', 'Joint credit card', 'community', 'Community', '8500', '2026-07-13', 'Current statement', '', '', 'unsecured', 'Visa', 'Both', 'Husband', '', '', '', '', '', '']
+    ]
+    const escapeCsv = (value) => {
+      const str = String(value ?? '')
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
+    const csv = [headers, ...examples].map((row) => row.map(escapeCsv).join(',')).join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'Mio_Inventory_Import_Template.csv'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  function handleInventoryCsvUpload(matter, scenarioId, file) {
+    if (!matter?.id || !file) return
+    if (!/\.csv$/i.test(file.name || '')) {
+      setInventoryAiImportNote('Please select a CSV file. Download the CSV template to see the required headings.')
+      return
+    }
+    setInventoryAiImportBusy(true)
+    setInventoryAiImportNote(`Reading ${file.name}...`)
+    try {
+      readExcelFile(file, (rows) => {
+        try {
+          const importedCount = importInventoryRowsToMatter(matter.id, scenarioId, rows)
+          if (!importedCount) {
+            setInventoryAiImportNote('No items were imported. Make sure each row has an item_name value and use the downloadable CSV template headings.')
+          } else {
+            setInventoryAiImportNote(`Imported ${importedCount} inventory item(s) from ${file.name}. Review the imported rows and edit as needed.`)
+          }
+        } catch (error) {
+          setInventoryAiImportNote(`CSV import failed: ${error.message || error}`)
+        } finally {
+          setInventoryAiImportBusy(false)
+        }
+      })
+    } catch (error) {
+      setInventoryAiImportNote(`CSV import failed: ${error.message || error}`)
+      setInventoryAiImportBusy(false)
+    }
   }
 
   function addParsedInventoryItems(matterId, scenarioId, parsedItems = []) {
@@ -24490,7 +24544,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       opposing_value: '',
       opposing_award: '',
       opposing_notes: '',
-      attorney_notes: 'Imported by AI inventory builder. Review/edit before relying on this item.',
+      attorney_notes: 'Imported from CSV. Review/edit before relying on this item.',
       client_notes: '',
       year: defaults.year || '',
       make: defaults.make || '',
@@ -24553,20 +24607,21 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <div style={{ color: '#64748b', fontSize: 12 }}>Assets and secured debts are grouped together. Use H/W/Joint on a category row to add directly without scrolling a giant table.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #bfdbfe', borderRadius: 999, padding: '6px 10px', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, cursor: 'pointer' }}>
-              AI build inventory from file
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #bfdbfe', borderRadius: 999, padding: '6px 10px', background: '#eff6ff', color: '#1d4ed8', fontWeight: 700, cursor: inventoryAiImportBusy ? 'wait' : 'pointer', opacity: inventoryAiImportBusy ? 0.65 : 1 }}>
+              Upload inventory CSV
               <input
                 type="file"
-                accept=".pdf,.doc,.docx,.txt,.xlsx,.xls,.csv"
+                accept=".csv,text/csv"
                 style={{ display: 'none' }}
                 disabled={inventoryAiImportBusy}
                 onChange={(e) => {
                   const file = e.target.files?.[0]
-                  if (file) handleInventoryAiUpload(matter, selectedScenarioId, file)
+                  if (file) handleInventoryCsvUpload(matter, selectedScenarioId, file)
                   e.target.value = ''
                 }}
               />
             </label>
+            <button type="button" onClick={downloadInventoryCsvTemplate}>Download CSV template</button>
             <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Expand all</button>
             <button type="button" onClick={() => groupRows.forEach((row) => { const key = inventoryGroupKey(row); if (!collapsedMap[key]) toggleInventoryGroupCollapsed(matter.id, key) })}>Collapse all</button>
             <button type="button" onClick={() => addInventoryItem(matter.id, selectedScenarioId, 'asset')}>+ Add Asset</button>
@@ -29357,14 +29412,374 @@ ${choices}`, '1'))
           <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Requested Relief Table</summary>
           <div style={{ marginTop: 10 }}>{renderRequestedReliefMatrixTable({ title: 'Requested Relief Table', maxHeight: 520, compact: true })}</div>
         </details>
+        <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, marginBottom: 12 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Requested Relief Exhibits</summary>
+          <div style={{ marginTop: 10 }}>{renderRequestedReliefExhibitsTable(matterId)}</div>
+        </details>
         <details style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Show side-by-side comparison table</summary>
           <div style={{ marginTop: 10 }}>{renderRequestedReliefComparisonPanel(matterId)}</div>
         </details>
         {renderRequestedReliefSetupModal()}
         {renderRequestedReliefBuilderModal()}
+        {renderRequestedReliefExhibitModal()}
       </div>
     )
+  }
+
+
+  function requestedReliefExhibitKey(matterId, reliefId, optionId, subIssueId = '') {
+    return [matterId || '', reliefId || '', optionId || '', subIssueId || 'main'].join('::')
+  }
+
+  function requestedReliefExhibitBucket(matterId, reliefId, optionId, subIssueId = '') {
+    return requestedReliefExhibits[requestedReliefExhibitKey(matterId, reliefId, optionId, subIssueId)] || { document_ids: [], sub_issues: [], hidden: false, complete: false }
+  }
+
+  function updateRequestedReliefExhibitBucket(matterId, reliefId, optionId, subIssueId, updater) {
+    const key = requestedReliefExhibitKey(matterId, reliefId, optionId, subIssueId)
+    setRequestedReliefExhibits((current) => {
+      const prior = current[key] || { document_ids: [], sub_issues: [], hidden: false, complete: false }
+      return { ...current, [key]: updater(prior) }
+    })
+  }
+
+  function addRequestedReliefSubIssue(matterId, reliefId, optionId) {
+    const name = (window.prompt('Name the sub relief / issue:') || '').trim()
+    if (!name) return
+    const subIssue = { id: crypto?.randomUUID ? crypto.randomUUID() : `rr-sub-${Date.now()}`, name, hidden: false, complete: false }
+    updateRequestedReliefExhibitBucket(matterId, reliefId, optionId, '', (bucket) => ({ ...bucket, sub_issues: [...(bucket.sub_issues || []), subIssue] }))
+  }
+
+  function updateRequestedReliefSubIssue(matterId, reliefId, optionId, subIssueId, patch) {
+    updateRequestedReliefExhibitBucket(matterId, reliefId, optionId, '', (parent) => ({
+      ...parent,
+      sub_issues: (parent.sub_issues || []).map((row) => row.id === subIssueId ? { ...row, ...patch } : row)
+    }))
+  }
+
+  function removeRequestedReliefSubIssue(matterId, reliefId, optionId, subIssueId) {
+    if (!window.confirm('Remove this sub relief / issue and its exhibit links?')) return
+    const parentKey = requestedReliefExhibitKey(matterId, reliefId, optionId, '')
+    const childKey = requestedReliefExhibitKey(matterId, reliefId, optionId, subIssueId)
+    setRequestedReliefExhibits((current) => {
+      const next = { ...current }
+      const parent = next[parentKey] || { document_ids: [], sub_issues: [] }
+      next[parentKey] = { ...parent, sub_issues: (parent.sub_issues || []).filter((row) => row.id !== subIssueId) }
+      delete next[childKey]
+      return next
+    })
+  }
+
+  function eventExhibitNumber(eventId, docId) {
+    return Number(eventExhibitLists?.[eventId]?.[docId] || 0) || ''
+  }
+
+  function addDocumentToReliefEventExhibitList(reliefId, docId) {
+    const relief = requestedReliefs.find((row) => String(row.id) === String(reliefId))
+    const eventId = relief?.setting_event_id
+    if (!eventId || !docId) return
+    setEventExhibitLists((current) => {
+      const currentList = { ...(current[eventId] || {}) }
+      if (currentList[docId]) return current
+      const used = Object.values(currentList).map(Number).filter(Number.isFinite)
+      const nextNumber = used.length ? Math.max(...used) + 1 : 1
+      return { ...current, [eventId]: { ...currentList, [docId]: nextNumber } }
+    })
+  }
+
+  function openRequestedReliefExhibitPicker({ matterId, reliefId, optionId, subIssueId = '', label = '' }) {
+    setRequestedReliefExhibitModal({ matterId, reliefId, optionId, subIssueId, label, mode: 'existing', selected_document_id: '' })
+    setRequestedReliefExhibitUpload({ name: '', date: '', description: '', status: 'Our Exhibit', tag_ids: [], document_field_values: {}, file: null })
+  }
+
+  function attachExistingRequestedReliefExhibit() {
+    const modal = requestedReliefExhibitModal
+    if (!modal?.selected_document_id) return alert('Select an existing document.')
+    updateRequestedReliefExhibitBucket(modal.matterId, modal.reliefId, modal.optionId, modal.subIssueId, (bucket) => ({ ...bucket, document_ids: Array.from(new Set([...(bucket.document_ids || []), modal.selected_document_id])) }))
+    addDocumentToReliefEventExhibitList(modal.reliefId, modal.selected_document_id)
+    setRequestedReliefExhibitModal(null)
+  }
+
+  async function uploadRequestedReliefExhibitDocument() {
+    const modal = requestedReliefExhibitModal
+    const form = requestedReliefExhibitUpload
+    if (!modal || !form.file) return alert('Choose a file to upload.')
+    const name = (form.name || form.file.name || '').trim()
+    if (!name) return alert('Enter a document name.')
+    const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const tempFilePayload = await readFileAsDataUrl(form.file)
+    const storedFilePayload = await uploadMioDocumentFile(form.file, docId, modal.matterId)
+    const nextDoc = {
+      id: docId,
+      matter_id: modal.matterId,
+      name,
+      date: form.date || '',
+      description: form.description || '',
+      status: form.status || 'Our Exhibit',
+      tag_ids: tagAndParentIds(form.tag_ids || []),
+      document_field_values: form.document_field_values || {},
+      upload_date: dateToInputValue(new Date()),
+      ...emptyDocumentAiReview,
+      ...tempFilePayload,
+      ...storedFilePayload
+    }
+    setDocuments((current) => [...current, nextDoc])
+    updateRequestedReliefExhibitBucket(modal.matterId, modal.reliefId, modal.optionId, modal.subIssueId, (bucket) => ({ ...bucket, document_ids: Array.from(new Set([...(bucket.document_ids || []), docId])) }))
+    addDocumentToReliefEventExhibitList(modal.reliefId, docId)
+    setRequestedReliefExhibitModal(null)
+  }
+
+  function detachRequestedReliefExhibit(matterId, reliefId, optionId, subIssueId, docId) {
+    updateRequestedReliefExhibitBucket(matterId, reliefId, optionId, subIssueId, (bucket) => ({ ...bucket, document_ids: (bucket.document_ids || []).filter((id) => id !== docId) }))
+  }
+
+  function renderRequestedReliefExhibitChips(matterId, reliefId, optionId, subIssueId = '') {
+    const bucket = requestedReliefExhibitBucket(matterId, reliefId, optionId, subIssueId)
+    const relief = requestedReliefs.find((row) => String(row.id) === String(reliefId))
+    const linked = (bucket.document_ids || []).map((id) => documents.find((doc) => String(doc.id) === String(id))).filter(Boolean)
+    return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center' }}>
+      {linked.map((doc) => {
+        const number = relief?.setting_event_id ? eventExhibitNumber(relief.setting_event_id, doc.id) : ''
+        return <span key={doc.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #d7e0ea', borderRadius: 8, padding: '5px 8px', background: '#fff' }}>
+          {number && <strong style={{ color: '#1d4ed8' }}>Ex. {number}</strong>}
+          <button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', padding: 0, fontWeight: 700, color: '#334155' }}>{doc.name || doc.file_name || 'Document'}</button>
+          <button type="button" title="Remove from this relief row" onClick={() => detachRequestedReliefExhibit(matterId, reliefId, optionId, subIssueId, doc.id)} style={{ border: 0, background: 'transparent', color: '#b91c1c', padding: 0 }}>x</button>
+        </span>
+      })}
+      <button type="button" onClick={() => openRequestedReliefExhibitPicker({ matterId, reliefId, optionId, subIssueId, label: requestedReliefOptionById(optionId)?.name || 'Requested relief' })} style={{ border: '1px solid #93c5fd', color: '#1d4ed8', background: '#fff', borderRadius: 8, padding: '6px 10px', fontWeight: 700 }}>+ Add Exhibit</button>
+    </div>
+  }
+
+  function requestedReliefOptionById(optionId) {
+    return requestedReliefOptions.find((option) => String(option.id) === String(optionId)) || null
+  }
+
+  function requestedReliefIssueParts(optionId) {
+    const option = requestedReliefOptionById(optionId)
+    if (!option) return ['Issue']
+    const ancestors = requestedReliefAncestorIds(option.id).map(requestedReliefOptionById).filter(Boolean).reverse()
+    return [...ancestors, option].map((row) => row.name).filter(Boolean)
+  }
+
+  function renderRequestedReliefExhibitsTable(matterId) {
+    const reliefs = requestedReliefs.filter((relief) => String(relief.matter_id) === String(matterId) && relief.relief_type !== 'opposing_relief')
+    const rows = []
+    reliefs.forEach((relief) => (relief.selected_option_ids || []).forEach((optionId) => rows.push({ relief, optionId })))
+
+    const numberById = {}
+    const depthById = {}
+    const visit = (parentId = '', path = [], depth = 0) => {
+      requestedReliefChildren(parentId).forEach((row, index) => {
+        const number = [...path, index + 1].join('.')
+        numberById[String(row.id)] = number
+        depthById[String(row.id)] = depth
+        visit(row.id, [...path, index + 1], depth + 1)
+      })
+    }
+    visit()
+
+    const grouped = []
+    const groupedByKey = new Map()
+    rows.forEach(({ relief, optionId }) => {
+      const option = requestedReliefOptionById(optionId)
+      if (!option) return
+      const issue = requestedReliefOptionById(option.parent_id) || option
+      const key = `${relief.id}::${issue.id}`
+      if (!groupedByKey.has(key)) {
+        const group = { relief, issue, options: [] }
+        groupedByKey.set(key, group)
+        grouped.push(group)
+      }
+      groupedByKey.get(key).options.push(option)
+    })
+
+    const hiddenCount = rows.reduce((count, { relief, optionId }) => {
+      const bucket = requestedReliefExhibitBucket(matterId, relief.id, optionId, '')
+      return count + (bucket.hidden ? 1 : 0) + (bucket.sub_issues || []).filter((sub) => sub.hidden).length
+    }, 0)
+
+    const visibleGroups = grouped.map((group) => ({
+      ...group,
+      options: group.options.filter((option) => showHiddenRequestedReliefExhibitRows || !requestedReliefExhibitBucket(matterId, group.relief.id, option.id, '').hidden)
+    })).filter((group) => group.options.length)
+
+    const selectedSplitKey = requestedReliefExhibitSplitIssueId || (visibleGroups[0] ? `${visibleGroups[0].relief.id}::${visibleGroups[0].issue.id}` : '')
+    const selectedSplitGroup = visibleGroups.find((group) => `${group.relief.id}::${group.issue.id}` === selectedSplitKey) || visibleGroups[0]
+
+    const smallButton = { border: '1px solid #93c5fd', color: '#1d4ed8', background: '#fff', borderRadius: 7, padding: '6px 10px', fontWeight: 700 }
+    const mutedButton = { border: '1px solid #cbd5e1', color: '#334155', background: '#fff', borderRadius: 7, padding: '6px 10px', fontWeight: 700 }
+
+    const renderOptionRow = (group, option, compact = false) => {
+      const bucket = requestedReliefExhibitBucket(matterId, group.relief.id, option.id, '')
+      const visibleSubs = (bucket.sub_issues || []).filter((sub) => showHiddenRequestedReliefExhibitRows || !sub.hidden)
+      const optionNumber = numberById[String(option.id)] || ''
+      return <div key={`${group.relief.id}-${option.id}`} style={{ marginTop: compact ? 8 : 10 }}>
+        <div style={{ border: `2px solid ${bucket.complete ? '#22c55e' : '#93c5fd'}`, background: bucket.complete ? '#ecfdf5' : bucket.hidden ? '#f1f5f9' : '#fff', borderRadius: 10, padding: compact ? 10 : 12, opacity: bucket.hidden ? .72 : 1 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: compact ? 'minmax(220px, .8fr) minmax(320px, 1.2fr)' : 'minmax(280px, .8fr) minmax(360px, 1.2fr)', gap: 14, alignItems: 'start' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 42, height: 28, padding: '0 9px', borderRadius: 999, background: bucket.complete ? '#16a34a' : '#2563eb', color: '#fff', fontWeight: 900 }}>{optionNumber}</span>
+                <strong style={{ fontSize: compact ? 14 : 15 }}>{option.name || 'Selected relief option'}</strong>
+              </div>
+              <div style={{ marginTop: 5, color: '#64748b', fontSize: 12 }}>{group.relief.name || 'Requested Relief'}{group.relief.setting_event_id ? ` · ${requestedReliefSettingLabel(group.relief.setting_event_id)}` : ''}</div>
+            </div>
+            <div>
+              {renderRequestedReliefExhibitChips(matterId, group.relief.id, option.id, '')}
+              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
+                <button type="button" onClick={() => updateRequestedReliefExhibitBucket(matterId, group.relief.id, option.id, '', (current) => ({ ...current, complete: !current.complete }))} style={{ ...smallButton, borderColor: '#86efac', color: '#15803d' }}>{bucket.complete ? 'Mark incomplete' : 'Mark complete'}</button>
+                <button type="button" onClick={() => addRequestedReliefSubIssue(matterId, group.relief.id, option.id)} style={smallButton}>+ Sub relief / issue</button>
+                <button type="button" onClick={() => updateRequestedReliefExhibitBucket(matterId, group.relief.id, option.id, '', (current) => ({ ...current, hidden: !current.hidden }))} style={mutedButton}>{bucket.hidden ? 'Unhide' : 'Hide'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        {visibleSubs.map((sub, subIndex) => {
+          const child = requestedReliefExhibitBucket(matterId, group.relief.id, option.id, sub.id)
+          return <div key={sub.id} style={{ marginLeft: compact ? 28 : 54, marginTop: 7, borderLeft: '3px solid #bfdbfe', paddingLeft: 12 }}>
+            <div style={{ border: `1px solid ${child.complete ? '#86efac' : '#dbe3ec'}`, borderRadius: 9, padding: 10, background: child.complete ? '#ecfdf5' : child.hidden ? '#f1f5f9' : '#f8fafc', opacity: child.hidden ? .72 : 1 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, .75fr) minmax(320px, 1.25fr)', gap: 12 }}>
+                <div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ color: '#1d4ed8', fontWeight: 900 }}>{optionNumber}.{subIndex + 1}</span><input value={sub.name || ''} onChange={(e) => updateRequestedReliefSubIssue(matterId, group.relief.id, option.id, sub.id, { name: e.target.value })} style={{ width: '100%', border: 0, background: 'transparent', boxShadow: 'none', padding: 2, fontWeight: 700 }} /></div>
+                </div>
+                <div>
+                  {renderRequestedReliefExhibitChips(matterId, group.relief.id, option.id, sub.id)}
+                  <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 8 }}>
+                    <button type="button" onClick={() => updateRequestedReliefSubIssue(matterId, group.relief.id, option.id, sub.id, { complete: !sub.complete })} style={{ ...smallButton, borderColor: '#86efac', color: '#15803d' }}>{sub.complete ? 'Mark incomplete' : 'Mark complete'}</button>
+                    <button type="button" onClick={() => updateRequestedReliefSubIssue(matterId, group.relief.id, option.id, sub.id, { hidden: !sub.hidden })} style={mutedButton}>{sub.hidden ? 'Unhide' : 'Hide'}</button>
+                    <button type="button" onClick={() => removeRequestedReliefSubIssue(matterId, group.relief.id, option.id, sub.id)} style={{ ...mutedButton, color: '#b91c1c' }}>Remove</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        })}
+      </div>
+    }
+
+    const multipleView = <div style={{ display: 'grid', gap: 14 }}>
+      {visibleGroups.map((group) => {
+        const issueNumber = numberById[String(group.issue.id)] || ''
+        return <section key={`${group.relief.id}-${group.issue.id}`} style={{ border: '1px solid #dbe3ec', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', padding: '10px 14px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}><span style={{ background: '#2563eb', color: '#fff', borderRadius: 999, padding: '4px 10px', fontWeight: 900 }}>{issueNumber}</span><div><div style={{ fontWeight: 900 }}>{group.issue.name || 'Issue'}</div><div style={{ color: '#64748b', fontSize: 12 }}>Selected relief only</div></div></div>
+          </div>
+          <div style={{ padding: 12 }}>{group.options.map((option) => renderOptionRow(group, option))}</div>
+        </section>
+      })}
+    </div>
+
+    const selectedByRelief = new Map()
+    rows.forEach(({ relief, optionId }) => {
+      const reliefKey = String(relief.id)
+      if (!selectedByRelief.has(reliefKey)) selectedByRelief.set(reliefKey, { relief, selectedIds: new Set() })
+      selectedByRelief.get(reliefKey).selectedIds.add(String(optionId))
+    })
+
+    const renderStructuredSelectedOption = (relief, option, depth) => {
+      const bucket = requestedReliefExhibitBucket(matterId, relief.id, option.id, '')
+      if (bucket.hidden && !showHiddenRequestedReliefExhibitRows) return null
+      const visibleSubs = (bucket.sub_issues || []).filter((sub) => showHiddenRequestedReliefExhibitRows || !sub.hidden)
+      const optionNumber = numberById[String(option.id)] || ''
+      return <Fragment key={`${relief.id}-${option.id}`}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) minmax(420px, 1.25fr)', alignItems: 'center', gap: 10, minHeight: 42, padding: '5px 8px', paddingLeft: 12 + (depth * 22), borderTop: '1px solid #dbe3ec', borderLeft: '1px dashed #60a5fa', borderRight: '1px dashed #60a5fa', borderBottom: '1px dashed #60a5fa', background: bucket.complete ? '#ecfdf5' : bucket.hidden ? '#f1f5f9' : '#eff6ff', opacity: bucket.hidden ? .72 : 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ color: '#2563eb', fontWeight: 900, flex: '0 0 auto' }}>{optionNumber}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid #60a5fa', borderRadius: 999, padding: '2px 7px', color: '#1d4ed8', background: '#fff', fontSize: 10, fontWeight: 900 }}>OPTION</span>
+            <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.name || 'Selected relief option'}</strong>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 240px' }}>{renderRequestedReliefExhibitChips(matterId, relief.id, option.id, '')}</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => updateRequestedReliefExhibitBucket(matterId, relief.id, option.id, '', (current) => ({ ...current, complete: !current.complete }))} style={{ ...smallButton, borderColor: '#86efac', color: '#15803d', padding: '4px 8px' }}>{bucket.complete ? 'Mark incomplete' : 'Mark complete'}</button>
+              <button type="button" onClick={() => addRequestedReliefSubIssue(matterId, relief.id, option.id)} style={{ ...smallButton, padding: '4px 8px' }}>+ Sub relief / issue</button>
+              <button type="button" onClick={() => updateRequestedReliefExhibitBucket(matterId, relief.id, option.id, '', (current) => ({ ...current, hidden: !current.hidden }))} style={{ ...mutedButton, padding: '4px 8px' }}>{bucket.hidden ? 'Unhide' : 'Hide'}</button>
+            </div>
+          </div>
+        </div>
+        {visibleSubs.map((sub, subIndex) => {
+          const child = requestedReliefExhibitBucket(matterId, relief.id, option.id, sub.id)
+          return <div key={sub.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) minmax(420px, 1.25fr)', alignItems: 'center', gap: 10, minHeight: 40, padding: '5px 8px', paddingLeft: 34 + (depth * 22), borderLeft: '1px solid #cbd5e1', borderRight: '1px solid #e2e8f0', borderBottom: '1px solid #e2e8f0', background: child.complete ? '#ecfdf5' : child.hidden ? '#f1f5f9' : '#fff', opacity: child.hidden ? .72 : 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ color: '#2563eb', fontWeight: 900 }}>{optionNumber}.{subIndex + 1}</span>
+              <input value={sub.name || ''} onChange={(e) => updateRequestedReliefSubIssue(matterId, relief.id, option.id, sub.id, { name: e.target.value })} style={{ width: '100%', border: 0, background: 'transparent', boxShadow: 'none', padding: 2, fontWeight: 700 }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 240px' }}>{renderRequestedReliefExhibitChips(matterId, relief.id, option.id, sub.id)}</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => updateRequestedReliefSubIssue(matterId, relief.id, option.id, sub.id, { complete: !sub.complete })} style={{ ...smallButton, borderColor: '#86efac', color: '#15803d', padding: '4px 8px' }}>{sub.complete ? 'Mark incomplete' : 'Mark complete'}</button>
+                <button type="button" onClick={() => updateRequestedReliefSubIssue(matterId, relief.id, option.id, sub.id, { hidden: !sub.hidden })} style={{ ...mutedButton, padding: '4px 8px' }}>{sub.hidden ? 'Unhide' : 'Hide'}</button>
+                <button type="button" onClick={() => removeRequestedReliefSubIssue(matterId, relief.id, option.id, sub.id)} style={{ ...mutedButton, color: '#b91c1c', padding: '4px 8px' }}>Remove</button>
+              </div>
+            </div>
+          </div>
+        })}
+      </Fragment>
+    }
+
+    const renderStructuredReliefTree = ({ relief, selectedIds }) => {
+      const includedIds = new Set(selectedIds)
+      selectedIds.forEach((optionId) => requestedReliefAncestorIds(optionId).forEach((ancestorId) => includedIds.add(String(ancestorId))))
+      const renderBranch = (parentId = '', depth = 0) => requestedReliefChildren(parentId).filter((row) => includedIds.has(String(row.id))).map((row) => {
+        const selected = selectedIds.has(String(row.id))
+        if (selected) return renderStructuredSelectedOption(relief, row, depth)
+        return <Fragment key={`${relief.id}-branch-${row.id}`}>
+          <div style={{ minHeight: 34, display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', paddingLeft: 12 + (depth * 22), borderBottom: '1px solid #e2e8f0', background: depth === 0 ? '#f8fafc' : '#fff' }}>
+            <span style={{ color: '#64748b', fontWeight: 800, minWidth: 48 }}>{numberById[String(row.id)] || ''}</span>
+            <strong style={{ fontSize: depth === 0 ? 14 : 13 }}>{row.name || 'Issue'}</strong>
+          </div>
+          {renderBranch(row.id, depth + 1)}
+        </Fragment>
+      })
+      return <section key={relief.id} style={{ border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden', background: '#fff', marginBottom: 10 }}>
+        <div style={{ padding: '8px 10px', background: '#f1f5f9', borderBottom: '1px solid #cbd5e1', fontWeight: 900 }}>{relief.name || 'Requested Relief'}{relief.setting_event_id ? <span style={{ marginLeft: 8, color: '#64748b', fontWeight: 600 }}>· {requestedReliefSettingLabel(relief.setting_event_id)}</span> : null}</div>
+        {renderBranch()}
+      </section>
+    }
+
+    const splitView = <div style={{ border: '1px solid #dbe3ec', borderRadius: 10, background: '#fff', padding: 8, maxHeight: '68vh', overflow: 'auto' }}>
+      {Array.from(selectedByRelief.values()).map(renderStructuredReliefTree)}
+    </div>
+
+    return <div style={{ background: '#f8fafc', borderRadius: 12, padding: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'end', flexWrap: 'wrap', padding: '4px 4px 12px' }}>
+        <div><h2 style={{ margin: 0 }}>Requested Relief Exhibits</h2><div style={{ color: '#64748b', fontSize: 12 }}>Only selected relief options are shown. Exhibits are numbered automatically on the connected setting or event.</div></div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'inline-flex', border: '1px solid #93c5fd', borderRadius: 7, overflow: 'hidden' }}>
+            <button type="button" onClick={() => setRequestedReliefExhibitLayout('split')} style={{ border: 0, borderRight: '1px solid #93c5fd', padding: '8px 13px', background: requestedReliefExhibitLayout === 'split' ? '#dbeafe' : '#fff', fontWeight: requestedReliefExhibitLayout === 'split' ? 900 : 600 }}>Split view</button>
+            <button type="button" onClick={() => setRequestedReliefExhibitLayout('multiple')} style={{ border: 0, padding: '8px 13px', background: requestedReliefExhibitLayout === 'multiple' ? '#dbeafe' : '#fff', fontWeight: requestedReliefExhibitLayout === 'multiple' ? 900 : 600 }}>Multiple choice</button>
+          </div>
+          <button type="button" onClick={() => setShowHiddenRequestedReliefExhibitRows((value) => !value)} disabled={!hiddenCount} style={mutedButton}>{showHiddenRequestedReliefExhibitRows ? 'Hide hidden rows' : `Show hidden rows${hiddenCount ? ` (${hiddenCount})` : ''}`}</button>
+        </div>
+      </div>
+      {!visibleGroups.length ? <div style={{ padding: 18, color: '#64748b', background: '#fff', borderRadius: 10 }}>No selected requested-relief options are visible.</div> : (requestedReliefExhibitLayout === 'split' ? splitView : multipleView)}
+    </div>
+  }
+
+  function renderEventExhibitList(eventId) {
+    const list = eventExhibitLists[eventId] || {}
+    const rows = Object.entries(list).map(([docId, number]) => ({ doc: documents.find((doc) => String(doc.id) === String(docId)), number: Number(number) })).filter((row) => row.doc).sort((a, b) => a.number - b.number)
+    return <div style={{ marginTop: 14, padding: 12, border: '1px solid #d5dce3', borderRadius: 8, background: '#fbfcfe' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><strong>Event Exhibit List</strong><span style={{ color: '#64748b', fontSize: 12 }}>{rows.length} exhibits</span></div>{!rows.length ? <div style={{ color: '#64748b', marginTop: 8 }}>No exhibits have been added through Requested Relief Exhibits.</div> : <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>{rows.map(({ doc, number }) => <div key={doc.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr auto', gap: 8, alignItems: 'center', padding: 8, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 7 }}><strong>Ex. {number}</strong><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', textAlign: 'left', padding: 0, color: '#1d4ed8', fontWeight: 700 }}>{doc.name || doc.file_name || 'Document'}</button><button type="button" onClick={() => setEventExhibitLists((current) => { const nextEvent = { ...(current[eventId] || {}) }; delete nextEvent[doc.id]; return { ...current, [eventId]: nextEvent } })} style={{ color: '#b91c1c' }}>Remove</button></div>)}</div>}</div>
+  }
+
+  function renderRequestedReliefExhibitModal() {
+    const modal = requestedReliefExhibitModal
+    if (!modal) return null
+    const matterDocs = documents.filter((doc) => String(doc.matter_id) === String(modal.matterId))
+    const fieldEntries = Object.entries(requestedReliefExhibitUpload.document_field_values || {})
+    return <Modal title={`Add Exhibit - ${modal.label || 'Requested Relief'}`} onClose={() => setRequestedReliefExhibitModal(null)}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}><button type="button" onClick={() => setRequestedReliefExhibitModal({ ...modal, mode: 'existing' })} style={{ fontWeight: modal.mode === 'existing' ? 800 : 400 }}>Existing Document</button><button type="button" onClick={() => setRequestedReliefExhibitModal({ ...modal, mode: 'upload' })} style={{ fontWeight: modal.mode === 'upload' ? 800 : 400 }}>Upload New File</button></div>
+      {modal.mode === 'existing' ? <div><label>Document<select value={modal.selected_document_id || ''} onChange={(e) => setRequestedReliefExhibitModal({ ...modal, selected_document_id: e.target.value })}><option value="">Select document...</option>{matterDocs.map((doc) => <option key={doc.id} value={doc.id}>{doc.name || doc.file_name || 'Document'}</option>)}</select></label><div style={{ marginTop: 14 }}><button type="button" onClick={attachExistingRequestedReliefExhibit}>Attach Exhibit</button></div></div> : <div style={{ display: 'grid', gap: 10 }}>
+        <label>File<input type="file" onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, file: e.target.files?.[0] || null, name: current.name || e.target.files?.[0]?.name || '' }))} /></label>
+        <label>Document name<input value={requestedReliefExhibitUpload.name} onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, name: e.target.value }))} /></label>
+        <label>Date<input type="date" value={requestedReliefExhibitUpload.date} onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, date: e.target.value }))} /></label>
+        <label>Description<textarea value={requestedReliefExhibitUpload.description} onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, description: e.target.value }))} /></label>
+        <label>Status<select value={requestedReliefExhibitUpload.status} onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, status: e.target.value }))}><option>Our Exhibit</option><option>Their Exhibit</option><option>Both</option><option>Neither</option></select></label>
+        <div><strong>Tags</strong><div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>{tags.filter((tag) => tag.is_active !== false).map((tag) => <label key={tag.id} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '4px 8px' }}><input type="checkbox" checked={(requestedReliefExhibitUpload.tag_ids || []).includes(tag.id)} onChange={() => setRequestedReliefExhibitUpload((current) => ({ ...current, tag_ids: (current.tag_ids || []).includes(tag.id) ? current.tag_ids.filter((id) => id !== tag.id) : [...(current.tag_ids || []), tag.id] }))} /> {tag.name}</label>)}</div></div>
+        <div><strong>Fields</strong>{fieldEntries.map(([key, value], index) => <div key={`${key}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, marginTop: 6 }}><input value={key} onChange={(e) => setRequestedReliefExhibitUpload((current) => { const next = { ...(current.document_field_values || {}) }; delete next[key]; next[e.target.value] = value; return { ...current, document_field_values: next } })} placeholder="Field name" /><input value={value} onChange={(e) => setRequestedReliefExhibitUpload((current) => ({ ...current, document_field_values: { ...(current.document_field_values || {}), [key]: e.target.value } }))} placeholder="Value" /><button type="button" onClick={() => setRequestedReliefExhibitUpload((current) => { const next = { ...(current.document_field_values || {}) }; delete next[key]; return { ...current, document_field_values: next } })}>Remove</button></div>)}<button type="button" onClick={() => setRequestedReliefExhibitUpload((current) => ({ ...current, document_field_values: { ...(current.document_field_values || {}), [`Field ${Object.keys(current.document_field_values || {}).length + 1}`]: '' } }))} style={{ marginTop: 8 }}>+ Add Field</button></div>
+        <button type="button" onClick={uploadRequestedReliefExhibitDocument}>Upload, Save as Document, and Attach</button>
+      </div>}
+    </Modal>
   }
 
   function renderRequestedReliefPage() {
@@ -29623,6 +30038,12 @@ ${choices}`, '1'))
           )}
 
           {workspaceMatterId && (
+            <section style={{ ...sectionStyle, background: '#fff' }}>
+              {renderRequestedReliefExhibitsTable(workspaceMatterId)}
+            </section>
+          )}
+
+          {workspaceMatterId && (
             <section style={{ ...sectionStyle, background: '#f8fafc' }}>
               <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontWeight: 700 }}>
                 <input type="checkbox" checked={requestedReliefShowComparison} onChange={(e) => setRequestedReliefShowComparison(e.target.checked)} />
@@ -29635,6 +30056,7 @@ ${choices}`, '1'))
 
           {renderRequestedReliefSetupModal()}
           {renderRequestedReliefBuilderModal()}
+          {renderRequestedReliefExhibitModal()}
         </div>
       </>
     )
@@ -31845,6 +32267,198 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}><h2 style={{ marginTop: 0 }}>Client Invoicing</h2><p>Use saved graph filters and Client Billing Fields to prepare invoice review.</p></div>
   }
 
+  async function invokePlaidBankAction(action, payload = {}) {
+    const { data, error } = await supabase.functions.invoke('plaid-bank', {
+      body: { action, ...payload }
+    })
+    if (error) throw error
+    if (data?.error) throw new Error(data.error)
+    return data || {}
+  }
+
+  function loadPlaidLinkScript() {
+    if (window.Plaid?.create) return Promise.resolve(window.Plaid)
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-mio-plaid-link="true"]')
+      if (existing) {
+        existing.addEventListener('load', () => resolve(window.Plaid), { once: true })
+        existing.addEventListener('error', () => reject(new Error('Plaid Link could not be loaded.')), { once: true })
+        return
+      }
+      const script = document.createElement('script')
+      script.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js'
+      script.async = true
+      script.dataset.mioPlaidLink = 'true'
+      script.onload = () => resolve(window.Plaid)
+      script.onerror = () => reject(new Error('Plaid Link could not be loaded.'))
+      document.head.appendChild(script)
+    })
+  }
+
+  async function loadBankingData({ sync = false } = {}) {
+    if (!session?.user?.id) return
+    setBankLoading(true)
+    setBankError('')
+    try {
+      if (sync) await invokePlaidBankAction('sync_transactions')
+      const data = await invokePlaidBankAction('dashboard')
+      setBankAccounts(Array.isArray(data.accounts) ? data.accounts : [])
+      setBankTransactions(Array.isArray(data.transactions) ? data.transactions : [])
+      setBankConnections(Array.isArray(data.connections) ? data.connections : [])
+      setBankLastSyncedAt(data.last_synced_at || new Date().toISOString())
+    } catch (error) {
+      console.error('Load banking data error:', error)
+      setBankError(error?.message || 'Could not load banking data.')
+    } finally {
+      setBankLoading(false)
+    }
+  }
+
+  async function connectBankWithPlaid() {
+    if (!session?.user?.id || bankConnecting) return
+    setBankConnecting(true)
+    setBankError('')
+    try {
+      const Plaid = await loadPlaidLinkScript()
+      const { link_token: linkToken } = await invokePlaidBankAction('create_link_token')
+      if (!linkToken) throw new Error('Plaid did not return a Link token.')
+      const handler = Plaid.create({
+        token: linkToken,
+        onSuccess: async (publicToken, metadata) => {
+          try {
+            await invokePlaidBankAction('exchange_public_token', {
+              public_token: publicToken,
+              institution: metadata?.institution || null,
+              accounts: metadata?.accounts || []
+            })
+            await loadBankingData({ sync: true })
+          } catch (error) {
+            console.error('Plaid token exchange error:', error)
+            setBankError(error?.message || 'The bank connected, but Mio could not finish saving the connection.')
+          } finally {
+            setBankConnecting(false)
+          }
+        },
+        onExit: (error) => {
+          if (error) setBankError(error.display_message || error.error_message || 'Bank connection was not completed.')
+          setBankConnecting(false)
+        }
+      })
+      handler.open()
+    } catch (error) {
+      console.error('Connect bank error:', error)
+      setBankError(error?.message || 'Could not start the bank connection.')
+      setBankConnecting(false)
+    }
+  }
+
+  async function disconnectBankConnection(connectionId) {
+    if (!connectionId || !window.confirm('Disconnect this institution from Mio? Existing imported transactions will remain unless removed separately.')) return
+    setBankLoading(true)
+    setBankError('')
+    try {
+      await invokePlaidBankAction('disconnect', { connection_id: connectionId })
+      await loadBankingData()
+    } catch (error) {
+      setBankError(error?.message || 'Could not disconnect the bank.')
+    } finally {
+      setBankLoading(false)
+    }
+  }
+
+  function bankMoney(value, isoCurrencyCode = 'USD') {
+    const amount = Number(value)
+    if (!Number.isFinite(amount)) return '—'
+    try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: isoCurrencyCode || 'USD' }).format(amount) }
+    catch { return `$${amount.toFixed(2)}` }
+  }
+
+  function renderBankingPage() {
+    const searchText = bankSearch.trim().toLowerCase()
+    const filteredTransactions = bankTransactions.filter((transaction) => {
+      if (bankAccountFilter !== 'all' && String(transaction.bank_account_id || transaction.account_id) !== String(bankAccountFilter)) return false
+      if (!bankShowPending && transaction.pending) return false
+      const date = transaction.authorized_date || transaction.date || ''
+      if (bankDateFrom && date < bankDateFrom) return false
+      if (bankDateTo && date > bankDateTo) return false
+      if (searchText) {
+        const haystack = [transaction.name, transaction.merchant_name, transaction.category_primary, transaction.category_detailed].filter(Boolean).join(' ').toLowerCase()
+        if (!haystack.includes(searchText)) return false
+      }
+      return true
+    })
+    const totalCurrent = bankAccounts.filter((account) => !['credit', 'loan'].includes(account.type)).reduce((sum, account) => sum + (Number(account.current_balance) || 0), 0)
+    const totalAvailable = bankAccounts.filter((account) => !['credit', 'loan'].includes(account.type)).reduce((sum, account) => sum + (Number(account.available_balance) || 0), 0)
+    const totalCreditDebt = bankAccounts.filter((account) => account.type === 'credit').reduce((sum, account) => sum + (Number(account.current_balance) || 0), 0)
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'start', flexWrap: 'wrap' }}>
+          <div>
+            <h1 style={{ marginBottom: 4 }}>Banking</h1>
+            <p style={{ color: '#566', marginTop: 0 }}>Read-only bank balances and transactions through Plaid. Mio never receives your bank password.</p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btnPrimary" onClick={connectBankWithPlaid} disabled={bankConnecting || bankLoading}>{bankConnecting ? 'Opening Plaid…' : '+ Connect bank'}</button>
+            <button type="button" onClick={() => loadBankingData({ sync: true })} disabled={bankLoading}>{bankLoading ? 'Syncing…' : 'Sync transactions'}</button>
+          </div>
+        </div>
+
+        {bankError && <div style={{ margin: '12px 0', padding: 12, border: '1px solid #fecaca', borderRadius: 10, background: '#fef2f2', color: '#991b1b', whiteSpace: 'pre-wrap' }}>{bankError}</div>}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 12, margin: '14px 0' }}>
+          <div className="card"><div className="hint">Cash/current balance</div><div style={{ fontSize: 28, fontWeight: 800 }}>{bankMoney(totalCurrent)}</div></div>
+          <div className="card"><div className="hint">Cash available</div><div style={{ fontSize: 28, fontWeight: 800 }}>{bankMoney(totalAvailable)}</div></div>
+          <div className="card"><div className="hint">Credit-card balances</div><div style={{ fontSize: 28, fontWeight: 800 }}>{bankMoney(totalCreditDebt)}</div></div>
+          <div className="card"><div className="hint">Last synced</div><div style={{ fontSize: 16, fontWeight: 800, marginTop: 6 }}>{bankLastSyncedAt ? new Date(bankLastSyncedAt).toLocaleString() : 'Not synced'}</div></div>
+        </div>
+
+        <section className="card" style={{ marginBottom: 14 }}>
+          <h2 style={{ marginTop: 0 }}>Connected accounts</h2>
+          {!bankAccounts.length ? <div className="empty">No bank accounts connected yet. Click <strong>Connect bank</strong> to open Plaid.</div> : (
+            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{['Institution','Account','Type','Current','Available','Status'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 9, borderBottom: '1px solid #e2e8f0' }}>{label}</th>)}</tr></thead>
+              <tbody>{bankAccounts.map((account) => <tr key={account.id}>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.institution_name || 'Bank'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><strong>{account.name || account.official_name || 'Account'}</strong><div className="hint">•••• {account.mask || '—'}</div></td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.subtype || account.type || '—'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 700 }}>{bankMoney(account.current_balance, account.iso_currency_code)}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{bankMoney(account.available_balance, account.iso_currency_code)}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.connection_status === 'error' ? 'Needs attention' : 'Connected'}</td>
+              </tr>)}</tbody>
+            </table></div>
+          )}
+          {!!bankConnections.length && <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Manage bank connections</summary><div style={{ display: 'grid', gap: 8, marginTop: 8 }}>{bankConnections.map((connection) => <div key={connection.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 10, padding: 10 }}><span><strong>{connection.institution_name || 'Financial institution'}</strong><span className="hint" style={{ marginLeft: 8 }}>{connection.status || 'connected'}</span></span><button type="button" className="btnDanger" onClick={() => disconnectBankConnection(connection.id)}>Disconnect</button></div>)}</div></details>}
+        </section>
+
+        <section className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
+            <div><h2 style={{ margin: 0 }}>Transactions</h2><div className="hint">{filteredTransactions.length} shown</div></div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+              <label className="hint">Account<select value={bankAccountFilter} onChange={(e) => setBankAccountFilter(e.target.value)}><option value="all">All accounts</option>{bankAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} ••••{account.mask || ''}</option>)}</select></label>
+              <label className="hint">From<input type="date" value={bankDateFrom} onChange={(e) => setBankDateFrom(e.target.value)} /></label>
+              <label className="hint">To<input type="date" value={bankDateTo} onChange={(e) => setBankDateTo(e.target.value)} /></label>
+              <label className="hint">Search<input value={bankSearch} onChange={(e) => setBankSearch(e.target.value)} placeholder="Merchant or category" /></label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, paddingBottom: 9 }}><input type="checkbox" checked={bankShowPending} onChange={(e) => setBankShowPending(e.target.checked)} /> Pending</label>
+            </div>
+          </div>
+          <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 850 }}>
+            <thead><tr>{['Date','Status','Description','Account','Category','Amount'].map((label) => <th key={label} style={{ textAlign: label === 'Amount' ? 'right' : 'left', padding: 9, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
+            <tbody>{filteredTransactions.map((transaction) => {
+              const account = bankAccounts.find((item) => String(item.id) === String(transaction.bank_account_id || transaction.account_id))
+              return <tr key={transaction.id || transaction.plaid_transaction_id}>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{transaction.authorized_date || transaction.date || '—'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{transaction.pending ? <span style={{ background: '#fef3c7', borderRadius: 999, padding: '3px 8px', fontSize: 12 }}>Pending</span> : 'Posted'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><strong>{transaction.merchant_name || transaction.name || 'Transaction'}</strong>{transaction.merchant_name && transaction.name && transaction.merchant_name !== transaction.name ? <div className="hint">{transaction.name}</div> : null}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account ? `${account.name} ••••${account.mask || ''}` : '—'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{transaction.category_primary || transaction.category_detailed || 'Uncategorized'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800, color: Number(transaction.amount) < 0 ? '#15803d' : '#0f172a' }}>{bankMoney(transaction.amount, transaction.iso_currency_code)}</td>
+              </tr>
+            })}{!filteredTransactions.length && <tr><td colSpan="6" className="empty">No transactions match these filters.</td></tr>}</tbody>
+          </table></div>
+        </section>
+      </>
+    )
+  }
+
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
     const tabButtonStyle = (tab) => ({
@@ -32309,6 +32923,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'screensaver' && canOpenPage('screensaver') && renderScreensaverPage()}
 
         {page === 'billing' && canOpenPage('billing') && renderBillingPage()}
+
+        {page === 'banking' && canOpenPage('banking') && renderBankingPage()}
 
         {page === 'service_inbox' && canOpenPage('service_inbox') && renderServiceInboxPage()}
 
@@ -34068,6 +34684,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <strong>Attached Matter:</strong> {formatMatterOption(selectedMatterForEvent())}
                   </div>
                 )}
+
+                {editingEventId && renderEventExhibitList(editingEventId)}
 
                 <div style={{ marginTop: 18, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -36772,7 +37390,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   )
 }
 
-function Modal({ title, children, onClose }) {
+function Modal({ title, children, onClose, wide = false }) {
   return (
     <>
       <div style={{
@@ -36780,8 +37398,8 @@ function Modal({ title, children, onClose }) {
         top: 40,
         left: '50%',
         transform: 'translateX(-50%)',
-        width: '92%',
-        maxWidth: 1320,
+        width: wide ? '97%' : '92%',
+        maxWidth: wide ? 1660 : 1320,
         maxHeight: '88vh',
         overflowY: 'auto',
         overflowX: 'hidden',
