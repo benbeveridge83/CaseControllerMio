@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V118'
+const MIO_APP_VERSION = 'Mio V120'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -173,6 +173,7 @@ const appPages = [
   { value: 'requested_relief', label: 'Requested Relief' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'checklist', label: 'Checklist' },
+  { value: 'setting_center', label: 'Setting Center' },
   { value: 'discovery', label: 'Discovery' },
   { value: 'documents', label: 'Documents' },
   { value: 'drafting', label: 'Drafting' },
@@ -200,6 +201,7 @@ const screenSaverBasePages = [
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
   { value: 'checklist', label: 'Checklist', page: 'checklist' },
+  { value: 'setting_center', label: 'Setting Center', page: 'setting_center' },
   { value: 'discovery_their_requests', label: "Discovery - Their Requests", page: 'discovery', discoverySide: 'their' },
   { value: 'discovery_our_requests', label: 'Discovery - Our Requests', page: 'discovery', discoverySide: 'ours' },
   { value: 'documents', label: 'Documents', page: 'documents' },
@@ -1389,6 +1391,14 @@ function App() {
   const [snapshotBarMetrics, setSnapshotBarMetrics] = useState(['matter_trust_funds', 'outstanding_balance'])
   const [snapshotBarSortMetric, setSnapshotBarSortMetric] = useState('matter_trust_funds')
   const [snapshotBarSortDirection, setSnapshotBarSortDirection] = useState('desc')
+  const [clioGraphCaseStatusFilters, setClioGraphCaseStatusFilters] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioGraphCaseStatusFiltersV120') || '[]') } catch { return [] } })
+  const [clioGraphMatterStatusFilters, setClioGraphMatterStatusFilters] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioGraphMatterStatusFiltersV120') || '[]') } catch { return [] } })
+  const [clioGraphGroupingMode, setClioGraphGroupingMode] = useState(() => localStorage.getItem('caseMioClioGraphGroupingModeV120') || 'matter')
+  const [financialGraphShowZeroLine, setFinancialGraphShowZeroLine] = useState(() => localStorage.getItem('caseMioFinancialGraphShowZeroLineV120') !== 'false')
+  const [withdrawingFinancialSeries, setWithdrawingFinancialSeries] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioWithdrawingFinancialSeriesV120') || '[]') } catch { return [] } })
+  const [requestedReliefCellEditor, setRequestedReliefCellEditor] = useState(null)
+  const [requestedReliefTocOpen, setRequestedReliefTocOpen] = useState(true)
+  const [matterRequestedReliefView, setMatterRequestedReliefView] = useState(() => localStorage.getItem('caseMioMatterRequestedReliefViewV120') || 'events')
   const snapshotTopScrollRef = useRef(null)
   const snapshotTableScrollRef = useRef(null)
   const [settingsTab, setSettingsTab] = useState(() => {
@@ -1770,6 +1780,13 @@ function App() {
     catch { return 'manual' }
   })
   const [checklistNewEmailOnly, setChecklistNewEmailOnly] = useState(false)
+  const [settingCenterExpandedId, setSettingCenterExpandedId] = useState('')
+  const [settingCenterFilter, setSettingCenterFilter] = useState('all')
+  const [settingCenterSearch, setSettingCenterSearch] = useState('')
+  const [settingCenterRecords, setSettingCenterRecords] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioSettingCenterRecords') || '{}') }
+    catch { return {} }
+  })
   const [refreshingNeedSetEmails, setRefreshingNeedSetEmails] = useState(false)
   const [settingWorkspaces, setSettingWorkspaces] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioSettingWorkspaces') || '{}') }
@@ -2503,7 +2520,13 @@ function App() {
       caseControllerTimelineColumns: { setter: setTimelineColumns, kind: 'array', fallback: [] },
       caseMioCourtTimelineRules: { setter: setCourtTimelineRules, kind: 'object', fallback: {} },
       caseMioMatterTimelineDateAdjustments: { setter: setMatterTimelineDateAdjustments, kind: 'object', fallback: {} },
-      caseMioMatterTimelineOptions: { setter: (value) => setMatterTimelineOptions({ ...defaultMatterTimelineOptions, ...(value || {}) }), kind: 'object', fallback: defaultMatterTimelineOptions }
+      caseMioMatterTimelineOptions: { setter: (value) => setMatterTimelineOptions({ ...defaultMatterTimelineOptions, ...(value || {}) }), kind: 'object', fallback: defaultMatterTimelineOptions },
+      caseMioClioGraphCaseStatusFiltersV120: { setter: setClioGraphCaseStatusFilters, kind: 'array', fallback: [] },
+      caseMioClioGraphMatterStatusFiltersV120: { setter: setClioGraphMatterStatusFilters, kind: 'array', fallback: [] },
+      caseMioClioGraphGroupingModeV120: { setter: setClioGraphGroupingMode, kind: 'string', fallback: 'matter' },
+      caseMioFinancialGraphShowZeroLineV120: { setter: setFinancialGraphShowZeroLine, kind: 'boolean', fallback: true },
+      caseMioWithdrawingFinancialSeriesV120: { setter: setWithdrawingFinancialSeries, kind: 'array', fallback: [] },
+      caseMioMatterRequestedReliefViewV120: { setter: setMatterRequestedReliefView, kind: 'string', fallback: 'events' }
     }
   }
 
@@ -2602,6 +2625,27 @@ function App() {
     }
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
     mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
+  }
+
+  useEffect(() => { saveMioStateKey('caseMioClioGraphCaseStatusFiltersV120', JSON.stringify(clioGraphCaseStatusFilters || [])) }, [clioGraphCaseStatusFilters])
+  useEffect(() => { saveMioStateKey('caseMioClioGraphMatterStatusFiltersV120', JSON.stringify(clioGraphMatterStatusFilters || [])) }, [clioGraphMatterStatusFilters])
+  useEffect(() => { saveMioStateKey('caseMioClioGraphGroupingModeV120', clioGraphGroupingMode) }, [clioGraphGroupingMode])
+  useEffect(() => { saveMioStateKey('caseMioFinancialGraphShowZeroLineV120', String(financialGraphShowZeroLine)) }, [financialGraphShowZeroLine])
+  useEffect(() => { saveMioStateKey('caseMioWithdrawingFinancialSeriesV120', JSON.stringify(withdrawingFinancialSeries || [])) }, [withdrawingFinancialSeries])
+  useEffect(() => { saveMioStateKey('caseMioMatterRequestedReliefViewV120', matterRequestedReliefView) }, [matterRequestedReliefView])
+
+  function toggleMultiValue(current, value, setter) {
+    const clean = String(value || '')
+    setter((list) => (list || []).includes(clean) ? (list || []).filter((item) => item !== clean) : [...(list || []), clean])
+    setClioSelectedMatterIds([])
+  }
+
+  function MultiCheckboxFilter({ label, options = [], selected = [], onToggle, onAll, onNone }) {
+    return <details style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, background: '#fff', minWidth: 160 }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 700 }}>{label} ({selected.length ? selected.length : 'All'})</summary>
+      <div style={{ display: 'flex', gap: 6, margin: '7px 0' }}><button type="button" onClick={onAll}>All</button><button type="button" onClick={onNone}>None</button></div>
+      <div style={{ display: 'grid', gap: 5, maxHeight: 180, overflow: 'auto' }}>{options.map((option) => <label key={option}><input type="checkbox" checked={selected.includes(option)} onChange={() => onToggle(option)} /> {option}</label>)}</div>
+    </details>
   }
 
   function billingEntryFromRelationalRow(row) {
@@ -2974,6 +3018,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioChecklistNeedToSetSortMode', checklistNeedToSetSortMode || 'manual') } catch {}
   }, [checklistNeedToSetSortMode])
+  useEffect(() => {
+    try { saveMioStateKey('caseMioSettingCenterRecords', JSON.stringify(settingCenterRecords || {})) } catch {}
+  }, [settingCenterRecords])
+
 
   useEffect(() => {
     try { saveMioStateKey('caseMioSettingWorkspaces', JSON.stringify(settingWorkspaces)) } catch {}
@@ -26029,7 +26077,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return emailRecord
   }
 
-  function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court') {
+  function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court', initialBody = '') {
     let email = null
     try {
       email = createWorkspaceEmailRecord(context, stepContext, role)
@@ -26049,7 +26097,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <div><strong>${safe(thread.subject || thread.title || 'Linked email')}</strong><br><span class="muted">${safe(thread.recipient_label || needToSetEmailRoleLabel(thread))} - ${thread.last_activity ? safe(new Date(thread.last_activity).toLocaleString()) : 'Linked to this step'}</span></div>
           ${thread.new_email_notice || workspaceEmailHasUnreadActivity(thread) ? '<span class="badge">Unread</span>' : '<span class="ok">Read</span>'}
         </div>`).join('') || '<div class="muted">This new draft is the first email linked to this step.</div>'
-      const signature = emailHtmlWithSignature('')
+      if (initialBody) {
+        email.body = initialBody
+        patchWorkspaceEmail(context, email.id, { body: initialBody })
+      }
+      const signature = emailHtmlWithSignature(initialBody || '')
       popup.document.open()
       popup.document.write(`<!doctype html><html><head><title>New email - ${safe(stepName)}</title><style>
         body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f5f7fb;color:#0f172a}.top{background:#0f72c9;color:white;padding:12px 18px;font-size:18px;font-weight:700;display:flex;justify-content:space-between}.wrap{padding:16px}.ctx{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px;background:#fff;border:1px solid #dbe4ee;border-radius:14px;padding:12px;margin-bottom:12px}.ctx div{font-size:13px;color:#475569}.ctx strong{display:block;color:#0f172a}.compose{background:white;border:1px solid #dbe4ee;border-radius:16px;box-shadow:0 12px 32px rgba(15,23,42,.12);overflow:hidden}.tools{display:flex;gap:8px;align-items:center;border-bottom:1px solid #e2e8f0;padding:10px 14px;background:#f8fafc;flex-wrap:wrap}.send{background:#0f72c9;color:white;border:0;border-radius:8px;padding:10px 18px;font-weight:800}.btn{border:1px solid #cbd5e1;background:white;border-radius:8px;padding:9px 12px}.row{display:grid;grid-template-columns:74px 1fr;gap:10px;align-items:center;border-bottom:1px solid #e2e8f0;padding:11px 14px}.row label{font-weight:700;color:#475569}.input{border:0;outline:0;font-size:15px;width:100%}.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:7px 10px;font-weight:700}.body{min-height:330px;padding:18px;font-size:15px;line-height:1.5;outline:0}.grid{display:grid;grid-template-columns:1fr 380px;gap:12px;margin-top:12px}.panel{background:white;border:1px solid #dbe4ee;border-radius:14px;padding:12px}.thread{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid #e2e8f0;border-radius:10px;padding:9px;margin-top:8px}.badge{background:#fee2e2;color:#991b1b;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.ok{background:#dcfce7;color:#166534;border-radius:999px;padding:2px 7px;font-size:12px;font-weight:800}.muted{color:#64748b;font-size:13px}.attached{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px;color:#1d4ed8;margin-top:8px}</style></head><body>
@@ -26363,6 +26415,161 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         })}
         {!rows.length && <div style={{ padding: 16, textAlign: 'center', color: '#64748b', border: '1px dashed #cbd5e1', borderRadius: 12 }}>No Need to Set rows match the current filters.</div>}
       </div>
+      </>
+    )
+  }
+
+  function settingCenterDefaultRecord(event = {}) {
+    const status = currentNeedToSetStatus(event)
+    const steps = checklistStepsForEvent(event)
+    const currentIndex = Math.max(0, steps.findIndex((step) => step.name === status.stepName))
+    const stageByIndex = ['request_dates', 'check_calendar', 'check_client', 'check_opposing', 'confirm_source', 'receive_confirmation', 'notify_and_calendar']
+    return {
+      stage: stageByIndex[Math.min(currentIndex, stageByIndex.length - 1)] || 'request_dates',
+      waiting_on: currentIndex === 0 ? 'You' : 'Court / Mediator',
+      proposed_dates: [],
+      draft: '',
+      draft_role: currentIndex >= 3 ? 'opposing_counsel' : currentIndex >= 2 ? 'client' : 'court',
+      latest_update: '',
+      ai_confidence: null,
+      updated_at: ''
+    }
+  }
+
+  function settingCenterRecord(event = {}) {
+    const id = checklistNeedToSetRowId(event)
+    return { ...settingCenterDefaultRecord(event), ...(settingCenterRecords[id] || {}) }
+  }
+
+  function patchSettingCenterRecord(event = {}, patch = {}) {
+    const id = checklistNeedToSetRowId(event)
+    if (!id) return
+    setSettingCenterRecords((current) => ({ ...current, [id]: { ...settingCenterDefaultRecord(event), ...(current[id] || {}), ...patch, updated_at: new Date().toISOString() } }))
+  }
+
+  function settingCenterStageLabel(stage = '') {
+    return ({ request_dates: 'Request dates', check_calendar: 'Check calendar', check_client: 'Check client', check_opposing: 'Check opposing counsel', confirm_source: 'Confirm with court / mediator', receive_confirmation: 'Await final confirmation', notify_and_calendar: 'Notify and calendar', complete: 'Complete' })[stage] || 'Request dates'
+  }
+
+  function settingCenterNextRole(stage = '') {
+    if (stage === 'check_client') return 'client'
+    if (stage === 'check_opposing') return 'opposing_counsel'
+    if (stage === 'confirm_source' || stage === 'request_dates' || stage === 'receive_confirmation') return 'court'
+    return 'client'
+  }
+
+  function settingCenterWorkingDates(record = {}) {
+    return (record.proposed_dates || []).filter((date) => date.attorney !== 'no' && date.client !== 'no' && date.opposing !== 'no')
+  }
+
+  function settingCenterDraftText(event = {}, record = {}) {
+    const matter = checklistMatterForEvent(event)
+    const name = matter?.name || checklistMatterLabel(event)
+    const cause = matter?.cause_number || matter?.cause || ''
+    const type = checklistEventCategoryLabel(event)
+    const dates = settingCenterWorkingDates(record).map((item) => item.value).filter(Boolean)
+    const dateLines = dates.length ? dates.map((value) => `- ${value}`).join('\n') : '- [proposed dates will be inserted here]'
+    if (record.stage === 'check_client') return `Good afternoon,\n\nThe ${record.source_label || 'court/mediator'} has offered the following dates for the ${type} in ${name}${cause ? `, cause number ${cause}` : ''}:\n\n${dateLines}\n\nThese dates currently work with my calendar. Please let me know which dates work for you.\n\nThank you.`
+    if (record.stage === 'check_opposing') return `Good afternoon,\n\nThe following dates remain available for the ${type} in ${name}${cause ? `, cause number ${cause}` : ''}:\n\n${dateLines}\n\nPlease let me know which of these dates work for you and your client.\n\nThank you.`
+    if (record.stage === 'confirm_source') return `Good afternoon,\n\nThe parties are available on the following date for the ${type} in ${name}${cause ? `, cause number ${cause}` : ''}:\n\n${dateLines}\n\nPlease confirm that the matter has been placed on the calendar.\n\nThank you.`
+    if (record.stage === 'notify_and_calendar') return `Good afternoon,\n\nThe ${type} in ${name}${cause ? `, cause number ${cause}` : ''} has been confirmed for:\n\n${dateLines}\n\nPlease place this date on your calendar. Additional appearance information will be provided as it becomes available.\n\nThank you.`
+    return `Good afternoon,\n\nI am contacting you regarding the ${type} in ${name}${cause ? `, cause number ${cause}` : ''}. Please provide available dates so the matter can be scheduled.\n\nThank you.`
+  }
+
+  function generateSettingCenterDraft(event = {}) {
+    const record = settingCenterRecord(event)
+    patchSettingCenterRecord(event, { draft: settingCenterDraftText(event, record), draft_role: settingCenterNextRole(record.stage), waiting_on: 'You', latest_update: 'Draft generated and awaiting approval', ai_confidence: 100 })
+  }
+
+  function addSettingCenterDate(event = {}) {
+    const record = settingCenterRecord(event)
+    patchSettingCenterRecord(event, { proposed_dates: [...(record.proposed_dates || []), { id: `date-${Date.now()}-${Math.random().toString(36).slice(2)}`, value: '', attorney: 'unknown', client: 'unknown', opposing: 'unknown', court: 'yes' }] })
+  }
+
+  function patchSettingCenterDate(event = {}, dateId = '', patch = {}) {
+    const record = settingCenterRecord(event)
+    patchSettingCenterRecord(event, { proposed_dates: (record.proposed_dates || []).map((item) => item.id === dateId ? { ...item, ...patch } : item) })
+  }
+
+  function removeSettingCenterDate(event = {}, dateId = '') {
+    const record = settingCenterRecord(event)
+    patchSettingCenterRecord(event, { proposed_dates: (record.proposed_dates || []).filter((item) => item.id !== dateId) })
+  }
+
+  function advanceSettingCenterStage(event = {}) {
+    const record = settingCenterRecord(event)
+    const order = ['request_dates', 'check_calendar', 'check_client', 'check_opposing', 'confirm_source', 'receive_confirmation', 'notify_and_calendar', 'complete']
+    const next = order[Math.min(order.length - 1, Math.max(0, order.indexOf(record.stage)) + 1)]
+    const waiting = next === 'check_calendar' ? 'You' : next === 'check_client' ? 'Client' : next === 'check_opposing' ? 'Opposing counsel' : next === 'receive_confirmation' ? 'Court / Mediator' : next === 'notify_and_calendar' ? 'You' : next === 'complete' ? 'Complete' : 'You'
+    patchSettingCenterRecord(event, { stage: next, waiting_on: waiting, draft: '', latest_update: `Advanced to ${settingCenterStageLabel(next)}` })
+  }
+
+  function renderSettingCenter() {
+    const rows = filteredChecklistEvents('need_date').filter((event) => {
+      const record = settingCenterRecord(event)
+      const search = settingCenterSearch.trim().toLowerCase()
+      if (settingCenterFilter !== 'all' && settingCenterFilter !== record.stage && !(settingCenterFilter === 'approval' && record.draft)) return false
+      if (!search) return true
+      return `${checklistMatterLabel(event)} ${checklistEventCategoryLabel(event)} ${record.waiting_on} ${record.latest_update}`.toLowerCase().includes(search)
+    })
+    const approvalCount = filteredChecklistEvents('need_date').filter((event) => settingCenterRecord(event).draft).length
+    const waitingCount = filteredChecklistEvents('need_date').filter((event) => !['You', 'Complete'].includes(settingCenterRecord(event).waiting_on)).length
+    const readyCount = filteredChecklistEvents('need_date').filter((event) => settingCenterRecord(event).stage === 'confirm_source').length
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div><h1 style={{ marginBottom: 4 }}>Setting Operations Center</h1><div style={{ color: '#64748b' }}>A separate scheduling workspace. The existing Need to Set page remains unchanged.</div></div>
+          <button type="button" onClick={() => { setChecklistTab('need_date'); setPage('checklist') }}>Open Current Need to Set Page</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(170px,1fr))', gap: 10, margin: '14px 0' }}>
+          {[['Events needing dates', filteredChecklistEvents('need_date').length, '#eff6ff'], ['Drafts awaiting approval', approvalCount, '#fef3c7'], ['Waiting on others', waitingCount, '#f1f5f9'], ['Ready to confirm', readyCount, '#dcfce7']].map(([label, value, bg]) => <button type="button" key={label} onClick={() => label.includes('Drafts') ? setSettingCenterFilter('approval') : setSettingCenterFilter('all')} style={{ textAlign: 'left', border: '1px solid #dbe4ee', borderRadius: 12, background: bg, padding: 14 }}><div style={{ fontSize: 12, color: '#64748b', fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900 }}>{value}</div></button>)}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+          <input value={settingCenterSearch} onChange={(e) => setSettingCenterSearch(e.target.value)} placeholder="Search matter, stage, waiting on..." style={{ minWidth: 300 }} />
+          <select value={settingCenterFilter} onChange={(e) => setSettingCenterFilter(e.target.value)} style={{ width: 230 }}>
+            <option value="all">All stages</option><option value="approval">Drafts awaiting approval</option><option value="request_dates">Request dates</option><option value="check_calendar">Check calendar</option><option value="check_client">Check client</option><option value="check_opposing">Check opposing counsel</option><option value="confirm_source">Confirm with court / mediator</option><option value="receive_confirmation">Await confirmation</option><option value="notify_and_calendar">Notify and calendar</option>
+          </select>
+        </div>
+        <div style={{ border: '1px solid #dbe4ee', borderRadius: 14, overflow: 'hidden', background: '#fff' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1.4fr) 170px 150px minmax(220px,1fr) 190px 120px', gap: 8, padding: '9px 12px', background: '#f8fafc', fontWeight: 900, fontSize: 12, color: '#475569' }}><div>Matter / Event</div><div>Current stage</div><div>Waiting on</div><div>Latest update</div><div>Next action</div><div>Age</div></div>
+          {rows.map((event) => {
+            const id = checklistNeedToSetRowId(event)
+            const record = settingCenterRecord(event)
+            const expanded = settingCenterExpandedId === id
+            const status = currentNeedToSetStatus(event)
+            const steps = checklistStepsForEvent(event)
+            const currentStep = steps.find((step) => step.name === status.stepName) || steps[0] || {}
+            return <Fragment key={id}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1.4fr) 170px 150px minmax(220px,1fr) 190px 120px', gap: 8, padding: 12, borderTop: '1px solid #e2e8f0', alignItems: 'center' }}>
+                <div><button type="button" onClick={() => setSettingCenterExpandedId(expanded ? '' : id)} style={{ marginRight: 8 }}>{expanded ? '▾' : '▸'}</button><strong>{checklistMatterLabel(event)}</strong><div style={{ color: '#64748b', fontSize: 12 }}>{checklistEventCategoryLabel(event)} · Current step: {status.stepName}</div></div>
+                <div><span style={{ padding: '4px 8px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', fontWeight: 800, fontSize: 12 }}>{settingCenterStageLabel(record.stage)}</span></div>
+                <div>{record.waiting_on || 'You'}</div>
+                <div style={{ color: '#475569', fontSize: 13 }}>{record.latest_update || 'No scheduling activity recorded yet.'}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => { setSettingCenterExpandedId(id); generateSettingCenterDraft(event) }}>{record.draft ? 'Review Draft' : 'Generate Draft'}</button><button type="button" onClick={() => advanceSettingCenterStage(event)}>Advance</button></div>
+                <div style={{ fontWeight: 900 }}>{status.rowDays} days</div>
+              </div>
+              {expanded && <div style={{ borderTop: '1px solid #e2e8f0', background: '#f8fafc', padding: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 14 }}>
+                  <section style={{ background: '#fff', border: '1px solid #dbe4ee', borderRadius: 12, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><strong>Proposed-date matrix</strong><button type="button" onClick={() => addSettingCenterDate(event)}>+ Add date</button></div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px,1fr) repeat(4,105px) 38px', gap: 6, marginTop: 10, fontSize: 12, fontWeight: 900, color: '#64748b' }}><div>Date / time</div><div>Court</div><div>Your calendar</div><div>Client</div><div>Opposing</div><div></div></div>
+                    {(record.proposed_dates || []).map((item) => <div key={item.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px,1fr) repeat(4,105px) 38px', gap: 6, marginTop: 6 }}><input value={item.value || ''} onChange={(e) => patchSettingCenterDate(event, item.id, { value: e.target.value })} placeholder="Aug. 12, 2026 at 10:00 a.m." />{['court','attorney','client','opposing'].map((field) => <select key={field} value={item[field] || 'unknown'} onChange={(e) => patchSettingCenterDate(event, item.id, { [field]: e.target.value })}><option value="unknown">?</option><option value="yes">Yes</option><option value="no">No</option><option value="maybe">Maybe</option></select>)}<button type="button" onClick={() => removeSettingCenterDate(event, item.id)}>×</button></div>)}
+                    {!(record.proposed_dates || []).length && <div style={{ color: '#64748b', padding: '18px 0' }}>No dates have been entered yet. Add the dates received from the court or mediator.</div>}
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={openMioCalendarWindow}>Open Mio Calendar ↗</button><button type="button" onClick={() => patchSettingCenterRecord(event, { stage: 'check_client', waiting_on: 'You', latest_update: 'Calendar checked; ready to contact client' })}>Calendar checked</button></div>
+                  </section>
+                  <section style={{ background: '#fff', border: '1px solid #dbe4ee', borderRadius: 12, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><strong>AI-assisted draft</strong><span style={{ fontSize: 12, color: '#64748b' }}>{record.ai_confidence ? `${record.ai_confidence}% confidence` : 'Approval required'}</span></div>
+                    <div style={{ display: 'flex', gap: 6, margin: '8px 0', flexWrap: 'wrap' }}><select value={record.draft_role || settingCenterNextRole(record.stage)} onChange={(e) => patchSettingCenterRecord(event, { draft_role: e.target.value })} style={{ width: 190 }}><option value="court">Court</option><option value="mediator">Mediator</option><option value="client">Client</option><option value="opposing_counsel">Opposing Counsel</option><option value="opposing_party">Opposing Party</option></select><button type="button" onClick={() => generateSettingCenterDraft(event)}>Regenerate Draft</button></div>
+                    <textarea value={record.draft || ''} onChange={(e) => patchSettingCenterRecord(event, { draft: e.target.value })} placeholder="Generate or type the proposed email..." style={{ minHeight: 230 }} />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}><button type="button" disabled={!record.draft} onClick={() => openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event), needToSetStepContext(event, currentStep, Math.max(0, steps.indexOf(currentStep))), record.draft_role || settingCenterNextRole(record.stage), record.draft)} style={{ background: '#2563eb', color: '#fff' }}>Approve / Open to Send</button><button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))}>Open linked emails</button><button type="button" onClick={() => patchSettingCenterRecord(event, { draft: '' })}>Clear</button></div>
+                  </section>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><div style={{ color: '#64748b', fontSize: 12 }}>Automation guardrail: AI may draft and interpret, but Mio should not mark an event set until final court or mediator confirmation is recorded.</div><div style={{ display: 'flex', gap: 8 }}><button type="button" onClick={() => editEvent(events.find((item) => item.id === (event.id || event.checklist_source_id)) || event)}>Open Event</button><button type="button" onClick={() => markChecklistEventSet(event)} style={{ background: '#15803d', color: '#fff' }}>Set Event Date</button></div></div>
+              </div>}
+            </Fragment>
+          })}
+          {!rows.length && <div style={{ padding: 20, color: '#64748b' }}>No Need to Set items match this filter.</div>}
+        </div>
       </>
     )
   }
@@ -27732,7 +27939,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </thead>
               <tbody>
                 {table.rows.map((row) => (
-                  <tr key={row.id}>
+                  <tr id={`rr-row-${row.id}`} key={row.id}>
                     {table.columns.map((column, columnIndex) => {
                       const checked = (tableSelections[row.id] || []).map(String).includes(String(columnIndex))
                       const isChoiceCell = isReliefBuilder && columnIndex > 0 && columnIndex < table.columns.length - 1
@@ -28723,11 +28930,26 @@ ${choices}`, '1'))
     )
   }
 
+  function RequestedReliefCellEditorModal() {
+    if (!requestedReliefCellEditor) return null
+    return <div style={{ position:'fixed', inset:0, background:'rgba(15,23,42,.45)', zIndex:10000, display:'flex', alignItems:'center', justifyContent:'center', padding:24 }} onMouseDown={() => setRequestedReliefCellEditor(null)}>
+      <div style={{ width:'min(900px,95vw)', maxHeight:'90vh', overflow:'auto', background:'#fff', borderRadius:14, padding:16, boxShadow:'0 24px 70px rgba(0,0,0,.25)' }} onMouseDown={(e)=>e.stopPropagation()}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:12 }}><div><strong>{requestedReliefCellEditor.rowLabel}</strong><div style={{ color:'#64748b' }}>{requestedReliefCellEditor.columnLabel}</div></div><button type="button" onClick={()=>setRequestedReliefCellEditor(null)}>Close</button></div>
+        <div className="rtbar" style={{ marginTop:12 }}><button type="button" onClick={()=>document.execCommand('bold')}>B</button><button type="button" onClick={()=>document.execCommand('italic')}>I</button><button type="button" onClick={()=>document.execCommand('underline')}>U</button><button type="button" onClick={()=>document.execCommand('insertOrderedList')}>1.</button><button type="button" onClick={()=>document.execCommand('insertUnorderedList')}>•</button></div>
+        <div contentEditable suppressContentEditableWarning style={{ minHeight:320, border:'1px solid #cbd5e1', borderRadius:10, padding:12, marginTop:8, outline:'none' }} dangerouslySetInnerHTML={{__html: requestedReliefCellEditor.html || ''}} onInput={(e)=>setRequestedReliefCellEditor((current)=>({...current, html:e.currentTarget.innerHTML}))} />
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:12 }}><button type="button" onClick={()=>setRequestedReliefCellEditor(null)}>Cancel</button><button type="button" className="btnPrimary" onClick={()=>{ requestedReliefCellEditor.onSave(requestedReliefCellEditor.html || ''); setRequestedReliefCellEditor(null) }}>Save cell</button></div>
+      </div>
+    </div>
+  }
+
   function renderRequestedReliefMatrixTable({ title = 'Requested Relief Table', maxHeight = 620, compact = false } = {}) {
     const shaped = ensureRequestedReliefMatrixShape(requestedReliefMatrixTable)
     const columns = shaped.columns
     const rows = requestedReliefMatrixRows()
     return (
+      <>
+      <RequestedReliefCellEditorModal />
+      {requestedReliefTocOpen && <div style={{ position:'fixed', right:18, top:150, zIndex:300, width:260, maxHeight:'65vh', overflow:'auto', background:'#fff', border:'1px solid #cbd5e1', borderRadius:12, padding:10, boxShadow:'0 12px 30px rgba(15,23,42,.16)' }}><div style={{ display:'flex', justifyContent:'space-between' }}><strong>Requested Relief TOC</strong><button type="button" onClick={()=>setRequestedReliefTocOpen(false)}>×</button></div>{activeRequestedReliefOptions().filter((row)=>!row.parent_id && row.is_active!==false).map((row)=><button type="button" key={row.id} onClick={()=>document.getElementById(`rr-row-${row.id}`)?.scrollIntoView({behavior:'smooth',block:'center'})} style={{display:'block',width:'100%',textAlign:'left',marginTop:5}}>{row.name}</button>)}</div>}
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff', marginTop: 12, overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, background: '#f8fafc', borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap' }}>
           <div>
@@ -28760,7 +28982,7 @@ ${choices}`, '1'))
                 const rowBg = isOption ? '#f8fbff' : (depth === 0 ? '#f1f5f9' : '#fff')
                 const weight = isOption ? 600 : 800
                 return (
-                  <tr key={row.id}>
+                  <tr id={`rr-row-${row.id}`} key={row.id}>
                     <td style={{ position: 'sticky', left: 0, zIndex: 1, background: rowBg, border: '1px solid #e2e8f0', padding: 8, minWidth: 420 }}>
                       <div style={{ paddingLeft: Math.min(depth, 8) * 18, display: 'flex', gap: 8, alignItems: 'center' }}>
                         <span style={{ color: '#1d4ed8', fontWeight: 900, minWidth: 46 }}>{number}</span>
@@ -28797,6 +29019,7 @@ ${choices}`, '1'))
           </table>
         </div>
       </section>
+      </>
     )
   }
 
@@ -30445,20 +30668,8 @@ ${choices}`, '1'))
           <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
           <input type="date" value={clioBalanceTo} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
         </label>
-        <label>
-          <div style={{ fontSize: 12, color: '#64748b' }}>Case status</div>
-          <select value={clioGraphCaseStatusFilter} onChange={(event) => { setClioGraphCaseStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
-            <option value="all">All case statuses</option>
-            {clioCaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-          </select>
-        </label>
-        <label>
-          <div style={{ fontSize: 12, color: '#64748b' }}>Matter status</div>
-          <select value={clioGraphMatterStatusFilter} onChange={(event) => { setClioGraphMatterStatusFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
-            <option value="all">All matter statuses</option>
-            {clioMatterStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-          </select>
-        </label>
+        <MultiCheckboxFilter label="Case status" options={clioCaseStatusOptions} selected={clioGraphCaseStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphCaseStatusFilters, value, setClioGraphCaseStatusFilters)} onAll={() => setClioGraphCaseStatusFilters([])} onNone={() => setClioGraphCaseStatusFilters(['__none__'])} />
+        <MultiCheckboxFilter label="Matter status" options={clioMatterStatusOptions} selected={clioGraphMatterStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphMatterStatusFilters, value, setClioGraphMatterStatusFilters)} onAll={() => setClioGraphMatterStatusFilters([])} onNone={() => setClioGraphMatterStatusFilters(['__none__'])} />
         <label>
           <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
           <select value={clioGraphMappingFilter} onChange={(event) => { setClioGraphMappingFilter(event.target.value); setClioSelectedMatterIds([]) }} style={{ width: '100%' }}>
@@ -30498,8 +30709,8 @@ ${choices}`, '1'))
     const graphPadding = { top: 24, right: 28, bottom: 52, left: 82 }
     const minDate = graphHasData ? Math.min(...allDates) : Date.now() - 86400000
     const maxDate = graphHasData ? Math.max(...allDates) : Date.now()
-    const minBalance = graphHasData ? Math.min(...allBalances, 0) : 0
-    const maxBalance = graphHasData ? Math.max(...allBalances, 1) : 100
+    const minBalance = graphHasData ? Math.min(...allBalances, financialGraphShowZeroLine ? 0 : Math.min(...allBalances)) : 0
+    const maxBalance = graphHasData ? Math.max(...allBalances, financialGraphShowZeroLine ? 0 : Math.max(...allBalances), 1) : 100
     const ySpan = Math.max(1, maxBalance - minBalance)
     const xSpan = Math.max(1, maxDate - minDate)
     const plotLeft = graphPadding.left
@@ -30521,6 +30732,7 @@ ${choices}`, '1'))
         <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
           <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Clio graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
             <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
+            {financialGraphShowZeroLine && minBalance <= 0 && maxBalance >= 0 && <line x1={plotLeft} x2={plotRight} y1={yForBalance(0)} y2={yForBalance(0)} stroke="#111827" strokeWidth="1.5" />}
             {yTicks.map((tick, index) => {
               const y = yForBalance(tick)
               return <g key={`y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g>
@@ -31872,6 +32084,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (metric === 'trust_minus_outstanding') return Number(row.matter_trust_funds || 0) - Number(row.outstanding_balance || 0)
     if (metric === 'outstanding_minus_trust') return Number(row.outstanding_balance || 0) - Number(row.matter_trust_funds || 0)
     if (metric === 'trust_minus_minimum_minus_wip') return Number(row.matter_trust_funds || 0) - Number(row.minimum_balance || 0) - Number(row.work_in_progress || 0)
+    if (metric === 'trust_minus_wip_minus_outstanding') return Number(row.matter_trust_funds || 0) - Number(row.work_in_progress || 0) - Number(row.outstanding_balance || 0)
+    if (metric === 'trust_minus_wip_minus_outstanding_minus_minimum') return Number(row.matter_trust_funds || 0) - Number(row.work_in_progress || 0) - Number(row.outstanding_balance || 0) - Number(row.minimum_balance || 0)
     if (metric === 'initial_retainer') return Number(row.initial_retainer || 0)
     return Number(row.matter_trust_funds || 0)
   }
@@ -31890,6 +32104,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       trust_minus_outstanding: 'Trust minus outstanding balance',
       outstanding_minus_trust: 'Outstanding balance minus trust',
       trust_minus_minimum_minus_wip: 'Trust minus minimum balance minus WIP',
+      trust_minus_wip_minus_outstanding: 'Trust minus WIP minus outstanding balance',
+      trust_minus_wip_minus_outstanding_minus_minimum: 'Trust minus WIP minus outstanding balance minus minimum balance',
       initial_retainer: 'Initial retainer'
     }
     return labels[metric] || metric
@@ -31916,8 +32132,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!matterNo) return false
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts) || ts < from || ts > to) return false
-      if (clioGraphCaseStatusFilter !== 'all' && String(row.case_status || '').toLowerCase() !== String(clioGraphCaseStatusFilter).toLowerCase()) return false
-      if (clioGraphMatterStatusFilter !== 'all' && String(row.matter_status || '').toLowerCase() !== String(clioGraphMatterStatusFilter).toLowerCase()) return false
+      if ((clioGraphCaseStatusFilters || []).length && !(clioGraphCaseStatusFilters || []).includes(String(row.case_status || ''))) return false
+      if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).includes(String(row.matter_status || ''))) return false
       if (clioGraphMappingFilter === 'mapped' && !row.mio_matter_id) return false
       if (clioGraphMappingFilter === 'unmapped' && row.mio_matter_id) return false
       const activeTypes = activeClioGraphCaseTypeFilters.includes('all') ? ['all'] : activeClioGraphCaseTypeFilters
@@ -31946,10 +32162,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     rows.forEach((row) => {
       const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
       if (!matterNo) return
+      const groupKey = clioGraphGroupingMode === 'client' ? String(row.clio_client_name || row.client_name || 'Unknown client') : matterNo
       const ts = new Date(row.snapshot_date).getTime()
       const value = snapshotGraphValueForMetric(row, metric)
-      const existing = byMatter.get(matterNo)
-      if (!existing || ts > existing.ts) byMatter.set(matterNo, { matterNo, label: snapshotGraphMatterLabel(row), client: row.clio_client_name || '', value, ts })
+      const existing = byMatter.get(groupKey)
+      if (!existing || ts > existing.ts) byMatter.set(groupKey, { matterNo: groupKey, label: clioGraphGroupingMode === 'client' ? groupKey : snapshotGraphMatterLabel(row), client: row.clio_client_name || '', value, ts })
     })
     return Array.from(byMatter.values())
       .filter((item) => !hasMinimum || Number(item.value || 0) >= minimum)
@@ -31958,16 +32175,21 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function snapshotGraphSeries() {
     const optionSet = new Set(snapshotGraphMatterOptions(snapshotGraphMetric).map((option) => option.matterNo))
-    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(normalizeClioMatterNumber).filter(Boolean))
-    const rows = filteredSnapshotRowsForGraph().filter((row) => selectedSet.has(normalizeClioMatterNumber(row.clio_matter_number)) && optionSet.has(normalizeClioMatterNumber(row.clio_matter_number)))
-    const byMatter = new Map()
+    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
+    const rows = filteredSnapshotRowsForGraph()
+    const bySeries = new Map()
     rows.forEach((row) => {
       const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
       if (!matterNo) return
-      if (!byMatter.has(matterNo)) byMatter.set(matterNo, { matter_id: matterNo, display_number: snapshotGraphMatterLabel(row), points: [] })
-      byMatter.get(matterNo).points.push({ date: row.snapshot_date, balance: snapshotGraphValueForMetric(row, snapshotGraphMetric) })
+      const key = clioGraphGroupingMode === 'client' ? String(row.clio_client_name || row.client_name || 'Unknown client') : matterNo
+      if (!selectedSet.has(key) || !optionSet.has(key)) return
+      if (!bySeries.has(key)) bySeries.set(key, { matter_id: key, display_number: clioGraphGroupingMode === 'client' ? key : snapshotGraphMatterLabel(row), pointsByDate: new Map() })
+      const date = row.snapshot_date
+      const value = snapshotGraphValueForMetric(row, snapshotGraphMetric)
+      const series = bySeries.get(key)
+      series.pointsByDate.set(date, Number(series.pointsByDate.get(date) || 0) + value)
     })
-    return Array.from(byMatter.values()).map((series) => ({ ...series, points: series.points.sort((a, b) => String(a.date).localeCompare(String(b.date))) }))
+    return Array.from(bySeries.values()).map((series) => ({ matter_id: series.matter_id, display_number: series.display_number, points: Array.from(series.pointsByDate.entries()).map(([date,balance]) => ({ date, balance })).sort((a,b) => String(a.date).localeCompare(String(b.date))) }))
   }
 
   function snapshotGraphInvoiceMarkers() {
@@ -32008,6 +32230,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <option value="trust_minus_outstanding">Trust minus outstanding balance</option>
               <option value="outstanding_minus_trust">Outstanding balance minus trust</option>
               <option value="trust_minus_minimum_minus_wip">Trust minus minimum balance minus WIP</option>
+              <option value="trust_minus_wip_minus_outstanding">Trust minus WIP minus outstanding balance</option>
+              <option value="trust_minus_wip_minus_outstanding_minus_minimum">Trust minus WIP minus outstanding balance minus minimum balance</option>
               <option value="initial_retainer">Initial retainer</option>
             </select>
           </label>
@@ -32030,20 +32254,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
             <input type="date" value={clioBalanceTo} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
           </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Case status</div>
-            <select value={clioGraphCaseStatusFilter} onChange={(event) => setClioGraphCaseStatusFilter(event.target.value)} style={{ width: '100%' }}>
-              <option value="all">All case statuses</option>
-              {clioCaseStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-            </select>
-          </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Matter status</div>
-            <select value={clioGraphMatterStatusFilter} onChange={(event) => setClioGraphMatterStatusFilter(event.target.value)} style={{ width: '100%' }}>
-              <option value="all">All matter statuses</option>
-              {clioMatterStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-            </select>
-          </label>
+          <MultiCheckboxFilter label="Case status" options={clioCaseStatusOptions} selected={clioGraphCaseStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphCaseStatusFilters, value, setClioGraphCaseStatusFilters)} onAll={() => setClioGraphCaseStatusFilters([])} onNone={() => setClioGraphCaseStatusFilters(['__none__'])} />
+          <MultiCheckboxFilter label="Matter status" options={clioMatterStatusOptions} selected={clioGraphMatterStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphMatterStatusFilters, value, setClioGraphMatterStatusFilters)} onAll={() => setClioGraphMatterStatusFilters([])} onNone={() => setClioGraphMatterStatusFilters(['__none__'])} />
           <label>
             <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
             <select value={clioGraphMappingFilter} onChange={(event) => setClioGraphMappingFilter(event.target.value)} style={{ width: '100%' }}>
@@ -32079,6 +32291,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 15).map((row) => row.matterNo))}>Select first 15 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.map((row) => row.matterNo))}>Select all shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers([])} disabled={!snapshotGraphSelectedMatterNumbers.length}>Clear selected</button>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Group by <select value={clioGraphGroupingMode} onChange={(event) => { setClioGraphGroupingMode(event.target.value); setSnapshotGraphSelectedMatterNumbers([]) }}><option value="matter">Matters</option><option value="client">Clients (combine all matters)</option></select></label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={financialGraphShowZeroLine} onChange={(event) => setFinancialGraphShowZeroLine(event.target.checked)} /> Show $0 line</label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={snapshotGraphShowInvoices} onChange={(event) => setSnapshotGraphShowInvoices(event.target.checked)} /> Show invoice sent markers</label>
           <strong>{snapshotGraphSelectedMatterNumbers.length} selected; {options.length} shown by filter</strong>
           <span style={{ color: '#64748b' }}>{clioSnapshotRows.length ? `${clioSnapshotRows.length} saved snapshot row(s) loaded for ${clioBalanceFrom || 'beginning'} to ${clioBalanceTo || 'today'}.` : 'No saved snapshot rows loaded yet.'}</span>
@@ -32086,7 +32300,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <div style={{ maxHeight: 230, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
           {options.map((option) => (
             <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}>
-              <input type="checkbox" checked={selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => current.includes(option.matterNo) ? current.filter((value) => value !== option.matterNo) : [...current, option.matterNo])} /> {option.label}{option.client ? ` (${option.client})` : ''}
+              <input type="checkbox" checked={selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => current.includes(option.matterNo) ? current.filter((value) => value !== option.matterNo) : [...current, option.matterNo])} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawingFinancialSeries.includes(String(option.matterNo)) ? ' — WITHDRAWING' : ''}
             </label>
           ))}
         </div>
@@ -32266,13 +32480,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <strong>{snapshotGraphSelectedMatterNumbers.length || options.length} selected/shown; {options.length} available</strong>
         </div>
         <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
-          {options.map((option) => <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}><input type="checkbox" checked={!selectedSet.size || selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => { const clean = current.map(normalizeClioMatterNumber).filter(Boolean); if (!clean.length) return options.filter((item) => item.matterNo !== option.matterNo).map((item) => item.matterNo); return clean.includes(option.matterNo) ? clean.filter((value) => value !== option.matterNo) : [...clean, option.matterNo] })} /> {option.label}{option.client ? ` (${option.client})` : ''}</label>)}
+          {options.map((option) => <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}><input type="checkbox" checked={!selectedSet.size || selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => { const clean = current.map(normalizeClioMatterNumber).filter(Boolean); if (!clean.length) return options.filter((item) => item.matterNo !== option.matterNo).map((item) => item.matterNo); return clean.includes(option.matterNo) ? clean.filter((value) => value !== option.matterNo) : [...clean, option.matterNo] })} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawingFinancialSeries.includes(String(option.matterNo)) ? ' — WITHDRAWING' : ''}</label>)}
         </div>
         {!sortedRows.length ? <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569' }}>No bar graph data loaded yet. Click Load saved snapshots.</div> : (
           <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
             <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Client bar graph" style={{ width: '100%', minWidth: Math.min(graphWidth, 1200), display: 'block' }}>
               <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
-              {yTicks.map((tick, index) => { const y = yForValue(tick); return <g key={`bar-y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g> })}
+              {financialGraphShowZeroLine && minBalance <= 0 && maxBalance >= 0 && <line x1={plotLeft} x2={plotRight} y1={yForBalance(0)} y2={yForBalance(0)} stroke="#111827" strokeWidth="1.5" />}
+            {yTicks.map((tick, index) => { const y = yForValue(tick); return <g key={`bar-y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g> })}
               <line x1={plotLeft} x2={plotRight} y1={zeroY} y2={zeroY} stroke="#94a3b8" />
               <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
               <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>Dollar</text>
@@ -32824,6 +33039,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {canOpenPage('checklist') && (
           <a href="#checklist" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('checklist') }} style={{ display: 'block', marginBottom: 10 }}>
             Checklist
+          </a>
+        )}
+
+        {canOpenPage('setting_center') && (
+          <a href="#setting_center" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('setting_center') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'setting_center' ? 900 : undefined, color: page === 'setting_center' ? '#1d4ed8' : undefined }}>
+            Setting Center
           </a>
         )}
 
@@ -34910,6 +35131,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         )}
 
 
+        {page === 'setting_center' && canOpenPage('setting_center') && renderSettingCenter()}
+
         {page === 'checklist' && canOpenPage('checklist') && (
           <>
             <style>{`
@@ -35264,7 +35487,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </thead>
                 <tbody>
                   {discoveryRows().map((row) => (
-                    <tr key={row.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                    <tr id={`rr-row-${row.id}`} key={row.id} style={{ borderTop: '1px solid #e5e7eb' }}>
                       <td style={{ minWidth: 260 }}>
                         {row.document ? (
                           <button type="button" onClick={() => openDocumentEditWindow(row.document)} style={{ textAlign: 'left' }} title="Open edit document window">{row.documentTitle}</button>
