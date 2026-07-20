@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V121'
+const MIO_APP_VERSION = 'Mio V120'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1327,8 +1327,6 @@ function App() {
     setPageState(pageOnly)
     if (typeof window !== 'undefined') window.history.replaceState(null, '', `#${cleanTarget}`)
   }
-  const previousPageRef = useRef(page)
-  const mattersClioRefreshRef = useRef(null)
 
   const [billingTab, setBillingTab] = useState('firm_billing')
   const [bankAccounts, setBankAccounts] = useState([])
@@ -3287,25 +3285,6 @@ function App() {
 
 
   useEffect(() => {
-    const previousPage = previousPageRef.current
-    previousPageRef.current = page
-    if (page !== 'matters' || previousPage === 'matters') return
-    if (mattersClioRefreshRef.current) return
-    mattersClioRefreshRef.current = (async () => {
-      try {
-        setClioSnapshotError('')
-        await importCurrentClioFinancialValuesFromReports()
-        await loadClioFinancialSnapshots()
-      } catch (error) {
-        console.error('Automatic Clio trust refresh on Matters page failed:', error)
-        setClioSnapshotError(error?.message || String(error))
-      } finally {
-        mattersClioRefreshRef.current = null
-      }
-    })()
-  }, [page])
-
-  useEffect(() => {
     if (page !== 'matter_timelines') return
     const measure = () => {
       const node = matterTimelineMainScrollRef.current
@@ -3642,7 +3621,7 @@ function App() {
     if (member.is_active === false) return []
 
     if (Array.isArray(member.page_access) && member.page_access.length > 0) {
-      return Array.from(new Set([...member.page_access, 'withdrawals', 'inventory', 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'setting_center', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
+      return Array.from(new Set([...member.page_access, 'withdrawals', 'inventory', 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
     }
 
     return appPages.map((p) => p.value)
@@ -3652,7 +3631,7 @@ function App() {
     // Service Inbox is a newly added core page. Existing team-member page_access
     // records may not contain it yet, so keep it visible instead of letting the
     // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory' || pageName === 'setting_center') return true
+    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory') return true
     return getAllowedPages().includes(pageName)
   }
 
@@ -20359,11 +20338,11 @@ useEffect(() => {
   }
 
   function serviceEmailSavePath(row) {
-    // The Matter Table efile_folder is the ONLY source of truth for Accepted and
-    // Notification of Service save locations. Never synthesize a matter folder,
-    // use a row suggestion, or fall back to a source-level default.
+    const source = serviceEmailSource(row?.source_id)
     const matterPath = serviceEmailKnownMatterPath(row)
-    return sanitizeServiceEfilePath(matterPath || '', row)
+    // The Matter Table efile_folder is the source of truth for accepted efile PDFs and notification-of-service PDFs.
+    const rawPath = matterPath || row?.suggested_save_path || source?.default_onedrive_folder || ''
+    return sanitizeServiceEfilePath(rawPath, row)
   }
 
   function serviceEmailPathIsKnown(row) {
@@ -20837,10 +20816,8 @@ useEffect(() => {
       throw new Error('Chrome did not provide folder access. Use Chrome or Edge and click Browse/set to choose the actual matter efile folder.')
     }
 
-    const displayPath = serviceEmailSavePath(row)
-    if (!resolvedMatterIdForSave) throw new Error('Select the matching matter before saving this filing.')
-    if (!displayPath) throw new Error('This matter has no efile folder set in the Matter Table. Set the efile folder on the matter first; Mio will not create or guess one.')
-    const shouldPick = window.confirm(`Choose the exact matter efile folder already recorded in the Matter Table.\n\nMatter:\n${matterLabel(resolvedMatterIdForSave)}\n\nMatter Table efile folder:\n${displayPath}`)
+    const displayPath = serviceEmailSavePath(row) || (resolvedMatterIdForSave ? `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(resolvedMatterIdForSave)}\\efile` : '')
+    const shouldPick = window.confirm(`Choose the actual matter efile folder where this PDF should be saved.\n\nMatter:\n${row?.suggested_matter_id ? matterLabel(row.suggested_matter_id) : '(matter not selected)'}\n\nDisplay path:\n${displayPath || '(not set)'}`)
     if (!shouldPick) throw new Error('No matter efile folder was selected.')
     directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
     rememberServiceEfileFolderHandle(resolvedMatterIdForSave, row?.id, directoryHandle)
