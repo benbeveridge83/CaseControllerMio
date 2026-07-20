@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V122'
+const MIO_APP_VERSION = 'Mio V121'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -10501,52 +10501,23 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert('Choose at least one bulk document row with a matter and a name.')
       return false
     }
-
-    const committedIds = new Set()
+    const committedIds = new Set(rows.map((row) => row.id))
     const savedRows = []
-    const failedRows = []
-
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index]
       const docId = `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
       const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, row.matter_id) : {}
-
-      // Never remove a bulk row or create a permanent document record when its file upload failed.
-      // This also prevents the large temporary base64 file_data value from being written into
-      // the cloud-state database, which was causing bulk saves to time out.
-      if (row.file && !storedFilePayload.file_path) {
-        failedRows.push(row)
-        continue
-      }
-
-      const {
-        file,
-        file_data: temporaryFileData,
-        preview_url: temporaryPreviewUrl,
-        data_url: temporaryDataUrl,
-        ...rowWithoutTemporaryFileData
-      } = row
-
+      const { file, ...rowWithoutFile } = row
       savedRows.push(withEmptyDocumentAiReview({
-        ...rowWithoutTemporaryFileData,
+        ...rowWithoutFile,
         ...storedFilePayload,
         id: docId,
         upload_date: dateToInputValue(new Date())
       }))
-      committedIds.add(row.id)
     }
-
-    if (savedRows.length > 0) {
-      setDocuments((currentDocuments) => [...currentDocuments, ...savedRows])
-      setBulkDocumentRows((currentRows) => currentRows.filter((row) => !committedIds.has(row.id)))
-    }
-
-    if (failedRows.length > 0) {
-      alert(`${savedRows.length} document${savedRows.length === 1 ? '' : 's'} saved. ${failedRows.length} file${failedRows.length === 1 ? '' : 's'} could not be uploaded and remain in Bulk Upload Review so you can try again.`)
-      return false
-    }
-
-    return savedRows.length > 0
+    setDocuments([...documents, ...savedRows])
+    setBulkDocumentRows(bulkDocumentRows.filter((row) => !committedIds.has(row.id)))
+    return true
   }
 
   function acceptCheckedBulkRows() {
