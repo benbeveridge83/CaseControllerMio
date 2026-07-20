@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V124'
+const MIO_APP_VERSION = 'Mio V125'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -18318,9 +18318,12 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function microsoftPopupRedirectUri() {
-    // Keep popup authentication isolated from the main Case Controller tab.
-    // The popup returns to the same deployed app origin, while the main window remains on Service Inbox.
-    return `${window.location.origin}${window.location.pathname || '/'}`
+    // Popup redirects must exactly match the SPA redirect URI registered in Azure.
+    // Do not use the current route (for example /service_inbox), because only the app root
+    // is registered and MSAL will otherwise leave the popup waiting until it times out.
+    const configured = String(serviceGraphConfig.redirectUri || '').trim()
+    if (configured && !/auth-redirect\.html/i.test(configured)) return configured.split('#')[0].replace(/\/$/, '') || window.location.origin
+    return window.location.origin
   }
 
   function clearMicrosoftInteractionState() {
@@ -30550,20 +30553,37 @@ ${choices}`, '1'))
   const clioGraphCaseTypeFilter = activeClioGraphCaseTypeFilters
   const clioMatterStatusOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_status || matter?.status || '').trim()).filter(Boolean))).sort()
 
-  function snapshotRowCaseStatus(row) {
-    const direct = String(row?.case_status || '').trim()
-    if (direct && !['open', 'closed'].includes(direct.toLowerCase())) return direct
-    const linkedMatter = row?.mio_matter_id
-      ? matters.find((matter) => String(matter.id) === String(row.mio_matter_id))
-      : null
-    const enrichedMatterId = !linkedMatter ? clioSnapshotEnrichmentForMatterNumber(row?.clio_matter_number || '')?.mio_matter_id : ''
-    const enrichedMatter = !linkedMatter && enrichedMatterId
-      ? matters.find((matter) => String(matter.id) === String(enrichedMatterId))
-      : null
-    return String(linkedMatter?.case_status || enrichedMatter?.case_status || direct || '').trim()
+  function matterForSnapshotRow(row) {
+    if (!row) return null
+    if (row.mio_matter_id) {
+      const byId = matters.find((matter) => String(matter.id) === String(row.mio_matter_id))
+      if (byId) return byId
+    }
+    const enrichment = clioSnapshotEnrichmentForMatterNumber(row.clio_matter_number || '')
+    if (enrichment?.mio_matter_id) {
+      const byEnrichment = matters.find((matter) => String(matter.id) === String(enrichment.mio_matter_id))
+      if (byEnrichment) return byEnrichment
+    }
+    const target = normalizeClioMatterNumber(row.clio_matter_number || '')
+    if (!target) return null
+    return matters.find((matter) => {
+      const candidates = [matter.clio_matter_number, matter.clio_display_number, matter.cause_number, matter.cause_no, matter.case_number, matter.name]
+      return candidates.some((value) => normalizeClioMatterNumber(value || '') === target)
+    }) || null
   }
 
+  function snapshotRowCaseStatus(row) {
+    const linkedMatter = matterForSnapshotRow(row)
+    const linkedStatus = String(linkedMatter?.case_status || '').trim()
+    if (linkedStatus) return linkedStatus
+    return String(row?.case_status || '').trim()
+  }
+
+  const configuredCaseStatusOptions = typeof options === 'function'
+    ? options('case_status').map((option) => String(option?.name || option?.value || option || '').trim())
+    : []
   const clioCaseStatusOptions = Array.from(new Set([
+    ...configuredCaseStatusOptions,
     ...matters.map((matter) => String(matter?.case_status || '').trim()),
     ...clioMatters.map((matter) => {
       const linked = mappedMioMatterForClioId(matter?.id)
@@ -32221,10 +32241,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!matterNo) return false
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts) || ts < from || ts > to) return false
-      const normalizedCaseStatus = snapshotRowCaseStatus(row).toLowerCase()
-      const linkedMatter = row?.mio_matter_id ? matters.find((matter) => String(matter.id) === String(row.mio_matter_id)) : null
+      const normalizedCaseStatus = snapshotRowCaseStatus(row).trim().toLowerCase()
+      const linkedMatter = matterForSnapshotRow(row)
       const normalizedMatterStatus = String(linkedMatter?.matter_status || row.matter_status || '').trim().toLowerCase()
-      if ((clioGraphCaseStatusFilters || []).length && !(clioGraphCaseStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedCaseStatus)) return false
+      const selectedCaseStatuses = (clioGraphCaseStatusFilters || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+      if (selectedCaseStatuses.includes('__none__')) return false
+      if (selectedCaseStatuses.length && !selectedCaseStatuses.includes(normalizedCaseStatus)) return false
       if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedMatterStatus)) return false
       if (clioGraphMappingFilter === 'mapped' && !row.mio_matter_id) return false
       if (clioGraphMappingFilter === 'unmapped' && row.mio_matter_id) return false
