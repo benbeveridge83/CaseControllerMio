@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V121'
+const MIO_APP_VERSION = 'Mio V123'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1568,6 +1568,7 @@ function App() {
   const [documentFilters, setDocumentFilters] = useState({ matter_id: 'all', name: '', date: '', description: '', status: 'all', tagId: 'all' })
   const [documentSort, setDocumentSort] = useState({ key: 'upload_date', direction: 'desc' })
   const [bulkSelectedTagIds, setBulkSelectedTagIds] = useState([])
+  const [bulkSelectedMatterId, setBulkSelectedMatterId] = useState('')
   const [bulkAiProgress, setBulkAiProgress] = useState({ running: false, total: 0, done: 0, current: '' })
   const [tagForm, setTagForm] = useState({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
   const [tagLibraryFilter, setTagLibraryFilter] = useState('')
@@ -10489,6 +10490,23 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function applyTagsToSelectedBulkRows() {
     if (bulkSelectedTagIds.length === 0) return
     setBulkDocumentRows(bulkDocumentRows.map((row) => row.selected ? { ...row, tag_ids: tagAndParentIds(Array.from(new Set([...(row.tag_ids || []), ...bulkSelectedTagIds]))) } : row))
+  }
+
+  function applyMatterToSelectedBulkRows() {
+    if (!bulkSelectedMatterId) {
+      alert('Select a matter first.')
+      return
+    }
+    const selectedCount = bulkDocumentRows.filter((row) => row.selected).length
+    if (!selectedCount) {
+      alert('Check at least one bulk upload row first.')
+      return
+    }
+    setBulkDocumentRows((current) => current.map((row) => row.selected ? {
+      ...row,
+      matter_id: bulkSelectedMatterId,
+      tag_ids: (row.tag_ids || []).filter((tagId) => isTagAvailableForMatter(tagId, bulkSelectedMatterId))
+    } : row))
   }
 
   function removeCheckedBulkRows() {
@@ -30504,7 +30522,10 @@ ${choices}`, '1'))
   const activeClioGraphCaseTypeFilters = sanitizedClioGraphCaseTypeFilters
   const clioGraphCaseTypeFilter = activeClioGraphCaseTypeFilters
   const clioMatterStatusOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_status || matter?.case_status || matter?.status || '').trim()).filter(Boolean))).sort()
-  const clioCaseStatusOptions = Array.from(new Set(clioMatters.map((matter) => String(matter?.status || '').trim().toLowerCase()).filter(Boolean))).sort()
+  const clioCaseStatusOptions = Array.from(new Set([
+    ...clioMatters.map((matter) => String(matter?.status || '').trim().toLowerCase()),
+    ...(clioSnapshotRows || []).map((row) => String(row?.case_status || '').trim().toLowerCase())
+  ].filter(Boolean))).sort()
 
   function clioMatterMinimumBalance(matterId) {
     const custom = Number(clioMinimumBalancesByMatterId?.[String(matterId)])
@@ -32155,8 +32176,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!matterNo) return false
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts) || ts < from || ts > to) return false
-      if ((clioGraphCaseStatusFilters || []).length && !(clioGraphCaseStatusFilters || []).includes(String(row.case_status || ''))) return false
-      if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).includes(String(row.matter_status || ''))) return false
+      const normalizedCaseStatus = String(row.case_status || '').trim().toLowerCase()
+      const normalizedMatterStatus = String(row.matter_status || '').trim().toLowerCase()
+      if ((clioGraphCaseStatusFilters || []).length && !(clioGraphCaseStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedCaseStatus)) return false
+      if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedMatterStatus)) return false
       if (clioGraphMappingFilter === 'mapped' && !row.mio_matter_id) return false
       if (clioGraphMappingFilter === 'unmapped' && row.mio_matter_id) return false
       const activeTypes = activeClioGraphCaseTypeFilters.includes('all') ? ['all'] : activeClioGraphCaseTypeFilters
@@ -35819,8 +35842,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <div style={{ marginTop: 12 }}>
                     <button type="button" onClick={() => setBulkDocumentRows(bulkDocumentRows.map((row) => ({ ...row, selected: true })))}>Select all rows</button>
                     <button type="button" onClick={removeCheckedBulkRows} style={{ marginLeft: 8 }}>Remove checked rows</button>
+                    <h3>Apply matter to selected bulk rows</h3>
+                    <SmartMatterSelect value={bulkSelectedMatterId} onChange={setBulkSelectedMatterId} placeholder="Select matter for checked rows" />
+                    <button type="button" onClick={applyMatterToSelectedBulkRows} style={{ marginTop: 8 }}>Copy matter to selected</button>
                     <h3>Apply tags to selected bulk rows</h3>
-                    {renderTagPicker(bulkSelectedTagIds, toggleBulkTag)}
+                    {renderTagPicker(bulkSelectedTagIds, toggleBulkTag, bulkSelectedMatterId)}
                     <button type="button" onClick={applyTagsToSelectedBulkRows} style={{ marginTop: 8 }}>Copy tags to selected</button>
                     <button type="button" onClick={() => analyzeVisibleBulkDocumentsWithAi(bulkDocumentRows, '')} disabled={bulkAiProgress.running} style={{ marginTop: 8, display: 'block' }}>
                       {bulkAiProgress.running ? 'Analyzing bulk...' : 'Analyze all bulk rows with AI'}
