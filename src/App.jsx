@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V125'
+const MIO_APP_VERSION = 'Mio V126'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1294,6 +1294,8 @@ function serviceEmailStatusLabel(status) {
 
 function App() {
   const [session, setSession] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const explicitSignOutRef = useRef(false)
   const [currentTeamMember, setCurrentTeamMember] = useState(null)
   const [loginBlockedMessage, setLoginBlockedMessage] = useState('')
   const [loginEmail, setLoginEmail] = useState('')
@@ -2877,25 +2879,67 @@ function App() {
 
   useEffect(() => {
     let mounted = true
+    let refreshTimer = null
 
-    const readStoredSession = async () => {
+    const recoverStoredSession = async () => {
       try {
-        const { data } = await supabase.auth.getSession()
-        if (mounted) setSession(data?.session || null)
+        const { data, error } = await supabase.auth.getSession()
+        if (error) throw error
+        let nextSession = data?.session || null
+        if (!nextSession) {
+          const refreshed = await supabase.auth.refreshSession()
+          if (!refreshed?.error) nextSession = refreshed?.data?.session || null
+        }
+        if (mounted) setSession(nextSession)
       } catch (error) {
-        console.warn('Unable to read Supabase session.', error)
-        if (mounted) setSession(null)
+        console.warn('Unable to recover Supabase session.', error)
+      } finally {
+        if (mounted) setAuthChecked(true)
       }
     }
 
-    readStoredSession()
+    const refreshWhenActive = async () => {
+      if (explicitSignOutRef.current || document.visibilityState === 'hidden') return
+      try {
+        const { data } = await supabase.auth.getSession()
+        if (data?.session) {
+          if (mounted) setSession(data.session)
+          return
+        }
+        const refreshed = await supabase.auth.refreshSession()
+        if (!refreshed?.error && refreshed?.data?.session && mounted) setSession(refreshed.data.session)
+      } catch (error) {
+        console.warn('Supabase session refresh failed.', error)
+      }
+    }
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (mounted) setSession(nextSession || null)
+    recoverStoredSession()
+    supabase.auth.startAutoRefresh?.()
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!mounted) return
+      if (nextSession) {
+        explicitSignOutRef.current = false
+        setSession(nextSession)
+        setAuthChecked(true)
+      } else if (event === 'SIGNED_OUT' && explicitSignOutRef.current) {
+        setSession(null)
+        setAuthChecked(true)
+      } else {
+        clearTimeout(refreshTimer)
+        refreshTimer = setTimeout(refreshWhenActive, 250)
+      }
     })
+
+    window.addEventListener('focus', refreshWhenActive)
+    document.addEventListener('visibilitychange', refreshWhenActive)
 
     return () => {
       mounted = false
+      clearTimeout(refreshTimer)
+      supabase.auth.stopAutoRefresh?.()
+      window.removeEventListener('focus', refreshWhenActive)
+      document.removeEventListener('visibilitychange', refreshWhenActive)
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
@@ -2940,6 +2984,23 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioMatterEfileFolders', JSON.stringify(matterEfileFolders)) } catch {}
   }, [matterEfileFolders])
+
+  useEffect(() => {
+    if (!matters.length) return
+    setMatterEfileFolders((current) => {
+      const next = { ...(current || {}) }
+      let changed = false
+      matters.forEach((matter) => {
+        const id = String(matter?.id || '')
+        const folder = String(matter?.efile_folder || matter?.e_file_folder || matter?.efileFolder || '').trim()
+        if (id && folder && next[id] !== folder) {
+          next[id] = folder
+          changed = true
+        }
+      })
+      return changed ? next : current
+    })
+  }, [matters])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioServiceGraphConfig', JSON.stringify(serviceGraphConfig)) } catch {}
@@ -3290,11 +3351,12 @@ function App() {
   useEffect(() => {
     const previousPage = previousPageRef.current
     previousPageRef.current = page
-    if (page !== 'matters' || previousPage === 'matters') return
+    if (page !== 'matters' || !session?.user?.id) return
     if (mattersClioRefreshRef.current) return
     mattersClioRefreshRef.current = (async () => {
       try {
         setClioSnapshotError('')
+        await loadClioFinancialSnapshots()
         await importCurrentClioFinancialValuesFromReports()
         await loadClioFinancialSnapshots()
       } catch (error) {
@@ -3304,7 +3366,7 @@ function App() {
         mattersClioRefreshRef.current = null
       }
     })()
-  }, [page])
+  }, [page, session?.user?.id])
 
   useEffect(() => {
     if (page !== 'matter_timelines') return
@@ -3658,6 +3720,7 @@ function App() {
   }
 
   async function logIn(e) {
+    explicitSignOutRef.current = false
     e.preventDefault()
     setLoginBlockedMessage('')
 
@@ -3675,6 +3738,7 @@ function App() {
   }
 
   async function logOut() {
+    explicitSignOutRef.current = true
     await supabase.auth.signOut()
     setTeam([])
     setClients([])
@@ -14499,21 +14563,26 @@ async function updateTeamCell(memberId, field, value) {
     const matterId = String(matter?.id || '')
     const matterCause = normalizeClioMatterNumber(matter?.cause_number || '')
     const matterName = String(matter?.name || '').toLowerCase().trim()
+    const matterClient = String(matter?.matter_client_name || `${matter?.clients?.first_name || ''} ${matter?.clients?.last_name || ''}`.trim()).toLowerCase().trim()
     const candidates = (clioSnapshotRows || []).filter((row) => {
       if (!row) return false
       if (matterId && String(row.mio_matter_id || '') === matterId) return true
       const rowNumber = normalizeClioMatterNumber(row.clio_matter_number || '')
       if (matterCause && rowNumber && (rowNumber === matterCause || clioMatterNumberPrefix(rowNumber) === clioMatterNumberPrefix(matterCause))) return true
       const rowName = String(row.matter_name || row.client_name || '').toLowerCase().trim()
-      return !!matterName && !!rowName && (rowName.includes(matterName) || matterName.includes(rowName))
+      if (matterName && rowName && (rowName.includes(matterName) || matterName.includes(rowName))) return true
+      return !!matterClient && !!rowName && (rowName.includes(matterClient) || matterClient.includes(rowName))
     })
     return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
   }
 
   function latestTrustAmountForMatter(matter = {}) {
     const snapshot = latestTrustSnapshotForMatter(matter)
-    if (!snapshot) return ''
-    const value = Number(snapshot.matter_trust_funds ?? snapshot.trust_running_balance ?? 0)
+    const rawValue = snapshot
+      ? (snapshot.matter_trust_funds ?? snapshot.trust_running_balance)
+      : (matter.matter_trust_funds ?? matter.trust_running_balance ?? matter.trust_amount ?? matter.trust_balance)
+    if (rawValue === '' || rawValue === null || rawValue === undefined) return ''
+    const value = Number(rawValue)
     return Number.isFinite(value) ? money(value) : ''
   }
 
@@ -20371,10 +20440,24 @@ useEffect(() => {
     return ''
   }
 
+  function matterEfileFolderForId(matterId) {
+    const id = String(matterId || '')
+    if (!id) return ''
+    const matter = matters.find((item) => String(item.id || '') === id) || null
+    return String(
+      matterEfileFolders[id] ||
+      matterEfileFolders[matterId] ||
+      matter?.efile_folder ||
+      matter?.e_file_folder ||
+      matter?.efileFolder ||
+      ''
+    ).trim()
+  }
+
   function serviceEmailKnownMatterPath(row) {
     const matterId = resolveServiceEmailMatterId(row)
     if (!matterId) return ''
-    return matterEfileFolders[matterId] || ''
+    return matterEfileFolderForId(matterId)
   }
 
   function sanitizeServiceEfilePath(value = '', row = null) {
@@ -20398,7 +20481,7 @@ useEffect(() => {
 
   function serviceEmailSavePathSource(row) {
     const matterId = resolveServiceEmailMatterId(row)
-    if (matterId && matterEfileFolders[matterId]) return 'matter_table'
+    if (matterId && matterEfileFolderForId(matterId)) return 'matter_table'
     if (row?.suggested_save_path && !serviceEmailRowHasGenericTemplatePath(row)) return 'row'
     if (row?.suggested_save_path) return 'row_template'
     const source = serviceEmailSource(row?.source_id)
@@ -21058,7 +21141,7 @@ useEffect(() => {
   function updateServiceEmailRowMatter(rowId, matterId) {
     setServiceEmailRows((rows) => rows.map((row) => {
       if (row.id !== rowId) return row
-      const matterPath = matterId ? matterEfileFolders[matterId] : ''
+      const matterPath = matterId ? matterEfileFolderForId(matterId) : ''
       return { ...row, suggested_matter_id: matterId, suggested_save_path: matterPath || '' }
     }))
   }
@@ -22162,7 +22245,24 @@ Ben`) : (row.draft_response || '') })
             {active ? <>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', marginBottom: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(340px, 1.4fr)', gap: 10 }}>
-                  <LabeledField label="Matter"><select value={active.suggested_matter_id || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRowMatter(active.id, e.target.value)}><option value="">Needs matter match</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}</select></LabeledField>
+                  <LabeledField label="Matter">
+                    <input
+                      key={`${active.id}-${active.suggested_matter_id || 'none'}`}
+                      list={`filing-matter-options-${active.id}`}
+                      defaultValue={active.suggested_matter_id ? formatMatterOption(matters.find((matter) => String(matter.id) === String(active.suggested_matter_id)) || {}) : ''}
+                      disabled={showSavedFilingReviewRows}
+                      placeholder="Type client, matter, or cause number"
+                      onBlur={(e) => {
+                        const typed = e.target.value.trim()
+                        const match = matters.find((matter) => !matterLooksClosed(matter) && formatMatterOption(matter) === typed)
+                        if (match) updateServiceEmailRowMatter(active.id, match.id)
+                        else if (!typed) updateServiceEmailRowMatter(active.id, '')
+                      }}
+                    />
+                    <datalist id={`filing-matter-options-${active.id}`}>
+                      {matters.filter((matter) => !matterLooksClosed(matter)).map((matter) => <option key={matter.id} value={formatMatterOption(matter)} />)}
+                    </datalist>
+                  </LabeledField>
                   <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} /></LabeledField>
                   <LabeledField label="Document name"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Tag"><div style={{ display: 'flex', gap: 6 }}><select value={serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailDocumentTag(active.id, e.target.value)} style={{ flex: 1 }}><option value="">No tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>Add tag</button></div></LabeledField>
@@ -27585,8 +27685,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       .sort((a, b) => String(a.start_date || '').localeCompare(String(b.start_date || '')) || String(a.title || '').localeCompare(String(b.title || '')))
   }
 
-  function openRequestedReliefNewSettingWindow(mode = 'unknown_active') {
-    const matterId = requestedReliefBuilder?.matter_id || requestedReliefSetupDraft?.matter_id || ''
+  function openRequestedReliefNewSettingWindow(mode = 'unknown_active', forcedMatterId = '') {
+    const matterId = forcedMatterId || requestedReliefBuilder?.matter_id || requestedReliefSetupDraft?.matter_id || ''
     if (!matterId) return alert('Select the matter first.')
     const title = (window.prompt('Name the new setting/event:', 'Trial') || '').trim()
     if (!title) return
@@ -27657,7 +27757,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefBuilder(true)
   }
 
-  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief', template = null } = {}) {
+  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief', template = null, setting_event_id = '' } = {}) {
     const resolvedMatterId = matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     if (!resolvedMatterId) {
       alert('Select a matter first, then add the relief.')
@@ -27668,7 +27768,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       matter_id: resolvedMatterId,
       relief_type,
       name: template?.name || requestedReliefKindLabel(relief_type),
-      setting_event_id: '',
+      setting_event_id: setting_event_id || '',
       issue_source: template ? 'template' : (matterIssueSet ? 'matter' : 'full'),
       template_id: template?.id || (template ? template.id : ''),
       use_full_tree: !template && !matterIssueSet
@@ -28726,7 +28826,7 @@ ${choices}`, '1'))
               </label>
             )) : <p style={{ color: '#64748b' }}>No existing pending settings were found for this matter.</p>}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known')}>New setting with known date</button>
+              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>New setting with known date</button>
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
             </div>
@@ -28793,7 +28893,7 @@ ${choices}`, '1'))
                 {requestedReliefMatterSettings(requestedReliefBuilder.matter_id).map((event) => <option key={event.id} value={event.id}>{requestedReliefSettingLabel(event.id)}</option>)}
               </select>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known')}>New setting with known date</button>
+                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>New setting with known date</button>
                 <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
                 <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
               </div>
@@ -29597,6 +29697,27 @@ ${choices}`, '1'))
             <button type="button" style={panelButton} onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
           </div>
         </div>
+
+        <section style={{ border: '1px solid #bfdbfe', borderRadius: 12, padding: 12, marginBottom: 14, background: '#eff6ff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+            <div><strong>Hearings and trials for this matter</strong><div style={muted}>Click an event to create or open requested relief attached to that setting.</div></div>
+            <button type="button" style={panelButton} onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>+ Add hearing/trial</button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 9 }}>
+            {requestedReliefMatterSettings(matterId).filter((event) => /hearing|trial|mediation|temporary|final/i.test(`${event.event_category || ''} ${event.event_subcategory || ''} ${event.title || ''}`)).map((event) => {
+              const linked = reliefRows.filter((relief) => String(relief.setting_event_id || '') === String(event.id))
+              return <div key={event.id} style={{ border: '1px solid #93c5fd', borderRadius: 10, background: '#fff', padding: 10 }}>
+                <div style={{ fontWeight: 850 }}>{requestedReliefSettingLabel(event.id)}</div>
+                <div style={{ ...muted, marginTop: 4 }}>{linked.length ? `${linked.length} relief set(s) attached` : 'No requested relief attached yet'}</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  {linked.map((relief) => <button key={relief.id} type="button" style={panelButton} onClick={() => { setRequestedReliefSavedReliefId(relief.id); beginRequestedReliefBuilder({ relief }) }}>{relief.name || 'Open relief'}</button>)}
+                  <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief', setting_event_id: event.id })}>+ Add relief</button>
+                </div>
+              </div>
+            })}
+            {!requestedReliefMatterSettings(matterId).some((event) => /hearing|trial|mediation|temporary|final/i.test(`${event.event_category || ''} ${event.event_subcategory || ''} ${event.title || ''}`)) && <div style={{ border: '1px dashed #93c5fd', borderRadius: 10, padding: 14, color: '#64748b', background: '#fff' }}>No active hearing or trial events are saved for this matter yet.</div>}
+          </div>
+        </section>
 
         <section style={{ border: '1px solid #dbeafe', borderRadius: 12, padding: 12, marginBottom: 14, background: '#f8fbff' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}><span style={{ width: 24, height: 24, borderRadius: '50%', background: '#2563eb', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900 }}>1</span><h4 style={{ margin: 0 }}>Choose or create relief for this matter</h4></div>
@@ -32997,6 +33118,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </tbody></table>
       </>
     )
+  }
+
+  if (!authChecked) {
+    return <div style={{ padding: 40, textAlign: 'center' }}>Restoring your Mio session...</div>
   }
 
   if (!session) {
