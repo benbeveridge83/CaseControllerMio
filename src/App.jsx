@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V123'
+const MIO_APP_VERSION = 'Mio V124'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -10224,10 +10224,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function applyTagsToDocuments(docIds, tagIds = bulkSelectedTagIds) {
-    if (docIds.length === 0 || tagIds.length === 0) return
-    setDocuments(documents.map((doc) => {
-      if (!docIds.includes(doc.id)) return doc
-      return { ...doc, tag_ids: tagAndParentIds(Array.from(new Set([...(doc.tag_ids || []), ...tagIds]))) }
+    const selectedIds = Array.isArray(docIds) ? docIds : []
+    const selectedTags = Array.isArray(tagIds) ? tagIds : []
+    if (!selectedIds.length) {
+      alert('Check at least one document first.')
+      return
+    }
+    if (!selectedTags.length) {
+      alert('Select at least one tag first.')
+      return
+    }
+    setDocuments((currentDocuments) => currentDocuments.map((doc) => {
+      if (!selectedIds.includes(doc.id)) return doc
+      const allowedTags = selectedTags.filter((tagId) => isTagAvailableForMatter(tagId, doc.matter_id))
+      return { ...doc, tag_ids: tagAndParentIds(Array.from(new Set([...(doc.tag_ids || []), ...allowedTags]))) }
     }))
   }
 
@@ -10471,6 +10481,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       document_field_values: {},
       ...emptyDocumentAiReview,
       file,
+      file_name: file.name,
+      original_file_name: file.name,
+      file_type: file.type || '',
+      file_size: file.size || 0,
       ...(await readFileAsDataUrl(file))
     })))
     setBulkDocumentRows([...bulkDocumentRows, ...prepared])
@@ -10488,8 +10502,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function applyTagsToSelectedBulkRows() {
-    if (bulkSelectedTagIds.length === 0) return
-    setBulkDocumentRows(bulkDocumentRows.map((row) => row.selected ? { ...row, tag_ids: tagAndParentIds(Array.from(new Set([...(row.tag_ids || []), ...bulkSelectedTagIds]))) } : row))
+    const selectedCount = bulkDocumentRows.filter((row) => row.selected).length
+    if (!selectedCount) {
+      alert('Check at least one bulk upload row first.')
+      return
+    }
+    if (!bulkSelectedTagIds.length) {
+      alert('Select at least one tag first.')
+      return
+    }
+    setBulkDocumentRows((currentRows) => currentRows.map((row) => {
+      if (!row.selected) return row
+      const allowedTags = bulkSelectedTagIds.filter((tagId) => isTagAvailableForMatter(tagId, row.matter_id))
+      return { ...row, tag_ids: tagAndParentIds(Array.from(new Set([...(row.tag_ids || []), ...allowedTags]))) }
+    }))
   }
 
   function applyMatterToSelectedBulkRows() {
@@ -12027,7 +12053,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
               <h3 style={{ margin: 0 }}>Bulk upload review</h3>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 {matterId && <input type="file" multiple onChange={(e) => { prepareBulkDocuments(e.target.files, matterId); e.target.value = '' }} />}
-                <button type="button" onClick={() => setBulkDocumentRows(bulkDocumentRows.map((row) => visibleBulkDocumentRows.some((visible) => visible.id === row.id) ? { ...row, selected: true, matter_id: row.matter_id || matterId } : row))}>Select all rows</button>
+                <button type="button" onClick={() => setBulkDocumentRows((currentRows) => currentRows.map((row) => visibleBulkDocumentRows.some((visible) => visible.id === row.id) ? { ...row, selected: true, matter_id: row.matter_id || matterId } : row))}>Select all rows</button>
+                <button type="button" onClick={() => setBulkDocumentRows((currentRows) => currentRows.map((row) => visibleBulkDocumentRows.some((visible) => visible.id === row.id) ? { ...row, selected: false } : row))}>Deselect all rows</button>
                 <button type="button" onClick={removeCheckedBulkRows}>Remove checked rows</button>
                 <button type="button" onClick={acceptCheckedBulkRows} style={{ fontWeight: 'bold' }}>Accept checked rows</button>
                 <button type="button" onClick={applyTagsToSelectedBulkRows}>Copy selected tags to selected rows</button>
@@ -12048,13 +12075,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
               </div>
             )}
             <table cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th>Pick</th><th>File</th><th>Matter</th><th>Name</th><th>Description</th><th>Tags</th><th>AI</th><th>Preview</th></tr></thead>
+              <thead><tr><th>Pick</th><th>File name</th><th>Matter</th><th>Document name</th><th>Description</th><th>Tags</th><th>AI</th><th>Preview</th></tr></thead>
               <tbody>
                 {visibleBulkDocumentRows.map((row) => (
                   <Fragment key={row.id}>
                     <tr style={{ borderTop: '1px solid #e5e7eb' }}>
                       <td><input type="checkbox" checked={row.selected} onChange={(e) => updateBulkDocumentRow(row.id, 'selected', e.target.checked)} /></td>
-                      <td>{row.file_name}</td>
+                      <td><span title={row.original_file_name || row.file_name || row.file?.name || ''}>{row.original_file_name || row.file_name || row.file?.name || 'No file name'}</span></td>
                       <td>{matterId ? matterLabel(matterId) : <SmartMatterSelect value={row.matter_id || ''} onChange={(value) => updateBulkDocumentRow(row.id, 'matter_id', value)} style={{ width: 260 }} />}</td>
                       <td><input value={row.name} onChange={(e) => updateBulkDocumentRow(row.id, 'name', e.target.value)} /></td>
                       <td><textarea value={row.description} onChange={(e) => updateBulkDocumentRow(row.id, 'description', e.target.value)} /></td>
@@ -30521,11 +30548,29 @@ ${choices}`, '1'))
     .filter((value) => value === 'all' || CLIO_BILLING_FIXED_CASE_TYPES.includes(value))
   const activeClioGraphCaseTypeFilters = sanitizedClioGraphCaseTypeFilters
   const clioGraphCaseTypeFilter = activeClioGraphCaseTypeFilters
-  const clioMatterStatusOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_status || matter?.case_status || matter?.status || '').trim()).filter(Boolean))).sort()
+  const clioMatterStatusOptions = Array.from(new Set(matters.map((matter) => String(matter?.matter_status || matter?.status || '').trim()).filter(Boolean))).sort()
+
+  function snapshotRowCaseStatus(row) {
+    const direct = String(row?.case_status || '').trim()
+    if (direct && !['open', 'closed'].includes(direct.toLowerCase())) return direct
+    const linkedMatter = row?.mio_matter_id
+      ? matters.find((matter) => String(matter.id) === String(row.mio_matter_id))
+      : null
+    const enrichedMatterId = !linkedMatter ? clioSnapshotEnrichmentForMatterNumber(row?.clio_matter_number || '')?.mio_matter_id : ''
+    const enrichedMatter = !linkedMatter && enrichedMatterId
+      ? matters.find((matter) => String(matter.id) === String(enrichedMatterId))
+      : null
+    return String(linkedMatter?.case_status || enrichedMatter?.case_status || direct || '').trim()
+  }
+
   const clioCaseStatusOptions = Array.from(new Set([
-    ...clioMatters.map((matter) => String(matter?.status || '').trim().toLowerCase()),
-    ...(clioSnapshotRows || []).map((row) => String(row?.case_status || '').trim().toLowerCase())
-  ].filter(Boolean))).sort()
+    ...matters.map((matter) => String(matter?.case_status || '').trim()),
+    ...clioMatters.map((matter) => {
+      const linked = mappedMioMatterForClioId(matter?.id)
+      return String(linked?.case_status || matter?.status || '').trim()
+    }),
+    ...(clioSnapshotRows || []).map((row) => snapshotRowCaseStatus(row))
+  ].filter(Boolean))).sort((a, b) => a.localeCompare(b))
 
   function clioMatterMinimumBalance(matterId) {
     const custom = Number(clioMinimumBalancesByMatterId?.[String(matterId)])
@@ -31452,7 +31497,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       clio_client_name: clientName,
       case_type: enrichment.case_type || (matchingClio ? clioMatterFixedCaseType(matchingClio) : (matchingMio ? clioFixedCaseTypeForMioMatter(matchingMio) : 'Other')),
       matter_status: enrichment.matter_status || matchingMio?.matter_status || matchingMio?.status || '',
-      case_status: enrichment.case_status || matchingClio?.status || '',
+      case_status: matchingMio?.case_status || enrichment.case_status || matchingClio?.status || '',
       minimum_balance: enrichment.minimum_balance,
       initial_retainer: enrichment.initial_retainer,
       custom_billing_rate: enrichment.custom_billing_rate,
@@ -31525,7 +31570,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       clio_matter_id: clioMatterId,
       case_type: matchingClio ? clioMatterFixedCaseType(matchingClio) : (matchingMio ? clioFixedCaseTypeForMioMatter(matchingMio) : 'Other'),
       matter_status: matchingMio?.matter_status || matchingMio?.status || '',
-      case_status: matchingClio?.status || '',
+      case_status: matchingMio?.case_status || matchingClio?.status || '',
       minimum_balance: Number.isFinite(minimumBalance) ? minimumBalance : 2000,
       initial_retainer: Number.isFinite(initialRetainer) ? initialRetainer : 3500,
       custom_billing_rate: effectiveMatterCustomBillingRate(mioMatterId || matchingMio?.id || '')
@@ -32176,8 +32221,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!matterNo) return false
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts) || ts < from || ts > to) return false
-      const normalizedCaseStatus = String(row.case_status || '').trim().toLowerCase()
-      const normalizedMatterStatus = String(row.matter_status || '').trim().toLowerCase()
+      const normalizedCaseStatus = snapshotRowCaseStatus(row).toLowerCase()
+      const linkedMatter = row?.mio_matter_id ? matters.find((matter) => String(matter.id) === String(row.mio_matter_id)) : null
+      const normalizedMatterStatus = String(linkedMatter?.matter_status || row.matter_status || '').trim().toLowerCase()
       if ((clioGraphCaseStatusFilters || []).length && !(clioGraphCaseStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedCaseStatus)) return false
       if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedMatterStatus)) return false
       if (clioGraphMappingFilter === 'mapped' && !row.mio_matter_id) return false
@@ -35840,7 +35886,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 <input type="file" multiple onChange={(e) => { prepareBulkDocuments(e.target.files); e.target.value = '' }} />
                 {bulkDocumentRows.length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <button type="button" onClick={() => setBulkDocumentRows(bulkDocumentRows.map((row) => ({ ...row, selected: true })))}>Select all rows</button>
+                    <button type="button" onClick={() => setBulkDocumentRows((currentRows) => currentRows.map((row) => ({ ...row, selected: true })))}>Select all rows</button>
+                    <button type="button" onClick={() => setBulkDocumentRows((currentRows) => currentRows.map((row) => ({ ...row, selected: false })))} style={{ marginLeft: 8 }}>Deselect all rows</button>
                     <button type="button" onClick={removeCheckedBulkRows} style={{ marginLeft: 8 }}>Remove checked rows</button>
                     <h3>Apply matter to selected bulk rows</h3>
                     <SmartMatterSelect value={bulkSelectedMatterId} onChange={setBulkSelectedMatterId} placeholder="Select matter for checked rows" />
