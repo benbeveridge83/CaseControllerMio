@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V127'
+const MIO_APP_VERSION = 'Mio V128'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -18590,42 +18590,22 @@ useEffect(() => {
     clearMicrosoftInteractionState()
     const app = await getServiceMsalApp()
     const currentHash = window.location.hash || `#${page || 'service_inbox'}`
-    const currentUrl = `${window.location.origin}${window.location.pathname || '/'}${currentHash}`
     sessionStorage.setItem('caseMioMicrosoftReturnHash', currentHash)
     sessionStorage.setItem('caseMioMicrosoftReturnPage', currentHash.replace(/^#/, '').split('?')[0] || page || 'service_inbox')
-    setServiceEmailScanNote('Opening Microsoft sign-in. This should return to the same page you are on now.')
+    setServiceEmailScanNote('Opening Microsoft sign-in. Mio will return to this same page after sign-in.')
 
-    let result = null
-    try {
-      result = await app.loginPopup(microsoftAuthRequest({
-        redirectUri: serviceGraphRedirectUri(),
-        prompt: 'select_account'
-      }))
-    } catch (popupError) {
-      console.warn('Microsoft popup sign-in failed:', popupError)
-      // Never replace the entire Case Controller tab with Microsoft's login page. The user can retry the popup.
-      throw new Error(`Microsoft popup sign-in did not finish. Please close any leftover Microsoft window and click Reconnect Microsoft again. ${popupError?.message || ''}`.trim())
-    }
-
-    const account = result?.account || app.getAllAccounts()[0]
-    if (!account) throw new Error('Microsoft sign-in completed, but no account was returned.')
-    app.setActiveAccount(account)
-    setServiceGraphAuth({
-      connected: true,
-      account: { username: account.username || '', name: account.name || '' },
-      connected_at: new Date().toISOString()
-    })
-    setServiceGraphConfig((config) => ({ ...config, mode: 'live' }))
-    setServiceEmailScanNote(`Connected to Microsoft as ${account.username || account.name || 'signed-in user'}.`)
-    if (currentHash && window.location.hash !== currentHash) window.history.replaceState(null, '', currentHash)
-    const targetPage = currentHash.replace(/^#/, '').split('?')[0]
-    if (targetPage) setPage(targetPage)
+    // Use a full-page redirect instead of loginPopup. The hosted popup was timing out because
+    // the complete Mio application loads inside the popup before MSAL can finish its handshake.
+    // Redirect sign-in is more reliable and handleRedirectPromise above restores the exact hash page.
+    await app.loginRedirect(microsoftAuthRequest({
+      redirectUri: serviceGraphRedirectUri(),
+      prompt: 'select_account'
+    }))
   } catch (error) {
     console.error('Microsoft connection failed:', error)
     setServiceGraphAuth({ connected: false, account: null })
     setServiceEmailScanNote(`Microsoft connection failed: ${error.message || error}`)
     alert(`Microsoft connection failed: ${error.message || error}`)
-  } finally {
     setServiceGraphBusy(false)
   }
 }
