@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V128'
+const MIO_APP_VERSION = 'Mio V129'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -18501,7 +18501,7 @@ async function loadMicrosoftMsalScript() {
     },
     system: { allowNativeBroker: false },
     cache: {
-      cacheLocation: 'localStorage',
+      cacheLocation: 'sessionStorage',
       storeAuthStateInCookie: false
     }
   })
@@ -18509,12 +18509,28 @@ async function loadMicrosoftMsalScript() {
   await app.initialize()
   return app
 }
+
+  function clearLegacyMicrosoftMsalCache() {
+    try {
+      Object.keys(localStorage || {}).forEach((key) => {
+        const lower = String(key).toLowerCase()
+        if (lower.includes('msal') || lower.includes('login.windows.net') || lower.includes('microsoftonline')) {
+          localStorage.removeItem(key)
+        }
+      })
+    } catch {}
+  }
+
 useEffect(() => {
   async function finishMicrosoftRedirectSignIn() {
     try {
       const clientId = (serviceGraphConfig.clientId || '').trim()
       if (!clientId) return
 
+      // V128 stored MSAL tokens in localStorage. Mio already uses substantial localStorage,
+      // so MSAL could not save the redirect token and threw cache_quota_exceeded.
+      // Remove only legacy Microsoft/MSAL cache entries, then use sessionStorage for MSAL.
+      clearLegacyMicrosoftMsalCache()
       const app = await getServiceMsalApp()
       const result = await app.handleRedirectPromise()
       const account = result?.account || app.getAllAccounts()[0]
@@ -18587,6 +18603,7 @@ useEffect(() => {
  async function connectMicrosoftGraph() {
   setServiceGraphBusy(true)
   try {
+    clearLegacyMicrosoftMsalCache()
     clearMicrosoftInteractionState()
     const app = await getServiceMsalApp()
     const currentHash = window.location.hash || `#${page || 'service_inbox'}`
