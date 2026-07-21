@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V126'
+const MIO_APP_VERSION = 'Mio V127'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2880,19 +2880,60 @@ function App() {
   useEffect(() => {
     let mounted = true
     let refreshTimer = null
+    const SESSION_BACKUP_KEY = 'caseMioSupabaseSessionV1'
+
+    const saveSessionBackup = (nextSession) => {
+      try {
+        if (nextSession?.access_token && nextSession?.refresh_token) {
+          localStorage.setItem(SESSION_BACKUP_KEY, JSON.stringify({
+            access_token: nextSession.access_token,
+            refresh_token: nextSession.refresh_token,
+            expires_at: nextSession.expires_at || null,
+            saved_at: Date.now()
+          }))
+        } else if (explicitSignOutRef.current) {
+          localStorage.removeItem(SESSION_BACKUP_KEY)
+        }
+      } catch (error) {
+        console.warn('Could not save Mio session backup.', error)
+      }
+    }
+
+    const restoreSessionBackup = async () => {
+      try {
+        const raw = localStorage.getItem(SESSION_BACKUP_KEY)
+        if (!raw) return null
+        const backup = JSON.parse(raw)
+        if (!backup?.access_token || !backup?.refresh_token) return null
+        const restored = await supabase.auth.setSession({
+          access_token: backup.access_token,
+          refresh_token: backup.refresh_token
+        })
+        if (restored?.error) throw restored.error
+        return restored?.data?.session || null
+      } catch (error) {
+        console.warn('Could not restore Mio session backup.', error)
+        try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
+        return null
+      }
+    }
 
     const recoverStoredSession = async () => {
       try {
         const { data, error } = await supabase.auth.getSession()
         if (error) throw error
         let nextSession = data?.session || null
+        if (!nextSession) nextSession = await restoreSessionBackup()
         if (!nextSession) {
           const refreshed = await supabase.auth.refreshSession()
           if (!refreshed?.error) nextSession = refreshed?.data?.session || null
         }
+        if (nextSession) saveSessionBackup(nextSession)
         if (mounted) setSession(nextSession)
       } catch (error) {
         console.warn('Unable to recover Supabase session.', error)
+        const backupSession = await restoreSessionBackup()
+        if (backupSession && mounted) setSession(backupSession)
       } finally {
         if (mounted) setAuthChecked(true)
       }
@@ -2920,9 +2961,11 @@ function App() {
       if (!mounted) return
       if (nextSession) {
         explicitSignOutRef.current = false
+        saveSessionBackup(nextSession)
         setSession(nextSession)
         setAuthChecked(true)
       } else if (event === 'SIGNED_OUT' && explicitSignOutRef.current) {
+        try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
         setSession(null)
         setAuthChecked(true)
       } else {
@@ -2931,7 +2974,13 @@ function App() {
       }
     })
 
+    const handleSessionStorage = (event) => {
+      if (event.key !== SESSION_BACKUP_KEY || explicitSignOutRef.current) return
+      refreshWhenActive()
+    }
+
     window.addEventListener('focus', refreshWhenActive)
+    window.addEventListener('storage', handleSessionStorage)
     document.addEventListener('visibilitychange', refreshWhenActive)
 
     return () => {
@@ -2939,6 +2988,7 @@ function App() {
       clearTimeout(refreshTimer)
       supabase.auth.stopAutoRefresh?.()
       window.removeEventListener('focus', refreshWhenActive)
+      window.removeEventListener('storage', handleSessionStorage)
       document.removeEventListener('visibilitychange', refreshWhenActive)
       listener?.subscription?.unsubscribe?.()
     }
@@ -3734,11 +3784,18 @@ function App() {
       return
     }
 
-    setSession(data?.session || null)
+    const nextSession = data?.session || null
+    try {
+      if (nextSession?.access_token && nextSession?.refresh_token) {
+        localStorage.setItem('caseMioSupabaseSessionV1', JSON.stringify({ access_token: nextSession.access_token, refresh_token: nextSession.refresh_token, expires_at: nextSession.expires_at || null, saved_at: Date.now() }))
+      }
+    } catch {}
+    setSession(nextSession)
   }
 
   async function logOut() {
     explicitSignOutRef.current = true
+    try { localStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
     await supabase.auth.signOut()
     setTeam([])
     setClients([])
@@ -22221,24 +22278,27 @@ Ben`) : (row.draft_response || '') })
       setSelectedFilingReviewRowId(row.id)
       previewNoticeServiceRow(row)
     }
-    const saveAndBill = async () => {
-      if (!active || showSavedFilingReviewRows) return
-      const currentIndex = liveRows.findIndex((row) => row.id === active.id)
+    const saveAndBillRow = async (row, event = null) => {
+      event?.stopPropagation?.()
+      if (!row || showSavedFilingReviewRows || serviceGraphBusy) return
+      const currentIndex = liveRows.findIndex((item) => item.id === row.id)
       const next = liveRows[currentIndex + 1] || liveRows[currentIndex - 1] || null
-      const ok = await processSingleFilingServiceEmail(active)
+      setSelectedFilingReviewRowId(row.id)
+      const ok = await processSingleFilingServiceEmail(row)
       if (ok) {
         setSelectedFilingReviewRowId(next?.id || '')
         if (next) previewNoticeServiceRow(next)
         else { setSelectedPdfPreviewUrl(''); setSelectedPdfPreviewName('') }
       }
     }
+    const saveAndBill = async () => saveAndBillRow(active)
     return (
       <>
       <Modal title={isNotice ? 'Notification of Service review' : 'Accepted e-filed document review'} onClose={() => setShowAcceptedExtractionWindow(false)} wide>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16 }}>Save and bill</button>
+          <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16 }}>Bill and save</button>
           <button type="button" onClick={() => setShowSavedFilingReviewRows((value) => !value)}>{showSavedFilingReviewRows ? 'Return to unsaved emails' : `Saved emails (${savedFilingReviewRows.filter((row) => serviceEmailRowCategory(row) === kind).length})`}</button>
-          <span style={{ color: '#64748b' }}>{showSavedFilingReviewRows ? 'Showing documents saved during this session.' : 'Save and bill saves the PDF to OneDrive/the matter efile folder, adds it to Documents, bills the matter, moves the email to Read, and advances to the next email.'}</span>
+          <span style={{ color: '#64748b' }}>{showSavedFilingReviewRows ? 'Showing documents saved during this session.' : 'Bill and save saves the PDF to OneDrive/the matter efile folder, adds it to Documents, bills the matter, moves the email to Read, and advances to the next email.'}</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 14, alignItems: 'start', minHeight: '78vh' }}>
           <div style={{ minWidth: 0 }}>
@@ -22265,7 +22325,7 @@ Ben`) : (row.draft_response || '') })
                   </LabeledField>
                   <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} /></LabeledField>
                   <LabeledField label="Document name"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
-                  <LabeledField label="Tag"><div style={{ display: 'flex', gap: 6 }}><select value={serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailDocumentTag(active.id, e.target.value)} style={{ flex: 1 }}><option value="">No tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>Add tag</button></div></LabeledField>
+                  <LabeledField label="Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6 }}><select value={serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailDocumentTag(active.id, e.target.value)} style={{ flex: 1, fontFamily: 'Consolas, monospace', fontWeight: 700 }}><option value="">No tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${tag.level ? `${'│  '.repeat(Math.max(0, (tag.level || 0) - 1))}└─ ` : '■ '}${tag.name}   [${tagFullName(tag.id).replace(/ > /g, ' / ')}]`}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>Add tag</button></div></LabeledField>
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
@@ -22279,7 +22339,7 @@ Ben`) : (row.draft_response || '') })
           </div>
           <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', maxHeight: '82vh', overflow: 'auto', position: 'sticky', top: 0 }}>
             <h3 style={{ marginTop: 0 }}>TOC</h3>
-            {rows.map((row) => <button key={row.id} type="button" onClick={() => selectRow(row)} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div><div style={{ fontWeight: 700 }}>{row.subject || row.suggested_document_name || 'Email'}</div></button>)}
+            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div><div style={{ fontWeight: 700, marginBottom: 7 }}>{row.subject || row.suggested_document_name || 'Email'}</div>{!showSavedFilingReviewRows && <button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button>}</div>)}
             {!rows.length && <div style={{ color: '#64748b', padding: 12, textAlign: 'center' }}>No emails to show.</div>}
           </aside>
         </div>
