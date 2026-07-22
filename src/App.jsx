@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V131'
+const MIO_APP_VERSION = 'Mio V132'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2893,8 +2893,9 @@ function App() {
 
   useEffect(() => {
     let mounted = true
-    let refreshTimer = null
+    let authTimeout = null
     const SESSION_BACKUP_KEY = 'caseMioSupabaseSessionV1'
+    const AUTH_BOOT_TIMEOUT_MS = 8000
 
     const saveSessionBackup = (nextSession) => {
       try {
@@ -2903,6 +2904,7 @@ function App() {
             access_token: nextSession.access_token,
             refresh_token: nextSession.refresh_token,
             expires_at: nextSession.expires_at || null,
+            user: nextSession.user || null,
             saved_at: Date.now()
           }))
         } else if (explicitSignOutRef.current) {
@@ -2913,97 +2915,98 @@ function App() {
       }
     }
 
-    const restoreSessionBackup = async () => {
+    const readUsableBackup = () => {
       try {
         const raw = localStorage.getItem(SESSION_BACKUP_KEY)
         if (!raw) return null
         const backup = JSON.parse(raw)
-        if (!backup?.access_token || !backup?.refresh_token) return null
-        const restored = await supabase.auth.setSession({
+        if (!backup?.access_token || !backup?.refresh_token || !backup?.user) return null
+        const expiresAtMs = Number(backup.expires_at || 0) * 1000
+        // Never feed an expired refresh token back into Supabase during startup. That was
+        // causing the app to wait on an orphaned GoTrue lock and repeatedly call /token.
+        if (!expiresAtMs || expiresAtMs <= Date.now() + 30000) return null
+        return {
           access_token: backup.access_token,
-          refresh_token: backup.refresh_token
-        })
-        if (restored?.error) throw restored.error
-        return restored?.data?.session || null
+          refresh_token: backup.refresh_token,
+          expires_at: backup.expires_at,
+          expires_in: Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000)),
+          token_type: 'bearer',
+          user: backup.user
+        }
       } catch (error) {
-        console.warn('Could not restore Mio session backup.', error)
-        try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
+        console.warn('Could not read Mio session backup.', error)
         return null
       }
     }
 
+    const finishAuthCheck = (nextSession = null) => {
+      if (!mounted) return
+      clearTimeout(authTimeout)
+      setSession(nextSession)
+      setAuthChecked(true)
+    }
+
     const recoverStoredSession = async () => {
+      const backup = readUsableBackup()
+      if (backup) {
+        // Render immediately from the still-valid backup instead of blocking the whole app
+        // while GoTrue waits on a stale cross-tab lock.
+        finishAuthCheck(backup)
+      }
+
       try {
-        const { data, error } = await supabase.auth.getSession()
-        if (error) throw error
-        let nextSession = data?.session || null
-        if (!nextSession) nextSession = await restoreSessionBackup()
-        if (!nextSession) {
-          const refreshed = await supabase.auth.refreshSession()
-          if (!refreshed?.error) nextSession = refreshed?.data?.session || null
+        const result = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase session lookup timed out.')), AUTH_BOOT_TIMEOUT_MS))
+        ])
+        const nextSession = result?.data?.session || null
+        if (nextSession) {
+          saveSessionBackup(nextSession)
+          finishAuthCheck(nextSession)
+        } else if (!backup) {
+          finishAuthCheck(null)
         }
-        if (nextSession) saveSessionBackup(nextSession)
-        if (mounted) setSession(nextSession)
       } catch (error) {
-        console.warn('Unable to recover Supabase session.', error)
-        const backupSession = await restoreSessionBackup()
-        if (backupSession && mounted) setSession(backupSession)
-      } finally {
-        if (mounted) setAuthChecked(true)
+        console.warn('Unable to recover Supabase session without blocking startup.', error)
+        if (!backup) finishAuthCheck(null)
       }
     }
 
-    const refreshWhenActive = async () => {
-      if (explicitSignOutRef.current || document.visibilityState === 'hidden') return
-      try {
-        const { data } = await supabase.auth.getSession()
-        if (data?.session) {
-          if (mounted) setSession(data.session)
-          return
-        }
-        const refreshed = await supabase.auth.refreshSession()
-        if (!refreshed?.error && refreshed?.data?.session && mounted) setSession(refreshed.data.session)
-      } catch (error) {
-        console.warn('Supabase session refresh failed.', error)
-      }
-    }
+    authTimeout = setTimeout(() => {
+      console.warn('Supabase authentication startup timed out; showing the login screen instead of remaining stuck.')
+      if (!readUsableBackup()) finishAuthCheck(null)
+    }, AUTH_BOOT_TIMEOUT_MS + 500)
 
     recoverStoredSession()
-    supabase.auth.startAutoRefresh?.()
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!mounted) return
       if (nextSession) {
         explicitSignOutRef.current = false
         saveSessionBackup(nextSession)
-        setSession(nextSession)
-        setAuthChecked(true)
-      } else if (event === 'SIGNED_OUT' && explicitSignOutRef.current) {
-        try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
-        setSession(null)
-        setAuthChecked(true)
-      } else {
-        clearTimeout(refreshTimer)
-        refreshTimer = setTimeout(refreshWhenActive, 250)
+        finishAuthCheck(nextSession)
+        return
+      }
+      if (event === 'SIGNED_OUT') {
+        if (explicitSignOutRef.current) {
+          try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
+        }
+        finishAuthCheck(null)
       }
     })
 
     const handleSessionStorage = (event) => {
       if (event.key !== SESSION_BACKUP_KEY || explicitSignOutRef.current) return
-      refreshWhenActive()
+      const backup = readUsableBackup()
+      if (backup) finishAuthCheck(backup)
     }
 
-    window.addEventListener('focus', refreshWhenActive)
     window.addEventListener('storage', handleSessionStorage)
-    document.addEventListener('visibilitychange', refreshWhenActive)
 
     return () => {
       mounted = false
-      clearTimeout(refreshTimer)
-      supabase.auth.stopAutoRefresh?.()
-      window.removeEventListener('focus', refreshWhenActive)
+      clearTimeout(authTimeout)
       window.removeEventListener('storage', handleSessionStorage)
-      document.removeEventListener('visibilitychange', refreshWhenActive)
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
