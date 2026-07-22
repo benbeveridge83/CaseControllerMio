@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V129'
+const MIO_APP_VERSION = 'Mio V130'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1841,6 +1841,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetSetRows') || '{}') }
     catch { return {} }
   })
+  const [needToSetFinalizedRows, setNeedToSetFinalizedRows] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioNeedToSetFinalizedRows') || '{}') }
+    catch { return {} }
+  })
   const [needToSetPausedRows, setNeedToSetPausedRows] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioNeedToSetPausedRows') || '{}') }
     catch { return {} }
@@ -3160,6 +3164,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetSetRows', JSON.stringify(needToSetSetRows)) } catch {}
   }, [needToSetSetRows])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioNeedToSetFinalizedRows', JSON.stringify(needToSetFinalizedRows)) } catch {}
+  }, [needToSetFinalizedRows])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioNeedToSetPausedRows', JSON.stringify(needToSetPausedRows)) } catch {}
@@ -4860,6 +4868,10 @@ function App() {
     return checklistCourtForEvent(event)?.court_coordinator_email || ''
   }
 
+  function checklistCourtDocket(event) {
+    return normalizedExternalUrl(checklistCourtForEvent(event)?.court_docket)
+  }
+
   function checklistRows() {
     return events.map((event) => ({
       ...event,
@@ -4993,10 +5005,11 @@ function App() {
         const isComplete = event.is_active === false || event.completed === true || event.status === 'completed'
         const rowId = checklistNeedToSetRowId(event)
         const isSetRow = Boolean(needToSetSetRows[rowId])
+        const isFinalizedRow = Boolean(needToSetFinalizedRows[rowId])
         const date = checklistDateObj(event)
         if (tab === 'completed') return isComplete
         if (tab === 'set') return !isComplete && isSetRow
-        if (tab === 'need_date') return !isComplete && !isSetRow && (!date || needToSetPausedRows[rowId])
+        if (tab === 'need_date') return !isComplete && !isSetRow && !isFinalizedRow && (!date || needToSetPausedRows[rowId])
         if (!date || isComplete) return false
         return true
       })
@@ -5352,6 +5365,29 @@ function App() {
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     if (confirm('Add to completed events/deadlines?')) await markChecklistEventCompleted(checklistCompletionEvent)
     else resetChecklistCompletionForm()
+  }
+
+  function openNeedToSetEventForSetting(event = {}) {
+    const sourceEvent = events.find((item) => item.id === (event.id || event.checklist_source_id)) || event
+    editEvent(sourceEvent)
+  }
+
+  function markNeedToSetAlreadySet(event = {}) {
+    const rowId = checklistNeedToSetRowId(event)
+    if (!rowId) return
+    if (!confirm('Remove this item from Need to Set and mark it as already set?')) return
+    setNeedToSetSetRows((current) => ({ ...current, [String(rowId)]: { set_at: new Date().toISOString(), source: 'already_set' } }))
+    setNeedToSetFinalizedRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+    setNeedToSetPausedRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+  }
+
+  function cancelNeedToSetSetting(event = {}) {
+    const rowId = checklistNeedToSetRowId(event)
+    if (!rowId) return
+    if (!confirm('Remove this item from Need to Set because it no longer needs to be set?')) return
+    setNeedToSetFinalizedRows((current) => ({ ...current, [String(rowId)]: { finalized_at: new Date().toISOString(), reason: 'cancelled' } }))
+    setNeedToSetSetRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+    setNeedToSetPausedRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
   }
 
   async function markChecklistEventSet(event) {
@@ -26632,6 +26668,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   <button type="button" onClick={() => matter ? openMatterDashboardInNewWindow(matter) : null} style={{ background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, padding: '9px 10px', fontWeight: 800 }}>Open Matter ↗</button>
                   <button type="button" onClick={() => openStepDetail(needToSetStepContext(event, steps.find((step) => step.name === status.stepName) || steps[0] || {}, Math.max(0, steps.findIndex((step) => step.name === status.stepName))))}>Add Note</button>
                   <button type="button" onClick={() => { const currentStep = steps.find((step) => step.name === status.stepName) || steps[0]; if (currentStep) toggleChecklistStepComplete(eventId, currentStep.id) }} style={{ color: '#15803d', border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>✓ Complete Step</button>
+                  <button type="button" onClick={() => openNeedToSetEventForSetting(event)} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Set</button>
+                  <button type="button" onClick={() => markNeedToSetAlreadySet(event)} style={{ color: '#166534', border: '1px solid #86efac', background: '#f0fdf4', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Already Set</button>
+                  <button type="button" onClick={() => cancelNeedToSetSetting(event)} style={{ color: '#9f1239', border: '1px solid #fecdd3', background: '#fff1f2', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Cancel Setting</button>
+                  <button type="button" onClick={() => checklistCourtDocket(event) && window.open(checklistCourtDocket(event), '_blank', 'noopener,noreferrer')} disabled={!checklistCourtDocket(event)} style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Court Docket ↗</button>
                   <button type="button" onClick={() => toggleNeedToSetPaused(event)} style={{ color: '#b45309', border: '1px solid #fed7aa', background: '#fffbeb', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{needPaused ? 'Resume' : 'Pause'}</button>
                   <button type="button" onClick={() => resetNeedToSetRowSteps(event)} style={{ color: '#dc2626', border: '1px solid #fecaca', background: '#fff', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Reset</button>
                   <button type="button" onClick={() => toggleChecklistStepsRow(eventId)} style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: 8, padding: '8px 10px' }}>{checklistStepsRowVisible(eventId) ? 'Hide Details' : 'Show Details'}</button>
@@ -26792,7 +26832,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                     <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}><button type="button" disabled={!record.draft} onClick={() => openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event), needToSetStepContext(event, currentStep, Math.max(0, steps.indexOf(currentStep))), record.draft_role || settingCenterNextRole(record.stage), record.draft)} style={{ background: '#2563eb', color: '#fff' }}>Approve / Open to Send</button><button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))}>Open linked emails</button><button type="button" onClick={() => patchSettingCenterRecord(event, { draft: '' })}>Clear</button></div>
                   </section>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><div style={{ color: '#64748b', fontSize: 12 }}>Automation guardrail: AI may draft and interpret, but Mio should not mark an event set until final court or mediator confirmation is recorded.</div><div style={{ display: 'flex', gap: 8 }}><button type="button" onClick={() => editEvent(events.find((item) => item.id === (event.id || event.checklist_source_id)) || event)}>Open Event</button><button type="button" onClick={() => markChecklistEventSet(event)} style={{ background: '#15803d', color: '#fff' }}>Set Event Date</button></div></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><div style={{ color: '#64748b', fontSize: 12 }}>Automation guardrail: AI may draft and interpret, but Mio should not mark an event set until final court or mediator confirmation is recorded.</div><div style={{ display: 'flex', gap: 8 }}><button type="button" onClick={() => editEvent(events.find((item) => item.id === (event.id || event.checklist_source_id)) || event)}>Open Event</button><button type="button" onClick={() => openNeedToSetEventForSetting(event)} style={{ background: '#15803d', color: '#fff' }}>Set Event Date</button></div></div>
               </div>}
             </Fragment>
           })}
@@ -35636,7 +35676,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                                   {checklistStepsRowVisible(event.id || event.checklist_source_id) ? 'Hide steps' : 'Show steps'}
                                 </button>
                                 <button type="button" onClick={() => openSettingWorkspace({ type: 'checklist', event, eventId: event.id || event.checklist_source_id, matter, matterId: matter?.id || '', settingType: event?.checklist_category || event?.event_category || 'Setting', courtName: checklistCourtName(event), courtEmail: checklistCourtCoordinatorEmail(event) })} style={{ background: '#0f766e', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Open setting</button>
-                                <button type="button" onClick={() => markChecklistEventSet(event)} style={{ background: '#2f6584', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Set</button>
+                                <button type="button" onClick={() => openNeedToSetEventForSetting(event)} style={{ background: '#0f766e', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Set</button>
+                                <button type="button" onClick={() => markNeedToSetAlreadySet(event)} style={{ background: '#15803d', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Already Set</button>
+                                <button type="button" onClick={() => cancelNeedToSetSetting(event)} style={{ background: '#be123c', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Cancel Setting</button>
+                                <button type="button" onClick={() => checklistCourtDocket(event) && window.open(checklistCourtDocket(event), '_blank', 'noopener,noreferrer')} disabled={!checklistCourtDocket(event)}>Court Docket ↗</button>
                                 <button type="button" onClick={() => toggleNeedToSetPaused(event)} style={{ background: needPaused ? '#334155' : '#94a3b8', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>{needPaused ? 'Resume' : 'Pause'}</button>
                                 <button type="button" onClick={() => resetNeedToSetRowSteps(event)} style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Reset Row</button>
                               </>
