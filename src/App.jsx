@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V130'
+const MIO_APP_VERSION = 'Mio V131'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2089,6 +2089,12 @@ function App() {
 
   const [calendarDate, setCalendarDate] = useState(new Date())
   const [calendarUserFilter, setCalendarUserFilter] = useState('all')
+  const [calendarCaseStatusFilter, setCalendarCaseStatusFilter] = useState(() => {
+    try { const value = JSON.parse(localStorage.getItem('caseMioCalendarCaseStatusFilter') || 'null'); return Array.isArray(value) ? value : null } catch { return null }
+  })
+  const [calendarMatterStatusFilter, setCalendarMatterStatusFilter] = useState(() => {
+    try { const value = JSON.parse(localStorage.getItem('caseMioCalendarMatterStatusFilter') || 'null'); return Array.isArray(value) ? value : null } catch { return null }
+  })
   const [calendarView, setCalendarView] = useState('month')
   const [checklistTab, setChecklistTab] = useState('future')
   const [checklistCaseStatusFilter, setChecklistCaseStatusFilter] = useState(() => {
@@ -2509,6 +2515,8 @@ function App() {
       caseMioScreenSaverDefaultSeconds: { setter: setScreenSaverDefaultSeconds, kind: 'number', fallback: defaultScreenSaverSeconds },
       caseMioScreenSaverRows: { setter: (value) => setScreenSaverRows(normalizeScreenSaverRows(value, screenSaverDefaultSeconds)), kind: 'array', fallback: [] },
       visibleMatterColumns: { setter: setVisibleMatterColumns, kind: 'object', fallback: {} },
+      caseMioCalendarCaseStatusFilter: { setter: setCalendarCaseStatusFilter, kind: 'object', fallback: null },
+      caseMioCalendarMatterStatusFilter: { setter: setCalendarMatterStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistCaseStatusFilter: { setter: setChecklistCaseStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistMatterStatusFilter: { setter: setChecklistMatterStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistEventCategoryFilter: { setter: setChecklistEventCategoryFilter, kind: 'object', fallback: null },
@@ -2636,6 +2644,8 @@ function App() {
     mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
   }
 
+  useEffect(() => { saveMioStateKey('caseMioCalendarCaseStatusFilter', JSON.stringify(calendarCaseStatusFilter)) }, [calendarCaseStatusFilter])
+  useEffect(() => { saveMioStateKey('caseMioCalendarMatterStatusFilter', JSON.stringify(calendarMatterStatusFilter)) }, [calendarMatterStatusFilter])
   useEffect(() => { saveMioStateKey('caseMioClioGraphCaseStatusFiltersV120', JSON.stringify(clioGraphCaseStatusFilters || [])) }, [clioGraphCaseStatusFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphMatterStatusFiltersV120', JSON.stringify(clioGraphMatterStatusFilters || [])) }, [clioGraphMatterStatusFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphGroupingModeV120', clioGraphGroupingMode) }, [clioGraphGroupingMode])
@@ -4716,12 +4726,26 @@ function App() {
     setCalendarDate(next)
   }
 
+  function calendarStatusOptions(field) {
+    return [...new Set(matters.map((matter) => String(matter?.[field] || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+  }
+
+  function calendarEventMatchesMatterFilters(event) {
+    const matter = matters.find((item) => String(item.id) === String(event.matter_id)) || null
+    const caseSelected = Array.isArray(calendarCaseStatusFilter) ? calendarCaseStatusFilter : null
+    const matterSelected = Array.isArray(calendarMatterStatusFilter) ? calendarMatterStatusFilter : null
+    if (caseSelected && !caseSelected.includes(String(matter?.case_status || ''))) return false
+    if (matterSelected && !matterSelected.includes(String(matter?.matter_status || ''))) return false
+    return true
+  }
+
   function eventsForDate(date) {
     const dateValue = dateToInputValue(date)
     return events.filter((event) => {
       // Keep completed/passed/reset events visible on the calendar; eventBlockColor() turns inactive events grey.
       if (isUndatedEventDate(event.start_date)) return false
       if (calendarUserFilter !== 'all' && event.assigned_to !== calendarUserFilter) return false
+      if (!calendarEventMatchesMatterFilters(event)) return false
       const start = event.start_date
       const end = isUndatedEventDate(event.end_date) ? event.start_date : (event.end_date || event.start_date)
       return start <= dateValue && end >= dateValue
@@ -11836,7 +11860,9 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         <div style={{ display: 'grid', gap: 6 }}>
           {values.map((itemValue, index) => (
             <div key={`${field.id}-${index}`} style={{ display: 'flex', gap: 6, alignItems: 'start' }}>
-              <textarea
+              {field.field_type === 'date' ? <input type="date" value={normalizeFieldValueForInput(field, itemValue || '')} onChange={(e) => { const nextValues = [...values]; nextValues[index] = e.target.value; onChange(nextValues) }} />
+                : field.field_type === 'time' ? <input type="time" value={normalizeFieldValueForInput(field, itemValue || '')} onChange={(e) => { const nextValues = [...values]; nextValues[index] = e.target.value; onChange(nextValues) }} />
+                  : <textarea
                 value={itemValue || ''}
                 onChange={(e) => {
                   const nextValues = [...values]
@@ -11844,7 +11870,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                   onChange(nextValues)
                 }}
                 style={{ minWidth: 260, minHeight: 54 }}
-              />
+              />}
               <button
                 type="button"
                 onClick={() => onChange(values.filter((_, valueIndex) => valueIndex !== index))}
@@ -21432,6 +21458,41 @@ useEffect(() => {
     return serviceEmailRowsForCurrentView().filter((row) => row.selected && row.status !== 'completed' && serviceEmailRowCategory(row) === normalized)
   }
 
+  function serviceReviewText(row = {}) {
+    return [row.subject, row.body_preview, row.bodyPreview, row.extracted_text, row.pdf_text, row.suggested_document_name, row.extracted_pdf_name, row.file_name].filter(Boolean).join(' ')
+  }
+
+  function inferNoticeDateTime(row = {}) {
+    const text = serviceReviewText(row)
+    const monthMap = { january: '01', february: '02', march: '03', april: '04', may: '05', june: '06', july: '07', august: '08', september: '09', october: '10', november: '11', december: '12', jan: '01', feb: '02', mar: '03', apr: '04', jun: '06', jul: '07', aug: '08', sep: '09', sept: '09', oct: '10', nov: '11', dec: '12' }
+    let date = ''
+    let match = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/)
+    if (match) date = `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`
+    if (!date && (match = text.match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2}|\d{2})\b/))) date = `${match[3].length === 2 ? `20${match[3]}` : match[3]}-${String(match[1]).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}`
+    if (!date && (match = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(20\d{2})\b/i))) date = `${match[3]}-${monthMap[match[1].toLowerCase()]}-${String(match[2]).padStart(2, '0')}`
+    let time = ''
+    match = text.match(/\b(1[0-2]|0?\d)(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
+    if (match) { let hour = Number(match[1]); const minute = match[2] || '00'; if (/p/i.test(match[3]) && hour < 12) hour += 12; if (/a/i.test(match[3]) && hour === 12) hour = 0; time = `${String(hour).padStart(2, '0')}:${minute}` }
+    const lower = text.toLowerCase()
+    const category = /trial/.test(lower) ? 'Trial' : /mediation/.test(lower) ? 'Mediation' : /deposition/.test(lower) ? 'Deposition' : /conference/.test(lower) ? 'Conference' : /hearing|setting/.test(lower) ? 'Hearing' : 'Notice'
+    return { date, time, category }
+  }
+
+  function hydrateServiceReviewRow(row = {}) {
+    const inferredMatterId = row.suggested_matter_id || inferServiceEmailMatter({ subject: row.subject || '', bodyPreview: row.body_preview || row.bodyPreview || '', body: { content: row.extracted_text || row.pdf_text || '' } })
+    const workingTags = serviceEmailRowCategory(row) === 'notification_service' ? ensureNoticeServiceTags() : ensureAcceptedServiceTags()
+    const inferredTagIds = row.document_tag_ids?.length ? row.document_tag_ids : (serviceEmailRowCategory(row) === 'notification_service' ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row)) : tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row)))
+    const next = { ...row, suggested_matter_id: inferredMatterId || '', suggested_save_path: inferredMatterId ? matterEfileFolderForId(inferredMatterId) : '', document_tag_ids: inferredTagIds }
+    next.document_field_values = fillAssociatedDocumentFields({ ...next, tag_ids: inferredTagIds, extracted_text: serviceReviewText(next) })
+    return next
+  }
+
+  function openCalendarWindow() {
+    const url = `${window.location.origin}${window.location.pathname}#calendar`
+    const popup = window.open(url, 'caseMioCalendar', 'width=1450,height=920,resizable=yes,scrollbars=yes')
+    if (popup) { try { popup.focus() } catch {} } else window.location.hash = '#calendar'
+  }
+
   function openAcceptedExtractionReview(actionGroup = 'accepted') {
     const normalized = normalizedServiceEmailActionGroup(actionGroup)
     if (normalized === 'notification_service') ensureNoticeServiceTags()
@@ -21440,6 +21501,8 @@ useEffect(() => {
       setServiceEmailScanNote(`No ${serviceEmailPhaseLabel(normalized)} emails to review for PDFs.`)
       return
     }
+    const hydratedById = new Map(rows.map((row) => [row.id, hydrateServiceReviewRow(row)]))
+    setServiceEmailRows((current) => current.map((row) => hydratedById.get(row.id) || row))
     setServiceInboxPhase(normalized)
     setShowAcceptedExtractionWindow(true)
     setShowSavedFilingReviewRows(false)
@@ -22208,23 +22271,27 @@ Ben`) : (row.draft_response || '') })
   }
 
   function addNoticeServiceRowToCalendar(row) {
-    const filingDate = row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())
+    const inferred = inferNoticeDateTime(row)
+    const eventDate = inferred.date || (row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()))
+    const startTime = inferred.time || '09:00'
+    const [hour = '09', minute = '00'] = startTime.split(':')
+    const endTime = `${String((Number(hour) + 1) % 24).padStart(2, '0')}:${minute}`
     setEditingEventId(null)
     setEventForm({
       ...emptyEventForm,
-      matter_id: row?.suggested_matter_id || '',
-      event_category: 'Notice',
+      matter_id: row?.suggested_matter_id || inferServiceEmailMatter({ subject: row?.subject || '', bodyPreview: serviceReviewText(row) }) || '',
+      event_category: inferred.category,
       event_subcategory: noticeServiceDocumentType(row),
-      title: row?.suggested_document_name || row?.subject || 'Notice of service',
-      description: `Created from Notice of Service email. Review PDF for exact hearing/deadline date.\n\nFrom: ${row?.from_name || row?.from_email || ''}\nSubject: ${row?.subject || ''}`,
-      start_date: filingDate,
-      end_date: filingDate,
-      start_time: '09:00',
-      end_time: '09:30',
+      title: `${inferred.category}: ${row?.suggested_document_name || row?.subject || 'Notice of setting'}`,
+      description: `Created from Notice of Service. Mio extracted the event information from the email/PDF text; review it before saving.\n\nFrom: ${row?.from_name || row?.from_email || ''}\nSubject: ${row?.subject || ''}`,
+      start_date: eventDate,
+      end_date: eventDate,
+      start_time: startTime,
+      end_time: endTime,
       is_active: true
     })
     setShowEventWindow(true)
-    setServiceEmailScanNote('Calendar event draft opened. Review the notice PDF, correct the date/time, then save the event.')
+    setServiceEmailScanNote(inferred.date ? 'Calendar event window opened with Mio's extracted date, time, type, and matter.' : 'Calendar event window opened. Mio could not find a reliable setting date, so review and enter the date before saving.')
   }
 
   async function addNoticeServiceRowToDiscovery(row) {
@@ -22242,9 +22309,10 @@ Ben`) : (row.draft_response || '') })
     if (!doc) doc = await createServiceEmailDocumentRecord({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, fileName, blob)
     if (doc) setDocuments((current) => current.some((item) => item.id === doc.id) ? current : [doc, ...current])
     setDiscoveryPageMode('responding')
+    const hydratedMatterId = row?.suggested_matter_id || inferServiceEmailMatter({ subject: row?.subject || '', bodyPreview: serviceReviewText(row) }) || ''
     setRespondingDiscoveryForm((current) => ({
       ...current,
-      matter_id: row?.suggested_matter_id || current.matter_id || '',
+      matter_id: hydratedMatterId || current.matter_id || '',
       discovery_type: discoveryType,
       document_id: doc?.id || current.document_id || '',
       document_name: fileName,
@@ -22252,8 +22320,17 @@ Ben`) : (row.draft_response || '') })
       client_response_due: row?.document_field_values?.response_date || row?.discovery_response_date || current.client_response_due || '',
       client_instructions: defaultDiscoveryInstructionsForType(discoveryType)
     }))
-    window.open(`${window.location.origin}${window.location.pathname}#discovery`, '_blank', 'noopener,noreferrer')
-    setServiceEmailScanNote('The discovery request was added to Documents and loaded into Responding to Discovery with the matter, type, received date, and document selected.')
+    try {
+      const textSource = serviceReviewText(row)
+      if (textSource.trim()) {
+        const extracted = localExtractRespondingDiscoveryRequests(textSource, discoveryType)
+        if (Array.isArray(extracted) && extracted.length) {
+          setRespondingDiscoveryForm((current) => ({ ...current, request_text: extracted.map((item) => item.request_text || item.text || item.request || '').filter(Boolean).join('\n') }))
+        }
+      }
+    } catch (error) { console.warn('Could not pre-extract discovery requests from service document text:', error) }
+    window.open(`${window.location.origin}${window.location.pathname}#discovery`, 'caseMioDiscovery', 'width=1450,height=920,resizable=yes,scrollbars=yes')
+    setServiceEmailScanNote('The discovery request was saved, loaded into Responding to Discovery, and Mio pre-extracted the individual requests when readable document text was available.')
   }
 
   async function previewNoticeServiceRow(row) {
@@ -22362,7 +22439,7 @@ Ben`) : (row.draft_response || '') })
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button>{isNotice && <button type="button" onClick={() => window.open(`${window.location.origin}${window.location.pathname}#calendar`, '_blank', 'noopener,noreferrer')}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add event draft</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
                 <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || active.suggested_document_name || active.subject}</div>
@@ -22426,13 +22503,17 @@ Ben`) : (row.draft_response || '') })
     const fields = documentFieldsForTags(tagIds)
     const nextValues = { ...(row.document_field_values || {}) }
     const filingDate = inferFilingDateForDocument(row)
+    const notice = inferNoticeDateTime(row)
     fields.forEach((field) => {
-      const keyLabel = `${field.field_key || ''} ${field.label || ''}`.toLowerCase()
+      const keyLabel = `${field.field_key || ''} ${field.label || ''} ${defaultExtractionInstructionsForField(field.id, (row.tag_ids || [])[0]) || ''}`.toLowerCase()
       const currentValue = nextValues[field.field_key]
       const hasValue = Array.isArray(currentValue) ? currentValue.some(Boolean) : Boolean(currentValue)
-      if (!hasValue && filingDate && /(filing|filed).*date|date.*(filing|filed)/.test(keyLabel)) {
-        nextValues[field.field_key] = field.allow_multiple ? [filingDate] : filingDate
-      }
+      let guessed = ''
+      if (filingDate && /(filing|filed).*date|date.*(filing|filed)/.test(keyLabel)) guessed = filingDate
+      else if (notice.date && /(hearing|trial|setting|mediation|deposition|conference|event|notice).*date|date.*(hearing|trial|setting|mediation|deposition|conference|event|notice)/.test(keyLabel)) guessed = notice.date
+      else if (notice.time && /(hearing|trial|setting|mediation|deposition|conference|event|notice).*time|time.*(hearing|trial|setting|mediation|deposition|conference|event|notice)/.test(keyLabel)) guessed = notice.time
+      else if (filingDate && field.field_type === 'date' && /(date served|service date|served on|received date)/.test(keyLabel)) guessed = filingDate
+      if (!hasValue && guessed) nextValues[field.field_key] = field.allow_multiple ? [guessed] : guessed
     })
     return applyCalculatedDocumentFieldValues(fields, nextValues)
   }
@@ -34778,6 +34859,20 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     ))}
                   </select>
                 </label>
+                <details style={{ position: 'relative' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Case status ({Array.isArray(calendarCaseStatusFilter) ? calendarCaseStatusFilter.length : calendarStatusOptions('case_status').length})</summary>
+                  <div style={{ position: 'absolute', zIndex: 20, background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, minWidth: 220, maxHeight: 280, overflow: 'auto' }}>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setCalendarCaseStatusFilter(null)}>All</button><button type="button" onClick={() => setCalendarCaseStatusFilter([])}>None</button></div>
+                    {calendarStatusOptions('case_status').map((value) => <label key={value} style={{ display: 'block', marginBottom: 5 }}><input type="checkbox" checked={!Array.isArray(calendarCaseStatusFilter) || calendarCaseStatusFilter.includes(value)} onChange={() => setCalendarCaseStatusFilter((current) => { const all = calendarStatusOptions('case_status'); const selected = Array.isArray(current) ? current : all; return selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value] })} /> {value}</label>)}
+                  </div>
+                </details>
+                <details style={{ position: 'relative' }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Matter status ({Array.isArray(calendarMatterStatusFilter) ? calendarMatterStatusFilter.length : calendarStatusOptions('matter_status').length})</summary>
+                  <div style={{ position: 'absolute', zIndex: 20, background: 'white', border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, minWidth: 240, maxHeight: 280, overflow: 'auto' }}>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setCalendarMatterStatusFilter(null)}>All</button><button type="button" onClick={() => setCalendarMatterStatusFilter([])}>None</button></div>
+                    {calendarStatusOptions('matter_status').map((value) => <label key={value} style={{ display: 'block', marginBottom: 5 }}><input type="checkbox" checked={!Array.isArray(calendarMatterStatusFilter) || calendarMatterStatusFilter.includes(value)} onChange={() => setCalendarMatterStatusFilter((current) => { const all = calendarStatusOptions('matter_status'); const selected = Array.isArray(current) ? current : all; return selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value] })} /> {value}</label>)}
+                  </div>
+                </details>
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
