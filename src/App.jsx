@@ -22291,8 +22291,7 @@ Ben`) : (row.draft_response || '') })
       is_active: true
     })
     setShowEventWindow(true)
-    setServiceEmailScanNote(inferred.date ? 'Calendar event window opened with Mio's extracted date, time, type, and matter.' : 'Calendar event window opened. Mio could not find a reliable setting date, so review and enter the date before saving.')
-  }
+setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's extracted date, time, type, and matter." : "Calendar event window opened. Mio could not find a reliable setting date, so review and enter the date before saving.")  }
 
   async function addNoticeServiceRowToDiscovery(row) {
     const typeText = `${row?.subject || ''} ${row?.suggested_document_name || ''} ${row?.body_preview || ''} ${serviceEmailDocumentTagLabel(row)}`.toLowerCase()
