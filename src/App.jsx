@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V139'
+const MIO_APP_VERSION = 'Mio V140'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2975,53 +2975,7 @@ function App() {
   useEffect(() => {
     let mounted = true
     let authTimeout = null
-    const SESSION_BACKUP_KEY = 'caseMioSupabaseSessionV1'
     const AUTH_BOOT_TIMEOUT_MS = 8000
-
-    const saveSessionBackup = (nextSession) => {
-      try {
-        if (nextSession?.access_token && nextSession?.refresh_token) {
-          const compactBackup = JSON.stringify({
-            access_token: nextSession.access_token,
-            refresh_token: nextSession.refresh_token,
-            expires_at: nextSession.expires_at || null,
-            user: nextSession.user ? { id: nextSession.user.id, email: nextSession.user.email, aud: nextSession.user.aud, role: nextSession.user.role } : null,
-            saved_at: Date.now()
-          })
-          try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
-          try { localStorage.setItem(SESSION_BACKUP_KEY, compactBackup) }
-          catch { try { sessionStorage.setItem(SESSION_BACKUP_KEY, compactBackup) } catch {} }
-        } else if (explicitSignOutRef.current) {
-          localStorage.removeItem(SESSION_BACKUP_KEY)
-        }
-      } catch (error) {
-        console.warn('Could not save Mio session backup.', error)
-      }
-    }
-
-    const readUsableBackup = () => {
-      try {
-        const raw = localStorage.getItem(SESSION_BACKUP_KEY) || sessionStorage.getItem(SESSION_BACKUP_KEY)
-        if (!raw) return null
-        const backup = JSON.parse(raw)
-        if (!backup?.access_token || !backup?.refresh_token || !backup?.user) return null
-        const expiresAtMs = Number(backup.expires_at || 0) * 1000
-        // Never feed an expired refresh token back into Supabase during startup. That was
-        // causing the app to wait on an orphaned GoTrue lock and repeatedly call /token.
-        if (!expiresAtMs || expiresAtMs <= Date.now() + 30000) return null
-        return {
-          access_token: backup.access_token,
-          refresh_token: backup.refresh_token,
-          expires_at: backup.expires_at,
-          expires_in: Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000)),
-          token_type: 'bearer',
-          user: backup.user
-        }
-      } catch (error) {
-        console.warn('Could not read Mio session backup.', error)
-        return null
-      }
-    }
 
     const finishAuthCheck = (nextSession = null) => {
       if (!mounted) return
@@ -3031,66 +2985,34 @@ function App() {
     }
 
     const recoverStoredSession = async () => {
-      const backup = readUsableBackup()
-      if (backup) {
-        // Render immediately from the still-valid backup instead of blocking the whole app
-        // while GoTrue waits on a stale cross-tab lock.
-        finishAuthCheck(backup)
-      }
-
       try {
         const result = await Promise.race([
           supabase.auth.getSession(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase session lookup timed out.')), AUTH_BOOT_TIMEOUT_MS))
         ])
-        const nextSession = result?.data?.session || null
-        if (nextSession) {
-          saveSessionBackup(nextSession)
-          finishAuthCheck(nextSession)
-        } else if (!backup) {
-          finishAuthCheck(null)
-        }
+        finishAuthCheck(result?.data?.session || null)
       } catch (error) {
         console.warn('Unable to recover Supabase session without blocking startup.', error)
-        if (!backup) finishAuthCheck(null)
+        finishAuthCheck(null)
       }
     }
 
     authTimeout = setTimeout(() => {
       console.warn('Supabase authentication startup timed out; showing the login screen instead of remaining stuck.')
-      if (!readUsableBackup()) finishAuthCheck(null)
+      finishAuthCheck(null)
     }, AUTH_BOOT_TIMEOUT_MS + 500)
 
     recoverStoredSession()
 
-    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       if (!mounted) return
-      if (nextSession) {
-        explicitSignOutRef.current = false
-        saveSessionBackup(nextSession)
-        finishAuthCheck(nextSession)
-        return
-      }
-      if (event === 'SIGNED_OUT') {
-        if (explicitSignOutRef.current) {
-          try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
-        }
-        finishAuthCheck(null)
-      }
+      if (nextSession) explicitSignOutRef.current = false
+      finishAuthCheck(nextSession || null)
     })
-
-    const handleSessionStorage = (event) => {
-      if (event.key !== SESSION_BACKUP_KEY || explicitSignOutRef.current) return
-      const backup = readUsableBackup()
-      if (backup) finishAuthCheck(backup)
-    }
-
-    window.addEventListener('storage', handleSessionStorage)
 
     return () => {
       mounted = false
       clearTimeout(authTimeout)
-      window.removeEventListener('storage', handleSessionStorage)
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
@@ -3852,9 +3774,16 @@ function App() {
     return Array.from(new Set((Array.isArray(member?.page_access) ? member.page_access : []).map((value) => String(value || '').trim()).filter(Boolean)))
   }
 
+  function isFirmStaffMember(member = currentTeamMember) {
+    const email = String(member?.email || session?.user?.email || '').trim().toLowerCase()
+    return email.endsWith('@beveridgelawfirm.com')
+  }
+
   function isClientPortalMember(member = currentTeamMember) {
     const pages = normalizedMemberPages(member)
-    return Boolean(member && pages.length === 1 && pages[0] === 'enforcement')
+    // Firm users must never be converted into the client portal merely because a
+    // page-access record is incomplete or was temporarily saved with one page.
+    return Boolean(member && !isFirmStaffMember(member) && pages.length === 1 && pages[0] === 'enforcement')
   }
 
   function clientPortalMatterRows(member = currentTeamMember) {
@@ -3893,6 +3822,10 @@ function App() {
   function getAllowedPages(member = currentTeamMember) {
     if (!member) return appPages.map((p) => p.value)
     if (member.is_active === false) return []
+    // Beveridge Law Firm accounts retain the complete Mio navigation. Client
+    // portal restrictions apply only to outside accounts specifically assigned
+    // Enforcement as their sole page.
+    if (isFirmStaffMember(member)) return appPages.map((p) => p.value)
     const pages = normalizedMemberPages(member)
     return pages.length ? pages : appPages.map((p) => p.value)
   }
@@ -3918,36 +3851,80 @@ function App() {
     return rows
   }
 
+  function clearMioBrowserCacheForAuthentication() {
+    // Supabase must be able to store its own auth token. Mio's durable state is
+    // already synchronized to Supabase, so old browser fallback copies can be
+    // removed safely when this origin is at the browser storage quota.
+    try {
+      const authKeys = new Set()
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i)
+        if (key && (key.startsWith('sb-') || key.includes('supabase'))) authKeys.add(key)
+      }
+      const removable = []
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i)
+        if (!key || authKeys.has(key)) continue
+        if (key.startsWith('caseMio') || key.startsWith('caseController') || key.startsWith('mio') || key.startsWith('clio')) removable.push(key)
+      }
+      removable.forEach((key) => localStorage.removeItem(key))
+      localStorage.removeItem('caseMioSupabaseSessionV1')
+      sessionStorage.removeItem('caseMioSupabaseSessionV1')
+    } catch (error) {
+      console.warn('Could not clear old Mio browser cache before authentication.', error)
+    }
+  }
+
   async function logIn(e) {
     explicitSignOutRef.current = false
     e.preventDefault()
     setLoginBlockedMessage('')
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: loginEmail,
-      password: loginPassword
-    })
+    clearMioBrowserCacheForAuthentication()
+
+    let data = null
+    let error = null
+    try {
+      const result = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password: loginPassword
+      })
+      data = result.data
+      error = result.error
+    } catch (signInError) {
+      // A previous oversized browser cache can make Supabase's internal token
+      // write throw instead of returning a normal auth error. Clear all
+      // non-auth fallback data and retry once.
+      if (String(signInError?.name || '').includes('QuotaExceeded') || String(signInError?.message || '').includes('quota')) {
+        try {
+          const preserve = []
+          for (let i = 0; i < localStorage.length; i += 1) {
+            const key = localStorage.key(i)
+            if (key && key.startsWith('sb-')) preserve.push([key, localStorage.getItem(key)])
+          }
+          localStorage.clear()
+          preserve.forEach(([key, value]) => { if (value != null) localStorage.setItem(key, value) })
+        } catch {}
+        const retry = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword })
+        data = retry.data
+        error = retry.error
+      } else {
+        error = signInError
+      }
+    }
 
     if (error) {
-      alert(error.message)
+      alert(error.message || String(error))
       return
     }
 
-    const nextSession = data?.session || null
-    try {
-      if (nextSession?.access_token && nextSession?.refresh_token) {
-        const compactBackup = JSON.stringify({ access_token: nextSession.access_token, refresh_token: nextSession.refresh_token, expires_at: nextSession.expires_at || null, user: nextSession.user ? { id: nextSession.user.id, email: nextSession.user.email, aud: nextSession.user.aud, role: nextSession.user.role } : null, saved_at: Date.now() })
-        try { localStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
-    try { sessionStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
-        try { localStorage.setItem('caseMioSupabaseSessionV1', compactBackup) } catch { try { sessionStorage.setItem('caseMioSupabaseSessionV1', compactBackup) } catch {} }
-      }
-    } catch {}
-    setSession(nextSession)
+    setSession(data?.session || null)
   }
 
   async function logOut() {
     explicitSignOutRef.current = true
     try { localStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
+    try { sessionStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
     await supabase.auth.signOut()
     setTeam([])
     setClients([])
