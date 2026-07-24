@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V136'
+const MIO_APP_VERSION = 'Mio V137'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1919,6 +1919,9 @@ function App() {
   })
   const [violationsMatterId, setViolationsMatterId] = useState('')
   const [expandedViolationIds, setExpandedViolationIds] = useState([])
+  const [enforcementAiFile, setEnforcementAiFile] = useState(null)
+  const [enforcementAiStatus, setEnforcementAiStatus] = useState('')
+  const [enforcementAiBusy, setEnforcementAiBusy] = useState(false)
   const [requestedReliefTables, setRequestedReliefTables] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioRequestedReliefTables') || 'null')
@@ -30583,13 +30586,15 @@ ${choices}`, '1'))
       id,
       title: 'New Violation',
       summary: '',
+      order_description: '',
       order_text: '',
       facts: '',
       relief_requested: '',
       legal_arguments: '',
       counter_arguments: '',
-      testimony_sections: [{ id: `testimony-${Date.now()}`, heading: 'Testimony', questions_answers: '' }],
+      testimony_sections: [{ id: `testimony-${Date.now()}`, heading: 'Testimony', qas: [{ id: `qa-${Date.now()}`, question: '', answer: '', exhibit_markers: [] }] }],
       document_ids: [],
+      legal_document_ids: [],
       created_at: new Date().toISOString()
     }
     updateMatterViolations(violationsMatterId, (rows) => [...rows, row])
@@ -30606,7 +30611,7 @@ ${choices}`, '1'))
   }
 
   function addViolationTestimonySection(violation) {
-    const next = [...(violation.testimony_sections || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `testimony-${Date.now()}`, heading: 'New Testimony Section', questions_answers: '' }]
+    const next = [...(violation.testimony_sections || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `testimony-${Date.now()}`, heading: 'New Testimony Heading', qas: [{ id: `qa-${Date.now()}`, question: '', answer: '', exhibit_markers: [] }] }]
     patchViolation(violation.id, { testimony_sections: next })
   }
 
@@ -30633,9 +30638,89 @@ ${choices}`, '1'))
     patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), ...newIds])) })
   }
 
+  async function uploadViolationLegalDocuments(violation, fileList) {
+    const files = Array.from(fileList || [])
+    if (!files.length || !violationsMatterId) return
+    const newIds = []
+    for (const file of files) {
+      const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const tempFilePayload = await readFileAsDataUrl(file)
+      const storedFilePayload = await uploadMioDocumentFile(file, docId, violationsMatterId)
+      const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Legal authority for enforcement violation: ${violation.title || 'Violation'}`, status: 'Neither', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
+      setDocuments((current) => [...current, nextDoc])
+      newIds.push(docId)
+    }
+    patchViolation(violation.id, { legal_document_ids: Array.from(new Set([...(violation.legal_document_ids || []), ...newIds])) })
+  }
+
   function violationPlainPreview(html, fallback = 'No details added yet.') {
     const text = String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
     return text || fallback
+  }
+
+  function downloadEnforcementTemplate() {
+    const text = `ENFORCEMENT INTAKE TEMPLATE\n\nMATTER / CASE:\n\nORDER DESCRIPTION:\nIdentify the order by title, signing date, court, and any page or paragraph references.\n\nVIOLATION 1 TITLE:\n\nORDER LANGUAGE (EXACT TEXT):\nPaste the exact provision that was violated.\n\nVIOLATION SUMMARY:\n\nVIOLATION FACTS:\nList each act or omission, dates, notice, and supporting facts.\n\nREQUESTED RELIEF / PENALTIES:\nState the contempt findings, confinement, fine, fees, make-up possession, compliance, clarification, or other relief requested.\n\nLEGAL ARGUMENTS / AUTHORITY:\n\nPOSSIBLE COUNTERARGUMENTS / TESTIMONY:\n\nTESTIMONY HEADING 1:\nQ:\nA:\nQ:\nA:\n\nEXHIBITS:\nExhibit 1 - name and description\n\n--- Duplicate the VIOLATION section for each additional violation. ---\n`
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'Enforcement_Intake_Template.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function normalizeEnforcementAiViolation(row = {}) {
+    const now = Date.now()
+    const sections = Array.isArray(row.testimony_sections) && row.testimony_sections.length ? row.testimony_sections : [{ heading: 'Testimony', qas: [] }]
+    return {
+      id: crypto?.randomUUID ? crypto.randomUUID() : `violation-${now}-${Math.random().toString(36).slice(2)}`,
+      title: row.title || 'Imported Violation',
+      summary: row.summary || '',
+      order_description: row.order_description || '',
+      order_text: row.order_text || '',
+      facts: row.facts || '',
+      relief_requested: row.relief_requested || '',
+      legal_arguments: row.legal_arguments || '',
+      counter_arguments: row.counter_arguments || '',
+      testimony_sections: sections.map((section, si) => ({
+        id: crypto?.randomUUID ? crypto.randomUUID() : `testimony-${now}-${si}`,
+        heading: section.heading || `Testimony Section ${si + 1}`,
+        qas: (Array.isArray(section.qas) ? section.qas : []).map((qa, qi) => ({ id: `qa-${now}-${si}-${qi}`, question: qa.question || '', answer: qa.answer || '', exhibit_markers: [] }))
+      })),
+      document_ids: [], legal_document_ids: [], created_at: new Date().toISOString(), imported_by_ai: true
+    }
+  }
+
+  async function analyzeEnforcementMotion() {
+    if (!violationsMatterId) return alert('Select a matter first.')
+    if (!enforcementAiFile) return alert('Choose a motion to enforce or completed enforcement template first.')
+    if (!session?.user?.id) return alert('You must be logged in to use AI import.')
+    setEnforcementAiBusy(true)
+    setEnforcementAiStatus('Reading the uploaded file...')
+    try {
+      const payload = await readFileAsDataUrl(enforcementAiFile)
+      const extracted = await extractDocumentTextForAi({ ...payload, name: enforcementAiFile.name, file_name: enforcementAiFile.name, file_type: enforcementAiFile.type })
+      if (!extracted.extracted_text || extracted.extracted_text.trim().length < 100) throw new Error((extracted.warnings || []).join(' ') || 'Mio could not read enough text from this file.')
+      setEnforcementAiStatus('AI is identifying order provisions, violations, requested penalties, and supporting sections...')
+      const matter = matters.find((row) => String(row.id) === String(violationsMatterId))
+      const { data, error } = await supabase.functions.invoke('analyze-enforcement-motion', { body: { user_id: session.user.id, matter_id: violationsMatterId, matter_name: matter ? formatMatterOption(matter) : '', file_name: enforcementAiFile.name, extracted_text: extracted.extracted_text } })
+      if (error) throw error
+      const imported = (data?.violations || []).map(normalizeEnforcementAiViolation)
+      if (!imported.length) throw new Error('The AI did not identify any violations. Review the file or use the enforcement intake template.')
+      updateMatterViolations(violationsMatterId, (current) => [...current, ...imported])
+      setExpandedViolationIds(imported.map((row) => row.id))
+      setEnforcementAiStatus(`Added ${imported.length} violation${imported.length === 1 ? '' : 's'}. Review every imported section against the filed motion.`)
+      setEnforcementAiFile(null)
+    } catch (error) {
+      console.error('Enforcement AI import failed:', error)
+      setEnforcementAiStatus(error.message || 'AI import failed.')
+      alert(error.message || 'AI import failed.')
+    } finally { setEnforcementAiBusy(false) }
+  }
+
+  function addTestimonyQa(violation, section) {
+    const sections = (violation.testimony_sections || []).map((row) => row.id === section.id ? { ...row, qas: [...(row.qas || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `qa-${Date.now()}`, question: '', answer: '', exhibit_markers: [] }] } : row)
+    patchViolation(violation.id, { testimony_sections: sections })
   }
 
   function renderEnforcementPage() {
@@ -30684,6 +30769,7 @@ ${choices}`, '1'))
             {violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement`)}>Copy client page link</button>}
           </div>
         </div>
+        <div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>
         {!violationsMatterId && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>Select a matter to begin an enforcement outline.</div>}
         {violationsMatterId && !rows.length && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>No violations have been added. Click Add Violation.</div>}
         {violationsMatterId && rows.length > 0 && <div className="enforcement-shell">
@@ -30701,7 +30787,7 @@ ${choices}`, '1'))
                 <button className="enforcement-no-print" type="button" onClick={()=>deleteViolation(violation.id)} style={{color:'#b91c1c'}}>Delete Violation</button>
               </div>
               {sectionRow('Violation Summary',violationPlainPreview(violation.summary||violation.facts),<RichTextBox value={violation.summary||''} onChange={(value)=>patchViolation(violation.id,{summary:value})} placeholder="Briefly summarize the violation..." minHeight={110}/>,true)}
-              {sectionRow('Order Language (Exact Text)',violationPlainPreview(violation.order_text),<RichTextBox value={violation.order_text||''} onChange={(value)=>patchViolation(violation.id,{order_text:value})} placeholder="Paste the exact order provision and identify the page/paragraph..." minHeight={130}/>)}
+              {sectionRow('Order Description and Exact Language',violationPlainPreview(violation.order_description||violation.order_text),<div style={{display:'grid',gap:10}}><LabeledField label="Order description"><RichTextBox value={violation.order_description||''} onChange={(value)=>patchViolation(violation.id,{order_description:value})} placeholder="Identify the order by title, signing date, court, and page/paragraph..." minHeight={90}/></LabeledField><LabeledField label="Exact order language"><RichTextBox value={violation.order_text||''} onChange={(value)=>patchViolation(violation.id,{order_text:value})} placeholder="Paste the exact provision that was violated..." minHeight={130}/></LabeledField></div>)}
               {sectionRow('Violation Facts / Explanation',violationPlainPreview(violation.facts),<RichTextBox value={violation.facts||''} onChange={(value)=>patchViolation(violation.id,{facts:value})} placeholder="Describe the date, conduct, notice, and how the order was violated..." minHeight={140}/>)}
               {sectionRow('Relief Requested',violationPlainPreview(violation.relief_requested),<RichTextBox value={violation.relief_requested||''} onChange={(value)=>patchViolation(violation.id,{relief_requested:value})} placeholder="Contempt finding, compliance, make-up time, fees, sanctions, clarification, or other relief..." minHeight={120}/>)}
               {sectionRow(`Exhibits (${linkedDocs.length})`,linkedDocs.map((doc,index)=>`Ex. ${index+1} ${doc.name||doc.file_name}`).join('; ')||'No exhibits added',<div>
@@ -30711,13 +30797,13 @@ ${choices}`, '1'))
                 </div>
                 <table className="enforcement-exhibit-table"><thead><tr><th>Exhibit No.</th><th>Document</th><th>Description / Date</th><th className="enforcement-no-print">Actions</th></tr></thead><tbody>{linkedDocs.map((doc,index)=><tr key={doc.id}><td><strong>Ex. {index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button></td><td>{doc.description||doc.date||doc.upload_date||'-'}</td><td className="enforcement-no-print"><button type="button" onClick={()=>patchViolation(violation.id,{document_ids:(violation.document_ids||[]).filter((id)=>String(id)!==String(doc.id))})} style={{color:'#b91c1c'}}>Delete</button></td></tr>)}{!linkedDocs.length&&<tr><td colSpan="4" style={{color:'#64748b'}}>No exhibits added.</td></tr>}</tbody></table>
               </div>)}
-              {sectionRow(`Testimony Q/A (${(violation.testimony_sections||[]).length} sections)`,(violation.testimony_sections||[]).map((row)=>row.heading).join('; ')||'No testimony sections',<div>
-                <div className="enforcement-no-print" style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}><button type="button" onClick={()=>addViolationTestimonySection(violation)}>+ Add Testimony Header / Section</button></div>
-                <div style={{display:'grid',gap:12}}>{(violation.testimony_sections||[]).map((section)=><section key={section.id} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:10,background:'#f8fafc'}}><div style={{display:'flex',gap:8,marginBottom:8}}><input value={section.heading||''} onChange={(e)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,heading:e.target.value}:row)})} style={{flex:1,fontWeight:850}}/><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).filter((row)=>row.id!==section.id)})} style={{color:'#b91c1c'}}>Delete section</button></div>
-                  {linkedDocs.length>0&&<div className="enforcement-no-print" style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}><span style={{fontSize:12,fontWeight:800,color:'#64748b',alignSelf:'center'}}>Insert exhibit marker:</span>{linkedDocs.map((doc,index)=><button key={doc.id} type="button" className="enforcement-marker-button" onClick={()=>insertViolationExhibitMarker(violation,section,doc,index+1)}>Ex. {index+1}</button>)}</div>}
-                  <RichTextBox value={section.questions_answers||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,questions_answers:value}:row)})} placeholder="Add each question and expected answer. Insert exhibit markers where the exhibit should be offered or discussed." minHeight={170}/></section>)}</div>
+              {sectionRow(`Testimony Q/A (${(violation.testimony_sections||[]).length} headings)`,(violation.testimony_sections||[]).map((row)=>row.heading).join('; ')||'No testimony headings',<div>
+                <div className="enforcement-no-print" style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}><button type="button" onClick={()=>addViolationTestimonySection(violation)}>+ Add New Heading</button></div>
+                <div style={{display:'grid',gap:12}}>{(violation.testimony_sections||[]).map((section)=><section key={section.id} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:10,background:'#f8fafc'}}><div style={{display:'flex',gap:8,marginBottom:8}}><input value={section.heading||''} onChange={(e)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,heading:e.target.value}:row)})} style={{flex:1,fontWeight:850}}/><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).filter((row)=>row.id!==section.id)})} style={{color:'#b91c1c'}}>Delete heading</button></div>
+                  <div style={{display:'grid',gap:8}}>{((section.qas&&section.qas.length)?section.qas:[{id:`legacy-${section.id}`,question:'',answer:violationPlainPreview(section.questions_answers,'')}]).map((qa,qi)=><div key={qa.id||qi} style={{display:'grid',gridTemplateColumns:'minmax(220px,1fr) minmax(260px,1fr) auto',gap:8,alignItems:'start',border:'1px solid #dbe3ea',borderRadius:8,padding:8,background:'#fff'}}><RichTextBox value={qa.question||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,question:value}:item)}:row)})} placeholder="Question" minHeight={74}/><div><RichTextBox value={qa.answer||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,answer:value}:item)}:row)})} placeholder="Expected answer" minHeight={74}/>{linkedDocs.length>0&&<div className="enforcement-no-print" style={{display:'flex',gap:5,flexWrap:'wrap',marginTop:5}}>{linkedDocs.map((doc,index)=><button key={doc.id} type="button" className="enforcement-marker-button" onClick={()=>{const marker=`<p><strong>[INTRODUCE EXHIBIT ${index+1}: ${doc.name||doc.file_name||'Document'}]</strong></p>`;patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,answer:`${item.answer||''}${marker}`}:item)}:row)})}}>Insert Ex. {index+1}</button>)}</div>}</div><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).filter((item)=>item.id!==qa.id)}:row)})} style={{color:'#b91c1c'}}>Delete</button></div>)}</div>
+                  <button className="enforcement-no-print" type="button" onClick={()=>addTestimonyQa(violation,section)} style={{marginTop:8}}>+ Add New Q/A</button></section>)}</div>
               </div>)}
-              {sectionRow('Legal Arguments / Authority',violationPlainPreview(violation.legal_arguments),<RichTextBox value={violation.legal_arguments||''} onChange={(value)=>patchViolation(violation.id,{legal_arguments:value})} placeholder="Add statutes, rules, cases, elements, burdens, and argument notes..." minHeight={150}/>)}
+              {sectionRow('Legal Arguments / Authority',violationPlainPreview(violation.legal_arguments),<div><RichTextBox value={violation.legal_arguments||''} onChange={(value)=>patchViolation(violation.id,{legal_arguments:value})} placeholder="Add statutes, rules, cases, elements, burdens, and argument notes..." minHeight={150}/><div className="enforcement-no-print" style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10}}><select defaultValue="" onChange={(e)=>{const id=e.target.value;if(id)patchViolation(violation.id,{legal_document_ids:Array.from(new Set([...(violation.legal_document_ids||[]),id]))});e.target.value=''}}><option value="">Attach legal authority document...</option>{matterDocs.filter((doc)=>!(violation.legal_document_ids||[]).includes(doc.id)).map((doc)=><option key={doc.id} value={doc.id}>{doc.name||doc.file_name||'Document'}</option>)}</select><label style={{cursor:'pointer'}}><span style={{border:'1px solid #cbd5e1',borderRadius:6,padding:'7px 10px',background:'#fff'}}>Upload authority document</span><input type="file" multiple style={{display:'none'}} onChange={(e)=>{uploadViolationLegalDocuments(violation,e.target.files);e.target.value=''}}/></label></div><div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>{(violation.legal_document_ids||[]).map((id)=>{const doc=documents.find((d)=>String(d.id)===String(id));return doc?<span key={id} style={{border:'1px solid #bfdbfe',background:'#eff6ff',padding:'5px 8px',borderRadius:999}}><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8'}}>{doc.name||doc.file_name}</button><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{legal_document_ids:(violation.legal_document_ids||[]).filter((x)=>String(x)!==String(id))})} style={{border:0,background:'transparent',color:'#b91c1c'}}>×</button></span>:null})}</div></div>)}
               {sectionRow('Possible Counterarguments / Testimony',violationPlainPreview(violation.counter_arguments),<RichTextBox value={violation.counter_arguments||''} onChange={(value)=>patchViolation(violation.id,{counter_arguments:value})} placeholder="Identify likely defenses, contrary testimony, impeachment points, and planned responses..." minHeight={150}/>)}
             </main>
           })()}
