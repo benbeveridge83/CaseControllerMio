@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V133'
+const MIO_APP_VERSION = 'Mio V134'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -171,6 +171,7 @@ const appPages = [
   { value: 'banking', label: 'Banking' },
   { value: 'service_inbox', label: 'Service Inbox' },
   { value: 'requested_relief', label: 'Requested Relief' },
+  { value: 'violations', label: 'Violations' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'checklist', label: 'Checklist' },
   { value: 'setting_center', label: 'Setting Center' },
@@ -199,6 +200,7 @@ const screenSaverBasePages = [
   { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
+  { value: 'violations', label: 'Violations', page: 'violations' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
   { value: 'checklist', label: 'Checklist', page: 'checklist' },
   { value: 'setting_center', label: 'Setting Center', page: 'setting_center' },
@@ -848,6 +850,9 @@ function RichTextBox({ value = '', onChange, placeholder = '', minHeight = 110 }
         <button type="button" onClick={() => runCommand('bold')}><strong>B</strong></button>
         <button type="button" onClick={() => runCommand('italic')}><em>I</em></button>
         <button type="button" onClick={() => runCommand('underline')}><u>U</u></button>
+        <button type="button" onClick={() => { document.execCommand('formatBlock', false, 'h2'); onChange(editorRef.current?.innerHTML || '') }}>H2</button>
+        <button type="button" onClick={() => { document.execCommand('formatBlock', false, 'h3'); onChange(editorRef.current?.innerHTML || '') }}>H3</button>
+        <button type="button" onClick={() => { document.execCommand('formatBlock', false, 'p'); onChange(editorRef.current?.innerHTML || '') }}>P</button>
         <button type="button" onClick={() => runCommand('insertOrderedList')}>1.</button>
         <button type="button" onClick={() => runCommand('insertUnorderedList')}>•</button>
         <button type="button" onClick={() => runCommand('indent')}>Indent</button>
@@ -1908,6 +1913,12 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefTemplates') || '[]') }
     catch { return [] }
   })
+  const [violationsByMatter, setViolationsByMatter] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioViolationsByMatter') || '{}') }
+    catch { return {} }
+  })
+  const [violationsMatterId, setViolationsMatterId] = useState('')
+  const [expandedViolationIds, setExpandedViolationIds] = useState([])
   const [requestedReliefTables, setRequestedReliefTables] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioRequestedReliefTables') || 'null')
@@ -2499,6 +2510,7 @@ function App() {
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
       caseMioRequestedReliefTemplates: { setter: (value) => setRequestedReliefTemplates(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefTemplates', requestedReliefTemplates)), kind: 'array', fallback: [] },
+      caseMioViolationsByMatter: { setter: setViolationsByMatter, kind: 'object', fallback: {} },
       caseMioRequestedReliefTables: { setter: (value) => setRequestedReliefTables(Array.isArray(value) && value.length ? value.map(ensureRequestedReliefTableShape) : defaultRequestedReliefTables.map(ensureRequestedReliefTableShape)), kind: 'array', fallback: defaultRequestedReliefTables },
       caseMioRequestedReliefMatrixTable: { setter: (value) => setRequestedReliefMatrixTable(ensureRequestedReliefMatrixShape(value)), kind: 'object', fallback: defaultRequestedReliefMatrixTable },
       caseMioRequestedReliefTableExpandedIds: { setter: setRequestedReliefTableExpandedIds, kind: 'array', fallback: [] },
@@ -3255,6 +3267,10 @@ function App() {
       try { saveMioStateKey('caseMioRequestedReliefTemplatesBackup', JSON.stringify(requestedReliefTemplates)) } catch {}
     }
   }, [requestedReliefTemplates])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioViolationsByMatter', JSON.stringify(violationsByMatter)) } catch {}
+  }, [violationsByMatter])
 
   useEffect(() => {
     try { localStorage.setItem('caseMioRequestedReliefLayout', requestedReliefLayout) } catch {}
@@ -27997,7 +28013,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       name: issueSet?.name || template?.name || 'Matter Issues',
       selected_issue_ids: expandedSelectedIssueIds.filter((id) => allIds.includes(id)),
       selected_table_ids: (issueSet?.selected_table_ids || template?.selected_table_ids || []).filter((id) => requestedReliefTables.some((table) => table.id === id)),
-      hidden_issue_ids: issueSet?.hidden_issue_ids || []
+      hidden_issue_ids: issueSet?.hidden_issue_ids || [],
+      source_template_id: template?.id || ''
     })
     setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))
     setShowRequestedReliefBuilder(true)
@@ -29153,7 +29170,12 @@ ${choices}`, '1'))
               </select>
             </LabeledField>
           )}
-          {isIssueBuilder && <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>}
+          {isIssueBuilder && <>
+            <button type="button" onClick={() => setRequestedReliefBuilderEditMode((on) => !on)} style={{ background: requestedReliefBuilderEditMode ? '#f59e0b' : undefined, color: requestedReliefBuilderEditMode ? 'white' : undefined }}>{requestedReliefBuilderEditMode ? 'Add/Edit Issues: ON' : 'Add/Edit Issues'}</button>
+            <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>
+            <button type="button" onClick={saveRequestedReliefBuilderAsTemplate}>Save as New Template</button>
+            <button type="button" onClick={updateRequestedReliefBuilderTemplate} style={{ background: '#1d4ed8', color: 'white' }}>Update Template</button>
+          </>}
           {!isIssueBuilder && (
             <>
               <LabeledField label="Issue/template source">
@@ -29183,7 +29205,7 @@ ${choices}`, '1'))
                   <button type="button" onClick={() => setRequestedReliefLayout('multiple')} style={{ border: 0, padding: '8px 14px', background: requestedReliefLayout === 'multiple' ? '#dbeafe' : 'white', fontWeight: requestedReliefLayout === 'multiple' ? 'bold' : 'normal' }}>Multiple choice</button>
                 </div>
               </LabeledField>
-              <button type="button" onClick={() => setRequestedReliefBuilderEditMode((on) => !on)} style={{ background: requestedReliefBuilderEditMode ? '#f59e0b' : undefined, color: requestedReliefBuilderEditMode ? 'white' : undefined }}>{requestedReliefBuilderEditMode ? 'Editing relief: ON' : 'Edit relief on page'}</button>
+              <button type="button" onClick={() => setRequestedReliefBuilderEditMode((on) => !on)} style={{ background: requestedReliefBuilderEditMode ? '#f59e0b' : undefined, color: requestedReliefBuilderEditMode ? 'white' : undefined }}>{requestedReliefBuilderEditMode ? 'Add/Edit Issues: ON' : 'Add/Edit Issues'}</button>
               <button type="button" onClick={() => setRequestedReliefBuilderHideOptions((on) => !on)}>{requestedReliefBuilderHideOptions ? 'Show options' : 'Hide options'}</button>
               <button type="button" onClick={saveRequestedReliefBuilderAsTemplate}>Save as Template</button>
               <button type="button" onClick={updateRequestedReliefBuilderTemplate} style={{ background: '#1d4ed8', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>Update Template</button>
@@ -29514,7 +29536,33 @@ ${choices}`, '1'))
     const settingsTabButton = (value, label) => (
       <button type="button" onClick={() => setRequestedReliefSettingsView(value)} style={{ marginRight: 8, marginBottom: 10, fontWeight: requestedReliefSettingsView === value ? 900 : 600, background: requestedReliefSettingsView === value ? '#dbeafe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '7px 10px' }}>{label}</button>
     )
-    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    if (requestedReliefSettingsView === 'templates') {
+      return (
+        <>
+          {settingsTabs}
+          <h2>Requested Relief Templates</h2>
+          <p style={{ color: '#475569' }}>Open a template here to edit its issues, hierarchy, relief options, selected options, and tables. Saving updates the reusable template used for new matters.</p>
+          <div style={{ marginBottom: 10 }}>
+            <button type="button" onClick={() => beginRequestedIssueBuilder({ template: { id: '', name: 'New Requested Relief Template', selected_issue_ids: activeRequestedReliefOptions().filter((row) => !isRequestedReliefOptionRow(row)).map((row) => row.id), selected_table_ids: [] } })}>+ New Template</button>
+          </div>
+          {!requestedReliefTemplates.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 18, color: '#64748b' }}>No templates have been saved yet.</div>}
+          <div style={{ display: 'grid', gap: 10 }}>
+            {requestedReliefTemplates.map((template) => (
+              <section key={template.id} style={{ border: '1px solid #dbe3ea', borderRadius: 10, padding: 12, background: '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div><strong>{template.name || 'Unnamed template'}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{(template.selected_issue_ids || template.issue_option_ids || []).length} issue rows • {(template.selected_option_ids || []).length} selected relief options • {(template.selected_table_ids || []).length} tables</div></div>
+                  <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => beginRequestedIssueBuilder({ template })}>Open / Edit Template</button>
+                    <button type="button" onClick={() => { if (window.confirm(`Delete template "${template.name || 'Unnamed template'}"?`)) setRequestedReliefTemplates((current) => current.filter((row) => row.id !== template.id)) }} style={{ color: '#b91c1c' }}>Delete</button>
+                  </div>
+                </div>
+              </section>
+            ))}
+          </div>
+        </>
+      )
+    }
     if (requestedReliefSettingsView === 'matrix') {
       return <>{settingsTabs}{renderRequestedReliefMatrixTable({ title: 'Requested Relief Table', maxHeight: 720 })}</>
     }
@@ -30473,6 +30521,105 @@ ${choices}`, '1'))
         <button type="button" onClick={uploadRequestedReliefExhibitDocument}>Upload, Save as Document, and Attach</button>
       </div>}
     </Modal>
+  }
+
+  function matterViolations(matterId = violationsMatterId) {
+    return Array.isArray(violationsByMatter?.[matterId]) ? violationsByMatter[matterId] : []
+  }
+
+  function updateMatterViolations(matterId, updater) {
+    if (!matterId) return
+    setViolationsByMatter((current) => ({ ...current, [matterId]: updater(Array.isArray(current?.[matterId]) ? current[matterId] : []) }))
+  }
+
+  function addViolation() {
+    if (!violationsMatterId) return alert('Select a matter first.')
+    const id = crypto?.randomUUID ? crypto.randomUUID() : `violation-${Date.now()}`
+    const row = { id, title: 'New Violation', order_text: '', facts: '', relief_requested: '', testimony_sections: [{ id: `testimony-${Date.now()}`, heading: 'Testimony', questions_answers: '' }], document_ids: [], created_at: new Date().toISOString() }
+    updateMatterViolations(violationsMatterId, (rows) => [...rows, row])
+    setExpandedViolationIds((current) => Array.from(new Set([...current, id])))
+  }
+
+  function patchViolation(violationId, patch) {
+    updateMatterViolations(violationsMatterId, (rows) => rows.map((row) => row.id === violationId ? { ...row, ...patch, updated_at: new Date().toISOString() } : row))
+  }
+
+  function deleteViolation(violationId) {
+    if (!window.confirm('Delete this violation and its testimony plan?')) return
+    updateMatterViolations(violationsMatterId, (rows) => rows.filter((row) => row.id !== violationId))
+  }
+
+  function addViolationTestimonySection(violation) {
+    const next = [...(violation.testimony_sections || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `testimony-${Date.now()}`, heading: 'New Testimony Section', questions_answers: '' }]
+    patchViolation(violation.id, { testimony_sections: next })
+  }
+
+  async function uploadViolationExhibits(violation, fileList) {
+    const files = Array.from(fileList || [])
+    if (!files.length || !violationsMatterId) return
+    const newIds = []
+    for (const file of files) {
+      const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const tempFilePayload = await readFileAsDataUrl(file)
+      const storedFilePayload = await uploadMioDocumentFile(file, docId, violationsMatterId)
+      const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Uploaded for violation: ${violation.title || 'Violation'}`, status: 'Our Exhibit', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
+      setDocuments((current) => [...current, nextDoc])
+      newIds.push(docId)
+    }
+    patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), ...newIds])) })
+  }
+
+  function renderViolationsPage() {
+    const rows = matterViolations()
+    const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(violationsMatterId || ''))
+    return (
+      <div>
+        <h1>Violations</h1>
+        <p style={{ color: '#566', marginTop: -6 }}>A client-shareable enforcement workspace. Give a client access to the Violations page in Team settings, then limit the client to the appropriate matter.</p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
+          <LabeledField label="Matter"><SmartMatterSelect value={violationsMatterId} onChange={setViolationsMatterId} placeholder="Select matter" /></LabeledField>
+          <button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>
+          {violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#violations`)}>Copy client page link</button>}
+        </div>
+        {!violationsMatterId && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 20, color: '#64748b' }}>Select a matter to add or review violations.</div>}
+        {violationsMatterId && !rows.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 20, color: '#64748b' }}>No violations have been added for this matter.</div>}
+        <div style={{ display: 'grid', gap: 12 }}>
+          {rows.map((violation, index) => {
+            const expanded = expandedViolationIds.includes(violation.id)
+            const linkedDocs = (violation.document_ids || []).map((id) => documents.find((doc) => String(doc.id) === String(id))).filter(Boolean)
+            return (
+              <section key={violation.id} style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 11, background: '#f8fafc' }}>
+                  <button type="button" onClick={() => setExpandedViolationIds((current) => current.includes(violation.id) ? current.filter((id) => id !== violation.id) : [...current, violation.id])}>{expanded ? '▾' : '▸'}</button>
+                  <strong style={{ color: '#1d4ed8' }}>{index + 1}.</strong>
+                  <input value={violation.title || ''} onChange={(e) => patchViolation(violation.id, { title: e.target.value })} style={{ flex: 1, fontWeight: 800 }} />
+                  <button type="button" onClick={() => deleteViolation(violation.id)} style={{ color: '#b91c1c' }}>Delete</button>
+                </div>
+                {expanded && <div style={{ padding: 12, display: 'grid', gap: 14 }}>
+                  <div><strong>Text from order being violated</strong><RichTextBox value={violation.order_text || ''} onChange={(value) => patchViolation(violation.id, { order_text: value })} placeholder="Paste the exact provision from the order..." minHeight={120} /></div>
+                  <div><strong>Violation facts / explanation</strong><RichTextBox value={violation.facts || ''} onChange={(value) => patchViolation(violation.id, { facts: value })} placeholder="Describe when, where, and how the order was violated..." minHeight={120} /></div>
+                  <div><strong>Relief requested for this violation</strong><RichTextBox value={violation.relief_requested || ''} onChange={(value) => patchViolation(violation.id, { relief_requested: value })} placeholder="Contempt, compliance, make-up time, fees, clarification, jail/probation terms, or other relief..." minHeight={100} /></div>
+                  <div style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}><strong>Exhibits</strong><label style={{ cursor: 'pointer' }}><span style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 10px', background: '#fff' }}>Upload raw files</span><input type="file" multiple style={{ display: 'none' }} onChange={(e) => { uploadViolationExhibits(violation, e.target.files); e.target.value = '' }} /></label></div>
+                    <select defaultValue="" onChange={(e) => { const id = e.target.value; if (id) patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), id])) }); e.target.value = '' }}>
+                      <option value="">Choose document already attached to matter...</option>{matterDocs.filter((doc) => !(violation.document_ids || []).includes(doc.id)).map((doc) => <option key={doc.id} value={doc.id}>{doc.name || doc.file_name || 'Document'}</option>)}
+                    </select>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>{linkedDocs.map((doc) => <span key={doc.id} style={{ border: '1px solid #d7e0ea', borderRadius: 8, padding: '5px 8px', background: '#fff' }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', fontWeight: 700 }}>{doc.name || doc.file_name}</button> <button type="button" onClick={() => patchViolation(violation.id, { document_ids: (violation.document_ids || []).filter((id) => id !== doc.id) })} style={{ color: '#b91c1c' }}>x</button></span>)}</div>
+                  </div>
+                  <div style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}><strong>Testimony plan</strong><button type="button" onClick={() => addViolationTestimonySection(violation)}>+ Add Testimony Header / Section</button></div>
+                    <div style={{ display: 'grid', gap: 10 }}>{(violation.testimony_sections || []).map((section, sectionIndex) => <section key={section.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: '#f8fafc' }}>
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 7 }}><input value={section.heading || ''} onChange={(e) => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.map((row) => row.id === section.id ? { ...row, heading: e.target.value } : row) })} style={{ flex: 1, fontWeight: 800 }} /><button type="button" onClick={() => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.filter((row) => row.id !== section.id) })} style={{ color: '#b91c1c' }}>Delete section</button></div>
+                      <RichTextBox value={section.questions_answers || ''} onChange={(value) => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.map((row) => row.id === section.id ? { ...row, questions_answers: value } : row) })} placeholder="Add questions and expected answers. Use headings, numbering, bold, italics, and indentation as needed..." minHeight={150} />
+                    </section>)}</div>
+                  </div>
+                </div>}
+              </section>
+            )
+          })}
+        </div>
+      </div>
+    )
   }
 
   function renderRequestedReliefPage() {
@@ -33667,6 +33814,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'service_inbox' && canOpenPage('service_inbox') && renderServiceInboxPage()}
 
         {page === 'requested_relief' && canOpenPage('requested_relief') && renderRequestedReliefPage()}
+
+        {page === 'violations' && canOpenPage('violations') && renderViolationsPage()}
 
         {page === 'ideas' && canOpenPage('ideas') && (
           <>
