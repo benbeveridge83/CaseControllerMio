@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V137'
+const MIO_APP_VERSION = 'Mio V139'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -157,6 +157,52 @@ function DiscoveryDateInput({ value, onChange }) {
       >N/A</button>
     </span>
   )
+}
+
+
+const CHECKLIST_TIMELINE_ICON_OPTIONS = [
+  { value: 'file', label: 'File / document' },
+  { value: 'mail', label: 'Notice / email' },
+  { value: 'scales', label: 'Requested relief / scales' },
+  { value: 'folder', label: 'Exhibits / folder' },
+  { value: 'people', label: 'Witnesses / people' },
+  { value: 'courthouse', label: 'Court / order' },
+  { value: 'briefcase', label: 'Preparation / briefcase' },
+  { value: 'calendar', label: 'Calendar / deadline' },
+  { value: 'checklist', label: 'Checklist' },
+  { value: 'none', label: 'No icon (colored square)' }
+]
+
+const DEFAULT_EVENT_CHECKLIST_TEMPLATES = {
+  Trial: [
+    { id: 'file-notice', name: 'File Notice of Trial', icon: 'file', color: '#2563eb', required: true },
+    { id: 'notify-client', name: 'Notify Client', icon: 'mail', color: '#0891b2', required: true },
+    { id: 'requested-relief', name: 'Requested Relief', icon: 'scales', color: '#f97316', required: true },
+    { id: 'exhibit-list', name: 'Exhibit List', icon: 'folder', color: '#65a30d', required: true },
+    { id: 'witness-list', name: 'Witness List', icon: 'people', color: '#7c3aed', required: true },
+    { id: 'pretrial-order', name: 'Pre-Trial Order', icon: 'courthouse', color: '#dc2626', required: false },
+    { id: 'final-prep', name: 'Final Witness Prep', icon: 'briefcase', color: '#475569', required: false }
+  ],
+  Hearing: [
+    { id: 'hearing-notice', name: 'File / Confirm Notice', icon: 'file', color: '#ea580c', required: true },
+    { id: 'hearing-client', name: 'Notify Client', icon: 'mail', color: '#f97316', required: true },
+    { id: 'hearing-relief', name: 'Confirm Requested Relief', icon: 'scales', color: '#d97706', required: true },
+    { id: 'hearing-exhibits', name: 'Prepare Exhibits', icon: 'folder', color: '#65a30d', required: false }
+  ],
+  Mediation: [
+    { id: 'mediation-confirm', name: 'Confirm Mediation', icon: 'calendar', color: '#16a34a', required: true },
+    { id: 'mediation-client', name: 'Prepare Client', icon: 'people', color: '#059669', required: true },
+    { id: 'mediation-position', name: 'Position Statement', icon: 'file', color: '#0d9488', required: false },
+    { id: 'mediation-exhibits', name: 'Mediation Exhibits', icon: 'folder', color: '#65a30d', required: false }
+  ],
+  Deposition: [
+    { id: 'depo-notice', name: 'Deposition Notice', icon: 'file', color: '#7c3aed', required: true },
+    { id: 'depo-client', name: 'Prepare Witness', icon: 'people', color: '#8b5cf6', required: true },
+    { id: 'depo-exhibits', name: 'Deposition Exhibits', icon: 'folder', color: '#a855f7', required: false }
+  ],
+  Other: [
+    { id: 'other-review', name: 'Review Event', icon: 'checklist', color: '#64748b', required: true }
+  ]
 }
 
 const appPages = [
@@ -1302,6 +1348,7 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const explicitSignOutRef = useRef(false)
   const [currentTeamMember, setCurrentTeamMember] = useState(null)
+  const [userAccessChecked, setUserAccessChecked] = useState(false)
   const [loginBlockedMessage, setLoginBlockedMessage] = useState('')
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
@@ -1922,6 +1969,8 @@ function App() {
   const [enforcementAiFile, setEnforcementAiFile] = useState(null)
   const [enforcementAiStatus, setEnforcementAiStatus] = useState('')
   const [enforcementAiBusy, setEnforcementAiBusy] = useState(false)
+  const [enforcementSharedReady, setEnforcementSharedReady] = useState(false)
+  const enforcementSharedSaveTimersRef = useRef({})
   const [requestedReliefTables, setRequestedReliefTables] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioRequestedReliefTables') || 'null')
@@ -2132,6 +2181,22 @@ function App() {
   })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
   const [checklistViewMode, setChecklistViewMode] = useState(() => localStorage.getItem('caseMioChecklistViewMode') || 'table')
+  const [checklistTimelineMonths, setChecklistTimelineMonths] = useState(() => Math.min(4, Math.max(1, Number(localStorage.getItem('caseMioChecklistTimelineMonths') || 3))))
+  const [checklistTimelineGroupBy, setChecklistTimelineGroupBy] = useState(() => localStorage.getItem('caseMioChecklistTimelineGroupBy') || 'matter')
+  const [checklistTimelineSettingsOpen, setChecklistTimelineSettingsOpen] = useState(() => localStorage.getItem('caseMioChecklistTimelineSettingsOpen') === 'true')
+  const [checklistTimelineDetailsOpen, setChecklistTimelineDetailsOpen] = useState(() => localStorage.getItem('caseMioChecklistTimelineDetailsOpen') !== 'false')
+  const [checklistTimelineSelectedEventId, setChecklistTimelineSelectedEventId] = useState('')
+  const [checklistTimelineTemplateType, setChecklistTimelineTemplateType] = useState('Trial')
+  const [eventChecklistTemplates, setEventChecklistTemplates] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioEventChecklistTemplates') || 'null')
+      return parsed && typeof parsed === 'object' ? parsed : DEFAULT_EVENT_CHECKLIST_TEMPLATES
+    } catch { return DEFAULT_EVENT_CHECKLIST_TEMPLATES }
+  })
+  const [eventChecklistCompletions, setEventChecklistCompletions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioEventChecklistCompletions') || '{}') || {} } catch { return {} }
+  })
+
   const [checklistDayGridShowEmptyDays, setChecklistDayGridShowEmptyDays] = useState(() => localStorage.getItem('caseMioChecklistDayGridShowEmptyDays') === 'true')
   const [checklistDayGridRowHeight, setChecklistDayGridRowHeight] = useState(() => {
     const saved = Number(localStorage.getItem('caseMioChecklistDayGridRowHeight') || 96)
@@ -3526,14 +3591,27 @@ function App() {
     const email = session?.user?.email || ''
     if (!email) {
       loadedSessionUserRef.current = ''
+      setUserAccessChecked(false)
       return
     }
     if (loadedSessionUserRef.current === email) return
     loadedSessionUserRef.current = email
-    fetchInitialData()
-    checkCurrentUserAccess(email)
-    loadMioCloudStateFromSupabase(session?.user?.id)
+    ;(async () => {
+      const member = await checkCurrentUserAccess(email)
+      if (isClientPortalMember(member)) await fetchClientPortalMatters(email)
+      else {
+        await fetchInitialData()
+        await loadMioCloudStateFromSupabase(session?.user?.id)
+      }
+    })()
   }, [session?.user?.email, session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.email || !userAccessChecked || !isClientPortalMember()) return
+    if (page !== 'enforcement') setPage('enforcement')
+    const rows = clientPortalMatterRows()
+    if (!rows.some((matter) => String(matter.id) === String(violationsMatterId))) setViolationsMatterId(rows[0]?.id || '')
+  }, [session?.user?.email, userAccessChecked, currentTeamMember, matters, page, violationsMatterId])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerDocuments', JSON.stringify(stripLargeFileData(documents)))
@@ -3690,6 +3768,14 @@ function App() {
     safeSetLocalStorage('caseMioChecklistViewMode', checklistViewMode || 'table')
   }, [checklistViewMode])
 
+  useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineMonths', String(checklistTimelineMonths || 3)) }, [checklistTimelineMonths])
+  useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineGroupBy', checklistTimelineGroupBy || 'matter') }, [checklistTimelineGroupBy])
+  useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineSettingsOpen', checklistTimelineSettingsOpen ? 'true' : 'false') }, [checklistTimelineSettingsOpen])
+  useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineDetailsOpen', checklistTimelineDetailsOpen ? 'true' : 'false') }, [checklistTimelineDetailsOpen])
+  useEffect(() => { safeSetLocalStorage('caseMioEventChecklistTemplates', JSON.stringify(eventChecklistTemplates || DEFAULT_EVENT_CHECKLIST_TEMPLATES)) }, [eventChecklistTemplates])
+  useEffect(() => { safeSetLocalStorage('caseMioEventChecklistCompletions', JSON.stringify(eventChecklistCompletions || {})) }, [eventChecklistCompletions])
+
+
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistDayGridShowEmptyDays', checklistDayGridShowEmptyDays ? 'true' : 'false')
   }, [checklistDayGridShowEmptyDays])
@@ -3762,55 +3848,74 @@ function App() {
     await fetchTasks()
   }
 
+  function normalizedMemberPages(member) {
+    return Array.from(new Set((Array.isArray(member?.page_access) ? member.page_access : []).map((value) => String(value || '').trim()).filter(Boolean)))
+  }
+
+  function isClientPortalMember(member = currentTeamMember) {
+    const pages = normalizedMemberPages(member)
+    return Boolean(member && pages.length === 1 && pages[0] === 'enforcement')
+  }
+
+  function clientPortalMatterRows(member = currentTeamMember) {
+    if (!isClientPortalMember(member)) return matters
+    const email = String(member?.email || session?.user?.email || '').trim().toLowerCase()
+    if (!email) return []
+    return matters.filter((matter) => String(matterClientEmail(matter) || '').trim().toLowerCase() === email)
+  }
+
   async function checkCurrentUserAccess(email) {
     setLoginBlockedMessage('')
-
-    const { data, error } = await supabase
-      .from('team_members')
-      .select('*')
-      .ilike('email', email)
-      .limit(1)
-      .maybeSingle()
-
+    setUserAccessChecked(false)
+    const { data, error } = await supabase.from('team_members').select('*').ilike('email', email).limit(1).maybeSingle()
     if (error) {
       console.log(error.message)
       setCurrentTeamMember(null)
-      return
+      setUserAccessChecked(true)
+      return null
     }
-
     if (data && data.is_active === false) {
       setLoginBlockedMessage('Your user account is inactive. Please contact the administrator.')
       await supabase.auth.signOut()
       setSession(null)
       setCurrentTeamMember(null)
-      return
+      setUserAccessChecked(true)
+      return null
     }
-
     setCurrentTeamMember(data || null)
-
+    setUserAccessChecked(true)
     const allowed = getAllowedPages(data)
-    if (data && allowed.length > 0 && !allowed.includes(page)) {
-      setPage(allowed[0])
-    }
+    if (isClientPortalMember(data)) setPage('enforcement')
+    else if (data && allowed.length > 0 && !allowed.includes(page)) setPage(allowed[0])
+    return data || null
   }
 
   function getAllowedPages(member = currentTeamMember) {
     if (!member) return appPages.map((p) => p.value)
     if (member.is_active === false) return []
-
-    if (Array.isArray(member.page_access) && member.page_access.length > 0) {
-      return Array.from(new Set([...member.page_access, 'withdrawals', 'inventory', 'matter_timelines', 'tasks', 'billing', 'service_inbox', 'requested_relief', 'calendar', 'checklist', 'setting_center', 'discovery', 'documents', 'onedrive_files', 'elements', 'people', 'tags', 'workflow', 'screensaver', 'ideas', 'settings']))
-    }
-
-    return appPages.map((p) => p.value)
+    const pages = normalizedMemberPages(member)
+    return pages.length ? pages : appPages.map((p) => p.value)
   }
 
   function canOpenPage(pageName) {
-    // Service Inbox is a newly added core page. Existing team-member page_access
-    // records may not contain it yet, so keep it visible instead of letting the
-    // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory' || pageName === 'setting_center' || pageName === 'enforcement') return true
     return getAllowedPages().includes(pageName)
+  }
+
+  async function fetchClientPortalMatters(email) {
+    const { data, error } = await supabase
+      .from('matters')
+      .select(`*, clients!inner(first_name,last_name,email,phone,address,city,state,zip,notes,is_active), courts(court_name,county,court_phone,court_address,court_coordinator,court_coordinator_email,court_coordinator_phone,court_website,court_docket)`)
+      .ilike('clients.email', String(email || '').trim())
+      .order('created_at', { ascending: false })
+    if (error) {
+      console.error('Could not load the client portal matter:', error)
+      setMatters([])
+      return []
+    }
+    const rows = data || []
+    setMatters(rows)
+    setClients(rows.map((row) => row.clients).filter(Boolean))
+    return rows
   }
 
   async function logIn(e) {
@@ -5587,6 +5692,176 @@ function App() {
       const bv = bi === -1 ? 999 : bi
       return av - bv || a.localeCompare(b)
     })
+  }
+
+
+  function ChecklistTimelineIcon({ name = 'none', size = 17, color = 'currentColor', strokeWidth = 1.8 }) {
+    const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
+    if (name === 'file') return <svg {...common}><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M9 12h6M9 16h6"/></svg>
+    if (name === 'mail') return <svg {...common}><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg>
+    if (name === 'scales') return <svg {...common}><path d="M12 3v18M7 5h10M5 8l-3 6h6L5 8Zm14 0-3 6h6l-3-6ZM7 21h10"/></svg>
+    if (name === 'folder') return <svg {...common}><path d="M3 6h7l2 2h9v11H3z"/><path d="M3 10h18"/></svg>
+    if (name === 'people') return <svg {...common}><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c.5-4 2.5-6 6-6s5.5 2 6 6M14 15c3.5 0 5.5 1.7 6 5"/></svg>
+    if (name === 'courthouse') return <svg {...common}><path d="m3 9 9-6 9 6M5 10h14M6 10v8M10 10v8M14 10v8M18 10v8M3 21h18M4 18h16"/></svg>
+    if (name === 'briefcase') return <svg {...common}><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V4h6v3M3 12h18M10 12v3h4v-3"/></svg>
+    if (name === 'calendar') return <svg {...common}><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+    if (name === 'checklist') return <svg {...common}><rect x="4" y="3" width="16" height="18" rx="2"/><path d="m8 9 1.5 1.5L12 8M14 9h3m-9 6 1.5 1.5L12 14M14 15h3"/></svg>
+    return <span style={{ width: size - 3, height: size - 3, border: `2px solid ${color}`, borderRadius: 3, display: 'inline-block' }} />
+  }
+
+  function checklistTimelineEventType(event = {}) {
+    const raw = String(event.checklist_category || event.event_category || event.checklist_subcategory || event.event_subcategory || '').toLowerCase()
+    if (raw.includes('trial')) return 'Trial'
+    if (raw.includes('hearing')) return 'Hearing'
+    if (raw.includes('mediat')) return 'Mediation'
+    if (raw.includes('deposition') || raw.includes('depo')) return 'Deposition'
+    return 'Other'
+  }
+
+  function checklistTimelineEventColor(event = {}) {
+    const type = checklistTimelineEventType(event)
+    return ({ Trial: '#2563eb', Hearing: '#f97316', Mediation: '#16a34a', Deposition: '#7c3aed', Other: '#64748b' })[type]
+  }
+
+  function checklistTimelineTemplateForEvent(event = {}) {
+    const type = checklistTimelineEventType(event)
+    return eventChecklistTemplates[type] || eventChecklistTemplates.Other || DEFAULT_EVENT_CHECKLIST_TEMPLATES.Other
+  }
+
+  function checklistTimelineCompletionKey(event = {}, item = {}) {
+    return `${event.id || event.checklist_source_id || event.checklist_id || 'event'}::${item.id}`
+  }
+
+  function toggleChecklistTimelineCompletion(event, item) {
+    const key = checklistTimelineCompletionKey(event, item)
+    setEventChecklistCompletions((current) => {
+      const next = { ...(current || {}) }
+      if (next[key]?.completed) delete next[key]
+      else next[key] = { completed: true, completed_at: new Date().toISOString(), completed_by: currentUser?.name || currentUser?.email || 'Current user' }
+      return next
+    })
+  }
+
+  function checklistTimelineRowLabel(event = {}) {
+    if (checklistTimelineGroupBy === 'category') return checklistEventCategoryLabel(event)
+    if (checklistTimelineGroupBy === 'court') return checklistCourtName(event) || 'No court listed'
+    return checklistMatterLabel(event)
+  }
+
+  function checklistTimelineMonthStart(eventsList = []) {
+    const dates = eventsList.map(checklistDateObj).filter(Boolean).sort((a, b) => a - b)
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    const first = dates.find((date) => date >= new Date(today.getFullYear(), today.getMonth(), 1)) || dates[0] || today
+    return new Date(first.getFullYear(), first.getMonth(), 1)
+  }
+
+  function updateEventChecklistTemplate(type, itemId, patch) {
+    setEventChecklistTemplates((current) => ({
+      ...(current || {}),
+      [type]: ((current || {})[type] || []).map((item) => item.id === itemId ? { ...item, ...patch } : item)
+    }))
+  }
+
+  function addEventChecklistTemplateItem(type) {
+    const id = `item-${Date.now()}`
+    setEventChecklistTemplates((current) => ({
+      ...(current || {}),
+      [type]: [...((current || {})[type] || []), { id, name: 'New checklist item', icon: 'none', color: '#2563eb', required: false }]
+    }))
+  }
+
+  function removeEventChecklistTemplateItem(type, itemId) {
+    setEventChecklistTemplates((current) => ({ ...(current || {}), [type]: ((current || {})[type] || []).filter((item) => item.id !== itemId) }))
+  }
+
+  function renderChecklistTimelineIconStack(event, compact = false) {
+    const items = checklistTimelineTemplateForEvent(event)
+    const typeColor = checklistTimelineEventColor(event)
+    return (
+      <button
+        type="button"
+        onClick={() => { setChecklistTimelineSelectedEventId(String(event.id || event.checklist_source_id || event.checklist_id || '')); setChecklistTimelineDetailsOpen(true) }}
+        title={`${event.checklist_title || event.title || 'Event'} - click for details`}
+        style={{ border: 0, padding: 0, background: 'transparent', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', minWidth: compact ? 34 : 42 }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column-reverse', alignItems: 'center', gap: 0 }}>
+          {items.map((item, index) => {
+            const completion = eventChecklistCompletions[checklistTimelineCompletionKey(event, item)]
+            return (
+              <Fragment key={item.id}>
+                {index > 0 && <span style={{ width: 2, height: compact ? 5 : 7, background: completion?.completed ? item.color : '#cbd5e1' }} />}
+                <span
+                  onClick={(e) => { e.stopPropagation(); toggleChecklistTimelineCompletion(event, item) }}
+                  title={`${item.name}${completion?.completed ? ` - completed ${new Date(completion.completed_at).toLocaleDateString()}` : ' - click to complete'}`}
+                  style={{ width: compact ? 23 : 27, height: compact ? 23 : 27, borderRadius: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}`, boxShadow: '0 1px 2px rgba(15,23,42,.12)', position: 'relative' }}
+                >
+                  <ChecklistTimelineIcon name={item.icon} size={compact ? 13 : 15} color={completion?.completed ? '#fff' : item.color} />
+                  {completion?.completed && <span style={{ position: 'absolute', right: -5, top: -6, width: 13, height: 13, borderRadius: 999, background: '#16a34a', color: '#fff', fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fff', fontWeight: 900 }}>✓</span>}
+                </span>
+              </Fragment>
+            )
+          })}
+        </div>
+        <span style={{ width: 2, height: compact ? 8 : 12, background: typeColor }} />
+        <span style={{ width: compact ? 15 : 18, height: compact ? 15 : 18, borderRadius: 999, background: typeColor, border: '3px solid #fff', boxShadow: `0 0 0 2px ${typeColor}` }} />
+      </button>
+    )
+  }
+
+  function renderChecklistTimelineView() {
+    const eventsList = filteredChecklistEvents(checklistTab).filter((event) => checklistDateObj(event))
+    const monthStart = checklistTimelineMonthStart(eventsList)
+    const months = Array.from({ length: checklistTimelineMonths }, (_, index) => new Date(monthStart.getFullYear(), monthStart.getMonth() + index, 1))
+    const selectedEvent = eventsList.find((event) => String(event.id || event.checklist_source_id || event.checklist_id || '') === checklistTimelineSelectedEventId) || eventsList[0] || null
+    const selectedItems = selectedEvent ? checklistTimelineTemplateForEvent(selectedEvent) : []
+    const selectedDone = selectedEvent ? selectedItems.filter((item) => eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]?.completed).length : 0
+    const detailWidth = checklistTimelineDetailsOpen ? 330 : 42
+
+    const renderMonth = (monthDate) => {
+      const y = monthDate.getFullYear(), m = monthDate.getMonth()
+      const days = new Date(y, m + 1, 0).getDate()
+      const monthEvents = eventsList.filter((event) => { const d = checklistDateObj(event); return d && d.getFullYear() === y && d.getMonth() === m })
+      const labels = Array.from(new Set(monthEvents.map(checklistTimelineRowLabel))).sort((a, b) => a.localeCompare(b))
+      const eventsByDay = {}
+      monthEvents.forEach((event) => { const d = checklistDateObj(event).getDate(); eventsByDay[d] = (eventsByDay[d] || 0) + 1 })
+      const dayWidths = Array.from({ length: days }, (_, index) => Math.max(34, Math.min(180, 34 + Math.max(0, (eventsByDay[index + 1] || 1) - 1) * 46)))
+      const gridColumns = `190px ${dayWidths.map((w) => `${w}px`).join(' ')}`
+      return (
+        <section key={`${y}-${m}`} style={{ border: '1px solid #dbe3ec', borderRadius: 10, overflow: 'hidden', background: '#fff', marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), background: '#f8fafc', borderBottom: '1px solid #dbe3ec' }}>
+            <div style={{ padding: '10px 12px', fontWeight: 900, fontSize: 16, position: 'sticky', left: 0, zIndex: 3, background: '#f8fafc' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}</div>
+            {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (eventsByDay[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
+          </div>
+          {labels.map((label) => (
+            <div key={label} style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
+              <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{label}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.filter((event) => checklistTimelineRowLabel(event) === label).length} setting{monthEvents.filter((event) => checklistTimelineRowLabel(event) === label).length === 1 ? '' : 's'}</div></div>
+              {Array.from({ length: days }, (_, index) => {
+                const dayEvents = monthEvents.filter((event) => checklistTimelineRowLabel(event) === label && checklistDateObj(event).getDate() === index + 1)
+                return <div key={index} style={{ borderLeft: '1px solid #f1f5f9', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 8, padding: '8px 4px 12px', background: dayEvents.length > 1 ? '#f8fbff' : undefined }}>{dayEvents.map((event) => <div key={event.id || event.checklist_source_id || event.checklist_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, minWidth: 38 }}><div style={{ maxWidth: 78, fontSize: 10, fontWeight: 700, color: '#475569', textAlign: 'center', lineHeight: 1.15 }}>{event.checklist_title || event.title || checklistTimelineEventType(event)}</div>{renderChecklistTimelineIconStack(event, true)}</div>)}</div>
+              })}
+            </div>
+          ))}
+          {!labels.length && <div style={{ padding: 22, color: '#64748b', fontStyle: 'italic' }}>No events in this month match the selected filters.</div>}
+        </section>
+      )
+    }
+
+    return (
+      <div style={{ border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', overflow: 'hidden' }}>
+        <div style={{ padding: 12, borderBottom: '1px solid #dbe3ec', background: '#fff', display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
+          <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 800 }}>Rows describe<select value={checklistTimelineGroupBy} onChange={(e) => setChecklistTimelineGroupBy(e.target.value)}><option value="matter">Matter</option><option value="category">Event category</option><option value="court">Court</option></select></label>
+          <div style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 12, fontWeight: 800 }}>Months to show</span><div style={{ display: 'flex' }}>{[1,2,3,4].map((count) => <button key={count} type="button" onClick={() => setChecklistTimelineMonths(count)} style={{ padding: '7px 12px', border: '1px solid #cbd5e1', background: checklistTimelineMonths === count ? '#2563eb' : '#fff', color: checklistTimelineMonths === count ? '#fff' : '#0f172a', fontWeight: 800 }}>{count}</button>)}</div></div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{['Trial','Hearing','Mediation','Deposition'].map((type) => <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: ({Trial:'#2563eb',Hearing:'#f97316',Mediation:'#16a34a',Deposition:'#7c3aed'})[type] }} />{type}</span>)}<button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${detailWidth}px`, transition: 'grid-template-columns .2s ease' }}>
+          <div style={{ overflowX: 'auto', padding: 12 }}>{months.map(renderMonth)}</div>
+          <aside style={{ borderLeft: '1px solid #dbe3ec', background: '#fff', minWidth: 0, overflow: 'hidden' }}>
+            {!checklistTimelineDetailsOpen ? <button type="button" onClick={() => setChecklistTimelineDetailsOpen(true)} title="Open event details" style={{ width: 42, height: 48, border: 0, background: '#fff', fontSize: 20 }}>›</button> : selectedEvent ? <div style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><div><span style={{ display: 'inline-block', padding: '3px 7px', borderRadius: 5, color: '#fff', background: checklistTimelineEventColor(selectedEvent), fontSize: 11, fontWeight: 900 }}>{checklistTimelineEventType(selectedEvent).toUpperCase()}</span><h2 style={{ margin: '8px 0 2px', fontSize: 18 }}>{selectedEvent.checklist_title || selectedEvent.title || 'Event'}</h2><div style={{ color: '#475569', fontSize: 13 }}>{checklistMatterLabel(selectedEvent)}</div></div><button type="button" onClick={() => setChecklistTimelineDetailsOpen(false)} style={{ border: 0, background: 'transparent', fontSize: 20 }}>×</button></div><div style={{ marginTop: 12, fontSize: 13, display: 'grid', gap: 6 }}><div>📅 {formatChecklistDate(selectedEvent)}</div>{selectedEvent.start_time && <div>🕘 {formatEventTime(selectedEvent.start_time)}</div>}<div>🏛 {checklistCourtName(selectedEvent) || 'No court listed'}</div></div><div style={{ marginTop: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 13 }}><span>Checklist progress</span><span>{selectedDone} of {selectedItems.length}</span></div><div style={{ height: 7, background: '#e2e8f0', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}><div style={{ width: `${selectedItems.length ? selectedDone / selectedItems.length * 100 : 0}%`, height: '100%', background: '#16a34a' }} /></div></div><div style={{ marginTop: 14, display: 'grid', gap: 7 }}>{selectedItems.map((item) => { const completion = eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]; return <button key={item.id} type="button" onClick={() => toggleChecklistTimelineCompletion(selectedEvent, item)} style={{ display: 'grid', gridTemplateColumns: '30px 1fr auto', alignItems: 'center', gap: 8, textAlign: 'left', padding: 8, border: '1px solid #e2e8f0', borderRadius: 7, background: completion?.completed ? '#f0fdf4' : '#fff' }}><span style={{ width: 28, height: 28, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}` }}><ChecklistTimelineIcon name={item.icon} size={16} color={completion?.completed ? '#fff' : item.color} /></span><span><strong>{item.name}</strong>{completion?.completed && <small style={{ display: 'block', color: '#64748b' }}>Completed {new Date(completion.completed_at).toLocaleDateString()} by {completion.completed_by}</small>}</span><span style={{ color: completion?.completed ? '#16a34a' : '#94a3b8', fontSize: 18 }}>{completion?.completed ? '✓' : '○'}</span></button> })}</div><button type="button" onClick={() => editEvent(events.find((item) => item.id === (selectedEvent.id || selectedEvent.checklist_source_id)) || selectedEvent)} style={{ width: '100%', marginTop: 14, background: '#2563eb', color: '#fff', border: 0, borderRadius: 7, padding: 9, fontWeight: 800 }}>Open Event</button></div> : <div style={{ padding: 16, color: '#64748b' }}>Select an event icon stack to see its details.</div>}
+          </aside>
+        </div>
+        {checklistTimelineSettingsOpen && <div style={{ borderTop: '1px solid #cbd5e1', background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e2e8f0' }}><div><strong>Event Checklist Settings</strong><div style={{ color: '#64748b', fontSize: 12 }}>Configure the detailed icon, color, requirement, and order for each event type.</div></div><button type="button" onClick={() => setChecklistTimelineSettingsOpen(false)}>Collapse settings⌄</button></div><div style={{ display: 'grid', gridTemplateColumns: '190px minmax(700px,1fr)', minHeight: 250 }}><div style={{ borderRight: '1px solid #e2e8f0', padding: 10 }}>{Object.keys(eventChecklistTemplates).map((type) => <button key={type} type="button" onClick={() => setChecklistTimelineTemplateType(type)} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 6, marginBottom: 4, background: checklistTimelineTemplateType === type ? '#dbeafe' : 'transparent', color: checklistTimelineTemplateType === type ? '#1d4ed8' : '#334155', fontWeight: 800 }}>{type} <span style={{ float: 'right' }}>{(eventChecklistTemplates[type] || []).length}</span></button>)}<button type="button" onClick={() => { const name = window.prompt('New event type name'); if (name?.trim()) { setEventChecklistTemplates((current) => ({ ...current, [name.trim()]: [] })); setChecklistTimelineTemplateType(name.trim()) } }} style={{ width: '100%', marginTop: 8 }}>+ Add event type</button></div><div style={{ padding: 10, overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left', padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Checklist item</th><th style={{ textAlign: 'left', padding: 7 }}>Detailed icon</th><th style={{ textAlign: 'left', padding: 7 }}>Color</th><th style={{ textAlign: 'left', padding: 7 }}>Required</th><th style={{ padding: 7 }}></th></tr></thead><tbody>{(eventChecklistTemplates[checklistTimelineTemplateType] || []).map((item, index) => <tr key={item.id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={item.name} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { name: e.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><label style={{ display: 'flex', alignItems: 'center', gap: 7 }}><ChecklistTimelineIcon name={item.icon} size={19} color={item.color} /><select value={item.icon} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { icon: e.target.value })}>{CHECKLIST_TIMELINE_ICON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="color" value={item.color} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { color: e.target.value })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={Boolean(item.required)} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { required: e.target.checked })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeEventChecklistTemplateItem(checklistTimelineTemplateType, item.id)} title="Delete item">🗑</button></td></tr>)}</tbody></table><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}><button type="button" onClick={() => addEventChecklistTemplateItem(checklistTimelineTemplateType)}>+ Add checklist item</button><button type="button" onClick={() => setEventChecklistTemplates(DEFAULT_EVENT_CHECKLIST_TEMPLATES)}>Reset all defaults</button></div></div></div></div>}
+      </div>
+    )
   }
 
   function renderChecklistEventMiniCard(event) {
@@ -30570,6 +30845,50 @@ ${choices}`, '1'))
     </Modal>
   }
 
+  async function loadSharedEnforcementState() {
+    if (!session?.user?.id || !userAccessChecked) return
+    const permittedMatterIds = (isClientPortalMember() ? clientPortalMatterRows() : matters).map((matter) => String(matter.id))
+    if (isClientPortalMember() && !permittedMatterIds.length) {
+      setEnforcementSharedReady(true)
+      return
+    }
+    let query = supabase.from('case_mio_enforcement_state').select('matter_id,violations,updated_at')
+    if (permittedMatterIds.length) query = query.in('matter_id', permittedMatterIds)
+    const { data, error } = await query
+    if (error) {
+      console.warn('Shared Enforcement storage is not ready. Run the V139 Enforcement SQL migration.', error)
+      setEnforcementSharedReady(true)
+      return
+    }
+    const sharedRows = {}
+    ;(data || []).forEach((row) => { sharedRows[String(row.matter_id)] = Array.isArray(row.violations) ? row.violations : [] })
+    setViolationsByMatter((current) => ({ ...current, ...sharedRows }))
+    setEnforcementSharedReady(true)
+  }
+
+  async function saveSharedEnforcementMatter(matterId, rows) {
+    if (!session?.user?.id || !matterId || !enforcementSharedReady) return
+    if (isClientPortalMember() && !clientPortalMatterRows().some((matter) => String(matter.id) === String(matterId))) return
+    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: Array.isArray(rows) ? rows : [], updated_by: session.user.id, updated_at: new Date().toISOString() }, { onConflict: 'matter_id' })
+    if (error) console.warn('Could not save shared Enforcement data:', error)
+  }
+
+  useEffect(() => {
+    if (!session?.user?.id || !userAccessChecked || !matters.length) return
+    setEnforcementSharedReady(false)
+    loadSharedEnforcementState()
+  }, [session?.user?.id, userAccessChecked, currentTeamMember, matters])
+
+  useEffect(() => {
+    if (!enforcementSharedReady || !session?.user?.id) return
+    const allowedIds = new Set((isClientPortalMember() ? clientPortalMatterRows() : matters).map((matter) => String(matter.id)))
+    Object.entries(violationsByMatter || {}).forEach(([matterId, rows]) => {
+      if (!allowedIds.has(String(matterId))) return
+      clearTimeout(enforcementSharedSaveTimersRef.current[matterId])
+      enforcementSharedSaveTimersRef.current[matterId] = window.setTimeout(() => saveSharedEnforcementMatter(matterId, rows), 500)
+    })
+  }, [violationsByMatter, enforcementSharedReady, session?.user?.id, currentTeamMember, matters])
+
   function matterViolations(matterId = violationsMatterId) {
     return Array.isArray(violationsByMatter?.[matterId]) ? violationsByMatter[matterId] : []
   }
@@ -30724,6 +31043,8 @@ ${choices}`, '1'))
   }
 
   function renderEnforcementPage() {
+    const clientPortal = isClientPortalMember()
+    const availableMatters = clientPortal ? clientPortalMatterRows() : matters
     const rows = matterViolations()
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(violationsMatterId || ''))
     const selectedId = expandedViolationIds.find((id) => rows.some((row) => row.id === id)) || rows[0]?.id || ''
@@ -30761,15 +31082,16 @@ ${choices}`, '1'))
             body *{visibility:hidden!important}.enforcement-page,.enforcement-page *{visibility:visible!important}.enforcement-page{position:absolute;left:0;top:0;width:100%;background:#fff}.enforcement-no-print,.enforcement-toc{display:none!important}.enforcement-shell{display:block}.enforcement-section-row{break-inside:avoid;border:1px solid #999}.enforcement-section-row>summary{display:block}.enforcement-section-preview,.enforcement-expand-label{display:none}.enforcement-section-row:not([open]) .enforcement-section-content{display:block!important}.enforcement-section-content{padding:10px}.richToolbar,button,input[type=file],select{display:none!important}input,textarea,[contenteditable=true]{border:0!important;box-shadow:none!important}.enforcement-workspace{width:100%}}
         `}</style>
         <div className="enforcement-no-print" style={{ display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14 }}>
-          <div><h1 style={{margin:'0 0 4px'}}>Enforcement</h1><div style={{color:'#64748b'}}>Add violations to an enforcement matter, organize exhibits and testimony, and print the complete court outline.</div></div>
+          <div><h1 style={{margin:'0 0 4px'}}>{clientPortal ? 'Your Enforcement Case' : 'Enforcement'}</h1><div style={{color:'#64748b'}}>{clientPortal ? 'Review the violations, exhibits, requested relief, and testimony plan prepared for your matter.' : 'Add violations to an enforcement matter, organize exhibits and testimony, and print the complete court outline.'}</div></div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
-            <LabeledField label="Matter"><SmartMatterSelect value={violationsMatterId} onChange={(id)=>{setViolationsMatterId(id);setExpandedViolationIds([])}} placeholder="Select matter" /></LabeledField>
-            <button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>
+            {clientPortal ? <div style={{fontWeight:800,color:'#334155'}}>{availableMatters[0] ? formatMatterOption(availableMatters[0]) : 'No matter has been assigned to this login.'}</div> : <LabeledField label="Matter"><SmartMatterSelect value={violationsMatterId} onChange={(id)=>{setViolationsMatterId(id);setExpandedViolationIds([])}} placeholder="Select matter" /></LabeledField>}
+            {!clientPortal && <button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}
             <button type="button" onClick={printEnforcement} disabled={!activeViolation}>Print Court Outline</button>
-            {violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement`)}>Copy client page link</button>}
+            {!clientPortal && violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}
+            {clientPortal && <button type="button" onClick={logOut}>Log Out</button>}
           </div>
         </div>
-        <div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>
+        {!clientPortal && <div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>}
         {!violationsMatterId && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>Select a matter to begin an enforcement outline.</div>}
         {violationsMatterId && !rows.length && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>No violations have been added. Click Add Violation.</div>}
         {violationsMatterId && rows.length > 0 && <div className="enforcement-shell">
@@ -30784,7 +31106,7 @@ ${choices}`, '1'))
             return <main className="enforcement-workspace">
               <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
                 <input value={violation.title||''} onChange={(e)=>patchViolation(violation.id,{title:e.target.value})} style={{flex:1,minWidth:280,fontWeight:900,fontSize:18}} />
-                <button className="enforcement-no-print" type="button" onClick={()=>deleteViolation(violation.id)} style={{color:'#b91c1c'}}>Delete Violation</button>
+                {!clientPortal && <button className="enforcement-no-print" type="button" onClick={()=>deleteViolation(violation.id)} style={{color:'#b91c1c'}}>Delete Violation</button>}
               </div>
               {sectionRow('Violation Summary',violationPlainPreview(violation.summary||violation.facts),<RichTextBox value={violation.summary||''} onChange={(value)=>patchViolation(violation.id,{summary:value})} placeholder="Briefly summarize the violation..." minHeight={110}/>,true)}
               {sectionRow('Order Description and Exact Language',violationPlainPreview(violation.order_description||violation.order_text),<div style={{display:'grid',gap:10}}><LabeledField label="Order description"><RichTextBox value={violation.order_description||''} onChange={(value)=>patchViolation(violation.id,{order_description:value})} placeholder="Identify the order by title, signing date, court, and page/paragraph..." minHeight={90}/></LabeledField><LabeledField label="Exact order language"><RichTextBox value={violation.order_text||''} onChange={(value)=>patchViolation(violation.id,{order_text:value})} placeholder="Paste the exact provision that was violated..." minHeight={130}/></LabeledField></div>)}
@@ -33737,6 +34059,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     )
   }
 
+  if (!userAccessChecked) return <div style={{ padding: 40, textAlign: 'center' }}>Checking your Mio access...</div>
+
   return (
     <div style={{ fontFamily: 'Arial', display: 'flex', width: '100vw', maxWidth: 'none', margin: 0 }}>
       <div style={{ position: 'fixed', top: 8, left: 8, zIndex: 10000, background: '#111827', color: '#fff', borderRadius: 999, padding: '4px 9px', fontSize: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>{MIO_APP_VERSION}</div>
@@ -33787,7 +34111,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           z-index: 1;
         }
       `}</style>
-      <aside style={{ width: 190, minHeight: '100vh', background: '#f2f2f2', padding: 20 }}>
+      {!isClientPortalMember() && <aside style={{ width: 190, minHeight: '100vh', background: '#f2f2f2', padding: 20 }}>
         <h3>Case Controller</h3>
 
         {canOpenPage('team') && (
@@ -33933,30 +34257,30 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <button onClick={logOut} style={{ marginTop: 30 }}>
           Log Out
         </button>
-      </aside>
+      </aside>}
 
-      <main style={{ flex: 1, padding: 20, minWidth: 0, width: 'calc(100vw - 190px)' }}>
-        <p>Logged in as: {session.user.email}</p>
+      <main style={{ flex: 1, padding: isClientPortalMember() ? 24 : 20, minWidth: 0, width: isClientPortalMember() ? '100vw' : 'calc(100vw - 190px)' }}>
+        {!isClientPortalMember() && <p>Logged in as: {session.user.email}</p>}
 
-        <button
+        {!isClientPortalMember() && <button
           type="button"
           onClick={() => openDailyBillingWindow()}
           title="Show today's billing entries"
           style={{ position: 'fixed', top: 14, right: 68, zIndex: 60, width: 42, height: 42, borderRadius: '50%', border: '1px solid #86efac', background: '#ecfdf5', color: '#166534', fontSize: 22, fontWeight: 'bold', boxShadow: '0 6px 18px rgba(22, 101, 52, 0.18)', cursor: 'pointer' }}
         >
           🕒
-        </button>
+        </button>}
 
-        <button
+        {!isClientPortalMember() && <button
           type="button"
           onClick={openWebsiteIdeaWindow}
           title="Add website idea or issue for this page"
           style={{ position: 'fixed', top: 14, right: 18, zIndex: 60, width: 42, height: 42, borderRadius: '50%', border: '1px solid #93c5fd', background: '#eff6ff', color: '#1d4ed8', fontSize: 22, fontWeight: 'bold', boxShadow: '0 6px 18px rgba(30, 64, 175, 0.18)', cursor: 'pointer' }}
         >
           💡
-        </button>
+        </button>}
 
-        {page !== 'workflow' && workflowItems.length > 0 && (
+        {!isClientPortalMember() && page !== 'workflow' && workflowItems.length > 0 && (
           <div style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 55, border: '1px solid #cbd5e1', borderRadius: 14, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 'min(560px, 94vw)' }}>
             <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>Save view to workflow:</span>
             <select value={workflowQuickLinkTargetId} onChange={(e) => setWorkflowQuickLinkTargetId(e.target.value)} style={{ maxWidth: 260 }}>
@@ -33967,7 +34291,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         )}
 
-        {screenSaverCaptureMode && page !== 'screensaver' && (
+        {!isClientPortalMember() && screenSaverCaptureMode && page !== 'screensaver' && (
           <div style={{ position: 'fixed', left: 18, bottom: 18, zIndex: 56, border: '1px solid #cbd5e1', borderRadius: 14, background: 'white', boxShadow: '0 12px 28px rgba(15, 23, 42, 0.18)', padding: 10, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 'min(760px, 94vw)', flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap' }}>Screensaver view:</span>
             <select value={screenSaverCaptureTargetValue} onChange={(e) => setScreenSaverCaptureTargetValue(e.target.value)} style={{ maxWidth: 260 }}>
@@ -33982,7 +34306,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         )}
 
-        {screenSaverRunning && (
+        {!isClientPortalMember() && screenSaverRunning && (
           <div style={{ position: 'sticky', top: 0, zIndex: 20, background: '#ecfdf5', border: '1px solid #86efac', borderRadius: 8, padding: 10, marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
             <span><strong>Screensaver running.</strong> It will continue cycling through the selected pages until stopped.</span>
             <button type="button" onClick={stopScreenSaver}>Stop screensaver</button>
@@ -35977,8 +36301,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               .need-step-card:hover .need-step-hover-actions { display: inline-flex !important; }
               .need-step-card button { font-size: 11px; padding: 3px 6px; }
             `}</style>
-            <h1>Checklist</h1>
-            <p style={{ color: '#566', marginTop: -6 }}>All active calendar events listed in date order. Future rows use the event category color.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h1 style={{ marginBottom: 8 }}>Checklist</h1>
+              <button type="button" onClick={() => setChecklistViewMode('checklist_view')} style={{ border: 0, background: 'transparent', color: '#2563eb', textDecoration: 'underline', fontWeight: 800, cursor: 'pointer' }}>Open Checklist View</button>
+            </div>
+            <p style={{ color: '#566', marginTop: -6 }}>All active calendar events listed in date order. Checklist View shows connected action-item icons across a one-to-four-month timeline.</p>
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 14 }}>
               <ChecklistCheckboxFilter kind="case" title="Case Status" />
@@ -36043,6 +36370,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <button type="button" onClick={() => setChecklistViewMode('table')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'table' ? '#2f6584' : '#fff', color: checklistViewMode === 'table' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'table' ? 'bold' : 'normal' }}>Table</button>
               <button type="button" onClick={() => setChecklistViewMode('columns')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'columns' ? '#2f6584' : '#fff', color: checklistViewMode === 'columns' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'columns' ? 'bold' : 'normal' }}>Category columns</button>
               <button type="button" onClick={() => setChecklistViewMode('day_grid')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'day_grid' ? '#2f6584' : '#fff', color: checklistViewMode === 'day_grid' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'day_grid' ? 'bold' : 'normal' }}>Day grid</button>
+              <button type="button" onClick={() => setChecklistViewMode('checklist_view')} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: checklistViewMode === 'checklist_view' ? '#2f6584' : '#fff', color: checklistViewMode === 'checklist_view' ? '#fff' : '#0f172a', fontWeight: checklistViewMode === 'checklist_view' ? 'bold' : 'normal' }}>Checklist View</button>
               {checklistViewMode === 'day_grid' && (
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }}>
                   <input type="checkbox" checked={checklistDayGridShowEmptyDays} onChange={(e) => setChecklistDayGridShowEmptyDays(e.target.checked)} />
@@ -36070,7 +36398,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
             )}
 
-            {checklistTab === 'need_date' && checklistViewMode === 'table' ? renderNeedToSetCardDashboard() : checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : (
+            {checklistTab === 'need_date' && checklistViewMode === 'table' ? renderNeedToSetCardDashboard() : checklistViewMode === 'columns' ? renderChecklistColumnsView() : checklistViewMode === 'day_grid' ? renderChecklistDayGridView() : checklistViewMode === 'checklist_view' ? renderChecklistTimelineView() : (
             <div style={{ overflowX: 'auto', border: '1px solid #d5dce3', borderRadius: 6 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
                 <thead>
