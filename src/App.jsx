@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V134'
+const MIO_APP_VERSION = 'Mio V135'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -171,7 +171,7 @@ const appPages = [
   { value: 'banking', label: 'Banking' },
   { value: 'service_inbox', label: 'Service Inbox' },
   { value: 'requested_relief', label: 'Requested Relief' },
-  { value: 'violations', label: 'Violations' },
+  { value: 'enforcement', label: 'Enforcement' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'checklist', label: 'Checklist' },
   { value: 'setting_center', label: 'Setting Center' },
@@ -200,7 +200,7 @@ const screenSaverBasePages = [
   { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
-  { value: 'violations', label: 'Violations', page: 'violations' },
+  { value: 'enforcement', label: 'Enforcement', page: 'enforcement' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
   { value: 'checklist', label: 'Checklist', page: 'checklist' },
   { value: 'setting_center', label: 'Setting Center', page: 'setting_center' },
@@ -29989,6 +29989,7 @@ ${choices}`, '1'))
             <button type="button" style={panelButton} onClick={beginRequestedReliefTemplateBuilder}>+ New Template</button>
             <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add / Edit Issues</button>
             <button type="button" style={panelButton} onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
+            <button type="button" style={panelButton} onClick={() => { setViolationsMatterId(matterId); setPage('enforcement'); window.location.hash = 'enforcement' }}>Open Enforcement</button>
           </div>
         </div>
 
@@ -30535,7 +30536,19 @@ ${choices}`, '1'))
   function addViolation() {
     if (!violationsMatterId) return alert('Select a matter first.')
     const id = crypto?.randomUUID ? crypto.randomUUID() : `violation-${Date.now()}`
-    const row = { id, title: 'New Violation', order_text: '', facts: '', relief_requested: '', testimony_sections: [{ id: `testimony-${Date.now()}`, heading: 'Testimony', questions_answers: '' }], document_ids: [], created_at: new Date().toISOString() }
+    const row = {
+      id,
+      title: 'New Violation',
+      summary: '',
+      order_text: '',
+      facts: '',
+      relief_requested: '',
+      legal_arguments: '',
+      counter_arguments: '',
+      testimony_sections: [{ id: `testimony-${Date.now()}`, heading: 'Testimony', questions_answers: '' }],
+      document_ids: [],
+      created_at: new Date().toISOString()
+    }
     updateMatterViolations(violationsMatterId, (rows) => [...rows, row])
     setExpandedViolationIds((current) => Array.from(new Set([...current, id])))
   }
@@ -30545,13 +30558,21 @@ ${choices}`, '1'))
   }
 
   function deleteViolation(violationId) {
-    if (!window.confirm('Delete this violation and its testimony plan?')) return
+    if (!window.confirm('Delete this violation and its planning content?')) return
     updateMatterViolations(violationsMatterId, (rows) => rows.filter((row) => row.id !== violationId))
   }
 
   function addViolationTestimonySection(violation) {
     const next = [...(violation.testimony_sections || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `testimony-${Date.now()}`, heading: 'New Testimony Section', questions_answers: '' }]
     patchViolation(violation.id, { testimony_sections: next })
+  }
+
+  function insertViolationExhibitMarker(violation, section, doc, exhibitNumber) {
+    const name = doc?.name || doc?.file_name || 'Document'
+    const marker = `<p><strong style="display:inline-block;border:2px solid #2563eb;background:#dbeafe;color:#1e3a8a;border-radius:6px;padding:4px 8px;">[INTRODUCE EXHIBIT ${exhibitNumber}: ${String(name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}]</strong></p>`
+    patchViolation(violation.id, {
+      testimony_sections: (violation.testimony_sections || []).map((row) => row.id === section.id ? { ...row, questions_answers: `${row.questions_answers || ''}${marker}` } : row)
+    })
   }
 
   async function uploadViolationExhibits(violation, fileList) {
@@ -30562,62 +30583,102 @@ ${choices}`, '1'))
       const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
       const tempFilePayload = await readFileAsDataUrl(file)
       const storedFilePayload = await uploadMioDocumentFile(file, docId, violationsMatterId)
-      const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Uploaded for violation: ${violation.title || 'Violation'}`, status: 'Our Exhibit', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
+      const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Uploaded for enforcement violation: ${violation.title || 'Violation'}`, status: 'Our Exhibit', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
       setDocuments((current) => [...current, nextDoc])
       newIds.push(docId)
     }
     patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), ...newIds])) })
   }
 
-  function renderViolationsPage() {
+  function violationPlainPreview(html, fallback = 'No details added yet.') {
+    const text = String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
+    return text || fallback
+  }
+
+  function renderEnforcementPage() {
     const rows = matterViolations()
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(violationsMatterId || ''))
+    const selectedId = expandedViolationIds.find((id) => rows.some((row) => row.id === id)) || rows[0]?.id || ''
+    const activeViolation = rows.find((row) => row.id === selectedId) || null
+    const setActiveViolation = (id) => setExpandedViolationIds((current) => [id, ...current.filter((value) => value !== id)])
+    const printEnforcement = () => window.print()
+    const sectionRow = (title, preview, content, defaultOpen = false) => (
+      <details className="enforcement-section-row" open={defaultOpen}>
+        <summary><span className="enforcement-section-title">{title}</span><span className="enforcement-section-preview">{preview}</span><span className="enforcement-expand-label">Expand</span></summary>
+        <div className="enforcement-section-content">{content}</div>
+      </details>
+    )
     return (
-      <div>
-        <h1>Violations</h1>
-        <p style={{ color: '#566', marginTop: -6 }}>A client-shareable enforcement workspace. Give a client access to the Violations page in Team settings, then limit the client to the appropriate matter.</p>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
-          <LabeledField label="Matter"><SmartMatterSelect value={violationsMatterId} onChange={setViolationsMatterId} placeholder="Select matter" /></LabeledField>
-          <button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>
-          {violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#violations`)}>Copy client page link</button>}
+      <div className="enforcement-page">
+        <style>{`
+          .enforcement-shell{display:grid;grid-template-columns:270px minmax(0,1fr);gap:14px;align-items:start}
+          .enforcement-toc{position:sticky;top:10px;border:1px solid #dbe3ea;border-radius:12px;background:#fff;padding:10px;max-height:calc(100vh - 40px);overflow:auto}
+          .enforcement-toc-item{display:block;width:100%;text-align:left;border:1px solid transparent;background:#fff;border-radius:9px;padding:10px;margin-bottom:6px;cursor:pointer}
+          .enforcement-toc-item.active{border-color:#93c5fd;background:#eff6ff;box-shadow:inset 3px 0 0 #2563eb}
+          .enforcement-workspace{min-width:0}
+          .enforcement-section-row{border:1px solid #dbe3ea;border-radius:10px;background:#fff;margin-bottom:9px;overflow:hidden}
+          .enforcement-section-row>summary{list-style:none;display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px;cursor:pointer;background:#fff}
+          .enforcement-section-row>summary::-webkit-details-marker{display:none}
+          .enforcement-section-row[open]>summary{background:#f8fafc;border-bottom:1px solid #e2e8f0}
+          .enforcement-section-title{font-weight:850;color:#0f172a}
+          .enforcement-section-preview{color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .enforcement-expand-label{font-size:12px;color:#2563eb;font-weight:800}
+          .enforcement-section-content{padding:12px}
+          .enforcement-exhibit-table{width:100%;border-collapse:collapse}
+          .enforcement-exhibit-table th,.enforcement-exhibit-table td{border-bottom:1px solid #e2e8f0;padding:9px;text-align:left;vertical-align:middle}
+          .enforcement-exhibit-table th{background:#f8fafc;font-size:12px;text-transform:uppercase;color:#64748b}
+          .enforcement-marker-button{border:1px solid #93c5fd;background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:5px 8px;font-weight:800}
+          @media(max-width:900px){.enforcement-shell{grid-template-columns:1fr}.enforcement-toc{position:static;max-height:none}.enforcement-section-row>summary{grid-template-columns:1fr}.enforcement-section-preview{white-space:normal}}
+          @media print{
+            body *{visibility:hidden!important}.enforcement-page,.enforcement-page *{visibility:visible!important}.enforcement-page{position:absolute;left:0;top:0;width:100%;background:#fff}.enforcement-no-print,.enforcement-toc{display:none!important}.enforcement-shell{display:block}.enforcement-section-row{break-inside:avoid;border:1px solid #999}.enforcement-section-row>summary{display:block}.enforcement-section-preview,.enforcement-expand-label{display:none}.enforcement-section-row:not([open]) .enforcement-section-content{display:block!important}.enforcement-section-content{padding:10px}.richToolbar,button,input[type=file],select{display:none!important}input,textarea,[contenteditable=true]{border:0!important;box-shadow:none!important}.enforcement-workspace{width:100%}}
+        `}</style>
+        <div className="enforcement-no-print" style={{ display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14 }}>
+          <div><h1 style={{margin:'0 0 4px'}}>Enforcement</h1><div style={{color:'#64748b'}}>Add violations to an enforcement matter, organize exhibits and testimony, and print the complete court outline.</div></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
+            <LabeledField label="Matter"><SmartMatterSelect value={violationsMatterId} onChange={(id)=>{setViolationsMatterId(id);setExpandedViolationIds([])}} placeholder="Select matter" /></LabeledField>
+            <button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>
+            <button type="button" onClick={printEnforcement} disabled={!activeViolation}>Print Court Outline</button>
+            {violationsMatterId && <button type="button" onClick={() => navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement`)}>Copy client page link</button>}
+          </div>
         </div>
-        {!violationsMatterId && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 20, color: '#64748b' }}>Select a matter to add or review violations.</div>}
-        {violationsMatterId && !rows.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 20, color: '#64748b' }}>No violations have been added for this matter.</div>}
-        <div style={{ display: 'grid', gap: 12 }}>
-          {rows.map((violation, index) => {
-            const expanded = expandedViolationIds.includes(violation.id)
-            const linkedDocs = (violation.document_ids || []).map((id) => documents.find((doc) => String(doc.id) === String(id))).filter(Boolean)
-            return (
-              <section key={violation.id} style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 11, background: '#f8fafc' }}>
-                  <button type="button" onClick={() => setExpandedViolationIds((current) => current.includes(violation.id) ? current.filter((id) => id !== violation.id) : [...current, violation.id])}>{expanded ? '▾' : '▸'}</button>
-                  <strong style={{ color: '#1d4ed8' }}>{index + 1}.</strong>
-                  <input value={violation.title || ''} onChange={(e) => patchViolation(violation.id, { title: e.target.value })} style={{ flex: 1, fontWeight: 800 }} />
-                  <button type="button" onClick={() => deleteViolation(violation.id)} style={{ color: '#b91c1c' }}>Delete</button>
+        {!violationsMatterId && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>Select a matter to begin an enforcement outline.</div>}
+        {violationsMatterId && !rows.length && <div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>No violations have been added. Click Add Violation.</div>}
+        {violationsMatterId && rows.length > 0 && <div className="enforcement-shell">
+          <aside className="enforcement-toc">
+            <div style={{fontSize:12,fontWeight:900,color:'#64748b',textTransform:'uppercase',margin:'2px 4px 10px'}}>Violations</div>
+            {rows.map((violation,index)=><button key={violation.id} type="button" className={`enforcement-toc-item ${activeViolation?.id===violation.id?'active':''}`} onClick={()=>setActiveViolation(violation.id)}><div style={{display:'flex',gap:8,alignItems:'start'}}><strong>{index+1}.</strong><span><strong>{violation.title||'Untitled violation'}</strong><small style={{display:'block',color:'#64748b',marginTop:3}}>{violationPlainPreview(violation.summary||violation.facts,'No summary')}</small></span></div></button>)}
+            <button type="button" onClick={addViolation} style={{width:'100%',marginTop:8}}>+ Add Violation</button>
+          </aside>
+          {activeViolation && (()=>{
+            const violation=activeViolation
+            const linkedDocs=(violation.document_ids||[]).map((id)=>documents.find((doc)=>String(doc.id)===String(id))).filter(Boolean)
+            return <main className="enforcement-workspace">
+              <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
+                <input value={violation.title||''} onChange={(e)=>patchViolation(violation.id,{title:e.target.value})} style={{flex:1,minWidth:280,fontWeight:900,fontSize:18}} />
+                <button className="enforcement-no-print" type="button" onClick={()=>deleteViolation(violation.id)} style={{color:'#b91c1c'}}>Delete Violation</button>
+              </div>
+              {sectionRow('Violation Summary',violationPlainPreview(violation.summary||violation.facts),<RichTextBox value={violation.summary||''} onChange={(value)=>patchViolation(violation.id,{summary:value})} placeholder="Briefly summarize the violation..." minHeight={110}/>,true)}
+              {sectionRow('Order Language (Exact Text)',violationPlainPreview(violation.order_text),<RichTextBox value={violation.order_text||''} onChange={(value)=>patchViolation(violation.id,{order_text:value})} placeholder="Paste the exact order provision and identify the page/paragraph..." minHeight={130}/>)}
+              {sectionRow('Violation Facts / Explanation',violationPlainPreview(violation.facts),<RichTextBox value={violation.facts||''} onChange={(value)=>patchViolation(violation.id,{facts:value})} placeholder="Describe the date, conduct, notice, and how the order was violated..." minHeight={140}/>)}
+              {sectionRow('Relief Requested',violationPlainPreview(violation.relief_requested),<RichTextBox value={violation.relief_requested||''} onChange={(value)=>patchViolation(violation.id,{relief_requested:value})} placeholder="Contempt finding, compliance, make-up time, fees, sanctions, clarification, or other relief..." minHeight={120}/>)}
+              {sectionRow(`Exhibits (${linkedDocs.length})`,linkedDocs.map((doc,index)=>`Ex. ${index+1} ${doc.name||doc.file_name}`).join('; ')||'No exhibits added',<div>
+                <div className="enforcement-no-print" style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+                  <select defaultValue="" onChange={(e)=>{const id=e.target.value;if(id)patchViolation(violation.id,{document_ids:Array.from(new Set([...(violation.document_ids||[]),id]))});e.target.value=''}}><option value="">Add document already attached to matter...</option>{matterDocs.filter((doc)=>!(violation.document_ids||[]).includes(doc.id)).map((doc)=><option key={doc.id} value={doc.id}>{doc.name||doc.file_name||'Document'}</option>)}</select>
+                  <label style={{cursor:'pointer'}}><span style={{border:'1px solid #cbd5e1',borderRadius:6,padding:'7px 10px',background:'#fff'}}>Upload and add exhibit</span><input type="file" multiple style={{display:'none'}} onChange={(e)=>{uploadViolationExhibits(violation,e.target.files);e.target.value=''}}/></label>
                 </div>
-                {expanded && <div style={{ padding: 12, display: 'grid', gap: 14 }}>
-                  <div><strong>Text from order being violated</strong><RichTextBox value={violation.order_text || ''} onChange={(value) => patchViolation(violation.id, { order_text: value })} placeholder="Paste the exact provision from the order..." minHeight={120} /></div>
-                  <div><strong>Violation facts / explanation</strong><RichTextBox value={violation.facts || ''} onChange={(value) => patchViolation(violation.id, { facts: value })} placeholder="Describe when, where, and how the order was violated..." minHeight={120} /></div>
-                  <div><strong>Relief requested for this violation</strong><RichTextBox value={violation.relief_requested || ''} onChange={(value) => patchViolation(violation.id, { relief_requested: value })} placeholder="Contempt, compliance, make-up time, fees, clarification, jail/probation terms, or other relief..." minHeight={100} /></div>
-                  <div style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}><strong>Exhibits</strong><label style={{ cursor: 'pointer' }}><span style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 10px', background: '#fff' }}>Upload raw files</span><input type="file" multiple style={{ display: 'none' }} onChange={(e) => { uploadViolationExhibits(violation, e.target.files); e.target.value = '' }} /></label></div>
-                    <select defaultValue="" onChange={(e) => { const id = e.target.value; if (id) patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), id])) }); e.target.value = '' }}>
-                      <option value="">Choose document already attached to matter...</option>{matterDocs.filter((doc) => !(violation.document_ids || []).includes(doc.id)).map((doc) => <option key={doc.id} value={doc.id}>{doc.name || doc.file_name || 'Document'}</option>)}
-                    </select>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 8 }}>{linkedDocs.map((doc) => <span key={doc.id} style={{ border: '1px solid #d7e0ea', borderRadius: 8, padding: '5px 8px', background: '#fff' }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', fontWeight: 700 }}>{doc.name || doc.file_name}</button> <button type="button" onClick={() => patchViolation(violation.id, { document_ids: (violation.document_ids || []).filter((id) => id !== doc.id) })} style={{ color: '#b91c1c' }}>x</button></span>)}</div>
-                  </div>
-                  <div style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 8 }}><strong>Testimony plan</strong><button type="button" onClick={() => addViolationTestimonySection(violation)}>+ Add Testimony Header / Section</button></div>
-                    <div style={{ display: 'grid', gap: 10 }}>{(violation.testimony_sections || []).map((section, sectionIndex) => <section key={section.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: '#f8fafc' }}>
-                      <div style={{ display: 'flex', gap: 8, marginBottom: 7 }}><input value={section.heading || ''} onChange={(e) => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.map((row) => row.id === section.id ? { ...row, heading: e.target.value } : row) })} style={{ flex: 1, fontWeight: 800 }} /><button type="button" onClick={() => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.filter((row) => row.id !== section.id) })} style={{ color: '#b91c1c' }}>Delete section</button></div>
-                      <RichTextBox value={section.questions_answers || ''} onChange={(value) => patchViolation(violation.id, { testimony_sections: violation.testimony_sections.map((row) => row.id === section.id ? { ...row, questions_answers: value } : row) })} placeholder="Add questions and expected answers. Use headings, numbering, bold, italics, and indentation as needed..." minHeight={150} />
-                    </section>)}</div>
-                  </div>
-                </div>}
-              </section>
-            )
-          })}
-        </div>
+                <table className="enforcement-exhibit-table"><thead><tr><th>Exhibit No.</th><th>Document</th><th>Description / Date</th><th className="enforcement-no-print">Actions</th></tr></thead><tbody>{linkedDocs.map((doc,index)=><tr key={doc.id}><td><strong>Ex. {index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button></td><td>{doc.description||doc.date||doc.upload_date||'-'}</td><td className="enforcement-no-print"><button type="button" onClick={()=>patchViolation(violation.id,{document_ids:(violation.document_ids||[]).filter((id)=>String(id)!==String(doc.id))})} style={{color:'#b91c1c'}}>Delete</button></td></tr>)}{!linkedDocs.length&&<tr><td colSpan="4" style={{color:'#64748b'}}>No exhibits added.</td></tr>}</tbody></table>
+              </div>)}
+              {sectionRow(`Testimony Q/A (${(violation.testimony_sections||[]).length} sections)`,(violation.testimony_sections||[]).map((row)=>row.heading).join('; ')||'No testimony sections',<div>
+                <div className="enforcement-no-print" style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}><button type="button" onClick={()=>addViolationTestimonySection(violation)}>+ Add Testimony Header / Section</button></div>
+                <div style={{display:'grid',gap:12}}>{(violation.testimony_sections||[]).map((section)=><section key={section.id} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:10,background:'#f8fafc'}}><div style={{display:'flex',gap:8,marginBottom:8}}><input value={section.heading||''} onChange={(e)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,heading:e.target.value}:row)})} style={{flex:1,fontWeight:850}}/><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).filter((row)=>row.id!==section.id)})} style={{color:'#b91c1c'}}>Delete section</button></div>
+                  {linkedDocs.length>0&&<div className="enforcement-no-print" style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}><span style={{fontSize:12,fontWeight:800,color:'#64748b',alignSelf:'center'}}>Insert exhibit marker:</span>{linkedDocs.map((doc,index)=><button key={doc.id} type="button" className="enforcement-marker-button" onClick={()=>insertViolationExhibitMarker(violation,section,doc,index+1)}>Ex. {index+1}</button>)}</div>}
+                  <RichTextBox value={section.questions_answers||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,questions_answers:value}:row)})} placeholder="Add each question and expected answer. Insert exhibit markers where the exhibit should be offered or discussed." minHeight={170}/></section>)}</div>
+              </div>)}
+              {sectionRow('Legal Arguments / Authority',violationPlainPreview(violation.legal_arguments),<RichTextBox value={violation.legal_arguments||''} onChange={(value)=>patchViolation(violation.id,{legal_arguments:value})} placeholder="Add statutes, rules, cases, elements, burdens, and argument notes..." minHeight={150}/>)}
+              {sectionRow('Possible Counterarguments / Testimony',violationPlainPreview(violation.counter_arguments),<RichTextBox value={violation.counter_arguments||''} onChange={(value)=>patchViolation(violation.id,{counter_arguments:value})} placeholder="Identify likely defenses, contrary testimony, impeachment points, and planned responses..." minHeight={150}/>)}
+            </main>
+          })()}
+        </div>}
       </div>
     )
   }
@@ -33815,7 +33876,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'requested_relief' && canOpenPage('requested_relief') && renderRequestedReliefPage()}
 
-        {page === 'violations' && canOpenPage('violations') && renderViolationsPage()}
+        {page === 'enforcement' && canOpenPage('enforcement') && renderEnforcementPage()}
 
         {page === 'ideas' && canOpenPage('ideas') && (
           <>
