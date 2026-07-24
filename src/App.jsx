@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V135'
+const MIO_APP_VERSION = 'Mio V136'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2913,13 +2913,16 @@ function App() {
     const saveSessionBackup = (nextSession) => {
       try {
         if (nextSession?.access_token && nextSession?.refresh_token) {
-          localStorage.setItem(SESSION_BACKUP_KEY, JSON.stringify({
+          const compactBackup = JSON.stringify({
             access_token: nextSession.access_token,
             refresh_token: nextSession.refresh_token,
             expires_at: nextSession.expires_at || null,
-            user: nextSession.user || null,
+            user: nextSession.user ? { id: nextSession.user.id, email: nextSession.user.email, aud: nextSession.user.aud, role: nextSession.user.role } : null,
             saved_at: Date.now()
-          }))
+          })
+          try { localStorage.removeItem(SESSION_BACKUP_KEY) } catch {}
+          try { localStorage.setItem(SESSION_BACKUP_KEY, compactBackup) }
+          catch { try { sessionStorage.setItem(SESSION_BACKUP_KEY, compactBackup) } catch {} }
         } else if (explicitSignOutRef.current) {
           localStorage.removeItem(SESSION_BACKUP_KEY)
         }
@@ -2930,7 +2933,7 @@ function App() {
 
     const readUsableBackup = () => {
       try {
-        const raw = localStorage.getItem(SESSION_BACKUP_KEY)
+        const raw = localStorage.getItem(SESSION_BACKUP_KEY) || sessionStorage.getItem(SESSION_BACKUP_KEY)
         if (!raw) return null
         const backup = JSON.parse(raw)
         if (!backup?.access_token || !backup?.refresh_token || !backup?.user) return null
@@ -3803,7 +3806,7 @@ function App() {
     // Service Inbox is a newly added core page. Existing team-member page_access
     // records may not contain it yet, so keep it visible instead of letting the
     // legacy page-access record hide it after login finishes loading.
-    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory' || pageName === 'setting_center') return true
+    if (pageName === 'service_inbox' || pageName === 'withdrawals' || pageName === 'inventory' || pageName === 'setting_center' || pageName === 'enforcement') return true
     return getAllowedPages().includes(pageName)
   }
 
@@ -3825,7 +3828,10 @@ function App() {
     const nextSession = data?.session || null
     try {
       if (nextSession?.access_token && nextSession?.refresh_token) {
-        localStorage.setItem('caseMioSupabaseSessionV1', JSON.stringify({ access_token: nextSession.access_token, refresh_token: nextSession.refresh_token, expires_at: nextSession.expires_at || null, saved_at: Date.now() }))
+        const compactBackup = JSON.stringify({ access_token: nextSession.access_token, refresh_token: nextSession.refresh_token, expires_at: nextSession.expires_at || null, user: nextSession.user ? { id: nextSession.user.id, email: nextSession.user.email, aud: nextSession.user.aud, role: nextSession.user.role } : null, saved_at: Date.now() })
+        try { localStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
+    try { sessionStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
+        try { localStorage.setItem('caseMioSupabaseSessionV1', compactBackup) } catch { try { sessionStorage.setItem('caseMioSupabaseSessionV1', compactBackup) } catch {} }
       }
     } catch {}
     setSession(nextSession)
@@ -5672,48 +5678,69 @@ function App() {
     )
   }
 
+  function matterIsOpenForPicker(matter = {}) {
+    if (matter.is_active === false) return false
+    const status = String(matter.case_status || matter.status || '').trim().toLowerCase()
+    if (!status) return true
+    return !['closed', 'inactive', 'archived', 'dismissed'].some((word) => status.includes(word))
+  }
+
   function SmartMatterSelect({ value, onChange, placeholder = 'Type to search matters', style = {}, activeOnly = false }) {
-    const listId = useRef(`matter-smart-${Math.random().toString(36).slice(2)}`)
     const [text, setText] = useState('')
+    const [open, setOpen] = useState(false)
+    const wrapperRef = useRef(null)
+    const matterOptions = (activeOnly ? matters.filter(matterIsOpenForPicker) : matters)
+      .slice()
+      .sort((a, b) => formatMatterOption(a).localeCompare(formatMatterOption(b)))
+    const filteredOptions = matterOptions.filter((matter) => !text || matchesSmartSearch(text, formatMatterOption(matter)))
 
     useEffect(() => {
-      const matterOptions = activeOnly ? matters.filter((matter) => matter.is_active !== false) : matters
-      const selected = matterOptions.find((matter) => matter.id === value)
+      const selected = matterOptions.find((matter) => String(matter.id) === String(value))
       setText(selected ? formatMatterOption(selected) : '')
-    }, [value, matters])
+    }, [value, matters, activeOnly])
 
-    function commit(nextText) {
-      const matterOptions = activeOnly ? matters.filter((matter) => matter.is_active !== false) : matters
-      const exact = matterOptions.find((matter) => formatMatterOption(matter).toLowerCase() === String(nextText || '').toLowerCase())
-      if (exact) onChange(exact.id)
+    useEffect(() => {
+      const close = (event) => {
+        if (wrapperRef.current && !wrapperRef.current.contains(event.target)) setOpen(false)
+      }
+      document.addEventListener('mousedown', close)
+      return () => document.removeEventListener('mousedown', close)
+    }, [])
+
+    function choose(matter) {
+      setText(formatMatterOption(matter))
+      onChange(matter.id)
+      setOpen(false)
     }
 
     return (
-      <>
+      <div ref={wrapperRef} style={{ position: 'relative', width: style.width || '100%', minWidth: style.minWidth || 220 }}>
         <input
-          list={listId.current}
           value={text}
           placeholder={placeholder}
+          onFocus={() => setOpen(true)}
           onChange={(e) => {
             const nextText = e.target.value
             setText(nextText)
-            const matterOptions = activeOnly ? matters.filter((matter) => matter.is_active !== false) : matters
+            setOpen(true)
             const exact = matterOptions.find((matter) => formatMatterOption(matter).toLowerCase() === nextText.toLowerCase())
             if (exact) onChange(exact.id)
             else if (!nextText) onChange('')
           }}
-          onBlur={(e) => commit(e.target.value)}
-          style={style}
+          style={{ ...style, width: '100%' }}
+          autoComplete="off"
         />
-        <datalist id={listId.current}>
-          {(activeOnly ? matters.filter((matter) => matter.is_active !== false) : matters)
-            .filter((matter) => !text || matchesSmartSearch(text, formatMatterOption(matter)))
-            .slice(0, 25)
-            .map((matter) => (
-              <option key={matter.id} value={formatMatterOption(matter)} />
+        {open && (
+          <div style={{ position: 'absolute', zIndex: 10050, left: 0, right: 0, top: 'calc(100% + 4px)', maxHeight: 340, overflowY: 'auto', border: '1px solid #94a3b8', borderRadius: 8, background: '#fff', boxShadow: '0 12px 28px rgba(15,23,42,.18)' }}>
+            {!filteredOptions.length && <div style={{ padding: 10, color: '#64748b' }}>No matching open matters.</div>}
+            {filteredOptions.map((matter) => (
+              <button key={matter.id} type="button" onMouseDown={(event) => { event.preventDefault(); choose(matter) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: 0, borderBottom: '1px solid #e2e8f0', borderRadius: 0, background: String(matter.id) === String(value) ? '#eff6ff' : '#fff', padding: '9px 10px', cursor: 'pointer' }}>
+                {formatMatterOption(matter)}
+              </button>
             ))}
-        </datalist>
-      </>
+          </div>
+        )}
+      </div>
     )
   }
 
@@ -21533,10 +21560,29 @@ useEffect(() => {
     return { date, time, category }
   }
 
+  function guessServiceReviewTagIds(row = {}, workingTags = tags) {
+    const text = serviceReviewText(row).toLowerCase()
+    const tagMap = new Map((workingTags || []).map((tag) => [String(tag.id), tag]))
+    const fullNameFromWorking = (tag) => { const names = []; let current = tag; const seen = new Set(); while (current && !seen.has(String(current.id))) { seen.add(String(current.id)); names.unshift(current.name || ''); current = tagMap.get(String(current.parent_id || current.parentId || '')) } return names.filter(Boolean).join(' > ') }
+    const candidates = (workingTags || []).map((tag) => {
+      const full = fullNameFromWorking(tag).toLowerCase()
+      const words = `${tag.name || ''} ${full}`.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 2)
+      let score = 0
+      words.forEach((word) => { if (text.includes(word)) score += word.length >= 7 ? 4 : 2 })
+      if (/motion/.test(text) && /motion/.test(full)) score += 8
+      if (/order/.test(text) && /order/.test(full)) score += 8
+      if (/discovery|interrogator|production|admission|disclosure/.test(text) && /discovery|rfp|rfa|rfd|rogg|interrogator|production|admission|disclosure/.test(full)) score += 10
+      if (/notice of service/.test(text) && /service/.test(full)) score += 4
+      return { tag, score }
+    }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score || (b.tag.level || 0) - (a.tag.level || 0))
+    return candidates[0] ? tagAndParentIds([candidates[0].tag.id], workingTags) : []
+  }
+
   function hydrateServiceReviewRow(row = {}) {
     const inferredMatterId = row.suggested_matter_id || inferServiceEmailMatter({ subject: row.subject || '', bodyPreview: row.body_preview || row.bodyPreview || '', body: { content: row.extracted_text || row.pdf_text || '' } })
     const workingTags = serviceEmailRowCategory(row) === 'notification_service' ? ensureNoticeServiceTags() : ensureAcceptedServiceTags()
-    const inferredTagIds = row.document_tag_ids?.length ? row.document_tag_ids : (serviceEmailRowCategory(row) === 'notification_service' ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row)) : tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row)))
+    const pathTagIds = serviceEmailRowCategory(row) === 'notification_service' ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row)) : tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row))
+    const inferredTagIds = row.document_tag_ids?.length ? row.document_tag_ids : (pathTagIds.length ? pathTagIds : guessServiceReviewTagIds(row, workingTags))
     const next = { ...row, suggested_matter_id: inferredMatterId || '', suggested_save_path: inferredMatterId ? matterEfileFolderForId(inferredMatterId) : '', document_tag_ids: inferredTagIds }
     next.document_field_values = fillAssociatedDocumentFields({ ...next, tag_ids: inferredTagIds, extracted_text: serviceReviewText(next) })
     return next
@@ -22498,10 +22544,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', marginBottom: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(340px, 1.4fr)', gap: 10 }}>
                   <LabeledField label="Matter">
-                    <select value={active.suggested_matter_id || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRowMatter(active.id, e.target.value)} style={{ width: '100%' }}>
-                      <option value="">Select an open matter</option>
-                      {matters.filter((matter) => !matterLooksClosed(matter)).sort((a, b) => formatMatterOption(a).localeCompare(formatMatterOption(b))).map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}
-                    </select>
+                    {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
                   <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} /></LabeledField>
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} readOnly /></LabeledField>
@@ -22533,7 +22576,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search all tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
               <div style={{ maxHeight: '65vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, padding: 8 }}>
                 <button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, ''); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', marginBottom: 6 }}>No tag</button>
-                {allTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <button type="button" key={tag.id} onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 10px', marginBottom: 4, borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}<span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button>)}
+                {allTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
               </div>
             </div>
           </Modal>
@@ -22546,7 +22589,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <LabeledField label="Place under this tag">
                 <select value={serviceTagBuilder.parentId} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, parentId: e.target.value }))}>
                   <option value="">Top-level tag</option>
-                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'— '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(tag.level || 0)}${tag.name}`}</option>)}
                 </select>
               </LabeledField>
               <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}><strong>New location:</strong> {serviceTagBuilder.parentId ? `${tagFullName(serviceTagBuilder.parentId)} > ` : ''}{serviceTagBuilder.name || 'New tag'}</div>
