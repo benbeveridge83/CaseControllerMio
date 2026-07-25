@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V142'
+const MIO_APP_VERSION = 'Mio V143'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2181,6 +2181,12 @@ function App() {
       return Array.isArray(parsed) ? parsed : null
     } catch { return null }
   })
+  const [checklistOpenClosedFilter, setChecklistOpenClosedFilter] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioChecklistOpenClosedFilter') || '["open","closed"]')
+      return Array.isArray(parsed) && parsed.length ? parsed : ['open', 'closed']
+    } catch { return ['open', 'closed'] }
+  })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
   const [checklistViewMode, setChecklistViewMode] = useState(() => localStorage.getItem('caseMioChecklistViewMode') || 'table')
   const [checklistTimelineMonths, setChecklistTimelineMonths] = useState(() => Math.min(4, Math.max(1, Number(localStorage.getItem('caseMioChecklistTimelineMonths') || 3))))
@@ -3688,6 +3694,9 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistEventCategoryFilter', JSON.stringify(checklistEventCategoryFilter))
   }, [checklistEventCategoryFilter])
+  useEffect(() => {
+    safeSetLocalStorage('caseMioChecklistOpenClosedFilter', JSON.stringify(checklistOpenClosedFilter))
+  }, [checklistOpenClosedFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistShowBlankDays', checklistShowBlankDays ? 'true' : 'false')
@@ -5132,16 +5141,24 @@ function App() {
     return color || 'white'
   }
 
+  function checklistMatterOpenClosedValue(matter = {}) {
+    const combined = `${matter.case_status || ''} ${matter.matter_status || ''} ${matter.status || ''}`.trim().toLowerCase()
+    if (matter.is_active === false || /closed|inactive|archived|dismissed/.test(combined)) return 'closed'
+    return 'open'
+  }
+
   function filteredChecklistEvents(tab = checklistTab) {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const selectedCase = checklistSelectedFilterValues('case')
     const selectedMatter = checklistSelectedFilterValues('matter')
     const selectedCategories = checklistSelectedFilterValues('category')
+    const selectedOpenClosed = Array.isArray(checklistOpenClosedFilter) && checklistOpenClosedFilter.length ? checklistOpenClosedFilter : ['open', 'closed']
 
     return checklistRows()
       .filter((event) => {
         const matter = checklistMatterForEvent(event)
+        if (matter && !selectedOpenClosed.includes(checklistMatterOpenClosedValue(matter))) return false
         if (matter && selectedCase.length > 0 && !selectedCase.includes(matter.case_status || '')) return false
         if (matter && selectedMatter.length > 0 && !selectedMatter.includes(matter.matter_status || '')) return false
         if (selectedCategories.length > 0 && !selectedCategories.includes(event.checklist_category || event.event_category || '')) return false
@@ -5850,9 +5867,9 @@ function App() {
       <div style={{ border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', overflow: 'hidden' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #dbe3ec', background: '#fff', display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
           <div style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 12, fontWeight: 800 }}>Months to show</span><div style={{ display: 'flex' }}>{[1,2,3,4,6,9,12].map((count) => <button key={count} type="button" onClick={() => setChecklistTimelineMonths(count)} style={{ padding: '7px 12px', border: '1px solid #cbd5e1', background: checklistTimelineMonths === count ? '#2563eb' : '#fff', color: checklistTimelineMonths === count ? '#fff' : '#0f172a', fontWeight: 800 }}>{count}</button>)}</div></div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{['Trial','Hearing','Mediation','Deposition'].map((type) => <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: ({Trial:'#2563eb',Hearing:'#f97316',Mediation:'#16a34a',Deposition:'#7c3aed'})[type] }} />{type}</span>)}<button type="button" onClick={() => setChecklistTimelineFilterOpen((v) => !v)} style={{ fontWeight: 800 }}>☰ {checklistTimelineFilterOpen ? 'Close setting filter' : 'Filter settings shown'}</button><button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{checklistEventCategories().map((type) => { const sample = eventsList.find((event) => String(event.checklist_category || event.event_category || '') === String(type)); const color = sample ? checklistTimelineEventColor(sample) : (options('event_category').find((option) => option.name === type)?.color || '#64748b'); return <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: color }} />{type}</span> })}<button type="button" onClick={() => setChecklistTimelineFilterOpen((v) => !v)} style={{ fontWeight: 800 }}>☰ {checklistTimelineFilterOpen ? 'Close filters' : 'Filters'}</button><button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
         </div>
-        {checklistTimelineFilterOpen && <div style={{ padding: '10px 12px', borderBottom: '1px solid #dbe3ec', background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}><div><strong>Checklist settings shown on each event</strong><div style={{ fontSize: 12, color: '#64748b' }}>Uncheck an item to hide that icon and detail row everywhere in Checklist View. This does not delete the setting.</div></div><div style={{ display: 'flex', gap: 6 }}><button type="button" onClick={() => setAllChecklistTimelineSettingsVisible(true)}>Show all</button><button type="button" onClick={() => setAllChecklistTimelineSettingsVisible(false)}>Hide all</button></div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 7 }}>{allChecklistTimelineSettings().map((item) => <label key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 9px', background: '#f8fafc' }}><input type="checkbox" checked={checklistTimelineVisibleSettings[item.id] !== false} onChange={(e) => setChecklistTimelineVisibleSettings((current) => ({ ...(current || {}), [item.id]: e.target.checked }))} /><span style={{ width: 24, height: 24, borderRadius: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${item.color || '#2563eb'}`, background: '#fff' }}><ChecklistTimelineIcon name={item.icon} size={14} color={item.color || '#2563eb'} /></span><span><strong>{item.name}</strong><small style={{ display: 'block', color: '#64748b' }}>{item.eventTypes.join(', ')}</small></span></label>)}</div></div>}
+        {checklistTimelineFilterOpen && <div style={{ padding: '10px 12px', borderBottom: '1px solid #dbe3ec', background: '#fff' }}><div style={{ marginBottom: 8 }}><strong>Checklist View filters</strong><div style={{ fontSize: 12, color: '#64748b' }}>These filters determine which matters and calendar events appear on the monthly rows.</div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8 }}><details open style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}><summary style={{ cursor: 'pointer', fontWeight: 'bold' }}>Open / Closed Matters <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({checklistOpenClosedFilter.length} of 2)</span></summary><div style={{ display: 'grid', gap: 5, marginTop: 8 }}>{[{ value: 'open', label: 'Open matters' }, { value: 'closed', label: 'Closed matters' }].map((option) => <label key={option.value} style={{ fontSize: 12 }}><input type="checkbox" checked={checklistOpenClosedFilter.includes(option.value)} onChange={() => setChecklistOpenClosedFilter((current) => current.includes(option.value) ? current.filter((value) => value !== option.value) : [...current, option.value])} /> {option.label}</label>)}</div></details><ChecklistCheckboxFilter kind="case" title="Case Status" /><ChecklistCheckboxFilter kind="matter" title="Matter Status" /><ChecklistCheckboxFilter kind="category" title="Event" /></div></div>}
         <div style={{ display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${detailWidth}px`, transition: 'grid-template-columns .2s ease' }}>
           <div style={{ overflowX: 'auto', padding: 12 }}>{months.map(renderMonth)}</div>
           <aside style={{ borderLeft: '1px solid #dbe3ec', background: '#fff', minWidth: 0, overflow: 'hidden' }}>
@@ -22792,7 +22809,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       options.push({ id: String(id || `${source}-${clean}`), name: clean, type: String(type || '').trim(), source })
     }
     const client = clients.find((item) => String(item.id) === String(matter.client_id))
-    add(client?.id || 'client', fullName(client), matter.client_status || 'Client', 'client')
+    add(client?.id || 'client', [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || client?.name || client?.email || '', matter.client_status || 'Client', 'client')
     ;(extra.opposing_parties || []).forEach((party, index) => add(party.id || `party-${index}`, party.name, party.party_type || 'Party', 'party'))
     matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || 'Person', 'person'))
     const court = courts.find((item) => String(item.id) === String(matter.court_id))
