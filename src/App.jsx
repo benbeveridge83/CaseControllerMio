@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V143'
+const MIO_APP_VERSION = 'Mio V144'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -5079,8 +5079,8 @@ function App() {
     const opts = checklistFilterOptions(kind)
     const selected = checklistSelectedFilterValues(kind)
     return (
-      <details style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}>
-        <summary style={{ cursor: 'pointer', fontWeight: 'bold' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span></summary>
+      <div style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}>
+        <div style={{ fontWeight: 'bold' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span></div>
         <div style={{ display: 'flex', gap: 6, margin: '8px 0 6px' }}>
           <button type="button" onClick={() => setChecklistFilter(kind, opts.map((option) => option.value))}>All</button>
           <button type="button" onClick={() => setChecklistFilter(kind, [])}>None</button>
@@ -5093,7 +5093,7 @@ function App() {
           ))}
           {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No options have been set yet.</div>}
         </div>
-      </details>
+      </div>
     )
   }
 
@@ -5797,11 +5797,15 @@ function App() {
   function renderChecklistTimelineIconStack(event, compact = false) {
     const items = checklistTimelineTemplateForEvent(event)
     const typeColor = checklistTimelineEventColor(event)
+    const matter = checklistMatterForEvent(event)
+    const client = clients.find((item) => String(item.id) === String(matter?.client_id || ''))
+    const clientName = client ? [client.first_name, client.last_name].filter(Boolean).join(' ') : (matter?.client_name || matter?.client || '')
+    const hoverText = [`Matter: ${matter?.name || 'No matter'}`, `Client: ${clientName || 'No client'}`, `Event: ${event.checklist_title || event.title || checklistTimelineEventType(event)}`].join('\n')
     return (
       <button
         type="button"
         onClick={() => { setChecklistTimelineSelectedEventId(String(event.id || event.checklist_source_id || event.checklist_id || '')); setChecklistTimelineDetailsOpen(true) }}
-        title={`${event.checklist_title || event.title || 'Event'} - click for details`}
+        title={hoverText}
         style={{ border: 0, padding: 0, background: 'transparent', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', minWidth: compact ? 34 : 42 }}
       >
         <div style={{ display: 'flex', flexDirection: 'column-reverse', alignItems: 'center', gap: 0 }}>
@@ -5812,7 +5816,7 @@ function App() {
                 {index > 0 && <span style={{ width: 2, height: compact ? 5 : 7, background: completion?.completed ? item.color : '#cbd5e1' }} />}
                 <span
                   onClick={(e) => { e.stopPropagation(); toggleChecklistTimelineCompletion(event, item) }}
-                  title={`${item.name}${completion?.completed ? ` - completed ${new Date(completion.completed_at).toLocaleDateString()}` : ' - click to complete'}`}
+                  title={`${hoverText}\nChecklist item: ${item.name}${completion?.completed ? ` - completed ${new Date(completion.completed_at).toLocaleDateString()}` : ' - click to complete'}`}
                   style={{ width: compact ? 23 : 27, height: compact ? 23 : 27, borderRadius: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}`, boxShadow: '0 1px 2px rgba(15,23,42,.12)', position: 'relative' }}
                 >
                   <ChecklistTimelineIcon name={item.icon} size={compact ? 13 : 15} color={completion?.completed ? '#fff' : item.color} />
@@ -5836,6 +5840,16 @@ function App() {
     const selectedItems = selectedEvent ? checklistTimelineTemplateForEvent(selectedEvent) : []
     const selectedDone = selectedEvent ? selectedItems.filter((item) => eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]?.completed).length : 0
     const detailWidth = checklistTimelineDetailsOpen ? 330 : 42
+    const maxEventsByDayNumber = {}
+    months.forEach((monthDate) => {
+      const y = monthDate.getFullYear(), m = monthDate.getMonth()
+      const counts = {}
+      eventsList.forEach((event) => {
+        const d = checklistDateObj(event)
+        if (d && d.getFullYear() === y && d.getMonth() === m) counts[d.getDate()] = (counts[d.getDate()] || 0) + 1
+      })
+      Object.entries(counts).forEach(([day, count]) => { maxEventsByDayNumber[day] = Math.max(maxEventsByDayNumber[day] || 0, count) })
+    })
 
     const renderMonth = (monthDate) => {
       const y = monthDate.getFullYear(), m = monthDate.getMonth()
@@ -5843,13 +5857,13 @@ function App() {
       const monthEvents = eventsList.filter((event) => { const d = checklistDateObj(event); return d && d.getFullYear() === y && d.getMonth() === m })
       const eventsByDay = {}
       monthEvents.forEach((event) => { const d = checklistDateObj(event).getDate(); eventsByDay[d] = (eventsByDay[d] || 0) + 1 })
-      const dayWidths = Array.from({ length: days }, (_, index) => Math.max(34, Math.min(180, 34 + Math.max(0, (eventsByDay[index + 1] || 1) - 1) * 46)))
+      const dayWidths = Array.from({ length: days }, (_, index) => Math.max(34, Math.min(180, 34 + Math.max(0, (maxEventsByDayNumber[index + 1] || 1) - 1) * 46)))
       const gridColumns = `190px ${dayWidths.map((w) => `${w}px`).join(' ')}`
       return (
         <section key={`${y}-${m}`} style={{ border: '1px solid #dbe3ec', borderRadius: 10, overflow: 'hidden', background: '#fff', marginBottom: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), background: '#f8fafc', borderBottom: '1px solid #dbe3ec' }}>
             <div style={{ padding: '10px 12px', fontWeight: 900, fontSize: 16, position: 'sticky', left: 0, zIndex: 3, background: '#f8fafc' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}</div>
-            {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (eventsByDay[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
+            {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (maxEventsByDayNumber[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
             <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.length} event{monthEvents.length === 1 ? '' : 's'}</div></div>
@@ -22897,7 +22911,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} readOnly /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
-                  <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const choice = window.prompt('Type 1 to open Edit Matter and add a party, or type 2 to open People and add a non-party filer.', '1'); if (choice === '1') { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (matter) editMatter(matter) } else if (choice === '2') { setPeopleMatterId(resolveServiceEmailMatterId(active)); setPersonForm((current) => ({ ...current, matter_id: resolveServiceEmailMatterId(active) })); window.location.hash = '#people'; setShowAcceptedExtractionWindow(false) } }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
+                  <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds }) ? tagFullName(serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })) : 'Choose tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New tag</button></div></LabeledField>
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
@@ -38896,6 +38910,148 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             )}
           </>
         )}
+
+        {page !== 'matters' && showMatterWindow && (
+              <Modal title={editingMatterId ? 'Edit Matter' : 'Add Matter'} onClose={closeMatterWindow}>
+                <form onSubmit={saveMatter}>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+                    {[
+                      ['matter', 'Matter Info'],
+                      ['court', 'Court Info'],
+                      ['parties', 'Parties and Counsels'],
+                      ['prior', 'Prior Counsel'],
+                      ['cocounsel', 'Co-Counsel']
+                    ].map(([key, label]) => (
+                      <button key={key} type="button" onClick={() => setMatterWindowTab(key)} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: matterWindowTab === key ? '#2f6584' : 'white', color: matterWindowTab === key ? 'white' : '#222', fontWeight: matterWindowTab === key ? 'bold' : 'normal' }}>{label}</button>
+                    ))}
+                  </div>
+
+                  {matterWindowTab === 'matter' && <>
+                  <h2>Matter Information</h2>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                    <LabeledField label="Client *">
+                      <SmartClientSelect
+                        value={matterForm.client_id}
+                        onChange={(value) => setMatterForm({ ...matterForm, client_id: value })}
+                        placeholder="Type to search clients *"
+                      />
+                    </LabeledField>
+
+                    <LabeledField label="Matter Name *">
+                      <input value={matterForm.name} onChange={(e) => setMatterForm({ ...matterForm, name: e.target.value })} />
+                    </LabeledField>
+
+                    <LabeledField label="Cause Number">
+                      <input value={matterForm.cause_number} onChange={(e) => setMatterForm({ ...matterForm, cause_number: e.target.value })} />
+                    </LabeledField>
+
+                    <LabeledField label="Hire Date">
+                      <input type="date" value={matterForm.hire_date} onChange={(e) => setMatterForm({ ...matterForm, hire_date: e.target.value })} />
+                    </LabeledField>
+
+                    <LabeledField label="Case Type">
+                      <select value={matterForm.matter_type} onChange={(e) => setMatterForm({ ...matterForm, matter_type: e.target.value, matter_subtype: '' })}>
+                        <option value="">Matter Type</option>
+                        {options('matter_type').map((o) => (
+                          <option key={o.id} value={o.name}>{o.name}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Case Subtype">
+                      <select value={matterForm.matter_subtype} onChange={(e) => setMatterForm({ ...matterForm, matter_subtype: e.target.value })} disabled={!matterForm.matter_type}>
+                        <option value="">Matter Subtype</option>
+                        {subtypeOptionsForMatterType(matterForm.matter_type).map((o) => (
+                          <option key={o.id} value={o.name}>{o.name}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Client Status">
+                      <select value={matterForm.client_status} onChange={(e) => setMatterForm({ ...matterForm, client_status: e.target.value })}>
+                        <option value="">Client Status</option>
+                        {options('client_status').map((o) => (
+                          <option key={o.id} value={o.name}>{o.name}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Case Status">
+                      <select value={matterForm.case_status} onChange={(e) => setMatterForm({ ...matterForm, case_status: e.target.value })}>
+                        <option value="">Case Status</option>
+                        {options('case_status').map((o) => (
+                          <option key={o.id} value={o.name}>{o.name}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Matter Status">
+                      <select value={matterForm.matter_status} onChange={(e) => setMatterForm({ ...matterForm, matter_status: e.target.value })}>
+                        <option value="">Matter Status</option>
+                        {options('matter_status').map((o) => (
+                          <option key={o.id} value={o.name}>{o.name}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Withdrawal">
+                      <select value={matterExtraDraft.withdrawal_status || matterWithdrawalStatus(editingMatterId)} onChange={(e) => setMatterExtraDraft({ ...matterExtraDraft, withdrawal_status: e.target.value })}>
+                        <option value="not_withdrawing">Not withdrawing</option>
+                        <option value="withdrawing">Withdrawing</option>
+                      </select>
+                    </LabeledField>
+
+                    <LabeledField label="Notes">
+                      <textarea value={matterForm.notes} onChange={(e) => setMatterForm({ ...matterForm, notes: e.target.value })} />
+                    </LabeledField>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 22 }}>
+                      <input type="checkbox" checked={matterForm.is_active} onChange={(e) => setMatterForm({ ...matterForm, is_active: e.target.checked })} />
+                      Active
+                    </label>
+                  </div>
+
+                  </> }
+
+                  {matterWindowTab === 'court' && <div style={{ marginTop: 25, padding: 15, border: '1px solid #ccc', maxWidth: 850 }}>
+                    <h2>Court Information</h2>
+
+                    <LabeledField label="Court">
+                      <select value={matterForm.court_id} onChange={(e) => setMatterForm({ ...matterForm, court_id: e.target.value })}>
+                        <option value="">Court</option>
+                        {courts.map((court) => (
+                          <option key={court.id} value={court.id}>{court.court_name} {court.county ? `- ${court.county}` : ''}</option>
+                        ))}
+                      </select>
+                    </LabeledField>
+
+                    {selectedCourt() && (
+                      <div style={{ marginTop: 15 }}>
+                        <p><strong>Court:</strong> {selectedCourt().court_name}</p>
+                        <p><strong>County:</strong> {selectedCourt().county}</p>
+                        <p><strong>Phone:</strong> {selectedCourt().court_phone}</p>
+                        <p><strong>Address:</strong> {selectedCourt().court_address}</p>
+                        <p><strong>Coordinator:</strong> {selectedCourt().court_coordinator}</p>
+                        <p><strong>Coordinator Email:</strong> {selectedCourt().court_coordinator_email}</p>
+                        <p><strong>Coordinator Phone:</strong> {selectedCourt().court_coordinator_phone}</p>
+                        <p><strong>Court Website:</strong> {websiteLink(selectedCourt().court_website, 'Open website')}</p>
+                        <p><strong>Court Docket:</strong> {websiteLink(selectedCourt().court_docket, 'Open docket')}</p>
+                      </div>
+                    )}
+                  </div>}
+
+                  {matterWindowTab === 'parties' && renderMatterPartiesEditor()}
+                  {matterWindowTab === 'prior' && renderMatterCounselListEditor('prior_counsels', 'Prior Counsel')}
+                  {matterWindowTab === 'cocounsel' && renderMatterCounselListEditor('co_counsels', 'Co-Counsel')}
+
+                  <div style={{ marginTop: 20 }}>
+                    <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>
+                    <button type="button" onClick={closeMatterWindow} style={{ marginLeft: 8 }}>Cancel</button>
+                  </div>
+                </form>
+              </Modal>
+            )}
       </main>
     </div>
   )
