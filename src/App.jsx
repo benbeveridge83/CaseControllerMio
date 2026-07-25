@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V140'
+const MIO_APP_VERSION = 'Mio V141'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -214,6 +214,8 @@ const appPages = [
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
+  { value: 'lawpay', label: 'LawPay' },
+  { value: 'efile', label: 'eFile' },
   { value: 'banking', label: 'Banking' },
   { value: 'service_inbox', label: 'Service Inbox' },
   { value: 'requested_relief', label: 'Requested Relief' },
@@ -830,7 +832,7 @@ const settingCategories = [
   { value: 'client_status', label: 'Client Status' },
   { value: 'matter_type', label: 'Matter Type' },
   { value: 'matter_subtype', label: 'Matter Subtype' },
-  { value: 'team_position', label: 'Team Positions' },
+  { value: 'team_position', label: 'Team Positions (include Clients)' },
   { value: 'matter_status_step', label: 'Matter Status Steps' },
   { value: 'checklist_setting_step', label: 'Need to Set Steps' },
   { value: 'party_type', label: 'Party Type' },
@@ -5798,7 +5800,6 @@ function App() {
       const y = monthDate.getFullYear(), m = monthDate.getMonth()
       const days = new Date(y, m + 1, 0).getDate()
       const monthEvents = eventsList.filter((event) => { const d = checklistDateObj(event); return d && d.getFullYear() === y && d.getMonth() === m })
-      const labels = Array.from(new Set(monthEvents.map(checklistTimelineRowLabel))).sort((a, b) => a.localeCompare(b))
       const eventsByDay = {}
       monthEvents.forEach((event) => { const d = checklistDateObj(event).getDate(); eventsByDay[d] = (eventsByDay[d] || 0) + 1 })
       const dayWidths = Array.from({ length: days }, (_, index) => Math.max(34, Math.min(180, 34 + Math.max(0, (eventsByDay[index + 1] || 1) - 1) * 46)))
@@ -5809,16 +5810,14 @@ function App() {
             <div style={{ padding: '10px 12px', fontWeight: 900, fontSize: 16, position: 'sticky', left: 0, zIndex: 3, background: '#f8fafc' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}</div>
             {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (eventsByDay[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
           </div>
-          {labels.map((label) => (
-            <div key={label} style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
-              <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{label}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.filter((event) => checklistTimelineRowLabel(event) === label).length} setting{monthEvents.filter((event) => checklistTimelineRowLabel(event) === label).length === 1 ? '' : 's'}</div></div>
-              {Array.from({ length: days }, (_, index) => {
-                const dayEvents = monthEvents.filter((event) => checklistTimelineRowLabel(event) === label && checklistDateObj(event).getDate() === index + 1)
-                return <div key={index} style={{ borderLeft: '1px solid #f1f5f9', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 8, padding: '8px 4px 12px', background: dayEvents.length > 1 ? '#f8fbff' : undefined }}>{dayEvents.map((event) => <div key={event.id || event.checklist_source_id || event.checklist_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, minWidth: 38 }}><div style={{ maxWidth: 78, fontSize: 10, fontWeight: 700, color: '#475569', textAlign: 'center', lineHeight: 1.15 }}>{event.checklist_title || event.title || checklistTimelineEventType(event)}</div>{renderChecklistTimelineIconStack(event, true)}</div>)}</div>
-              })}
-            </div>
-          ))}
-          {!labels.length && <div style={{ padding: 22, color: '#64748b', fontStyle: 'italic' }}>No events in this month match the selected filters.</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
+            <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.length} event{monthEvents.length === 1 ? '' : 's'}</div></div>
+            {Array.from({ length: days }, (_, index) => {
+              const dayEvents = monthEvents.filter((event) => checklistDateObj(event).getDate() === index + 1)
+              return <div key={index} style={{ borderLeft: '1px solid #f1f5f9', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 8, padding: '8px 4px 12px', background: dayEvents.length > 1 ? '#f8fbff' : undefined }}>{dayEvents.map((event) => <div key={event.id || event.checklist_source_id || event.checklist_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, minWidth: 38 }}><div style={{ maxWidth: 78, fontSize: 10, fontWeight: 700, color: '#475569', textAlign: 'center', lineHeight: 1.15 }}>{event.checklist_title || event.title || checklistTimelineEventType(event)}</div>{renderChecklistTimelineIconStack(event, true)}</div>)}</div>
+            })}
+          </div>
+          {!monthEvents.length && <div style={{ padding: 22, color: '#64748b', fontStyle: 'italic' }}>No events in this month match the selected filters.</div>}
         </section>
       )
     }
@@ -5826,8 +5825,7 @@ function App() {
     return (
       <div style={{ border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', overflow: 'hidden' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #dbe3ec', background: '#fff', display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12, fontWeight: 800 }}>Rows describe<select value={checklistTimelineGroupBy} onChange={(e) => setChecklistTimelineGroupBy(e.target.value)}><option value="matter">Matter</option><option value="category">Event category</option><option value="court">Court</option></select></label>
-          <div style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 12, fontWeight: 800 }}>Months to show</span><div style={{ display: 'flex' }}>{[1,2,3,4].map((count) => <button key={count} type="button" onClick={() => setChecklistTimelineMonths(count)} style={{ padding: '7px 12px', border: '1px solid #cbd5e1', background: checklistTimelineMonths === count ? '#2563eb' : '#fff', color: checklistTimelineMonths === count ? '#fff' : '#0f172a', fontWeight: 800 }}>{count}</button>)}</div></div>
+          <div style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 12, fontWeight: 800 }}>Months to show</span><div style={{ display: 'flex' }}>{[1,2,3,4,6,9,12].map((count) => <button key={count} type="button" onClick={() => setChecklistTimelineMonths(count)} style={{ padding: '7px 12px', border: '1px solid #cbd5e1', background: checklistTimelineMonths === count ? '#2563eb' : '#fff', color: checklistTimelineMonths === count ? '#fff' : '#0f172a', fontWeight: 800 }}>{count}</button>)}</div></div>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{['Trial','Hearing','Mediation','Deposition'].map((type) => <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: ({Trial:'#2563eb',Hearing:'#f97316',Mediation:'#16a34a',Deposition:'#7c3aed'})[type] }} />{type}</span>)}<button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${detailWidth}px`, transition: 'grid-template-columns .2s ease' }}>
@@ -7395,7 +7393,7 @@ function App() {
       <div style={{ border: '1px solid #cfd8e1', borderRadius: 6, padding: 16, background: '#fbfdff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>Matter Information</h3>
-          <button type="button" onClick={() => editMatter(matter)}>Edit Matter</button>
+          <button type="button" onClick={() => { editMatter(matter); setPage('matters') }}>Edit Matter</button>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
@@ -15075,10 +15073,18 @@ async function updateTeamCell(memberId, field, value) {
     )
   }
 
+  function matterCourtWebsiteUrl(matter = {}) {
+    return String(matter?.courts?.website_url || matter?.courts?.court_website || matter?.court_website || '').trim()
+  }
+
+  function matterDocketUrl(matter = {}) {
+    return String(matter?.courts?.docket_url || matter?.courts?.court_docket_url || matter?.docket_url || '').trim()
+  }
+
   function MatterPageHeaderRow() {
     return (
       <tr>
-        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Link</th>
+        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Action</th>
         <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 132, background: '#f8fafc' }} title="Most recent loaded Clio Trust Management Report snapshot">Trust</th>
         {shownMatterColumns().map((column) => (
           <th
@@ -15158,9 +15164,13 @@ async function updateTeamCell(memberId, field, value) {
       <>
         <td style={{ ...matterDataCellStyle('action'), textAlign: 'center', minWidth: 116 }}>
           <MatterQuickLinkIcons matter={matter} />
+          <div style={{ marginTop: 4, display: 'grid', gap: 3 }}>
+            <button type="button" onClick={() => openMatterTaskTemplates(matter)} style={{ padding: '3px 5px', fontSize: 11 }}>Dashboard</button>
+            <button type="button" onClick={() => editMatter(matter)} style={{ padding: '3px 5px', fontSize: 11 }}>Edit matter</button>
+          </div>
           <div style={{ marginTop: 4 }}><MatterBillingButtons matter={matter} /></div>
-          <div style={{ marginTop: 5 }}>
-            <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} disabled={!showMatterStepsOnMatterPage || matterStepsForMatter(matter).length === 0}>
+          <div style={{ marginTop: 4 }}>
+            <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} disabled={!showMatterStepsOnMatterPage || matterStepsForMatter(matter).length === 0} style={{ padding: '3px 5px', fontSize: 11 }}>
               {matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Show steps'}
             </button>
           </div>
@@ -15185,7 +15195,7 @@ async function updateTeamCell(memberId, field, value) {
             {matterPageFieldsEditable ? (
               <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
             ) : (
-              <MatterLinkTextHover matter={matter}>{matter.cause_number}</MatterLinkTextHover>
+              matterDocketUrl(matter) ? <a href={matterDocketUrl(matter)} target="_blank" rel="noreferrer" title="Open court docket">{matter.cause_number}</a> : <MatterLinkTextHover matter={matter}>{matter.cause_number}</MatterLinkTextHover>
             )}
           </td>
         )}
@@ -15302,9 +15312,7 @@ async function updateTeamCell(memberId, field, value) {
                 ))}
               </MatterEditableSelectCell>
             ) : (
-              <MatterLinkTextHover matter={matter} option="court_email">
-                {matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}
-              </MatterLinkTextHover>
+              matterCourtWebsiteUrl(matter) ? <a href={matterCourtWebsiteUrl(matter)} target="_blank" rel="noreferrer" title="Open court website">{matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}</a> : <MatterLinkTextHover matter={matter} option="court_email">{matter.courts ? `${matter.courts.court_name || ''}${matter.courts.county ? ` - ${matter.courts.county}` : ''}` : ''}</MatterLinkTextHover>
             )}
           </td>
         )}
@@ -15388,12 +15396,7 @@ async function updateTeamCell(memberId, field, value) {
           </td>
         )}
 
-        <td style={matterDataCellStyle('action')}>
-          <button onClick={() => openMatterTaskTemplates(matter)}>Matter Dashboard</button>
-          <button onClick={() => openRequestedReliefForMatter(matter.id)} style={{ marginLeft: 8 }}>Requested Relief</button>
-          <button onClick={() => editMatter(matter)} style={{ marginLeft: 8 }}>Edit Matter</button>
-          <button onClick={() => deleteRow('matters', matter.id, fetchMatters, 'matter')} style={{ marginLeft: 8 }}>Delete</button>
-        </td>
+
       </>
     )
   }
@@ -22801,7 +22804,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="Matter">
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
-                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} /></LabeledField>
+                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} />{!showSavedFilingReviewRows && !saveFolder && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>Open folder</button>}</div></LabeledField>
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} readOnly /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
@@ -22809,7 +22812,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" onClick={() => emailClientForServiceRow(active)} title="Email this filing to the client">✉ Client</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
                 <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || active.suggested_document_name || active.subject}</div>
@@ -30276,7 +30279,9 @@ ${choices}`, '1'))
         <style>{`
           .rr-md-card-actions button { margin-right: 6px; margin-top: 4px; }
           .rr-md-select { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; background: #fff; }
-        `}</style>
+          .mio-client-portal input, .mio-client-portal textarea, .mio-client-portal [contenteditable="true"] { color: #15803d !important; }
+        .mio-client-portal .richBox, .mio-client-portal .rte { color: #15803d !important; }
+      `}</style>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
           <div>
             <h3 style={{ margin: 0 }}>Requested Relief</h3>
@@ -34139,6 +34144,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </a>
         )}
 
+        {canOpenPage('lawpay') && <a href="#lawpay" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('lawpay') }} style={{ display: 'block', marginBottom: 10 }}>LawPay</a>}
+        {canOpenPage('efile') && <a href="#efile" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('efile') }} style={{ display: 'block', marginBottom: 10 }}>eFile</a>}
+
 
         {canOpenPage('service_inbox') && (
           <a href="#service_inbox" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('service_inbox') }} style={{ display: 'block', marginBottom: 10 }}>
@@ -34236,7 +34244,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </button>
       </aside>}
 
-      <main style={{ flex: 1, padding: isClientPortalMember() ? 24 : 20, minWidth: 0, width: isClientPortalMember() ? '100vw' : 'calc(100vw - 190px)' }}>
+      <main className={isClientPortalMember() ? 'mio-client-portal' : ''} style={{ flex: 1, padding: isClientPortalMember() ? 24 : 20, minWidth: 0, width: isClientPortalMember() ? '100vw' : 'calc(100vw - 190px)' }}>
         {!isClientPortalMember() && <p>Logged in as: {session.user.email}</p>}
 
         {!isClientPortalMember() && <button
@@ -34299,6 +34307,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'screensaver' && canOpenPage('screensaver') && renderScreensaverPage()}
 
         {page === 'billing' && canOpenPage('billing') && renderBillingPage()}
+
+        {page === 'lawpay' && canOpenPage('lawpay') && (
+          <div><h1>LawPay</h1><p>Payment collection will remain connected to Clio billing. This workspace is the Mio control center for payment links, trust/operating account mapping, payment history, receipts, failed payments, refunds, and reconciliation.</p><div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12 }}><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Connection</h3><p>Connect LawPay/8am credentials through a server-side Edge Function. Never place the secret key in App.jsx.</p><button type="button" onClick={() => alert('Next step: add the LawPay server-side OAuth/API Edge Function and secrets.')}>Configure LawPay</button></section><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Clio invoices</h3><p>Create and email Clio invoices, then generate Clio Payments links for invoice, trust request, or client payment.</p><button type="button" onClick={() => setPage('billing')}>Open Clio Billing</button></section><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Payment activity</h3><p>Payment history, account, invoice, matter, fees, refunds, receipts, and reconciliation will appear here after the server connection is enabled.</p></section></div></div>
+        )}
+
+        {page === 'efile' && canOpenPage('efile') && (
+          <div><h1>Texas eFile</h1><p>This is the EFSP/Direct Filer implementation workspace. It begins with firm users, attorneys, service contacts, payment accounts, court policy, fee calculation, case lookup, initial/subsequent filings, filing status, cancellation, service, and clerk-review results.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><a href="https://www.txcourts.gov/jcit/electronic-filing.aspx" target="_blank" rel="noreferrer">Texas JCIT eFiling resources</a><button type="button" onClick={() => setPage('service_inbox')}>Open filing/service inbox</button></div><section style={{marginTop:14,border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Implementation status</h3><ul><li>EFSP infrastructure and certification checklist reviewed.</li><li>Firm/user/attorney/service-contact/payment-account modules required.</li><li>Initial and subsequent filing, fees, status, cancellation, service, and review-result workflows required.</li><li>No live filing submission is enabled until OCA/Tyler credentials and certification are completed.</li></ul></section></div>
+        )}
 
         {page === 'banking' && canOpenPage('banking') && renderBankingPage()}
 
