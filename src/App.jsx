@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V144'
+const MIO_APP_VERSION = 'Mio V145'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -541,6 +541,7 @@ const emptyMatterForm = {
 
 const emptyCounselInfo = {
   name: '',
+  title: '',
   firm_name: '',
   email: '',
   phone: '',
@@ -557,23 +558,44 @@ const emptyPartyInfo = {
   counsel: { ...emptyCounselInfo }
 }
 
+const emptyMatterPersonInfo = {
+  name: '',
+  title: '',
+  email: '',
+  phone: '',
+  address: '',
+  notes: ''
+}
+
+const DEFAULT_COURT_PEOPLE = [
+  { ...emptyMatterPersonInfo, title: 'Court Coordinator (Presiding Court)' },
+  { ...emptyMatterPersonInfo, title: 'Court Coordinator (Associate Court)' },
+  { ...emptyMatterPersonInfo, title: 'Court Reporter (Presiding Court)' },
+  { ...emptyMatterPersonInfo, title: 'Court Reporter (Associate Court)' }
+]
+
 const emptyMatterExtraInfo = {
   assigned_attorney_id: '',
   mediator_email: '',
   opposing_parties: [{ ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }],
   prior_counsels: [{ ...emptyCounselInfo }],
-  co_counsels: [{ ...emptyCounselInfo }]
+  co_counsels: [{ ...emptyCounselInfo }],
+  court_people: DEFAULT_COURT_PEOPLE.map((person) => ({ ...person })),
+  third_parties: [{ ...emptyMatterPersonInfo }]
 }
 
 function cloneMatterExtraInfo(info = {}) {
   const cloneCounsel = (item = {}) => ({ ...emptyCounselInfo, ...item })
   const cloneParty = (item = {}) => ({ ...emptyPartyInfo, ...item, counsel: cloneCounsel(item.counsel) })
+  const clonePerson = (item = {}) => ({ ...emptyMatterPersonInfo, ...item })
   return {
     ...emptyMatterExtraInfo,
     ...info,
     opposing_parties: Array.isArray(info.opposing_parties) && info.opposing_parties.length ? info.opposing_parties.map(cloneParty) : [{ ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }],
     prior_counsels: Array.isArray(info.prior_counsels) && info.prior_counsels.length ? info.prior_counsels.map(cloneCounsel) : [{ ...emptyCounselInfo }],
-    co_counsels: Array.isArray(info.co_counsels) && info.co_counsels.length ? info.co_counsels.map(cloneCounsel) : [{ ...emptyCounselInfo }]
+    co_counsels: Array.isArray(info.co_counsels) && info.co_counsels.length ? info.co_counsels.map(cloneCounsel) : [{ ...emptyCounselInfo }],
+    court_people: Array.isArray(info.court_people) && info.court_people.length ? info.court_people.map(clonePerson) : DEFAULT_COURT_PEOPLE.map(clonePerson),
+    third_parties: Array.isArray(info.third_parties) && info.third_parties.length ? info.third_parties.map(clonePerson) : [{ ...emptyMatterPersonInfo }]
   }
 }
 
@@ -7356,6 +7378,7 @@ function App() {
     return (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         <LabeledField label="Counsel Name"><input value={counsel.name || ''} onChange={(e) => onChange('name', e.target.value)} /></LabeledField>
+        <LabeledField label="Title / Role"><input value={counsel.title || ''} onChange={(e) => onChange('title', e.target.value)} placeholder="Attorney, prior counsel, co-counsel..." /></LabeledField>
         <LabeledField label="Firm Name"><input value={counsel.firm_name || ''} onChange={(e) => onChange('firm_name', e.target.value)} /></LabeledField>
         <LabeledField label="Email"><input value={counsel.email || ''} onChange={(e) => onChange('email', e.target.value)} /></LabeledField>
         <LabeledField label="Phone"><input value={counsel.phone || ''} onChange={(e) => onChange('phone', e.target.value)} /></LabeledField>
@@ -7410,6 +7433,51 @@ function App() {
           </div>
         ))}
         <button type="button" onClick={() => addMatterCounsel(listName)}>Add another {title.toLowerCase()}</button>
+      </div>
+    )
+  }
+
+  function renderMatterCourtPeopleEditor() {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <h3>Court People</h3>
+        {(matterExtraDraft.court_people || []).map((person, index) => (
+          <div key={index} style={{ marginBottom: 12, padding: 12, border: '1px solid #c8d0d8', borderRadius: 6 }}>
+            {renderMatterPersonFields(person, (field, value) => updateMatterPersonList('court_people', index, field, value))}
+            <button type="button" onClick={() => removeMatterPersonListItem('court_people', index)} style={{ marginTop: 8 }}>Remove</button>
+          </div>
+        ))}
+        <button type="button" onClick={() => addMatterPersonListItem('court_people', { title: 'Court Contact' })}>Add court person</button>
+      </div>
+    )
+  }
+
+  function renderMatterThirdPartiesEditor() {
+    return (
+      <div>
+        <h2>3rd Parties</h2>
+        <p style={{ color: '#64748b' }}>Add witnesses, experts, agencies, family members, service providers, and anyone else connected to this matter who is not a party, court contact, prior counsel, or co-counsel.</p>
+        {(matterExtraDraft.third_parties || []).map((person, index) => (
+          <div key={index} style={{ marginBottom: 14, padding: 12, border: '1px solid #c8d0d8', borderRadius: 6 }}>
+            <h3>3rd Party {index + 1}</h3>
+            {renderMatterPersonFields(person, (field, value) => updateMatterPersonList('third_parties', index, field, value))}
+            <button type="button" onClick={() => removeMatterPersonListItem('third_parties', index)} style={{ marginTop: 8 }}>Remove</button>
+          </div>
+        ))}
+        <button type="button" onClick={() => addMatterPersonListItem('third_parties')}>Add another 3rd party</button>
+      </div>
+    )
+  }
+
+  function renderMatterPersonFields(person, onChange) {
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <LabeledField label="Name"><input value={person.name || ''} onChange={(e) => onChange('name', e.target.value)} /></LabeledField>
+        <LabeledField label="Title / Designation"><input value={person.title || ''} onChange={(e) => onChange('title', e.target.value)} /></LabeledField>
+        <LabeledField label="Email"><input value={person.email || ''} onChange={(e) => onChange('email', e.target.value)} /></LabeledField>
+        <LabeledField label="Phone"><input value={person.phone || ''} onChange={(e) => onChange('phone', e.target.value)} /></LabeledField>
+        <LabeledField label="Address"><textarea value={person.address || ''} onChange={(e) => onChange('address', e.target.value)} /></LabeledField>
+        <LabeledField label="Notes"><textarea value={person.notes || ''} onChange={(e) => onChange('notes', e.target.value)} /></LabeledField>
       </div>
     )
   }
@@ -14362,6 +14430,43 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function removeMatterCounsel(listName, index) {
     const list = (matterExtraDraft[listName] || []).filter((_, i) => i !== index)
     setMatterExtraDraft({ ...matterExtraDraft, [listName]: list.length ? list : [{ ...emptyCounselInfo }] })
+  }
+
+  function updateMatterPersonList(listName, index, field, value) {
+    const list = [...(matterExtraDraft[listName] || [])]
+    list[index] = { ...emptyMatterPersonInfo, ...(list[index] || {}), [field]: value }
+    setMatterExtraDraft({ ...matterExtraDraft, [listName]: list })
+  }
+
+  function addMatterPersonListItem(listName, defaults = {}) {
+    setMatterExtraDraft({ ...matterExtraDraft, [listName]: [...(matterExtraDraft[listName] || []), { ...emptyMatterPersonInfo, ...defaults }] })
+  }
+
+  function removeMatterPersonListItem(listName, index) {
+    const list = (matterExtraDraft[listName] || []).filter((_, i) => i !== index)
+    const fallback = listName === 'court_people' ? [] : [{ ...emptyMatterPersonInfo }]
+    setMatterExtraDraft({ ...matterExtraDraft, [listName]: list.length ? list : fallback })
+  }
+
+  function updateMatterExtraPerson(matterId, listName, index, field, value) {
+    if (!matterId) return
+    const current = matterExtraFor(matterId)
+    const list = [...(current[listName] || [])]
+    list[index] = { ...emptyMatterPersonInfo, ...(list[index] || {}), [field]: value }
+    setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, [listName]: list } })
+  }
+
+  function addMatterExtraPerson(matterId, listName, defaults = {}) {
+    if (!matterId) return
+    const current = matterExtraFor(matterId)
+    setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, [listName]: [...(current[listName] || []), { ...emptyMatterPersonInfo, ...defaults }] } })
+  }
+
+  function removeMatterExtraPerson(matterId, listName, index) {
+    if (!matterId) return
+    const current = matterExtraFor(matterId)
+    const next = (current[listName] || []).filter((_, i) => i !== index)
+    setMatterExtraInfoById({ ...matterExtraInfoById, [matterId]: { ...current, [listName]: next } })
   }
 
   function saveMatterExtraForId(matterId, draft = matterExtraDraft) {
@@ -22824,10 +22929,18 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     }
     const client = clients.find((item) => String(item.id) === String(matter.client_id))
     add(client?.id || 'client', [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || client?.name || client?.email || '', matter.client_status || 'Client', 'client')
-    ;(extra.opposing_parties || []).forEach((party, index) => add(party.id || `party-${index}`, party.name, party.party_type || 'Party', 'party'))
-    matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || 'Person', 'person'))
+    ;(extra.opposing_parties || []).forEach((party, index) => {
+      add(party.id || `party-${index}`, party.name, `${party.party_type || 'Party'}${party.name ? '' : ''}`, 'party')
+      const counsel = party.counsel || {}
+      add(`party-counsel-${index}`, counsel.name, counsel.title || `Counsel for ${party.name || `Party ${index + 1}`}`, 'counsel')
+    })
+    ;(extra.prior_counsels || []).forEach((person, index) => add(`prior-counsel-${index}`, person.name, person.title || 'Prior Counsel', 'counsel'))
+    ;(extra.co_counsels || []).forEach((person, index) => add(`co-counsel-${index}`, person.name, person.title || 'Co-Counsel', 'counsel'))
+    ;(extra.court_people || []).forEach((person, index) => add(`court-person-${index}`, person.name, person.title || 'Court', 'court'))
+    ;(extra.third_parties || []).forEach((person, index) => add(`third-party-${index}`, person.name, person.title || '3rd Party', 'person'))
+    matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || person.title || '3rd Party', 'person'))
     const court = courts.find((item) => String(item.id) === String(matter.court_id))
-    add(court?.id || 'court', court?.name || matter.court_name, 'Court', 'court')
+    add(court?.id || 'court', court?.court_name || court?.name || matter.court_name, 'Court', 'court')
     return options.sort((a, b) => a.name.localeCompare(b.name))
   }
 
@@ -34859,7 +34972,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       ['court', 'Court Info'],
                       ['parties', 'Parties and Counsels'],
                       ['prior', 'Prior Counsel'],
-                      ['cocounsel', 'Co-Counsel']
+                      ['cocounsel', 'Co-Counsel'],
+                      ['thirdparties', '3rd Parties']
                     ].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => setMatterWindowTab(key)} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: matterWindowTab === key ? '#2f6584' : 'white', color: matterWindowTab === key ? 'white' : '#222', fontWeight: matterWindowTab === key ? 'bold' : 'normal' }}>{label}</button>
                     ))}
@@ -34978,11 +35092,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         <p><strong>Court Docket:</strong> {websiteLink(selectedCourt().court_docket, 'Open docket')}</p>
                       </div>
                     )}
+                    {renderMatterCourtPeopleEditor()}
                   </div>}
 
                   {matterWindowTab === 'parties' && renderMatterPartiesEditor()}
                   {matterWindowTab === 'prior' && renderMatterCounselListEditor('prior_counsels', 'Prior Counsel')}
                   {matterWindowTab === 'cocounsel' && renderMatterCounselListEditor('co_counsels', 'Co-Counsel')}
+                  {matterWindowTab === 'thirdparties' && renderMatterThirdPartiesEditor()}
 
                   <div style={{ marginTop: 20 }}>
                     <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>
@@ -37152,43 +37268,110 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'people' && canOpenPage('people') && (
           <>
             <h1>People</h1>
-            <p>Select a matter and add people to that matter. People have a name, notes, and tags.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
-              <form onSubmit={addMatterPerson} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', display: 'grid', gap: 10 }}>
-                <h2>Add Person</h2>
-                <SmartMatterSelect value={personForm.matter_id || peopleMatterId} onChange={(value) => { setPeopleMatterId(value); setPersonForm({ ...personForm, matter_id: value, tag_ids: (personForm.tag_ids || []).filter((tagId) => isTagAvailableForMatter(tagId, value)) }) }} placeholder="Matter *" />
-                <input placeholder="Name *" value={personForm.name} onChange={(e) => setPersonForm({ ...personForm, name: e.target.value })} />
-                <textarea placeholder="Notes" value={personForm.notes} onChange={(e) => setPersonForm({ ...personForm, notes: e.target.value })} />
-                <div>
-                  <strong>Tags</strong>
-                  {renderTagPicker(personForm.tag_ids || [], togglePersonFormTag, personForm.matter_id || peopleMatterId)}
-                </div>
-                <button type="submit">Save Person</button>
-              </form>
-
-              <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
-                <h2>People for Matter</h2>
-                <SmartMatterSelect value={peopleMatterId} onChange={(value) => setPeopleMatterId(value)} placeholder="Select matter to view people" />
-                <input placeholder="Predictive search people" value={peopleSearchText} onChange={(e) => setPeopleSearchText(e.target.value)} style={{ width: '100%', padding: 8, margin: '10px 0' }} />
-                <div style={{ overflow: 'auto', border: '1px solid #d5dce3' }}>
-                  <table cellPadding="7" style={{ width: '100%', borderCollapse: 'collapse', minWidth: 850 }}>
-                    <thead><tr><th>Matter</th><th>Name</th><th>Notes</th><th>Tags</th><th>Action</th></tr></thead>
-                    <tbody>
-                      {filteredMatterPeople().map((person) => (
-                        <tr key={person.id} style={{ borderTop: '1px solid #e5e7eb' }}>
-                          <td><SmartMatterSelect value={person.matter_id || ''} onChange={(value) => updateMatterPersonCell(person.id, 'matter_id', value)} style={{ width: 260 }} /></td>
-                          <td><input value={person.name || ''} onChange={(e) => updateMatterPersonCell(person.id, 'name', e.target.value)} /></td>
-                          <td><textarea value={person.notes || ''} onChange={(e) => updateMatterPersonCell(person.id, 'notes', e.target.value)} /></td>
-                          <td style={{ minWidth: 260 }}>{renderTagPicker(person.tag_ids || [], (tagId) => togglePersonTag(person.id, tagId), person.matter_id)}</td>
-                          <td><button type="button" onClick={() => deleteMatterPerson(person.id)}>Delete</button></td>
-                        </tr>
-                      ))}
-                      {filteredMatterPeople().length === 0 && <tr><td colSpan="5">No people match the current matter/search.</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            <p>Select a matter to manage every person connected to it. Changes here use the same matter information as Edit Matter, so additions and edits appear in both places.</p>
+            <div style={{ marginBottom: 14, maxWidth: 620 }}>
+              <SmartMatterSelect value={peopleMatterId} onChange={(value) => setPeopleMatterId(value)} placeholder="Select matter to view people" />
+              <input placeholder="Predictive search people" value={peopleSearchText} onChange={(e) => setPeopleSearchText(e.target.value)} style={{ width: '100%', padding: 8, marginTop: 10 }} />
             </div>
+            {!peopleMatterId && <div style={{ padding: 18, border: '1px dashed #cbd5e1', borderRadius: 8 }}>Select a matter to view its court contacts, parties, counsel, and 3rd parties.</div>}
+            {peopleMatterId && (() => {
+              const matter = matters.find((item) => String(item.id) === String(peopleMatterId)) || {}
+              const extra = matterExtraFor(peopleMatterId)
+              const client = clients.find((item) => String(item.id) === String(matter.client_id)) || matter.clients || {}
+              const search = peopleSearchText.trim().toLowerCase()
+              const matches = (...values) => !search || values.filter(Boolean).join(' ').toLowerCase().includes(search)
+              const sectionStyle = { border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', marginBottom: 14 }
+              const rowStyle = { border: '1px solid #e2e8f0', borderRadius: 7, padding: 12, marginTop: 10 }
+              const personRow = (person, listName, index, fallbackTitle) => {
+                if (!matches(person.name, person.title, fallbackTitle, person.email, person.phone, person.address, person.notes)) return null
+                return <div key={`${listName}-${index}`} style={rowStyle}>
+                  {renderMatterPersonFields({ ...person, title: person.title || fallbackTitle }, (field, value) => updateMatterExtraPerson(peopleMatterId, listName, index, field, value))}
+                  <button type="button" onClick={() => removeMatterExtraPerson(peopleMatterId, listName, index)} style={{ marginTop: 8 }}>Remove</button>
+                </div>
+              }
+              const counselRow = (person, listName, index, fallbackTitle) => {
+                if (!matches(person.name, person.title, fallbackTitle, person.firm_name, person.email, person.phone, person.address)) return null
+                return <div key={`${listName}-${index}`} style={rowStyle}>
+                  <strong>{person.title || fallbackTitle}</strong>
+                  {renderCounselFields({ ...person, title: person.title || fallbackTitle }, (field, value) => {
+                    const current = matterExtraFor(peopleMatterId)
+                    const list = [...(current[listName] || [])]
+                    list[index] = { ...emptyCounselInfo, ...(list[index] || {}), [field]: value }
+                    setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, [listName]: list } })
+                  })}
+                  <button type="button" onClick={() => {
+                    const current = matterExtraFor(peopleMatterId)
+                    const list = (current[listName] || []).filter((_, i) => i !== index)
+                    setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, [listName]: list } })
+                  }} style={{ marginTop: 8 }}>Remove</button>
+                </div>
+              }
+              return <div>
+                <section style={sectionStyle}>
+                  <h2 style={{ marginTop: 0 }}>Court</h2>
+                  {(extra.court_people || []).map((person, index) => personRow(person, 'court_people', index, person.title || 'Court Contact'))}
+                  <button type="button" onClick={() => addMatterExtraPerson(peopleMatterId, 'court_people', { title: 'Court Contact' })} style={{ marginTop: 10 }}>Add court person</button>
+                </section>
+
+                <section style={sectionStyle}>
+                  <h2 style={{ marginTop: 0 }}>Parties</h2>
+                  {matches(client.first_name, client.last_name, client.name, client.email, client.phone, matter.client_status) && <div style={rowStyle}>
+                    <strong>My Client</strong>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginTop: 8 }}>
+                      <LabeledField label="Name"><input value={[client.first_name, client.last_name].filter(Boolean).join(' ') || client.name || ''} readOnly /></LabeledField>
+                      <LabeledField label="Party Status / Title"><input value={`${matter.client_status || 'Client'} — CLIENT`} readOnly /></LabeledField>
+                      <LabeledField label="Email"><input value={client.email || ''} readOnly /></LabeledField>
+                      <LabeledField label="Phone"><input value={client.phone || client.mobile_phone || ''} readOnly /></LabeledField>
+                    </div>
+                    <small>Client contact information is linked to the Clients page.</small>
+                  </div>}
+                  {(extra.opposing_parties || []).map((party, index) => {
+                    if (!matches(party.name, party.party_type, party.email, party.phone, party.address, party.counsel?.name)) return null
+                    return <div key={`party-${index}`} style={rowStyle}>
+                      <h3 style={{ marginTop: 0 }}>Opposing / Additional Party {index + 1}</h3>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                        <LabeledField label="Party Name"><input value={party.name || ''} onChange={(e) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], name: e.target.value }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) }} /></LabeledField>
+                        <LabeledField label="Party Type / Title"><select value={party.party_type || ''} onChange={(e) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], party_type: e.target.value }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) }}><option value="">Party Type</option>{options('party_type').map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}</select></LabeledField>
+                        <LabeledField label="Email"><input value={party.email || ''} onChange={(e) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], email: e.target.value }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) }} /></LabeledField>
+                        <LabeledField label="Phone"><input value={party.phone || ''} onChange={(e) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], phone: e.target.value }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) }} /></LabeledField>
+                        <LabeledField label="Address"><textarea value={party.address || ''} onChange={(e) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], address: e.target.value }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) }} /></LabeledField>
+                      </div>
+                      <h4>Party Counsel</h4>
+                      {renderCounselFields(party.counsel || emptyCounselInfo, (field, value) => { const current = matterExtraFor(peopleMatterId); const list = [...current.opposing_parties]; list[index] = { ...list[index], counsel: { ...(list[index].counsel || emptyCounselInfo), [field]: value } }; setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list } }) })}
+                      <button type="button" onClick={() => { const current = matterExtraFor(peopleMatterId); const list = current.opposing_parties.filter((_, i) => i !== index); setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: list.length ? list : [{ ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }] } }) }} style={{ marginTop: 8 }}>Remove this party</button>
+                    </div>
+                  })}
+                  <button type="button" onClick={() => { const current = matterExtraFor(peopleMatterId); setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, opposing_parties: [...current.opposing_parties, { ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }] } }) }} style={{ marginTop: 10 }}>Add another party</button>
+                </section>
+
+                <section style={sectionStyle}>
+                  <h2 style={{ marginTop: 0 }}>Prior Counsel</h2>
+                  {(extra.prior_counsels || []).map((person, index) => counselRow(person, 'prior_counsels', index, 'Prior Counsel'))}
+                  <button type="button" onClick={() => { const current = matterExtraFor(peopleMatterId); setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, prior_counsels: [...current.prior_counsels, { ...emptyCounselInfo, title: 'Prior Counsel' }] } }) }}>Add prior counsel</button>
+                </section>
+
+                <section style={sectionStyle}>
+                  <h2 style={{ marginTop: 0 }}>Co-Counsel</h2>
+                  {(extra.co_counsels || []).map((person, index) => counselRow(person, 'co_counsels', index, 'Co-Counsel'))}
+                  <button type="button" onClick={() => { const current = matterExtraFor(peopleMatterId); setMatterExtraInfoById({ ...matterExtraInfoById, [peopleMatterId]: { ...current, co_counsels: [...current.co_counsels, { ...emptyCounselInfo, title: 'Co-Counsel' }] } }) }}>Add co-counsel</button>
+                </section>
+
+                <section style={sectionStyle}>
+                  <h2 style={{ marginTop: 0 }}>3rd Parties</h2>
+                  {(extra.third_parties || []).map((person, index) => personRow(person, 'third_parties', index, '3rd Party'))}
+                  {matterPeople.filter((person) => String(person.matter_id) === String(peopleMatterId) && matches(person.name, person.designation, person.title, person.notes)).map((person) => <div key={person.id} style={rowStyle}>
+                    <strong>{person.designation || person.title || '3rd Party'}</strong>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
+                      <LabeledField label="Name"><input value={person.name || ''} onChange={(e) => updateMatterPersonCell(person.id, 'name', e.target.value)} /></LabeledField>
+                      <LabeledField label="Title / Designation"><input value={person.designation || person.title || ''} onChange={(e) => updateMatterPersonCell(person.id, 'designation', e.target.value)} /></LabeledField>
+                      <LabeledField label="Notes"><textarea value={person.notes || ''} onChange={(e) => updateMatterPersonCell(person.id, 'notes', e.target.value)} /></LabeledField>
+                    </div>
+                    <button type="button" onClick={() => deleteMatterPerson(person.id)} style={{ marginTop: 8 }}>Remove</button>
+                  </div>)}
+                  <button type="button" onClick={() => addMatterExtraPerson(peopleMatterId, 'third_parties', { title: '3rd Party' })} style={{ marginTop: 10 }}>Add 3rd party</button>
+                </section>
+              </div>
+            })()}
           </>
         )}
 
@@ -38920,7 +39103,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       ['court', 'Court Info'],
                       ['parties', 'Parties and Counsels'],
                       ['prior', 'Prior Counsel'],
-                      ['cocounsel', 'Co-Counsel']
+                      ['cocounsel', 'Co-Counsel'],
+                      ['thirdparties', '3rd Parties']
                     ].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => setMatterWindowTab(key)} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: matterWindowTab === key ? '#2f6584' : 'white', color: matterWindowTab === key ? 'white' : '#222', fontWeight: matterWindowTab === key ? 'bold' : 'normal' }}>{label}</button>
                     ))}
@@ -39039,11 +39223,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         <p><strong>Court Docket:</strong> {websiteLink(selectedCourt().court_docket, 'Open docket')}</p>
                       </div>
                     )}
+                    {renderMatterCourtPeopleEditor()}
                   </div>}
 
                   {matterWindowTab === 'parties' && renderMatterPartiesEditor()}
                   {matterWindowTab === 'prior' && renderMatterCounselListEditor('prior_counsels', 'Prior Counsel')}
                   {matterWindowTab === 'cocounsel' && renderMatterCounselListEditor('co_counsels', 'Co-Counsel')}
+                  {matterWindowTab === 'thirdparties' && renderMatterThirdPartiesEditor()}
 
                   <div style={{ marginTop: 20 }}>
                     <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>
