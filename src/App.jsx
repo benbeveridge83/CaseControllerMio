@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V145'
+const MIO_APP_VERSION = 'Mio V146'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1505,6 +1505,30 @@ function App() {
   })
   const [clients, setClients] = useState([])
   const [matters, setMatters] = useState([])
+  const [lawPayStatus, setLawPayStatus] = useState({ loading: false, connected: false, message: 'Not tested' })
+  const [lawPaySettings, setLawPaySettings] = useState({
+    operating_page_url: '',
+    trust_page_url: '',
+    echeck_operating_page_url: '',
+    echeck_trust_page_url: '',
+    clientcredit_trust_page_url: ''
+  })
+  const [lawPayPaymentRequests, setLawPayPaymentRequests] = useState([])
+  const [lawPayTransactions, setLawPayTransactions] = useState([])
+  const [lawPayBusy, setLawPayBusy] = useState(false)
+  const [lawPayMessage, setLawPayMessage] = useState('')
+  const [lawPayForm, setLawPayForm] = useState({
+    matter_id: '',
+    account_key: 'operating',
+    amount: '',
+    reference: '',
+    invoice_number: '',
+    payer_name: '',
+    payer_email: '',
+    payer_phone: '',
+    lock_amount: true,
+    lock_reference: true
+  })
   const [courts, setCourts] = useState([])
   const [settings, setSettings] = useState([])
   const [events, setEvents] = useState([])
@@ -2759,6 +2783,10 @@ function App() {
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
     mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
   }
+
+  useEffect(() => {
+    if (page === 'lawpay' && canOpenPage('lawpay')) loadLawPayWorkspace()
+  }, [page])
 
   useEffect(() => { saveMioStateKey('caseMioCalendarCaseStatusFilter', JSON.stringify(calendarCaseStatusFilter)) }, [calendarCaseStatusFilter])
   useEffect(() => { saveMioStateKey('caseMioCalendarMatterStatusFilter', JSON.stringify(calendarMatterStatusFilter)) }, [calendarMatterStatusFilter])
@@ -34045,6 +34073,222 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     )
   }
 
+
+  function lawPayAccountOptions() {
+    return [
+      { key: 'operating', label: 'Operating (credit/debit)', setting: 'operating_page_url' },
+      { key: 'trust', label: 'Trust/IOLTA (credit/debit)', setting: 'trust_page_url' },
+      { key: 'echeck_operating', label: 'Operating (eCheck)', setting: 'echeck_operating_page_url' },
+      { key: 'echeck_trust', label: 'Trust/IOLTA (eCheck)', setting: 'echeck_trust_page_url' },
+      { key: 'clientcredit_trust', label: 'ClientCredit Trust', setting: 'clientcredit_trust_page_url' }
+    ]
+  }
+
+  function lawPayMatterClient(matter) {
+    if (!matter) return null
+    return clients.find((client) => String(client.id) === String(matter.client_id)) ||
+      clients.find((client) => String(client.name || '').trim().toLowerCase() === String(matter.client_name || '').trim().toLowerCase()) || null
+  }
+
+  function lawPayClientName(client, matter) {
+    if (client) return [client.first_name, client.last_name].filter(Boolean).join(' ').trim() || client.name || ''
+    return matter?.client_name || matter?.client || ''
+  }
+
+  async function loadLawPayWorkspace() {
+    try {
+      const [settingsResult, requestsResult, transactionsResult] = await Promise.all([
+        supabase.from('lawpay_settings').select('*').eq('id', 1).maybeSingle(),
+        supabase.from('lawpay_payment_requests').select('*').order('created_at', { ascending: false }).limit(100),
+        supabase.from('lawpay_transactions').select('*').order('occurred_at', { ascending: false }).limit(200)
+      ])
+      if (!settingsResult.error && settingsResult.data) {
+        setLawPaySettings((current) => ({ ...current, ...settingsResult.data }))
+      }
+      if (!requestsResult.error) setLawPayPaymentRequests(requestsResult.data || [])
+      if (!transactionsResult.error) setLawPayTransactions(transactionsResult.data || [])
+    } catch (error) {
+      console.error('Load LawPay workspace failed:', error)
+    }
+  }
+
+  async function testLawPayConnection() {
+    setLawPayStatus({ loading: true, connected: false, message: 'Testing LawPay credentials...' })
+    setLawPayMessage('')
+    try {
+      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'health' } })
+      if (error) throw error
+      if (!data?.ok) throw new Error(data?.error || 'LawPay connection test failed.')
+      setLawPayStatus({ loading: false, connected: true, message: `Connected. ${data.account_count || 0} configured accounts; latest gateway event ${data.latest_event_at ? new Date(data.latest_event_at).toLocaleString() : 'not found'}.` })
+    } catch (error) {
+      setLawPayStatus({ loading: false, connected: false, message: error?.message || String(error) })
+    }
+  }
+
+  async function saveLawPaySettings() {
+    setLawPayBusy(true)
+    setLawPayMessage('')
+    try {
+      const payload = {
+        id: 1,
+        operating_page_url: String(lawPaySettings.operating_page_url || '').trim(),
+        trust_page_url: String(lawPaySettings.trust_page_url || '').trim(),
+        echeck_operating_page_url: String(lawPaySettings.echeck_operating_page_url || '').trim(),
+        echeck_trust_page_url: String(lawPaySettings.echeck_trust_page_url || '').trim(),
+        clientcredit_trust_page_url: String(lawPaySettings.clientcredit_trust_page_url || '').trim(),
+        updated_at: new Date().toISOString()
+      }
+      const { error } = await supabase.from('lawpay_settings').upsert(payload, { onConflict: 'id' })
+      if (error) throw error
+      setLawPayMessage('LawPay payment-page URLs saved.')
+    } catch (error) {
+      setLawPayMessage(`Could not save LawPay settings: ${error?.message || error}`)
+    } finally {
+      setLawPayBusy(false)
+    }
+  }
+
+  function selectLawPayMatter(matterId) {
+    const matter = matters.find((row) => String(row.id) === String(matterId))
+    const client = lawPayMatterClient(matter)
+    setLawPayForm((current) => ({
+      ...current,
+      matter_id: matterId,
+      payer_name: lawPayClientName(client, matter),
+      payer_email: client?.email || matter?.client_email || '',
+      payer_phone: client?.phone || matter?.client_phone || '',
+      reference: matter ? `${matter.name || matter.matter_name || 'Matter'}${matter.cause_number ? ` - ${matter.cause_number}` : ''}` : ''
+    }))
+  }
+
+  async function createLawPayPaymentLink() {
+    const amount = Number(lawPayForm.amount)
+    if (!lawPayForm.matter_id) return alert('Select a matter.')
+    if (!Number.isFinite(amount) || amount <= 0) return alert('Enter a valid payment amount.')
+    const account = lawPayAccountOptions().find((item) => item.key === lawPayForm.account_key)
+    const paymentPageUrl = String(lawPaySettings?.[account?.setting] || '').trim()
+    if (!paymentPageUrl) return alert(`Enter and save the hosted payment-page URL for ${account?.label || 'this account'} first.`)
+    const matter = matters.find((row) => String(row.id) === String(lawPayForm.matter_id))
+    const client = lawPayMatterClient(matter)
+    setLawPayBusy(true)
+    setLawPayMessage('')
+    try {
+      const { data, error } = await supabase.functions.invoke('lawpay-gateway', {
+        body: {
+          action: 'create_link',
+          payment_page_url: paymentPageUrl,
+          account_key: lawPayForm.account_key,
+          amount_cents: Math.round(amount * 100),
+          reference: lawPayForm.reference,
+          invoice_number: lawPayForm.invoice_number,
+          payer_name: lawPayForm.payer_name,
+          payer_email: lawPayForm.payer_email,
+          payer_phone: lawPayForm.payer_phone,
+          matter_id: matter?.id || null,
+          matter_name: matter?.name || matter?.matter_name || '',
+          client_id: client?.id || matter?.client_id || null,
+          client_name: lawPayClientName(client, matter),
+          lock_amount: !!lawPayForm.lock_amount,
+          lock_reference: !!lawPayForm.lock_reference
+        }
+      })
+      if (error) throw error
+      if (!data?.url) throw new Error(data?.error || 'LawPay did not return a payment link.')
+      setLawPayMessage('Payment link created and recorded.')
+      await loadLawPayWorkspace()
+      try { await navigator.clipboard.writeText(data.url) } catch {}
+      window.open(data.url, '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      setLawPayMessage(`Could not create payment link: ${error?.message || error}`)
+    } finally {
+      setLawPayBusy(false)
+    }
+  }
+
+  async function syncLawPayTransactions() {
+    setLawPayBusy(true)
+    setLawPayMessage('Syncing LawPay gateway events...')
+    try {
+      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
+      if (error) throw error
+      if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
+      setLawPayMessage(`Synced ${data.processed || 0} LawPay event(s).`)
+      await loadLawPayWorkspace()
+    } catch (error) {
+      setLawPayMessage(`Could not sync LawPay transactions: ${error?.message || error}`)
+    } finally {
+      setLawPayBusy(false)
+    }
+  }
+
+  function copyLawPayLink(url) {
+    if (!url) return
+    navigator.clipboard?.writeText(url).then(() => setLawPayMessage('Payment link copied.')).catch(() => prompt('Copy this payment link:', url))
+  }
+
+  function emailLawPayLink(request) {
+    const subject = encodeURIComponent(`Payment request${request.invoice_number ? ` - Invoice ${request.invoice_number}` : ''}`)
+    const body = encodeURIComponent(`Please use the secure LawPay link below to make your payment of ${money(Number(request.amount_cents || 0) / 100)}.\n\n${request.payment_url}\n\nReference: ${request.reference || request.matter_name || ''}`)
+    window.location.href = `mailto:${encodeURIComponent(request.payer_email || '')}?subject=${subject}&body=${body}`
+  }
+
+  function renderLawPayPage() {
+    const selectedMatter = matters.find((row) => String(row.id) === String(lawPayForm.matter_id))
+    return <div>
+      <h1>LawPay</h1>
+      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Clio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>
+
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14, background: '#f8fafc' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div><h2 style={{ margin: 0 }}>Connection</h2><div style={{ color: lawPayStatus.connected ? '#166534' : '#92400e', marginTop: 4 }}>{lawPayStatus.message}</div></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={testLawPayConnection} disabled={lawPayStatus.loading || lawPayBusy}>{lawPayStatus.loading ? 'Testing...' : 'Test connection'}</button>
+            <button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>Sync transactions</button>
+          </div>
+        </div>
+      </section>
+
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Hosted payment pages</h2>
+        <p style={{ color: '#64748b' }}>Paste the LawPay “Show &amp; Copy Page Link” URL for each account. Mio adds the client, amount, invoice, and matter reference to that secure LawPay page.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(290px,1fr))', gap: 10 }}>
+          {lawPayAccountOptions().map((account) => <label key={account.key} style={{ display: 'grid', gap: 4 }}><strong>{account.label}</strong><input value={lawPaySettings?.[account.setting] || ''} onChange={(event) => setLawPaySettings((current) => ({ ...current, [account.setting]: event.target.value }))} placeholder="https://secure.affinipay.com/pages/..." /></label>)}
+        </div>
+        <button type="button" onClick={saveLawPaySettings} disabled={lawPayBusy} style={{ marginTop: 10 }}>Save payment-page URLs</button>
+      </section>
+
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Create payment request</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}>
+          <label>Matter<select value={lawPayForm.matter_id} onChange={(event) => selectLawPayMatter(event.target.value)}><option value="">Select matter...</option>{matters.filter((matter) => matter.active !== false).map((matter) => <option key={matter.id} value={matter.id}>{matter.name || matter.matter_name} — {lawPayClientName(lawPayMatterClient(matter), matter)}</option>)}</select></label>
+          <label>Deposit account<select value={lawPayForm.account_key} onChange={(event) => setLawPayForm((current) => ({ ...current, account_key: event.target.value }))}>{lawPayAccountOptions().map((account) => <option key={account.key} value={account.key}>{account.label}</option>)}</select></label>
+          <label>Amount<input type="number" min="0.01" step="0.01" value={lawPayForm.amount} onChange={(event) => setLawPayForm((current) => ({ ...current, amount: event.target.value }))} placeholder="0.00" /></label>
+          <label>Clio invoice number<input value={lawPayForm.invoice_number} onChange={(event) => setLawPayForm((current) => ({ ...current, invoice_number: event.target.value }))} /></label>
+          <label>Payer name<input value={lawPayForm.payer_name} onChange={(event) => setLawPayForm((current) => ({ ...current, payer_name: event.target.value }))} /></label>
+          <label>Payer email<input type="email" value={lawPayForm.payer_email} onChange={(event) => setLawPayForm((current) => ({ ...current, payer_email: event.target.value }))} /></label>
+          <label>Payer phone<input value={lawPayForm.payer_phone} onChange={(event) => setLawPayForm((current) => ({ ...current, payer_phone: event.target.value }))} /></label>
+          <label>Reference<input value={lawPayForm.reference} onChange={(event) => setLawPayForm((current) => ({ ...current, reference: event.target.value }))} /></label>
+        </div>
+        <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}><label><input type="checkbox" checked={lawPayForm.lock_amount} onChange={(event) => setLawPayForm((current) => ({ ...current, lock_amount: event.target.checked }))} /> Lock amount</label><label><input type="checkbox" checked={lawPayForm.lock_reference} onChange={(event) => setLawPayForm((current) => ({ ...current, lock_reference: event.target.checked }))} /> Lock reference</label></div>
+        {selectedMatter && <div style={{ marginTop: 8, color: '#64748b' }}>Selected: <strong>{selectedMatter.name || selectedMatter.matter_name}</strong>{selectedMatter.cause_number ? ` • ${selectedMatter.cause_number}` : ''}</div>}
+        <button type="button" onClick={createLawPayPaymentLink} disabled={lawPayBusy} style={{ marginTop: 12, background: '#1d4ed8', color: 'white' }}>{lawPayBusy ? 'Working...' : 'Create, copy, and open payment link'}</button>
+        {lawPayMessage && <div style={{ marginTop: 10, padding: 8, borderRadius: 6, background: '#eff6ff' }}>{lawPayMessage}</div>}
+      </section>
+
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14, overflowX: 'auto' }}>
+        <h2 style={{ marginTop: 0 }}>Payment requests</h2>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}><thead><tr>{['Created','Client / Matter','Account','Amount','Invoice','Reference','Status','Actions'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayPaymentRequests.map((request) => <tr key={request.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.created_at ? new Date(request.created_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}><strong>{request.client_name || request.payer_name || ''}</strong><br/><small>{request.matter_name || ''}</small></td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.account_key}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(request.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.invoice_number || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.status || 'sent'}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => window.open(request.payment_url, '_blank', 'noopener,noreferrer')}>Open</button> <button type="button" onClick={() => copyLawPayLink(request.payment_url)}>Copy</button> <button type="button" onClick={() => emailLawPayLink(request)}>Email</button></td></tr>)}</tbody></table>
+        {!lawPayPaymentRequests.length && <p>No payment requests recorded yet.</p>}
+      </section>
+
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, overflowX: 'auto' }}>
+        <h2 style={{ marginTop: 0 }}>Gateway transaction activity</h2>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr>{['Date','Status','Type','Account','Amount','Payer','Reference','Transaction ID'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayTransactions.map((transaction) => <tr key={transaction.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.status || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.transaction_type || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.account_key || transaction.account_id || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(transaction.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.payer_name || transaction.payer_email || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', fontFamily: 'monospace', fontSize: 11 }}>{transaction.gateway_transaction_id || ''}</td></tr>)}</tbody></table>
+        {!lawPayTransactions.length && <p>No synchronized gateway transactions yet.</p>}
+      </section>
+    </div>
+  }
+
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
     const tabButtonStyle = (tab) => ({
@@ -34525,9 +34769,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'billing' && canOpenPage('billing') && renderBillingPage()}
 
-        {page === 'lawpay' && canOpenPage('lawpay') && (
-          <div><h1>LawPay</h1><p>Payment collection will remain connected to Clio billing. This workspace is the Mio control center for payment links, trust/operating account mapping, payment history, receipts, failed payments, refunds, and reconciliation.</p><div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12 }}><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Connection</h3><p>Connect LawPay/8am credentials through a server-side Edge Function. Never place the secret key in App.jsx.</p><button type="button" onClick={() => alert('Next step: add the LawPay server-side OAuth/API Edge Function and secrets.')}>Configure LawPay</button></section><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Clio invoices</h3><p>Create and email Clio invoices, then generate Clio Payments links for invoice, trust request, or client payment.</p><button type="button" onClick={() => setPage('billing')}>Open Clio Billing</button></section><section style={{border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Payment activity</h3><p>Payment history, account, invoice, matter, fees, refunds, receipts, and reconciliation will appear here after the server connection is enabled.</p></section></div></div>
-        )}
+        {page === 'lawpay' && canOpenPage('lawpay') && renderLawPayPage()}
 
         {page === 'efile' && canOpenPage('efile') && (
           <div><h1>Texas eFile</h1><p>This is the EFSP/Direct Filer implementation workspace. It begins with firm users, attorneys, service contacts, payment accounts, court policy, fee calculation, case lookup, initial/subsequent filings, filing status, cancellation, service, and clerk-review results.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><a href="https://www.txcourts.gov/jcit/electronic-filing.aspx" target="_blank" rel="noreferrer">Texas JCIT eFiling resources</a><button type="button" onClick={() => setPage('service_inbox')}>Open filing/service inbox</button></div><section style={{marginTop:14,border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Implementation status</h3><ul><li>EFSP infrastructure and certification checklist reviewed.</li><li>Firm/user/attorney/service-contact/payment-account modules required.</li><li>Initial and subsequent filing, fees, status, cancellation, service, and review-result workflows required.</li><li>No live filing submission is enabled until OCA/Tyler credentials and certification are completed.</li></ul></section></div>
