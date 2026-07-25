@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V141'
+const MIO_APP_VERSION = 'Mio V142'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2189,6 +2189,11 @@ function App() {
   const [checklistTimelineDetailsOpen, setChecklistTimelineDetailsOpen] = useState(() => localStorage.getItem('caseMioChecklistTimelineDetailsOpen') !== 'false')
   const [checklistTimelineSelectedEventId, setChecklistTimelineSelectedEventId] = useState('')
   const [checklistTimelineTemplateType, setChecklistTimelineTemplateType] = useState('Trial')
+  const [checklistTimelineFilterOpen, setChecklistTimelineFilterOpen] = useState(false)
+  const [checklistTimelineVisibleSettings, setChecklistTimelineVisibleSettings] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioChecklistTimelineVisibleSettings') || '{}') }
+    catch { return {} }
+  })
   const [eventChecklistTemplates, setEventChecklistTemplates] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioEventChecklistTemplates') || 'null')
@@ -3696,6 +3701,7 @@ function App() {
   useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineGroupBy', checklistTimelineGroupBy || 'matter') }, [checklistTimelineGroupBy])
   useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineSettingsOpen', checklistTimelineSettingsOpen ? 'true' : 'false') }, [checklistTimelineSettingsOpen])
   useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineDetailsOpen', checklistTimelineDetailsOpen ? 'true' : 'false') }, [checklistTimelineDetailsOpen])
+  useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineVisibleSettings', JSON.stringify(checklistTimelineVisibleSettings || {})) }, [checklistTimelineVisibleSettings])
   useEffect(() => { safeSetLocalStorage('caseMioEventChecklistTemplates', JSON.stringify(eventChecklistTemplates || DEFAULT_EVENT_CHECKLIST_TEMPLATES)) }, [eventChecklistTemplates])
   useEffect(() => { safeSetLocalStorage('caseMioEventChecklistCompletions', JSON.stringify(eventChecklistCompletions || {})) }, [eventChecklistCompletions])
 
@@ -5704,7 +5710,25 @@ function App() {
 
   function checklistTimelineTemplateForEvent(event = {}) {
     const type = checklistTimelineEventType(event)
-    return eventChecklistTemplates[type] || eventChecklistTemplates.Other || DEFAULT_EVENT_CHECKLIST_TEMPLATES.Other
+    const items = eventChecklistTemplates[type] || eventChecklistTemplates.Other || DEFAULT_EVENT_CHECKLIST_TEMPLATES.Other
+    return items.filter((item) => checklistTimelineVisibleSettings[item.id] !== false)
+  }
+
+  function allChecklistTimelineSettings() {
+    const seen = new Map()
+    Object.entries(eventChecklistTemplates || {}).forEach(([type, items]) => {
+      ;(items || []).forEach((item) => {
+        if (!seen.has(item.id)) seen.set(item.id, { ...item, eventTypes: [type] })
+        else seen.get(item.id).eventTypes.push(type)
+      })
+    })
+    return Array.from(seen.values()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+  }
+
+  function setAllChecklistTimelineSettingsVisible(visible) {
+    const next = {}
+    allChecklistTimelineSettings().forEach((item) => { next[item.id] = Boolean(visible) })
+    setChecklistTimelineVisibleSettings(next)
   }
 
   function checklistTimelineCompletionKey(event = {}, item = {}) {
@@ -5716,7 +5740,7 @@ function App() {
     setEventChecklistCompletions((current) => {
       const next = { ...(current || {}) }
       if (next[key]?.completed) delete next[key]
-      else next[key] = { completed: true, completed_at: new Date().toISOString(), completed_by: currentUser?.name || currentUser?.email || 'Current user' }
+      else next[key] = { completed: true, completed_at: new Date().toISOString(), completed_by: session?.user?.user_metadata?.full_name || session?.user?.email || 'Current user' }
       return next
     })
   }
@@ -5826,8 +5850,9 @@ function App() {
       <div style={{ border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', overflow: 'hidden' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #dbe3ec', background: '#fff', display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
           <div style={{ display: 'grid', gap: 4 }}><span style={{ fontSize: 12, fontWeight: 800 }}>Months to show</span><div style={{ display: 'flex' }}>{[1,2,3,4,6,9,12].map((count) => <button key={count} type="button" onClick={() => setChecklistTimelineMonths(count)} style={{ padding: '7px 12px', border: '1px solid #cbd5e1', background: checklistTimelineMonths === count ? '#2563eb' : '#fff', color: checklistTimelineMonths === count ? '#fff' : '#0f172a', fontWeight: 800 }}>{count}</button>)}</div></div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{['Trial','Hearing','Mediation','Deposition'].map((type) => <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: ({Trial:'#2563eb',Hearing:'#f97316',Mediation:'#16a34a',Deposition:'#7c3aed'})[type] }} />{type}</span>)}<button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>{['Trial','Hearing','Mediation','Deposition'].map((type) => <span key={type} style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><span style={{ width: 11, height: 11, borderRadius: 999, background: ({Trial:'#2563eb',Hearing:'#f97316',Mediation:'#16a34a',Deposition:'#7c3aed'})[type] }} />{type}</span>)}<button type="button" onClick={() => setChecklistTimelineFilterOpen((v) => !v)} style={{ fontWeight: 800 }}>☰ {checklistTimelineFilterOpen ? 'Close setting filter' : 'Filter settings shown'}</button><button type="button" onClick={() => setChecklistTimelineSettingsOpen((v) => !v)} style={{ fontWeight: 800 }}>⚙ {checklistTimelineSettingsOpen ? 'Close settings' : 'Open settings'}</button><button type="button" onClick={() => setChecklistTimelineDetailsOpen((v) => !v)} style={{ fontWeight: 800 }}>{checklistTimelineDetailsOpen ? 'Hide details' : 'Show details'}</button></div>
         </div>
+        {checklistTimelineFilterOpen && <div style={{ padding: '10px 12px', borderBottom: '1px solid #dbe3ec', background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}><div><strong>Checklist settings shown on each event</strong><div style={{ fontSize: 12, color: '#64748b' }}>Uncheck an item to hide that icon and detail row everywhere in Checklist View. This does not delete the setting.</div></div><div style={{ display: 'flex', gap: 6 }}><button type="button" onClick={() => setAllChecklistTimelineSettingsVisible(true)}>Show all</button><button type="button" onClick={() => setAllChecklistTimelineSettingsVisible(false)}>Hide all</button></div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 7 }}>{allChecklistTimelineSettings().map((item) => <label key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 9px', background: '#f8fafc' }}><input type="checkbox" checked={checklistTimelineVisibleSettings[item.id] !== false} onChange={(e) => setChecklistTimelineVisibleSettings((current) => ({ ...(current || {}), [item.id]: e.target.checked }))} /><span style={{ width: 24, height: 24, borderRadius: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${item.color || '#2563eb'}`, background: '#fff' }}><ChecklistTimelineIcon name={item.icon} size={14} color={item.color || '#2563eb'} /></span><span><strong>{item.name}</strong><small style={{ display: 'block', color: '#64748b' }}>{item.eventTypes.join(', ')}</small></span></label>)}</div></div>}
         <div style={{ display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${detailWidth}px`, transition: 'grid-template-columns .2s ease' }}>
           <div style={{ overflowX: 'auto', padding: 12 }}>{months.map(renderMonth)}</div>
           <aside style={{ borderLeft: '1px solid #dbe3ec', background: '#fff', minWidth: 0, overflow: 'hidden' }}>
@@ -20263,8 +20288,10 @@ useEffect(() => {
         notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
         notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
         source_email_subject: row.subject || '',
-        source_email_from: row.from_email || row.from_name || ''
+        source_email_from: row.from_email || row.from_name || '',
+        filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || ''
       },
+      filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || '',
       filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
       notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
       notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
@@ -20530,6 +20557,7 @@ useEffect(() => {
       category: serviceEmailPhaseLabel(serviceEmailRowCategory(row)),
       billing_minutes: billingMinutes,
       document_name: details.document_name ?? row?.suggested_document_name ?? '',
+      filed_by_person_id: details.filed_by_person_id ?? row?.filed_by_person_id ?? (row ? guessServiceReviewFiler(row) : ''),
       save_path: details.save_path ?? (row ? serviceEmailSavePath(row) : ''),
       notes: details.notes || ''
     }
@@ -21185,8 +21213,21 @@ useEffect(() => {
     if (selectedDirectoryHandle) {
       rememberServiceEfileFolderHandle(matterId, rowId, selectedDirectoryHandle)
     }
+    const { error: folderSaveError } = await supabase.from('matters').update({ efile_folder: next }).eq('id', matterId)
+    if (folderSaveError) {
+      console.error('Could not save matter efile folder:', folderSaveError)
+      alert(`Chrome opened the selected folder, but Mio could not save the path to the Matter Table: ${folderSaveError.message || folderSaveError}`)
+      return ''
+    }
+    setMatters((current) => current.map((matter) => String(matter.id) === String(matterId) ? { ...matter, efile_folder: next } : matter))
     setServiceEmailRows((rows) => rows.map((item) => item.id === rowId ? { ...item, suggested_matter_id: matterId, suggested_save_path: next } : item))
     setServiceEmailScanNote(`Saved efile folder for ${matterLabel(matterId)} in the Matter Table. Accepted efile PDFs and notification-of-service PDFs for this matter will use that folder.`)
+    return next
+  }
+
+  async function chooseAndSaveMatterEfileFolder(row) {
+    if (!row?.id) return
+    return await promptForMatterEfileFolder(row.id)
   }
 
   function openServiceEmailInOutlook(row) {
@@ -22739,6 +22780,37 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     } : row))
   }
 
+  function serviceReviewFilerOptions(row = {}) {
+    const matterId = resolveServiceEmailMatterId(row)
+    if (!matterId) return []
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || {}
+    const extra = matterExtraFor(matterId)
+    const options = []
+    const add = (id, name, type, source = 'person') => {
+      const clean = String(name || '').trim()
+      if (!clean || options.some((item) => item.name.toLowerCase() === clean.toLowerCase())) return
+      options.push({ id: String(id || `${source}-${clean}`), name: clean, type: String(type || '').trim(), source })
+    }
+    const client = clients.find((item) => String(item.id) === String(matter.client_id))
+    add(client?.id || 'client', fullName(client), matter.client_status || 'Client', 'client')
+    ;(extra.opposing_parties || []).forEach((party, index) => add(party.id || `party-${index}`, party.name, party.party_type || 'Party', 'party'))
+    matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || 'Person', 'person'))
+    const court = courts.find((item) => String(item.id) === String(matter.court_id))
+    add(court?.id || 'court', court?.name || matter.court_name, 'Court', 'court')
+    return options.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  function guessServiceReviewFiler(row = {}) {
+    const options = serviceReviewFilerOptions(row)
+    if (!options.length) return ''
+    const text = serviceReviewText(row).toLowerCase()
+    const direct = options.find((item) => text.includes(item.name.toLowerCase()))
+    if (direct) return direct.id
+    if (/filed by the court|court clerk|district clerk|county clerk/.test(text)) return options.find((item) => item.source === 'court')?.id || ''
+    const opposingParty = options.find((item) => item.source === 'party')
+    return opposingParty?.id || options.find((item) => item.source !== 'client')?.id || options[0]?.id || ''
+  }
+
   function renderFilingServiceReviewWindow(kind = 'accepted') {
     const isNotice = kind === 'notification_service'
     const liveRows = serviceEmailRowsForCurrentView().filter((row) => serviceEmailRowCategory(row) === kind)
@@ -22808,6 +22880,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} readOnly /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
+                  <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const choice = window.prompt('Type 1 to open Edit Matter and add a party, or type 2 to open People and add a non-party filer.', '1'); if (choice === '1') { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (matter) editMatter(matter) } else if (choice === '2') { setPeopleMatterId(resolveServiceEmailMatterId(active)); setPersonForm((current) => ({ ...current, matter_id: resolveServiceEmailMatterId(active) })); window.location.hash = '#people'; setShowAcceptedExtractionWindow(false) } }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds }) ? tagFullName(serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })) : 'Choose tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New tag</button></div></LabeledField>
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
