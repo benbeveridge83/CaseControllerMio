@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V151'
+const MIO_APP_VERSION = 'Mio V152'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27203,14 +27203,14 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const hasResponse = !completed && unreadCount > 0
     const stepContext = needToSetStepContext(event, step, stepIndex)
     return (
-      <div className="need-step-node" key={step.id} style={{ minWidth: 80, textAlign: 'center', position: 'relative', flex: '0 0 auto' }}>
+      <div className="need-step-node" key={step.id} style={{ minWidth: 44, maxWidth: 72, textAlign: 'center', position: 'relative', flex: '1 1 52px' }}>
         <div style={{ position: 'relative', display: 'inline-grid', placeItems: 'center' }}>
-          <button type="button" onClick={() => openStepDetail(stepContext)} title={`${step.name}${completion?.completed_at ? ` • completed ${new Date(completion.completed_at).toLocaleDateString()}` : ''}`} style={{ width: 28, height: 28, borderRadius: 999, border: isCurrent ? '2px solid #2563eb' : `1px solid ${completed ? '#86efac' : '#cbd5e1'}`, background: completed ? '#dcfce7' : (hasResponse ? '#fee2e2' : isCurrent ? '#eff6ff' : '#fff'), color: completed ? '#166534' : hasResponse ? '#b91c1c' : isCurrent ? '#1d4ed8' : '#64748b', fontWeight: 900 }}>{completed ? '✓' : stepIndex + 1}</button>
-          {!completed && (hasResponse || sentWaiting) && <span title={hasResponse ? 'Response received' : 'Email sent — waiting for response'} style={{ position: 'absolute', right: -12, top: -8, width: 21, height: 21, borderRadius: 999, display: 'grid', placeItems: 'center', background: hasResponse ? '#fee2e2' : '#dbeafe', color: hasResponse ? '#b91c1c' : '#1d4ed8', border: `1px solid ${hasResponse ? '#fecaca' : '#93c5fd'}`, fontSize: 11 }}>{hasResponse ? '✉' : '✉➜'}</span>}
+          <button type="button" onClick={(e) => { e.stopPropagation(); openStepDetail(stepContext) }} title={`${stepIndex + 1}. ${step.name}${completion?.completed_at ? ` • completed ${new Date(completion.completed_at).toLocaleDateString()}` : ''}`} style={{ width: 24, height: 24, padding: 0, borderRadius: 999, border: isCurrent ? '2px solid #2563eb' : `1px solid ${completed ? '#86efac' : '#cbd5e1'}`, background: completed ? '#dcfce7' : (hasResponse ? '#fee2e2' : isCurrent ? '#eff6ff' : '#fff'), color: completed ? '#166534' : hasResponse ? '#b91c1c' : isCurrent ? '#1d4ed8' : '#64748b', fontWeight: 900, fontSize: 10 }}>{completed ? '✓' : stepIndex + 1}</button>
+          {!completed && (hasResponse || sentWaiting) && <span title={hasResponse ? 'Response received' : 'Email sent — waiting for response'} style={{ position: 'absolute', right: -12, top: -9, width: 19, height: 19, borderRadius: 999, display: 'grid', placeItems: 'center', background: hasResponse ? '#fee2e2' : '#dbeafe', color: hasResponse ? '#b91c1c' : '#1d4ed8', border: `1px solid ${hasResponse ? '#fecaca' : '#93c5fd'}`, fontSize: 9 }}>{hasResponse ? '✉' : '✉➜'}</span>}
         </div>
-        <div style={{ fontSize: 10, fontWeight: isCurrent ? 900 : 700, color: isCurrent ? '#0f172a' : '#64748b', marginTop: 5, lineHeight: 1.15 }}>{step.name}</div>
-        {completion?.completed_at && <div style={{ fontSize: 9, color: '#15803d', marginTop: 2 }}>{new Date(completion.completed_at).toLocaleDateString()}</div>}
-        <div className="need-step-hover-actions" style={{ display: 'none', position: 'absolute', zIndex: 30, left: '50%', transform: 'translateX(-50%)', top: 32, gap: 4, padding: 5, border: '1px solid #cbd5e1', background: '#0f172a', borderRadius: 9, boxShadow: '0 8px 24px rgba(15,23,42,.22)' }}>
+        <div title={step.name} style={{ fontSize: 8.5, fontWeight: isCurrent ? 900 : 700, color: isCurrent ? '#0f172a' : '#64748b', marginTop: 3, lineHeight: 1.05, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{step.name}</div>
+        {completion?.completed_at && <div style={{ fontSize: 8, color: '#15803d', marginTop: 1 }}>{new Date(completion.completed_at).toLocaleDateString()}</div>}
+        <div className="need-step-hover-actions" onClick={(e) => e.stopPropagation()} style={{ display: 'none', position: 'absolute', zIndex: 40, left: '50%', transform: 'translateX(-50%)', top: 27, gap: 3, padding: 4, border: '1px solid #cbd5e1', background: '#0f172a', borderRadius: 8, boxShadow: '0 8px 24px rgba(15,23,42,.22)', whiteSpace: 'nowrap' }}>
           <button title="Add time" onClick={() => openChecklistStepBilling(event, step.name)}>◷</button>
           {!!stepEmails.length && <button title="Open email" onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)}>✉</button>}
           <button title={completed ? 'Mark incomplete' : 'Complete'} onClick={() => toggleChecklistStepComplete(eventId, step.id)}>{completed ? '↶' : '✓'}</button>
@@ -27333,25 +27333,75 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     </aside>
   }
   function renderNeedToSetCardDashboard() {
-    const rows = checklistDisplayRows()
-    const eventRows = rows.filter((row)=>row.event)
-    const unreadCount = eventRows.filter((row)=>needToSetEventHasNewEmail(row.event)).length
-    const waitingCount = Math.max(0,eventRows.length-unreadCount)
+    // This page must use the exact same source rows as Checklist > Need to Set.
+    // Passing need_date here prevents ordinary dated calendar events from appearing.
+    const rows = checklistDisplayRows('need_date')
+    const eventRows = rows.filter((row) => row.event)
+    const unreadCount = eventRows.filter((row) => needToSetEventHasNewEmail(row.event)).length
+    const waitingCount = Math.max(0, eventRows.length - unreadCount)
+    const readyCount = eventRows.filter((row) => String(currentNeedToSetStatus(row.event)?.stepName || '').toLowerCase().includes('confirm')).length
     return <>
-      <style>{`.need-step-node:hover .need-step-hover-actions{display:inline-flex!important}.need-step-hover-actions button{border:0;background:transparent;color:white;padding:2px 4px}.nts-row:hover{box-shadow:0 8px 22px rgba(15,23,42,.08)}`}</style>
-      <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+      <style>{`
+        .need-step-node:hover .need-step-hover-actions{display:inline-flex!important}
+        .need-step-hover-actions button{border:0;background:transparent;color:white;padding:2px 4px;font-size:11px}
+        .nts-row:hover{box-shadow:0 6px 18px rgba(15,23,42,.07)}
+        .nts-compact-grid{display:grid;grid-template-columns:minmax(245px,1.35fr) 92px minmax(120px,.72fr) 64px 70px 145px minmax(185px,1fr) minmax(330px,1.65fr);gap:6px;align-items:center}
+        @media(max-width:1250px){.nts-compact-grid{grid-template-columns:minmax(210px,1.2fr) 82px 105px 58px 62px 130px minmax(160px,.9fr) minmax(285px,1.45fr)}}
+      `}</style>
+      <div style={{ display:'flex', gap:10, alignItems:'flex-start', width:'100%' }}>
         {needToSetTocDock==='left'&&renderNeedToSetFloatingToc(rows)}
-        <main style={{ flex:1, minWidth:0 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}><div style={{ display:'flex', gap:8, alignItems:'center' }}><label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label></div><div style={{ display:'flex',gap:8 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Need to Set Settings</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Expand Rows</button></div></div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(150px,1fr))', gap:8, marginBottom:10 }}><div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:10,background:'#eff6ff'}}><strong>{eventRows.length}</strong><div>Need to Set</div></div><div style={{padding:10,border:'1px solid #fecaca',borderRadius:10,background:'#fff1f2'}}><strong>{unreadCount}</strong><div>Immediate Attention</div></div><div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:10,background:'#f8fafc'}}><strong>{waitingCount}</strong><div>Waiting on Others</div></div><div style={{padding:10,border:'1px solid #bbf7d0',borderRadius:10,background:'#f0fdf4'}}><strong>{eventRows.filter((row)=>currentNeedToSetStatus(row.event)?.stepName?.toLowerCase().includes('confirm')).length}</strong><div>Ready to Confirm</div></div></div>
-          <div style={{ display:'grid', gridTemplateColumns:'minmax(230px,1.25fr) 110px minmax(140px,.8fr) 90px 90px 155px minmax(250px,1.2fr) 250px', gap:8, padding:'7px 10px', background:'#f8fafc', border:'1px solid #e2e8f0', fontSize:11, fontWeight:800 }}><span>Matter / Client</span><span>Setting Type</span><span>Court</span><span>Created</span><span>Activity</span><span>Waiting Status</span><span>Carry-Forward Info</span><span>Step Progress</span></div>
-          <div style={{ display:'grid', gap:6, marginTop:5 }}>{rows.map((row)=>{ if(!row.event) return null; const event=row.event; const eventId=event.id||event.checklist_source_id||event.checklist_id; const matter=checklistMatterForEvent(event); const status=currentNeedToSetStatus(event); const steps=checklistStepsForEvent(event); const unread=needToSetEventHasNewEmail(event); const expanded=checklistStepsRowVisible(eventId); const settingType=checklistEventCategoryLabel(event); return <section id={needToSetRowDomId(event)} className="nts-row" key={eventId} style={{ border:`1px solid ${unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff7f7':'#fff', overflow:'hidden' }}><div onClick={()=>toggleChecklistStepsRow(eventId)} style={{ cursor:'pointer', display:'grid', gridTemplateColumns:'minmax(230px,1.25fr) 110px minmax(140px,.8fr) 90px 90px 155px minmax(250px,1.2fr) 250px', gap:8, padding:'9px 10px', alignItems:'center', fontSize:12 }}><div><strong style={{color:'#1d4ed8'}}>{checklistMatterLabel(event)}</strong><div style={{color:'#64748b',fontSize:10}}>{matter?.cause_number||matter?.cause||''}</div></div><span style={{display:'inline-flex',justifyContent:'center',padding:'4px 8px',borderRadius:999,background:settingType?.toLowerCase().includes('trial')?'#ede9fe':settingType?.toLowerCase().includes('mediation')?'#ccfbf1':'#dbeafe',color:'#1e3a8a',fontWeight:900}}>{settingType}</span><span>{checklistCourtName(event)||'No court'}</span><span><strong>{status.rowDays}d</strong><div style={{fontSize:10,color:'#64748b'}}>{needToSetShortDate(needToSetCreatedAt(event))}</div></span><span><strong>{status.timeDays??'—'}d</strong><div style={{fontSize:10,color:'#64748b'}}>since activity</div></span><span style={{padding:'5px 7px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:800}}>{unread?'Response received — review needed':`Waiting for response from ${status?.waitingOn||'Court / Client'}`}</span><span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:6,background:'#f8fafc'}}><strong>From: {status?.stepName||'Previous step'}</strong><div style={{fontSize:10,color:'#64748b'}}>{status?.lastBillingDescription||'No carry-forward details saved.'}</div></span><div style={{display:'flex',alignItems:'flex-start',gap:3,overflow:'visible'}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}<span style={{marginLeft:'auto'}}>{expanded?'⌃':'⌄'}</span></div></div>{renderNeedToSetExpandedStepDetail(event)}</section>})}</div>
+        <main style={{ flex:1, minWidth:0, width:'100%' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'center', flexWrap:'wrap', marginBottom:8 }}>
+            <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+              <label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age (oldest first)</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label>
+              <label style={{display:'inline-flex',gap:5,alignItems:'center'}}><input type="checkbox" checked={checklistNewEmailOnly} onChange={(e)=>setChecklistNewEmailOnly(e.target.checked)}/> Unread email only</label>
+            </div>
+            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>{ const next={}; eventRows.forEach(({event})=>{next[event.id||event.checklist_source_id||event.checklist_id]=true}); setChecklistStepsExpandedByRow(next) }}>Expand All</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Collapse All</button></div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(130px,1fr))', gap:7, marginBottom:8 }}>
+            <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#eff6ff'}}><strong>{eventRows.length}</strong><span style={{marginLeft:6}}>Need to Set</span></div>
+            <div style={{padding:'7px 10px',border:'1px solid #fecaca',borderRadius:9,background:'#fff1f2'}}><strong>{unreadCount}</strong><span style={{marginLeft:6}}>Immediate Attention</span></div>
+            <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#f8fafc'}}><strong>{waitingCount}</strong><span style={{marginLeft:6}}>Waiting on Others</span></div>
+            <div style={{padding:'7px 10px',border:'1px solid #bbf7d0',borderRadius:9,background:'#f0fdf4'}}><strong>{readyCount}</strong><span style={{marginLeft:6}}>Ready to Confirm</span></div>
+          </div>
+          <div className="nts-compact-grid" style={{ padding:'6px 8px', background:'#f8fafc', border:'1px solid #e2e8f0', fontSize:10, fontWeight:900, color:'#475569' }}><span>Matter / Client</span><span>Type</span><span>Court</span><span>Age</span><span>Activity</span><span>Waiting On</span><span>Carry-Forward</span><span>All Steps</span></div>
+          <div style={{ display:'grid', gap:4, marginTop:4 }}>
+            {rows.map((row)=>{
+              if(row.type==='paused_divider') return <div key={row.key} style={{padding:'5px 8px',fontSize:11,fontWeight:900,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>Paused Need to Set events</div>
+              if(!row.event) return null
+              const event=row.event
+              const eventId=event.id||event.checklist_source_id||event.checklist_id
+              const matter=checklistMatterForEvent(event)
+              const status=currentNeedToSetStatus(event)
+              const steps=checklistStepsForEvent(event)
+              const unread=needToSetEventHasNewEmail(event)
+              const expanded=checklistStepsRowVisible(eventId)
+              const settingType=checklistEventCategoryLabel(event)
+              const typeLower=String(settingType||'').toLowerCase()
+              const typeBg=typeLower.includes('trial')?'#ede9fe':typeLower.includes('mediat')?'#ccfbf1':typeLower.includes('deadline')?'#dbeafe':'#dbeafe'
+              return <section id={needToSetRowDomId(event)} className="nts-row" key={eventId} style={{ border:`1px solid ${unread?'#fca5a5':'#dbe4ee'}`, borderRadius:9, background:unread?'#fff4f4':'#fff', overflow:'visible' }}>
+                <div className="nts-compact-grid" onClick={()=>toggleChecklistStepsRow(eventId)} style={{ cursor:'pointer', padding:'6px 8px', minHeight:54, fontSize:11 }}>
+                  <div style={{minWidth:0}}><div style={{display:'flex',alignItems:'center',gap:5}}><span style={{fontSize:11}}>{expanded?'▾':'▸'}</span><strong style={{color:'#1d4ed8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{checklistMatterLabel(event)}</strong></div><div style={{color:'#64748b',fontSize:9,marginLeft:16}}>{matter?.cause_number||matter?.cause||''}</div></div>
+                  <span style={{display:'inline-flex',justifyContent:'center',padding:'3px 6px',borderRadius:999,background:typeBg,color:'#1e3a8a',fontWeight:900,fontSize:9,textTransform:'uppercase'}}>{settingType}</span>
+                  <span title={checklistCourtName(event)||'No court'} style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{checklistCourtName(event)||'No court'}</span>
+                  <span><strong>{status.rowDays}d</strong><div style={{fontSize:8.5,color:'#64748b'}}>{needToSetShortDate(needToSetCreatedAt(event))}</div></span>
+                  <span><strong>{status.timeDays??'—'}d</strong><div style={{fontSize:8.5,color:'#64748b'}}>last activity</div></span>
+                  <span style={{padding:'4px 6px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:850,fontSize:9.5,lineHeight:1.15}}>{unread?'Response received — action needed':`Waiting for ${status?.waitingOn||'Court / Client'}`}</span>
+                  <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>From: {status?.stepName||'Previous step'}</strong><div title={status?.lastBillingDescription||''} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{status?.lastBillingDescription||'No carry-forward details saved.'}</div></span>
+                  <div onClick={(e)=>e.stopPropagation()} style={{display:'flex',alignItems:'flex-start',gap:1,minWidth:0,overflow:'visible',paddingTop:2}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}</div>
+                </div>
+                {renderNeedToSetExpandedStepDetail(event)}
+              </section>
+            })}
+            {!eventRows.length&&<div style={{padding:24,textAlign:'center',color:'#64748b',border:'1px dashed #cbd5e1',borderRadius:10}}>No events are currently listed in Checklist &gt; Need to Set.</div>}
+          </div>
         </main>
         {needToSetTocDock==='right'&&renderNeedToSetFloatingToc(rows)}
       </div>
       {renderNeedToSetSettingsDrawer(rows)}
     </>
   }
+
   function settingCenterDefaultRecord(event = {}) {
     const status = currentNeedToSetStatus(event)
     const steps = checklistStepsForEvent(event)
