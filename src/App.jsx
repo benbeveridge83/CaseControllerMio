@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V150'
+const MIO_APP_VERSION = 'Mio V151'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2030,7 +2030,10 @@ function App() {
   const [enforcementAiStatus, setEnforcementAiStatus] = useState('')
   const [enforcementAiBusy, setEnforcementAiBusy] = useState(false)
   const [enforcementSharedReady, setEnforcementSharedReady] = useState(false)
+  const [enforcementSaveStatus, setEnforcementSaveStatus] = useState('Not loaded')
+  const [enforcementSaveError, setEnforcementSaveError] = useState('')
   const enforcementSharedSaveTimersRef = useRef({})
+  const enforcementLastSavedJsonRef = useRef({})
   const [requestedReliefTables, setRequestedReliefTables] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioRequestedReliefTables') || 'null')
@@ -31023,10 +31026,60 @@ ${choices}`, '1'))
     </Modal>
   }
 
+  function enforcementRowsNewestTimestamp(rows = []) {
+    return Math.max(0, ...((Array.isArray(rows) ? rows : []).map((row) => {
+      const value = row?.updated_at || row?.created_at || ''
+      const time = value ? new Date(value).getTime() : 0
+      return Number.isFinite(time) ? time : 0
+    })))
+  }
+
+  async function loadSharedEnforcementDocuments(permittedMatterIds = []) {
+    if (!session?.user?.id || !permittedMatterIds.length) return
+    const { data, error } = await supabase
+      .from('case_mio_enforcement_documents')
+      .select('matter_id,document_id,metadata,updated_at')
+      .in('matter_id', permittedMatterIds)
+    if (error) {
+      console.warn('Could not load shared Enforcement documents:', error)
+      return
+    }
+    const sharedDocs = (data || []).map((row) => ({ ...(row.metadata || {}), id: row.document_id, matter_id: row.matter_id })).filter((row) => row.id)
+    if (sharedDocs.length) {
+      setDocuments((current) => {
+        const map = new Map((current || []).map((doc) => [String(doc.id), doc]))
+        sharedDocs.forEach((doc) => map.set(String(doc.id), { ...(map.get(String(doc.id)) || {}), ...doc }))
+        return Array.from(map.values())
+      })
+    }
+  }
+
+  async function saveSharedEnforcementDocument(doc, reason = 'upload') {
+    if (!session?.user?.id || !doc?.id || !doc?.matter_id) return false
+    const { error } = await supabase.from('case_mio_enforcement_documents').upsert({
+      matter_id: String(doc.matter_id),
+      document_id: String(doc.id),
+      metadata: stripLargeFileData(doc),
+      uploaded_by: session.user.id,
+      updated_at: new Date().toISOString(),
+      reason
+    }, { onConflict: 'matter_id,document_id' })
+    if (error) {
+      console.error('Could not save shared Enforcement document metadata:', error)
+      setEnforcementSaveError(error.message || 'Document metadata did not save.')
+      setEnforcementSaveStatus('NOT SAVED')
+      return false
+    }
+    return true
+  }
+
   async function loadSharedEnforcementState() {
     if (!session?.user?.id || !userAccessChecked) return
+    setEnforcementSaveStatus('Loading from Supabase...')
+    setEnforcementSaveError('')
     const permittedMatterIds = (isClientPortalMember() ? clientPortalMatterRows() : matters).map((matter) => String(matter.id))
     if (isClientPortalMember() && !permittedMatterIds.length) {
+      setEnforcementSaveStatus('No authorized matter found')
       setEnforcementSharedReady(true)
       return
     }
@@ -31034,21 +31087,87 @@ ${choices}`, '1'))
     if (permittedMatterIds.length) query = query.in('matter_id', permittedMatterIds)
     const { data, error } = await query
     if (error) {
-      console.warn('Shared Enforcement storage is not ready. Run the V139 Enforcement SQL migration.', error)
-      setEnforcementSharedReady(true)
+      console.error('Shared Enforcement load failed:', error)
+      setEnforcementSaveError(error.message || 'Supabase could not load Enforcement data.')
+      setEnforcementSaveStatus('NOT SAVING - database access failed')
+      setEnforcementSharedReady(false)
       return
     }
-    const sharedRows = {}
-    ;(data || []).forEach((row) => { sharedRows[String(row.matter_id)] = Array.isArray(row.violations) ? row.violations : [] })
-    setViolationsByMatter((current) => ({ ...current, ...sharedRows }))
+    const serverRows = {}
+    const serverUpdated = {}
+    ;(data || []).forEach((row) => {
+      serverRows[String(row.matter_id)] = Array.isArray(row.violations) ? row.violations : []
+      serverUpdated[String(row.matter_id)] = row.updated_at ? new Date(row.updated_at).getTime() : 0
+    })
+    let recoveryMatterIds = []
+    const recoveryRowsByMatter = {}
+    setViolationsByMatter((current) => {
+      const next = { ...current }
+      permittedMatterIds.forEach((matterId) => {
+        const localRows = Array.isArray(current?.[matterId]) ? current[matterId] : []
+        const remoteRows = Array.isArray(serverRows?.[matterId]) ? serverRows[matterId] : []
+        const localNewest = enforcementRowsNewestTimestamp(localRows)
+        const remoteNewest = Math.max(serverUpdated[matterId] || 0, enforcementRowsNewestTimestamp(remoteRows))
+        // A client browser draft may contain unsaved work from before the RLS fix.
+        // Preserve and re-upload it only when it is demonstrably newer than Supabase.
+        if (isClientPortalMember() && localRows.length && localNewest > remoteNewest) {
+          next[matterId] = localRows
+          recoveryMatterIds.push(matterId)
+          recoveryRowsByMatter[matterId] = localRows
+        } else if (Object.prototype.hasOwnProperty.call(serverRows, matterId)) {
+          next[matterId] = remoteRows
+        }
+      })
+      return next
+    })
+    ;(data || []).forEach((row) => {
+      enforcementLastSavedJsonRef.current[String(row.matter_id)] = JSON.stringify(Array.isArray(row.violations) ? row.violations : [])
+    })
+    await loadSharedEnforcementDocuments(permittedMatterIds)
     setEnforcementSharedReady(true)
+    setEnforcementSaveStatus(recoveryMatterIds.length ? 'Recovered newer browser draft; saving to Supabase...' : 'Loaded from Supabase')
+    if (recoveryMatterIds.length) {
+      window.setTimeout(() => {
+        recoveryMatterIds.forEach((matterId) => {
+          const rows = Array.isArray(recoveryRowsByMatter[matterId]) ? recoveryRowsByMatter[matterId] : []
+          saveSharedEnforcementMatter(matterId, rows, { force: true, reason: 'browser-recovery' })
+          const referencedIds = new Set(rows.flatMap((row) => [...(row.document_ids || []), ...(row.legal_document_ids || [])]).map(String))
+          ;(documents || []).filter((doc) => String(doc.matter_id) === String(matterId) && referencedIds.has(String(doc.id))).forEach((doc) => saveSharedEnforcementDocument(doc, 'browser-recovery'))
+        })
+      }, 300)
+    }
   }
 
-  async function saveSharedEnforcementMatter(matterId, rows) {
-    if (!session?.user?.id || !matterId || !enforcementSharedReady) return
-    if (isClientPortalMember() && !clientPortalMatterRows().some((matter) => String(matter.id) === String(matterId))) return
-    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: Array.isArray(rows) ? rows : [], updated_by: session.user.id, updated_at: new Date().toISOString() }, { onConflict: 'matter_id' })
-    if (error) console.warn('Could not save shared Enforcement data:', error)
+  async function saveSharedEnforcementMatter(matterId, rows, options = {}) {
+    if (!session?.user?.id || !matterId) return false
+    if (!enforcementSharedReady && !options.force) return false
+    if (isClientPortalMember() && !clientPortalMatterRows().some((matter) => String(matter.id) === String(matterId))) return false
+    const cleanRows = Array.isArray(rows) ? rows : []
+    const json = JSON.stringify(cleanRows)
+    if (!options.force && enforcementLastSavedJsonRef.current[String(matterId)] === json) return true
+    setEnforcementSaveStatus('Saving...')
+    setEnforcementSaveError('')
+    const now = new Date().toISOString()
+    // Keep a recovery snapshot before replacing the current matter state.
+    await supabase.from('case_mio_enforcement_snapshots').insert({ matter_id: matterId, violations: cleanRows, saved_by: session.user.id, saved_at: now, reason: options.reason || 'autosave' })
+    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: cleanRows, updated_by: session.user.id, updated_at: now }, { onConflict: 'matter_id' })
+    if (error) {
+      console.error('Could not save shared Enforcement data:', error)
+      setEnforcementSaveError(error.message || 'Supabase rejected the Enforcement save.')
+      setEnforcementSaveStatus('NOT SAVED')
+      try { localStorage.setItem('caseMioViolationsByMatterEmergencyBackup', JSON.stringify({ saved_at: now, matter_id: matterId, violations: cleanRows })) } catch {}
+      return false
+    }
+    enforcementLastSavedJsonRef.current[String(matterId)] = json
+    setEnforcementSaveStatus(`Saved ${new Date().toLocaleTimeString()}`)
+    return true
+  }
+
+  async function saveCurrentEnforcementNow() {
+    if (!violationsMatterId) return
+    clearTimeout(enforcementSharedSaveTimersRef.current[violationsMatterId])
+    const ok = await saveSharedEnforcementMatter(violationsMatterId, matterViolations(violationsMatterId), { force: true, reason: 'manual-save' })
+    if (!ok) alert('The Enforcement page did not save to Supabase. Do not close this tab. Check the red save warning and run the V151 SQL migration.')
   }
 
   useEffect(() => {
@@ -31063,7 +31182,8 @@ ${choices}`, '1'))
     Object.entries(violationsByMatter || {}).forEach(([matterId, rows]) => {
       if (!allowedIds.has(String(matterId))) return
       clearTimeout(enforcementSharedSaveTimersRef.current[matterId])
-      enforcementSharedSaveTimersRef.current[matterId] = window.setTimeout(() => saveSharedEnforcementMatter(matterId, rows), 500)
+      setEnforcementSaveStatus('Unsaved changes...')
+      enforcementSharedSaveTimersRef.current[matterId] = window.setTimeout(() => saveSharedEnforcementMatter(matterId, rows), 250)
     })
   }, [violationsByMatter, enforcementSharedReady, session?.user?.id, currentTeamMember, matters])
 
@@ -31130,6 +31250,7 @@ ${choices}`, '1'))
       const storedFilePayload = await uploadMioDocumentFile(file, docId, violationsMatterId)
       const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Uploaded for enforcement violation: ${violation.title || 'Violation'}`, status: 'Our Exhibit', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
       setDocuments((current) => [...current, nextDoc])
+      await saveSharedEnforcementDocument(nextDoc, 'violation-exhibit-upload')
       newIds.push(docId)
     }
     patchViolation(violation.id, { document_ids: Array.from(new Set([...(violation.document_ids || []), ...newIds])) })
@@ -31145,6 +31266,7 @@ ${choices}`, '1'))
       const storedFilePayload = await uploadMioDocumentFile(file, docId, violationsMatterId)
       const nextDoc = { id: docId, matter_id: violationsMatterId, name: file.name, date: dateToInputValue(new Date()), description: `Legal authority for enforcement violation: ${violation.title || 'Violation'}`, status: 'Neither', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...tempFilePayload, ...storedFilePayload }
       setDocuments((current) => [...current, nextDoc])
+      await saveSharedEnforcementDocument(nextDoc, 'legal-authority-upload')
       newIds.push(docId)
     }
     patchViolation(violation.id, { legal_document_ids: Array.from(new Set([...(violation.legal_document_ids || []), ...newIds])) })
@@ -31351,8 +31473,9 @@ ${choices}`, '1'))
         `}</style>
         <div className="enforcement-no-print" style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14}}>
           <div><h1 style={{margin:'0 0 4px'}}>{clientPortal?'Your Enforcement Case':'Enforcement'}</h1><div style={{color:'#64748b'}}>{clientPortal?'Review the violations, exhibits, requested relief, and testimony plan prepared for your matter.':'Add violations, organize a violation-to-exhibit matrix, build the numbered exhibit list, assign predicate foundations, and print the complete court outline.'}</div></div>
-          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>{!clientPortal&&<label>Matter<select value={violationsMatterId} onChange={(e)=>{setViolationsMatterId(e.target.value);setExpandedViolationIds([])}}><option value="">Select matter...</option>{availableMatters.map((row)=><option key={row.id} value={row.id}>{formatMatterOption(row)}</option>)}</select></label>}{!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}<button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}</div>
+          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>{!clientPortal&&<label>Matter<select value={violationsMatterId} onChange={(e)=>{setViolationsMatterId(e.target.value);setExpandedViolationIds([])}}><option value="">Select matter...</option>{availableMatters.map((row)=><option key={row.id} value={row.id}>{formatMatterOption(row)}</option>)}</select></label>}{!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}<button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}</div>
         </div>
+        {enforcementSaveError&&<div className="enforcement-no-print" style={{border:'2px solid #dc2626',background:'#fef2f2',color:'#991b1b',padding:10,borderRadius:8,marginBottom:12,fontWeight:850}}>Enforcement changes are not reaching Supabase: {enforcementSaveError}. Do not close this tab until this is fixed or use Save now after running the V151 SQL migration.</div>}
         {!clientPortal&&<div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>}
         {!violationsMatterId&&<div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>Select a matter to begin an enforcement outline.</div>}
         {violationsMatterId&&rows.length>0&&<nav className="enforcement-workspace-tabs enforcement-screen-only" aria-label="Enforcement workspace sections">{[
