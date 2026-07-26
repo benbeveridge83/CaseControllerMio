@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V146'
+const MIO_APP_VERSION = 'Mio V147'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -222,6 +222,7 @@ const appPages = [
   { value: 'enforcement', label: 'Enforcement' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'checklist', label: 'Checklist' },
+  { value: 'need_to_set', label: 'Need to Set' },
   { value: 'setting_center', label: 'Setting Center' },
   { value: 'discovery', label: 'Discovery' },
   { value: 'documents', label: 'Documents' },
@@ -251,6 +252,7 @@ const screenSaverBasePages = [
   { value: 'enforcement', label: 'Enforcement', page: 'enforcement' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
   { value: 'checklist', label: 'Checklist', page: 'checklist' },
+  { value: 'need_to_set', label: 'Need to Set', page: 'need_to_set' },
   { value: 'setting_center', label: 'Setting Center', page: 'setting_center' },
   { value: 'discovery_their_requests', label: "Discovery - Their Requests", page: 'discovery', discoverySide: 'their' },
   { value: 'discovery_our_requests', label: 'Discovery - Our Requests', page: 'discovery', discoverySide: 'ours' },
@@ -1958,6 +1960,12 @@ function App() {
     try { return localStorage.getItem('caseMioNeedToSetTocCollapsed') === 'true' }
     catch { return false }
   })
+  const [needToSetSettingsOpen, setNeedToSetSettingsOpen] = useState(false)
+  const [needToSetSettingsType, setNeedToSetSettingsType] = useState('')
+  const [needToSetAiByEvent, setNeedToSetAiByEvent] = useState({})
+  const [needToSetAiLoading, setNeedToSetAiLoading] = useState({})
+  const [needToSetTocDock, setNeedToSetTocDock] = useState(() => localStorage.getItem('caseMioNeedToSetTocDock') || 'left')
+
   const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioWithdrawalSteps') || 'null')
@@ -3261,6 +3269,8 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem('caseMioNeedToSetTocCollapsed', needToSetTocCollapsed ? 'true' : 'false') } catch {}
   }, [needToSetTocCollapsed])
+  useEffect(() => { try { localStorage.setItem('caseMioNeedToSetTocDock', needToSetTocDock || 'left') } catch {} }, [needToSetTocDock])
+
 
   useEffect(() => {
     try { saveMioStateKey('caseMioWithdrawalSteps', JSON.stringify(withdrawalSteps)) } catch {}
@@ -14649,7 +14659,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       category: settingForm.category,
       name: settingForm.name.trim(),
       parent_name: settingForm.category === 'matter_subtype' || settingForm.category === 'event_subcategory' || settingForm.category === 'task_subcategory' || settingForm.category === 'matter_status_step' || settingForm.category === 'checklist_setting_step' ? settingForm.parent_name : null,
-      default_pages: settingForm.category === 'task_subcategory' ? currentSettingTaskMeta() : settingForm.category === 'matter_status_step' ? { client_status: settingForm.default_pages?.client_status || '' } : null,
+      default_pages: settingForm.category === 'task_subcategory' ? currentSettingTaskMeta() : settingForm.category === 'matter_status_step' ? { client_status: settingForm.default_pages?.client_status || '' } : settingForm.category === 'checklist_setting_step' ? { ...(settingForm.default_pages || {}), purpose: settingForm.default_pages?.purpose || '', email_roles: Array.isArray(settingForm.default_pages?.email_roles) ? settingForm.default_pages.email_roles : [] } : null,
       color: settingForm.category === 'event_category' || settingForm.category === 'event_subcategory' || settingForm.category === 'matter_status' || settingForm.category === 'matter_status' ? settingForm.color : null,
       sort_order: nextSortOrder,
       is_active: settingForm.is_active
@@ -27171,233 +27181,164 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
     const completion = checklistStepCompletion(eventId, step.id)
     const completed = !!completion?.completed
-    const firstOpenIndex = checklistStepsForEvent(event).findIndex((item) => !checklistStepCompletion(eventId, item.id)?.completed)
-    const currentIndex = firstOpenIndex === -1 ? Math.max(totalSteps - 1, 0) : firstOpenIndex
+    const status = currentNeedToSetStatus(event)
+    const currentIndex = Math.max(0, checklistStepsForEvent(event).findIndex((candidate) => candidate.name === status.stepName))
     const isCurrent = stepIndex === currentIndex
     const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
     const unreadCount = stepEmails.filter((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email)).length
-    const roleLabels = [...new Set(stepEmails.map(needToSetEmailRoleLabel).filter(Boolean))]
+    const sentWaiting = !completed && stepEmails.some((email) => !workspaceEmailHasUnreadActivity(email) && (email.last_sent_at || email.sent_at || email.status === 'sent' || email.thread_messages?.some((m) => String(m.direction || '').toLowerCase() === 'outgoing')))
+    const hasResponse = !completed && unreadCount > 0
     const stepContext = needToSetStepContext(event, step, stepIndex)
     return (
-      <div id={needToSetStepDomId(event, step, stepIndex)} key={step.id} style={{ display: 'grid', justifyItems: 'center', gap: 5, minWidth: 92, scrollMarginTop: 110 }}>
-        <button
-          type="button"
-          onClick={() => openStepDetail(stepContext)}
-          title="Open this step detail"
-          style={{ width: 34, height: 34, borderRadius: 999, border: isCurrent ? '3px solid #2563eb' : '2px solid #dbe4ee', background: completed ? '#dcfce7' : (isCurrent ? '#eff6ff' : '#fff'), color: completed ? '#166534' : (isCurrent ? '#1d4ed8' : '#64748b'), fontWeight: 800 }}
-        >
-          {completed ? '✓' : stepIndex + 1}
-        </button>
-        <div style={{ fontSize: 11, textAlign: 'center', color: isCurrent ? '#0f172a' : '#64748b', fontWeight: isCurrent ? 800 : 600, minHeight: 26 }}>{step.name}</div>
-        {!!stepEmails.length && (
-          <button
-            type="button"
-            onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)}
-            title="Open linked emails for this step"
-            style={{ position: 'relative', border: '1px solid #cbd5e1', borderRadius: 999, background: '#fff', color: '#334155', padding: '4px 8px', fontSize: 11, display: 'inline-flex', gap: 4, alignItems: 'center' }}
-          >
-            <span>✉</span><span>{roleLabels.slice(0, 2).join('/') || 'Email'}</span>
-            {unreadCount > 0 && <span style={{ position: 'absolute', top: -8, right: -8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 5px', fontSize: 10, fontWeight: 800 }}>{unreadCount}</span>}
-          </button>
-        )}
+      <div className="need-step-node" key={step.id} style={{ minWidth: 80, textAlign: 'center', position: 'relative', flex: '0 0 auto' }}>
+        <div style={{ position: 'relative', display: 'inline-grid', placeItems: 'center' }}>
+          <button type="button" onClick={() => openStepDetail(stepContext)} title={`${step.name}${completion?.completed_at ? ` • completed ${new Date(completion.completed_at).toLocaleDateString()}` : ''}`} style={{ width: 28, height: 28, borderRadius: 999, border: isCurrent ? '2px solid #2563eb' : `1px solid ${completed ? '#86efac' : '#cbd5e1'}`, background: completed ? '#dcfce7' : (hasResponse ? '#fee2e2' : isCurrent ? '#eff6ff' : '#fff'), color: completed ? '#166534' : hasResponse ? '#b91c1c' : isCurrent ? '#1d4ed8' : '#64748b', fontWeight: 900 }}>{completed ? '✓' : stepIndex + 1}</button>
+          {!completed && (hasResponse || sentWaiting) && <span title={hasResponse ? 'Response received' : 'Email sent — waiting for response'} style={{ position: 'absolute', right: -12, top: -8, width: 21, height: 21, borderRadius: 999, display: 'grid', placeItems: 'center', background: hasResponse ? '#fee2e2' : '#dbeafe', color: hasResponse ? '#b91c1c' : '#1d4ed8', border: `1px solid ${hasResponse ? '#fecaca' : '#93c5fd'}`, fontSize: 11 }}>{hasResponse ? '✉' : '✉➜'}</span>}
+        </div>
+        <div style={{ fontSize: 10, fontWeight: isCurrent ? 900 : 700, color: isCurrent ? '#0f172a' : '#64748b', marginTop: 5, lineHeight: 1.15 }}>{step.name}</div>
+        {completion?.completed_at && <div style={{ fontSize: 9, color: '#15803d', marginTop: 2 }}>{new Date(completion.completed_at).toLocaleDateString()}</div>}
+        <div className="need-step-hover-actions" style={{ display: 'none', position: 'absolute', zIndex: 30, left: '50%', transform: 'translateX(-50%)', top: 32, gap: 4, padding: 5, border: '1px solid #cbd5e1', background: '#0f172a', borderRadius: 9, boxShadow: '0 8px 24px rgba(15,23,42,.22)' }}>
+          <button title="Add time" onClick={() => openChecklistStepBilling(event, step.name)}>◷</button>
+          {!!stepEmails.length && <button title="Open email" onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)}>✉</button>}
+          <button title={completed ? 'Mark incomplete' : 'Complete'} onClick={() => toggleChecklistStepComplete(eventId, step.id)}>{completed ? '↶' : '✓'}</button>
+          <button title="Mark incomplete" onClick={() => { if (completed) toggleChecklistStepComplete(eventId, step.id) }}>⊘</button>
+        </div>
       </div>
     )
   }
 
+  function needToSetThreadMessages(email = {}) {
+    const messages = Array.isArray(email.thread_messages) ? email.thread_messages.slice() : []
+    return messages.sort((a, b) => String(b.received_at || b.sent_at || b.created_at || '').localeCompare(String(a.received_at || a.sent_at || a.created_at || '')))
+  }
+
+  function needToSetMessageIsTheirs(message = {}, email = {}) {
+    const direction = String(message.direction || message.message_direction || '').toLowerCase()
+    if (direction) return ['incoming', 'received', 'inbound'].includes(direction)
+    const from = String(message.from_email || message.from || '').toLowerCase()
+    const mine = String(session?.user?.email || '').toLowerCase()
+    return !!from && !!mine && !from.includes(mine)
+  }
+
+  function openNeedToSetOutlook(email = {}, event = {}, step = {}, stepIndex = 0, draftBody = '') {
+    const messages = needToSetThreadMessages(email)
+    const latest = messages[0] || {}
+    const webLink = email.outlook_web_link || email.web_link || latest.web_link || latest.outlook_web_link || ''
+    if (webLink) { window.open(webLink, '_blank', 'noopener,noreferrer'); return }
+    openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event), needToSetStepContext(event, step, stepIndex), email.recipient_role || email.role || 'court', draftBody || '')
+  }
+
+  async function generateNeedToSetAiSuggestion(event = {}) {
+    const id = checklistNeedToSetRowId(event)
+    if (!id) return
+    const steps = checklistStepsForEvent(event)
+    const status = currentNeedToSetStatus(event)
+    const stepIndex = Math.max(0, steps.findIndex((candidate) => candidate.name === status.stepName))
+    const step = steps[stepIndex] || steps[0] || {}
+    const emails = needToSetEmailsForStep(event, step, stepIndex)
+    setNeedToSetAiLoading((current) => ({ ...current, [id]: true }))
+    try {
+      const payload = {
+        action: 'suggest',
+        matter: checklistMatterForEvent(event),
+        event: { id, type: checklistEventCategoryLabel(event), title: event.title || event.checklist_title || '', status },
+        current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '' },
+        emails: emails.map((email) => ({ id: email.id, subject: email.subject || email.title || '', role: needToSetEmailRoleLabel(email), unread: !!(email.new_email_notice || workspaceEmailHasUnreadActivity(email)), messages: needToSetThreadMessages(email).slice(0, 8) })),
+        calendar_hint: 'Check Mio calendar for conflicts before proposing dates.'
+      }
+      const { data, error } = await supabase.functions.invoke('need-to-set-assistant', { body: payload })
+      if (error) throw error
+      setNeedToSetAiByEvent((current) => ({ ...current, [id]: data || {} }))
+    } catch (error) {
+      const unread = emails.find((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email))
+      setNeedToSetAiByEvent((current) => ({ ...current, [id]: { summary: unread ? 'A new response is waiting on the current step.' : `The next step is ${step.name || 'the current step'}.`, actions: unread ? ['Open the newest response', 'Check the calendar for conflicts', 'Draft the next reply'] : ['Draft the next email', 'Review carry-forward information'] } }))
+    } finally { setNeedToSetAiLoading((current) => ({ ...current, [id]: false })) }
+  }
+
+  async function saveNeedToSetStepMeta(step, patch = {}) {
+    if (!step?.id) return
+    const nextDefaultPages = { ...(step.default_pages || {}), ...patch }
+    const { error } = await supabase.from('setting_options').update({ default_pages: nextDefaultPages }).eq('id', step.id)
+    if (error) { alert(error.message); return }
+    setSettings((current) => current.map((item) => item.id === step.id ? { ...item, default_pages: nextDefaultPages } : item))
+  }
+
+  function renderNeedToSetSettingsDrawer(rows = []) {
+    if (!needToSetSettingsOpen) return null
+    const eventTypes = Array.from(new Set(rows.filter((row) => row.event).map((row) => checklistEventCategoryLabel(row.event)).filter(Boolean)))
+    const type = needToSetSettingsType || eventTypes[0] || ''
+    const steps = settings.filter((item) => item.category === 'checklist_setting_step' && item.is_active && item.parent_name === type).sort((a,b)=>(a.sort_order??999)-(b.sort_order??999))
+    const contactRoles = ['Court Coordinator','Court','Client','Opposing Counsel','Opposing Party','Mediator','Other']
+    return <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 120, background: '#fff', borderTop: '2px solid #93c5fd', boxShadow: '0 -18px 50px rgba(15,23,42,.18)', maxHeight: '43vh', overflow: 'auto', padding: '12px 18px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><div><strong style={{ fontSize: 18 }}>Need to Set Settings</strong><span style={{ marginLeft: 10, color: '#15803d', background: '#dcfce7', borderRadius: 999, padding: '3px 8px', fontSize: 12 }}>Synced with Settings page</span><div style={{ color: '#64748b', fontSize: 12 }}>Changes here update the same Need to Set step records used on the Settings page.</div></div><button onClick={() => setNeedToSetSettingsOpen(false)}>✕ Close</button></div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}><strong>Setting type</strong><select value={type} onChange={(e)=>setNeedToSetSettingsType(e.target.value)}>{eventTypes.map((value)=><option key={value}>{value}</option>)}</select></div>
+      <div style={{ marginTop: 10, minWidth: 1100 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', background:'#f8fafc', fontWeight:800, fontSize:12 }}><span>#</span><span>Step Name</span><span>Purpose</span><span>Email assigned to step</span><span>Indicators</span></div>
+        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const roles=Array.isArray(meta.email_roles)?meta.email_roles:[]; return <div key={step.id} style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', borderTop:'1px solid #e2e8f0', alignItems:'center' }}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><select value={roles[0]||''} onChange={(e)=>saveNeedToSetStepMeta(step,{email_roles:e.target.value?[e.target.value]:[]})}><option value="">No email</option>{contactRoles.map((role)=><option key={role} value={role}>{role}</option>)}</select><span style={{ color:'#475569' }}>✉➜ sent &nbsp; ✉ response</span></div> })}
+      </div>
+    </div>
+  }
   function renderNeedToSetExpandedStepDetail(event = {}) {
     const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
     if (!checklistStepsRowVisible(eventId)) return null
     const steps = checklistStepsForEvent(event)
     if (!steps.length) return null
-    const firstOpenIndex = steps.findIndex((step) => !checklistStepCompletion(eventId, step.id)?.completed)
-    const stepIndex = firstOpenIndex === -1 ? Math.max(steps.length - 1, 0) : firstOpenIndex
-    const step = steps[stepIndex]
-    const eventContext = needToSetEventWorkspaceContext(event)
+    const status = currentNeedToSetStatus(event)
+    const stepIndex = Math.max(0, steps.findIndex((candidate) => candidate.name === status.stepName))
+    const step = steps[stepIndex] || steps[0]
     const stepContext = needToSetStepContext(event, step, stepIndex)
-    const stepEmails = needToSetEmailsForStep(event, step, stepIndex)
-    const allRows = []
-    steps.forEach((candidateStep) => {
-      const candidateContext = needToSetStepContext(event, candidateStep, steps.indexOf(candidateStep))
-      stepBillingEntries(candidateContext).forEach((entry) => allRows.push({ step: candidateStep.name, entry }))
-    })
-    const addEmailRoleButton = (role, label) => (
-      <button type="button" onClick={() => openNeedToSetEmailComposeWindow(eventContext, stepContext, role)} style={{ border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', padding: '7px 10px', fontWeight: 700 }}>✉ {label}</button>
-    )
-    return (
-      <div style={{ margin: '0 10px 16px', border: '1px solid #bfdbfe', borderRadius: 16, background: '#f8fbff', padding: 14, boxShadow: '0 8px 24px rgba(15,23,42,.05)' }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-          <strong>Step {stepIndex + 1} of {steps.length}: {step.name}</strong>
-          <span style={{ background: '#dbeafe', color: '#1d4ed8', borderRadius: 999, padding: '3px 8px', fontSize: 12, fontWeight: 800 }}>Current Step</span>
-          <button type="button" onClick={() => openStepDetail(stepContext)}>Open Step</button>
-          <button type="button" onClick={() => openBillingWindow({ matter_id: stepContext.matterId || '', matter_status: stepContext.matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!stepContext.matterId}>Add Time</button>
-          <button type="button" onClick={() => toggleChecklistStepComplete(eventId, step.id)}>Mark Complete</button>
-          <button type="button" onClick={() => addWorkspaceEmailForStep(eventContext, stepContext, null, 'attach')}>Open Existing Email Thread</button>
-          <button type="button" onClick={() => openNeedToSetEmailComposeWindow(eventContext, stepContext, 'court')} style={{ background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, padding: '8px 12px', fontWeight: 800 }}>New Email</button>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-          {addEmailRoleButton('client', 'Email Client')}
-          {addEmailRoleButton('opposing_counsel', 'Email Opposing Counsel')}
-          {addEmailRoleButton('opposing_party', 'Email Opposing Party')}
-          {addEmailRoleButton('mediator', 'Email Mediator')}
-          {addEmailRoleButton('court', 'Email Court')}
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr) minmax(280px, 1fr)', gap: 12 }}>
-          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
-            <h3 style={{ marginTop: 0 }}>Prior Time Entries on This Step</h3>
-            <label style={{ display: 'block', marginBottom: 10, fontWeight: 800 }}>Last billing activity description
-              <textarea
-                value={stepBillingNoteValue(stepContext)}
-                onChange={(e) => updateStepBillingNoteValue(stepContext, e.target.value)}
-                placeholder="Last billing activity description for this step"
-                style={{ width: '100%', minHeight: 46, marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, fontWeight: 700 }}
-              />
-            </label>
-            {stepBillingEntries(stepContext).slice(0, 4).map((entry) => <div key={entry.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 50px', gap: 8, padding: '6px 0', borderTop: '1px solid #e2e8f0' }}><span>{entry.date || ''}</span><span>{entry.description || ''}</span><strong>{entry.billing_time || ''}</strong></div>)}
-            {!stepBillingEntries(stepContext).length && <p style={{ color: '#64748b' }}>No time entries have been saved for this exact step yet.</p>}
-            <button type="button" onClick={() => openBillingWindow({ matter_id: stepContext.matterId || '', matter_status: stepContext.matter?.matter_status || '', matter_step: stepBillingNameForContext(stepContext) })} disabled={!stepContext.matterId}>Add time on this step</button>
-          </section>
-          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
-            <h3 style={{ marginTop: 0 }}>All Billing Entries for Setting This Event</h3>
-            {allRows.slice(0, 7).map(({ step: rowStep, entry }) => <div key={`${rowStep}-${entry.id}`} style={{ display: 'grid', gridTemplateColumns: '1fr 70px', gap: 8, padding: '6px 0', borderTop: '1px solid #e2e8f0' }}><span><strong>{rowStep}</strong><br /><span style={{ color: '#64748b' }}>{entry.description || entry.date || ''}</span></span><strong>{entry.billing_time || ''}</strong></div>)}
-            {!allRows.length && <p style={{ color: '#64748b' }}>No billing entries have been entered for this setting yet.</p>}
-          </section>
-          <section style={{ border: '1px solid #dbe4ee', borderRadius: 12, background: '#fff', padding: 12 }}>
-            <h3 style={{ marginTop: 0 }}>Email Threads Linked to This Step</h3>
-            {stepEmails.map((email, index) => {
-              const unread = email.new_email_notice || workspaceEmailHasUnreadActivity(email)
-              const latest = latestIncomingWorkspaceMessage(email) || (Array.isArray(email.thread_messages) ? email.thread_messages[0] : null) || {}
-              return <button key={email.id} type="button" onClick={() => openNeedToSetEmailThreadsWindow(event, step, stepIndex)} style={{ width: '100%', textAlign: 'left', border: '1px solid #e2e8f0', borderRadius: 10, background: unread ? '#eff6ff' : '#fff', padding: 10, marginBottom: 8 }}><strong>✉ {email.subject || email.title || `Thread ${index + 1}`}</strong>{unread && <span style={{ marginLeft: 8, background: '#ef4444', color: '#fff', borderRadius: 999, padding: '2px 7px', fontSize: 11 }}>Unread</span>}<div style={{ color: '#64748b', marginTop: 4 }}>{latest.from_email || email.to || ''} {latest.received_at ? `• ${needToSetShortDate(latest.received_at)}` : ''}</div></button>
-            })}
-            {!stepEmails.length && <p style={{ color: '#64748b' }}>No email thread is attached to this step yet.</p>}
-          </section>
-        </div>
+    const allEmails = Array.from(new Map(steps.flatMap((candidate, index) => needToSetEmailsForStep(event, candidate, index)).map((email) => [email.id, email])).values())
+    const currentIds = new Set(needToSetEmailsForStep(event, step, stepIndex).map((email) => email.id))
+    const id = checklistNeedToSetRowId(event)
+    const ai = needToSetAiByEvent[id] || {}
+    const unreadCurrent = allEmails.some((email) => currentIds.has(email.id) && (email.new_email_notice || workspaceEmailHasUnreadActivity(email)))
+    const matter = checklistMatterForEvent(event)
+    return <div style={{ borderTop:'1px solid #dbeafe', background: unreadCurrent ? '#fff7f7' : '#fbfdff', padding:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'minmax(420px,1.4fr) minmax(320px,1fr) minmax(280px,.9fr)', gap:10 }}>
+        <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Step Progress (Step {stepIndex+1} of {steps.length})</strong><div style={{ display:'flex', gap:8, alignItems:'flex-start', marginTop:10, overflowX:'auto' }}>{steps.map((candidate,index)=>renderNeedToSetStepPill(event,candidate,index,steps.length))}</div></section>
+        <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Step Purpose</strong><p style={{ margin:'8px 0 0', color:'#334155' }}>{step.default_pages?.purpose || `Complete ${step.name} and preserve the information needed for the next scheduling step.`}</p></section>
+        <section style={{ border:'1px solid #ddd6fe', borderRadius:10, background:'#faf5ff', padding:10 }}><strong>✦ AI Suggestions</strong><p style={{ color:'#4c1d95' }}>{ai.summary || 'Review the current step and linked emails for the best next action.'}</p>{(ai.actions||[]).map((action,index)=><div key={index} style={{ fontSize:12, marginTop:4 }}>• {action}</div>)}<div style={{ display:'flex', gap:6, marginTop:8, flexWrap:'wrap' }}><button onClick={()=>generateNeedToSetAiSuggestion(event)} disabled={needToSetAiLoading[id]}>{needToSetAiLoading[id]?'Analyzing…':'Refresh Suggestions'}</button><button onClick={()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court',ai.draft_body||'')}>Draft Email</button></div></section>
       </div>
-    )
-  }
-
-
-  function renderNeedToSetFloatingToc(rows = []) {
-    const items = rows.filter((row) => row.type !== 'paused_divider' && row.event).map((row) => {
-      const event = row.event
-      const needRowId = checklistNeedToSetRowId(event)
-      const paused = Boolean(needToSetPausedRows[needRowId])
-      const status = currentNeedToSetStatus(event)
-      const bg = colorForNeedToSetAgeSoft(status?.timeDays ?? 8)
-      return { event, paused, status, bg, steps: checklistStepsForEvent(event) }
-    })
-    if (!items.length) return null
-    if (needToSetTocCollapsed) {
-      return (
-        <button type="button" onClick={() => setNeedToSetTocCollapsed(false)} title="Show Need to Set step TOC" style={{ position: 'fixed', right: 12, top: 160, zIndex: 80, border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '8px 10px', fontWeight: 900, boxShadow: '0 10px 24px rgba(15,23,42,.18)' }}>Steps ☰</button>
-      )
-    }
-    return (
-      <aside style={{ position: 'fixed', right: 12, top: 150, zIndex: 80, width: 260, maxHeight: '70vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 14, background: 'rgba(255,255,255,.96)', boxShadow: '0 16px 36px rgba(15,23,42,.18)', padding: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <strong style={{ color: '#0f172a' }}>Need to Set Steps</strong>
-          <button type="button" onClick={() => setNeedToSetTocCollapsed(true)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, background: '#fff', padding: '3px 8px', fontSize: 11, fontWeight: 800 }}>Collapse</button>
+      <div style={{ display:'grid', gridTemplateColumns:'minmax(270px,.75fr) minmax(420px,1.25fr)', gap:10, marginTop:10 }}>
+        <div style={{ display:'grid', gap:10 }}>
+          <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Event Actions</strong><div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:8 }}><button onClick={()=>openNeedToSetEventForSetting(event)}>Set</button><button onClick={()=>toggleNeedToSetPaused(event)}>{needToSetPausedRows[checklistNeedToSetRowId(event)]?'Resume':'Pause'}</button><button onClick={()=>markNeedToSetAlreadySet(event)}>Already Set</button><button onClick={()=>cancelNeedToSetSetting(event)} style={{ color:'#b91c1c' }}>Cancel Setting</button><button onClick={()=>matter&&openMatterDashboardInNewWindow(matter)}>Open Matter</button></div></section>
+          <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Step Actions — {step.name}</strong><div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:8 }}><button onClick={()=>openChecklistStepBilling(event,step.name)}>◷ Add Time</button><button onClick={()=>toggleChecklistStepComplete(eventId,step.id)}>✓ Complete</button><button onClick={()=>{ if(checklistStepCompletion(eventId,step.id)?.completed) toggleChecklistStepComplete(eventId,step.id)}}>⊘ Mark Incomplete</button><button onClick={()=>openNeedToSetEmailThreadsWindow(event,step,stepIndex)}>✉ Open Email</button><button onClick={()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court')}>New Email</button></div></section>
+          <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Carry-Forward Information</strong><div style={{ marginTop:7, color:'#334155' }}>{status?.lastBillingDescription || stepBillingNoteValue(stepContext) || 'No carry-forward information has been saved yet.'}</div><textarea value={stepBillingNoteValue(stepContext)} onChange={(e)=>updateStepBillingNoteValue(stepContext,e.target.value)} placeholder="Dates, approvals, conflicts, or information needed by the next step" style={{ width:'100%', minHeight:70, marginTop:8 }}/></section>
         </div>
-        {items.map(({ event, paused, status, bg, steps }) => (
-          <div key={checklistNeedToSetRowId(event)} style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 7, marginBottom: 8, background: bg }}>
-            <button type="button" onClick={() => document.getElementById(needToSetRowDomId(event))?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'block', width: '100%', textAlign: 'left', border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 900, cursor: 'pointer' }}>
-              {checklistMatterLabel(event)} {paused ? <span style={{ color: '#92400e', fontSize: 11 }}>(Paused)</span> : null}
-            </button>
-            <div style={{ display: 'grid', gap: 3, marginTop: 5 }}>
-              {steps.map((step, stepIndex) => {
-                const completion = checklistStepCompletion(event?.id || event?.checklist_source_id || event?.checklist_id || '', step.id)
-                return (
-                  <button key={step.id} type="button" onClick={() => document.getElementById(needToSetStepDomId(event, step, stepIndex))?.scrollIntoView({ behavior: 'smooth', block: 'center' })} style={{ textAlign: 'left', border: '1px solid rgba(148,163,184,.55)', borderRadius: 7, background: completion?.completed ? 'rgba(255,255,255,.45)' : 'rgba(255,255,255,.78)', padding: '3px 5px', fontSize: 11, color: completion?.completed ? '#64748b' : '#0f172a', cursor: 'pointer' }}>
-                    {stepIndex + 1}. {step.name}{completion?.completed ? ' ✓' : ''}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ))}
-      </aside>
-    )
+        <section style={{ border:'1px solid #cbd5e1', borderRadius:10, background:'#fff', padding:10 }}><div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}><strong>Email Threads ({allEmails.length})</strong><span style={{ fontSize:12, color:'#64748b' }}>Newest message appears first • red text is their email</span></div><div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(3,Math.max(1,allEmails.length))}, minmax(260px,1fr))`, gap:8, marginTop:8, overflowX:'auto' }}>{allEmails.map((email,index)=>{ const attached=currentIds.has(email.id); const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email)); const messages=needToSetThreadMessages(email); return <article key={email.id||index} style={{ minWidth:260, border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff1f2':'#fff', overflow:'hidden' }}><div style={{ padding:9, borderBottom:'1px solid #e2e8f0', background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6 }}><strong>{needToSetEmailRoleLabel(email)||`Email ${index+1}`}</strong>{attached&&<span style={{ color:'#1d4ed8', fontSize:11, fontWeight:800 }}>Current Step</span>}</div><div style={{ fontSize:12 }}>{email.subject||email.title||'Email thread'}</div>{unread&&<span style={{ color:'#b91c1c', fontSize:11, fontWeight:800 }}>Response received — action needed</span>}</div><div style={{ maxHeight:245, overflow:'auto' }}>{messages.slice(0,6).map((message,msgIndex)=>{ const theirs=needToSetMessageIsTheirs(message,email); return <div key={message.id||msgIndex} style={{ padding:'8px 9px', borderBottom:'1px solid #f1f5f9', color:theirs?'#b91c1c':'#1f2937', background:theirs?'#fffafa':'#fff' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6, fontSize:10, fontWeight:800 }}><span>{theirs?'THEIRS':'MINE'} • {message.from_name||message.from_email||message.from||''}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{ fontSize:12, marginTop:4, whiteSpace:'pre-wrap' }}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{ padding:12, color:'#64748b' }}>No message content has been synchronized yet.</div>}</div><div style={{ display:'flex', gap:6, padding:8 }}><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex)}>Open in Outlook</button><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex,ai.draft_body||'')}>Reply / Send</button></div></article>})}</div></section>
+      </div>
+    </div>
   }
-
+  function renderNeedToSetFloatingToc(rows = []) {
+    const items = rows.filter((row) => row.type !== 'paused_divider' && row.event).map((row) => ({ event: row.event, steps: checklistStepsForEvent(row.event) }))
+    if (!items.length) return null
+    if (needToSetTocCollapsed) return <button onClick={()=>setNeedToSetTocCollapsed(false)} style={{ position:'fixed', left:8, top:150, zIndex:80 }}>☰ TOC</button>
+    const dockLeft = needToSetTocDock === 'left'
+    return <aside style={{ position:'sticky', top:10, alignSelf:'start', width:250, maxHeight:'calc(100vh - 110px)', overflow:'auto', border:'1px solid #cbd5e1', borderRadius:12, background:'#fff', boxShadow:'0 10px 24px rgba(15,23,42,.10)', padding:10, order:dockLeft?0:2 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}><strong>TOC</strong><div><button title="Move TOC" onClick={()=>setNeedToSetTocDock(dockLeft?'right':'left')}>{dockLeft?'Move right':'Move left'}</button><button onClick={()=>setNeedToSetTocCollapsed(true)}>✕</button></div></div><div style={{ fontSize:11,color:'#64748b',margin:'4px 0 8px' }}>Moveable left/right • hide or show steps per event</div>
+      {items.map(({event,steps})=>{ const eventId=event.id||event.checklist_source_id||event.checklist_id; const visible=checklistStepsRowVisible(eventId); const unread=needToSetEventHasNewEmail(event); return <div key={eventId} style={{ borderTop:'1px solid #e2e8f0', padding:'7px 0', background:unread?'#fff1f2':'transparent' }}><button onClick={()=>{ document.getElementById(needToSetRowDomId(event))?.scrollIntoView({behavior:'smooth',block:'start'}) }} style={{ width:'100%', textAlign:'left', border:0, background:'transparent', fontWeight:800, color:'#1d4ed8' }}>{checklistMatterLabel(event)} {unread?'✉':''}</button><button onClick={()=>toggleChecklistStepsRow(eventId)} style={{ fontSize:10 }}>{visible?'Hide steps':'Show steps'}</button>{visible&&<div style={{ marginTop:5 }}>{steps.map((step,index)=>{ const complete=checklistStepCompletion(eventId,step.id)?.completed; const unreadStep=needToSetEmailsForStep(event,step,index).some((email)=>email.new_email_notice||workspaceEmailHasUnreadActivity(email)); return <div key={step.id} style={{ display:'flex', gap:6, alignItems:'center', fontSize:11, padding:'3px 4px', color:complete?'#15803d':unreadStep?'#b91c1c':'#475569' }}><span>{complete?'✓':unreadStep?'✉':'○'}</span><span>{step.name}</span></div>})}</div>}</div>})}
+    </aside>
+  }
   function renderNeedToSetCardDashboard() {
     const rows = checklistDisplayRows()
-    return (
-      <>
-      {renderNeedToSetFloatingToc(rows)}
-      <div style={{ display: 'grid', gap: 14 }}>
-        {rows.map((row) => {
-          if (row.type === 'paused_divider') {
-            return <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '6px 0 2px' }}><div style={{ height: 2, background: '#94a3b8', flex: 1 }} /><strong style={{ color: '#334155', background: '#e0f2fe', border: '2px solid #1d4ed8', borderRadius: 999, padding: '5px 14px' }}>Paused</strong><div style={{ height: 2, background: '#94a3b8', flex: 1 }} /></div>
-          }
-          const event = row.event
-          const matter = checklistMatterForEvent(event)
-          const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
-          const needRowId = checklistNeedToSetRowId(event)
-          const needPaused = Boolean(needToSetPausedRows[needRowId])
-          const steps = checklistStepsForEvent(event)
-          const status = currentNeedToSetStatus(event)
-          const summary = needToSetEmailSummary(event)
-          const accent = needPaused ? '#94a3b8' : (status?.rowColor || '#2563eb')
-          return (
-            <section id={needToSetRowDomId(event)} key={eventId || needRowId} data-need-paused-row={needPaused ? 'true' : undefined} draggable onDragStart={() => setDraggedNeedToSetRowId(needRowId)} onDragOver={(dragEvent) => dragEvent.preventDefault()} onDrop={() => moveNeedToSetRow(draggedNeedToSetRowId, needRowId)} style={{ border: '1px solid #dbe4ee', borderLeft: `6px solid ${accent}`, borderRadius: 18, background: needPaused ? '#f1f5f9' : '#fff', boxShadow: '0 10px 28px rgba(15,23,42,.06)', overflow: 'hidden' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, .9fr) minmax(155px, .45fr) minmax(420px, 1.6fr) 140px', gap: 16, padding: 16, alignItems: 'start' }}>
-                <div>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                    <div style={{ width: 42, height: 42, borderRadius: 12, background: '#eff6ff', display: 'grid', placeItems: 'center', fontSize: 22 }}>⚖</div>
-                    <div><a href={matter ? `#matter_dashboard:${encodeURIComponent(matter.id)}` : '#'} onClick={(e) => { if (!matter) e.preventDefault() }} style={{ fontSize: 17, fontWeight: 800, color: '#1d4ed8' }}>{checklistMatterLabel(event)}</a><div style={{ color: '#64748b', marginTop: 3 }}>{matter?.cause_number || matter?.cause || ''}</div></div>
-                  </div>
-                  <div style={{ marginTop: 14, display: 'grid', gap: 7, fontSize: 13 }}>
-                    <div><strong>Event Type:</strong> {checklistEventCategoryLabel(event)}</div>
-                    <div><strong>Court:</strong> {checklistCourtWebsite(event) ? <a href={checklistCourtWebsite(event)} target="_blank" rel="noreferrer">{checklistCourtName(event) || 'Court'}</a> : (checklistCourtName(event) || 'No court listed')}</div>
-                    <div><strong>Court Coordinator:</strong> {checklistCourtCoordinatorEmail(event) ? <a href={`mailto:${checklistCourtCoordinatorEmail(event)}`}>{checklistCourtCoordinatorEmail(event)}</a> : 'No email listed'}</div>
-                    <div><button type="button" onClick={openMioCalendarWindow} style={{ border: '1px solid #bfdbfe', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8', padding: '4px 8px', fontSize: 11, fontWeight: 800 }}>Calendar ↗</button></div>
-                  </div>
-                  {summary.total > 0 && <button type="button" onClick={() => openSettingWorkspace(needToSetEventWorkspaceContext(event))} style={{ marginTop: 14, border: '1px solid #dbe4ee', borderRadius: 999, background: '#f8fafc', padding: '6px 10px', color: '#334155' }}>✉ Email activity: {summary.unread} unread / {summary.total} total thread{summary.total === 1 ? '' : 's'}</button>}
-                </div>
-                <div style={{ display: 'grid', gap: 9, fontSize: 13 }}>
-                  {needToSetMetricBox('Need to Set Since', needToSetShortDate(needToSetCreatedAt(event)), status.rowDays)}
-                  {needToSetMetricBox('Total Days Waiting', `${status.rowDays} days`, status.rowDays)}
-                  {needToSetMetricBox('Current Step Age', status.stepDays === null || status.stepDays === undefined ? '—' : `${status.stepDays} days`, status.stepDays ?? 0)}
-                  {needToSetMetricBox('Last Worked', status.lastTimeEntryAt ? needToSetShortDate(status.lastTimeEntryAt) : 'No time yet', status.timeDays ?? 8)}
-                  {renderNeedToSetAgeLegend()}
-                </div>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'start', justifyContent: 'space-between', gap: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'start', gap: 4, flex: 1, overflowX: 'auto', paddingBottom: 6 }}>
-                      {steps.map((step, stepIndex) => renderNeedToSetStepPill(event, step, stepIndex, steps.length))}
-                    </div>
-                  </div>
-                  <div style={{ marginTop: 10, border: '1px solid #e2e8f0', borderRadius: 12, background: '#f8fafc', padding: 10 }}>
-                    <strong>Remaining Steps ({steps.filter((step) => !checklistStepCompletion(eventId, step.id)?.completed).length})</strong>
-                    <ol style={{ margin: '6px 0 0 22px', color: '#334155' }}>{steps.map((step) => {
-                      const completion = checklistStepCompletion(eventId, step.id)
-                      const completedDate = formatNeedToSetCompletedDate(completion)
-                      return <li key={step.id} style={{ color: completion?.completed ? '#64748b' : '#0f172a' }}>{step.name}{completedDate ? <span style={{ marginLeft: 8, fontWeight: 800, color: '#166534' }}>completed {completedDate}</span> : null}</li>
-                    })}</ol>
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <button type="button" onClick={() => matter ? openMatterDashboardInNewWindow(matter) : null} style={{ background: '#2563eb', color: '#fff', border: 0, borderRadius: 8, padding: '9px 10px', fontWeight: 800 }}>Open Matter ↗</button>
-                  <button type="button" onClick={() => openStepDetail(needToSetStepContext(event, steps.find((step) => step.name === status.stepName) || steps[0] || {}, Math.max(0, steps.findIndex((step) => step.name === status.stepName))))}>Add Note</button>
-                  <button type="button" onClick={() => { const currentStep = steps.find((step) => step.name === status.stepName) || steps[0]; if (currentStep) toggleChecklistStepComplete(eventId, currentStep.id) }} style={{ color: '#15803d', border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>✓ Complete Step</button>
-                  <button type="button" onClick={() => openNeedToSetEventForSetting(event)} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Set</button>
-                  <button type="button" onClick={() => markNeedToSetAlreadySet(event)} style={{ color: '#166534', border: '1px solid #86efac', background: '#f0fdf4', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Already Set</button>
-                  <button type="button" onClick={() => cancelNeedToSetSetting(event)} style={{ color: '#9f1239', border: '1px solid #fecdd3', background: '#fff1f2', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Cancel Setting</button>
-                  <button type="button" onClick={() => checklistCourtDocket(event) && window.open(checklistCourtDocket(event), '_blank', 'noopener,noreferrer')} disabled={!checklistCourtDocket(event)} style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Court Docket ↗</button>
-                  <button type="button" onClick={() => toggleNeedToSetPaused(event)} style={{ color: '#b45309', border: '1px solid #fed7aa', background: '#fffbeb', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{needPaused ? 'Resume' : 'Pause'}</button>
-                  <button type="button" onClick={() => resetNeedToSetRowSteps(event)} style={{ color: '#dc2626', border: '1px solid #fecaca', background: '#fff', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>Reset</button>
-                  <button type="button" onClick={() => toggleChecklistStepsRow(eventId)} style={{ border: '1px solid #cbd5e1', background: '#fff', borderRadius: 8, padding: '8px 10px' }}>{checklistStepsRowVisible(eventId) ? 'Hide Details' : 'Show Details'}</button>
-                </div>
-              </div>
-              {renderNeedToSetExpandedStepDetail(event)}
-            </section>
-          )
-        })}
-        {!rows.length && <div style={{ padding: 16, textAlign: 'center', color: '#64748b', border: '1px dashed #cbd5e1', borderRadius: 12 }}>No Need to Set rows match the current filters.</div>}
+    const eventRows = rows.filter((row)=>row.event)
+    const unreadCount = eventRows.filter((row)=>needToSetEventHasNewEmail(row.event)).length
+    const waitingCount = Math.max(0,eventRows.length-unreadCount)
+    return <>
+      <style>{`.need-step-node:hover .need-step-hover-actions{display:inline-flex!important}.need-step-hover-actions button{border:0;background:transparent;color:white;padding:2px 4px}.nts-row:hover{box-shadow:0 8px 22px rgba(15,23,42,.08)}`}</style>
+      <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+        {needToSetTocDock==='left'&&renderNeedToSetFloatingToc(rows)}
+        <main style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'center', flexWrap:'wrap', marginBottom:10 }}><div style={{ display:'flex', gap:8, alignItems:'center' }}><label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label></div><div style={{ display:'flex',gap:8 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Need to Set Settings</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Expand Rows</button></div></div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(150px,1fr))', gap:8, marginBottom:10 }}><div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:10,background:'#eff6ff'}}><strong>{eventRows.length}</strong><div>Need to Set</div></div><div style={{padding:10,border:'1px solid #fecaca',borderRadius:10,background:'#fff1f2'}}><strong>{unreadCount}</strong><div>Immediate Attention</div></div><div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:10,background:'#f8fafc'}}><strong>{waitingCount}</strong><div>Waiting on Others</div></div><div style={{padding:10,border:'1px solid #bbf7d0',borderRadius:10,background:'#f0fdf4'}}><strong>{eventRows.filter((row)=>currentNeedToSetStatus(row.event)?.stepName?.toLowerCase().includes('confirm')).length}</strong><div>Ready to Confirm</div></div></div>
+          <div style={{ display:'grid', gridTemplateColumns:'minmax(230px,1.25fr) 110px minmax(140px,.8fr) 90px 90px 155px minmax(250px,1.2fr) 250px', gap:8, padding:'7px 10px', background:'#f8fafc', border:'1px solid #e2e8f0', fontSize:11, fontWeight:800 }}><span>Matter / Client</span><span>Setting Type</span><span>Court</span><span>Created</span><span>Activity</span><span>Waiting Status</span><span>Carry-Forward Info</span><span>Step Progress</span></div>
+          <div style={{ display:'grid', gap:6, marginTop:5 }}>{rows.map((row)=>{ if(!row.event) return null; const event=row.event; const eventId=event.id||event.checklist_source_id||event.checklist_id; const matter=checklistMatterForEvent(event); const status=currentNeedToSetStatus(event); const steps=checklistStepsForEvent(event); const unread=needToSetEventHasNewEmail(event); const expanded=checklistStepsRowVisible(eventId); const settingType=checklistEventCategoryLabel(event); return <section id={needToSetRowDomId(event)} className="nts-row" key={eventId} style={{ border:`1px solid ${unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff7f7':'#fff', overflow:'hidden' }}><div onClick={()=>toggleChecklistStepsRow(eventId)} style={{ cursor:'pointer', display:'grid', gridTemplateColumns:'minmax(230px,1.25fr) 110px minmax(140px,.8fr) 90px 90px 155px minmax(250px,1.2fr) 250px', gap:8, padding:'9px 10px', alignItems:'center', fontSize:12 }}><div><strong style={{color:'#1d4ed8'}}>{checklistMatterLabel(event)}</strong><div style={{color:'#64748b',fontSize:10}}>{matter?.cause_number||matter?.cause||''}</div></div><span style={{display:'inline-flex',justifyContent:'center',padding:'4px 8px',borderRadius:999,background:settingType?.toLowerCase().includes('trial')?'#ede9fe':settingType?.toLowerCase().includes('mediation')?'#ccfbf1':'#dbeafe',color:'#1e3a8a',fontWeight:900}}>{settingType}</span><span>{checklistCourtName(event)||'No court'}</span><span><strong>{status.rowDays}d</strong><div style={{fontSize:10,color:'#64748b'}}>{needToSetShortDate(needToSetCreatedAt(event))}</div></span><span><strong>{status.timeDays??'—'}d</strong><div style={{fontSize:10,color:'#64748b'}}>since activity</div></span><span style={{padding:'5px 7px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:800}}>{unread?'Response received — review needed':`Waiting for response from ${status?.waitingOn||'Court / Client'}`}</span><span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:6,background:'#f8fafc'}}><strong>From: {status?.stepName||'Previous step'}</strong><div style={{fontSize:10,color:'#64748b'}}>{status?.lastBillingDescription||'No carry-forward details saved.'}</div></span><div style={{display:'flex',alignItems:'flex-start',gap:3,overflow:'visible'}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}<span style={{marginLeft:'auto'}}>{expanded?'⌃':'⌄'}</span></div></div>{renderNeedToSetExpandedStepDetail(event)}</section>})}</div>
+        </main>
+        {needToSetTocDock==='right'&&renderNeedToSetFloatingToc(rows)}
       </div>
-      </>
-    )
+      {renderNeedToSetSettingsDrawer(rows)}
+    </>
   }
-
   function settingCenterDefaultRecord(event = {}) {
     const status = currentNeedToSetStatus(event)
     const steps = checklistStepsForEvent(event)
@@ -36747,6 +36688,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </Modal>
         )}
 
+
+        {page === 'need_to_set' && canOpenPage('need_to_set') && (
+          <>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed.</p></div><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div>
+            {renderNeedToSetCardDashboard()}
+          </>
+        )}
 
         {page === 'setting_center' && canOpenPage('setting_center') && renderSettingCenter()}
 
