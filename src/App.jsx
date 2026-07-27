@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V165'
+const MIO_APP_VERSION = 'Mio V166'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -3670,8 +3670,12 @@ function App() {
     loadedSessionUserRef.current = email
     ;(async () => {
       const member = await checkCurrentUserAccess(email)
-      if (isClientPortalMember(member)) await fetchClientPortalMatters(email)
-      else {
+      if (isClientPortalMember(member)) {
+        const clientMatters = await fetchClientPortalMatters(email)
+        const permittedIds = (clientMatters || []).map((matter) => String(matter.id))
+        await loadSharedEnforcementDocuments(permittedIds)
+        mioCloudStateLoadedRef.current = true
+      } else {
         await fetchInitialData()
         await loadMioCloudStateFromSupabase(session?.user?.id)
       }
@@ -3680,14 +3684,28 @@ function App() {
 
   useEffect(() => {
     if (!session?.user?.email || !userAccessChecked || !isClientPortalMember()) return
-    if (page !== 'enforcement') setPage('enforcement')
+    const allowedPages = getAllowedPages()
+    if (!allowedPages.includes(page)) setPage(allowedPages[0] || 'enforcement')
     const rows = clientPortalMatterRows()
     if (!rows.some((matter) => String(matter.id) === String(violationsMatterId))) setViolationsMatterId(rows[0]?.id || '')
   }, [session?.user?.email, userAccessChecked, currentTeamMember, matters, page, violationsMatterId])
 
   useEffect(() => {
-    safeSetLocalStorage('caseControllerDocuments', JSON.stringify(stripLargeFileData(documents)))
-  }, [documents])
+    const safeDocuments = stripLargeFileData(documents)
+    safeSetLocalStorage('caseControllerDocuments', JSON.stringify(safeDocuments))
+    if (!isClientPortalMember()) {
+      try { saveMioStateKey('caseControllerDocuments', JSON.stringify(safeDocuments)) } catch {}
+      return
+    }
+    if (!session?.user?.id || !userAccessChecked) return
+    const allowedMatterIds = new Set(clientPortalMatterRows().map((matter) => String(matter.id)))
+    const timer = window.setTimeout(() => {
+      safeDocuments
+        .filter((doc) => doc?.id && doc?.matter_id && allowedMatterIds.has(String(doc.matter_id)))
+        .forEach((doc) => saveSharedEnforcementDocument(doc, 'client-document-save'))
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [documents, session?.user?.id, userAccessChecked, currentTeamMember, matters])
 
 
   useEffect(() => {
@@ -11347,8 +11365,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         upload_date: dateToInputValue(new Date())
       }))
     }
-    setDocuments([...documents, ...savedRows])
-    setBulkDocumentRows(bulkDocumentRows.filter((row) => !committedIds.has(row.id)))
+    setDocuments((current) => [...current, ...savedRows])
+    if (isClientPortalMember()) {
+      for (const savedRow of savedRows) await saveSharedEnforcementDocument(savedRow, 'client-document-upload')
+    }
+    setBulkDocumentRows((current) => current.filter((row) => !committedIds.has(row.id)))
     return true
   }
 
@@ -15620,7 +15641,7 @@ async function updateTeamCell(memberId, field, value) {
 
         {visibleMatterColumns.case_status && (
           <td style={matterDataCellStyle('case_status')}>
-            <MatterEditableSelectCell matter={matter} field="case_status" columnKey="case_status">
+            <MatterEditableSelectCell matter={{ ...matter, case_status: effectiveMatterCaseStatus(matter) }} field="case_status" columnKey="case_status">
               <option value="">Select</option>
               {options('case_status').map((option) => (
                 <option key={option.id} value={option.name}>{option.name}</option>
@@ -16108,6 +16129,13 @@ async function updateTeamCell(memberId, field, value) {
   const normalizeMatterStatus = (value) => String(value || '').trim().toLowerCase()
   const matterStatusOptions = options('matter_status')
   const matterStatusOptionKeys = new Set(matterStatusOptions.map((status) => normalizeMatterStatus(status.name)))
+  const caseStatusOptions = options('case_status')
+  const caseStatusOptionKeys = new Set(caseStatusOptions.map((status) => normalizeMatterStatus(status.name)))
+  const effectiveMatterCaseStatus = (matter) => {
+    const raw = String(matter?.case_status || '').trim()
+    const key = normalizeMatterStatus(raw)
+    return !key || !caseStatusOptionKeys.has(key) ? 'Open' : raw
+  }
   const filteredSortedMatters = sortedMatters.filter((matter) => {
     const matterPageFilterMatches = (selectedValues, actualValue, blankToken = '') => {
       if (selectedValues === null) return true
@@ -16117,7 +16145,7 @@ async function updateTeamCell(memberId, field, value) {
       return selectedValues.some((value) => (value === blankToken && !actual) || normalizeMatterStatus(value) === actual)
     }
 
-    const caseStatusMatches = matterPageFilterMatches(matterPageFilterCaseStatus, matter.case_status || 'Open')
+    const caseStatusMatches = matterPageFilterMatches(matterPageFilterCaseStatus, effectiveMatterCaseStatus(matter))
 
     const matterStatusMatches = matterPageFilterMatches(matterPageFilterMatterStatus, matter.matter_status, '__blank__')
 
@@ -16130,7 +16158,7 @@ async function updateTeamCell(memberId, field, value) {
       matter.matter_type,
       matter.matter_subtype,
       matter.client_status,
-      matter.case_status,
+      effectiveMatterCaseStatus(matter),
       matter.matter_status,
       matter.notes,
       matter.clients?.first_name,
@@ -16322,7 +16350,7 @@ async function updateTeamCell(memberId, field, value) {
                   <td>{matter.name || ''}</td>
                   <td>{clientName}</td>
                   <td>{matter.cause_number || ''}</td>
-                  <td><div>{matter.case_status || 'Open'}</div><div style={{ color: '#64748b', fontSize: 12 }}>{matter.matter_status || ''}</div></td>
+                  <td><div>{effectiveMatterCaseStatus(matter)}</div><div style={{ color: '#64748b', fontSize: 12 }}>{matter.matter_status || ''}</div></td>
                   <td style={{ minWidth: 360 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       <strong>{progress.done}/{progress.total}</strong>
