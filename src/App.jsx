@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V152'
+const MIO_APP_VERSION = 'Mio V153'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1968,6 +1968,8 @@ function App() {
   const [needToSetAiByEvent, setNeedToSetAiByEvent] = useState({})
   const [needToSetAiLoading, setNeedToSetAiLoading] = useState({})
   const [needToSetTocDock, setNeedToSetTocDock] = useState(() => localStorage.getItem('caseMioNeedToSetTocDock') || 'left')
+  const [needToSetCompanions, setNeedToSetCompanions] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetCompanions') || '{}') } catch { return {} } })
+  const [peopleImportRows, setPeopleImportRows] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioPeopleImportRows') || '[]') } catch { return [] } })
 
   const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
     try {
@@ -2338,7 +2340,7 @@ function App() {
 
   const [clientFilter, setClientFilter] = useState('all')
 
-  const [settingsFilter, setSettingsFilter] = useState('matter_type')
+  const [settingsFilter, setSettingsFilter] = useState(() => { try { return localStorage.getItem('caseMioSettingsFilter') || 'matter_type' } catch { return 'matter_type' } })
   const [draggedSettingId, setDraggedSettingId] = useState(null)
   const [settingsSort, setSettingsSort] = useState({ field: 'sort_order', direction: 'asc' })
   const [positionsSort, setPositionsSort] = useState({ field: 'name', direction: 'asc' })
@@ -3277,6 +3279,9 @@ function App() {
     try { localStorage.setItem('caseMioNeedToSetTocCollapsed', needToSetTocCollapsed ? 'true' : 'false') } catch {}
   }, [needToSetTocCollapsed])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetTocDock', needToSetTocDock || 'left') } catch {} }, [needToSetTocDock])
+  useEffect(() => { try { localStorage.setItem('caseMioNeedToSetCompanions', JSON.stringify(needToSetCompanions || {})) } catch {} }, [needToSetCompanions])
+  useEffect(() => { try { localStorage.setItem('caseMioPeopleImportRows', JSON.stringify(peopleImportRows || [])) } catch {} }, [peopleImportRows])
+  useEffect(() => { try { localStorage.setItem('caseMioSettingsFilter', settingsFilter || 'matter_type') } catch {} }, [settingsFilter])
 
 
   useEffect(() => {
@@ -14687,7 +14692,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (error) alert(error.message)
     else {
       setEditingSettingId(null)
-      setSettingForm({ ...emptySettingForm, category: settingsFilter })
+      setSettingForm({ ...emptySettingForm, category: settingsFilter, parent_name: settingForm.category === 'checklist_setting_step' ? settingForm.parent_name : '' })
       fetchSettings()
     }
   }
@@ -27268,6 +27273,53 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     } finally { setNeedToSetAiLoading((current) => ({ ...current, [id]: false })) }
   }
 
+  function needToSetCompanionKey(event = {}) { return String(checklistNeedToSetRowId(event) || event?.id || event?.checklist_source_id || '') }
+  function personalServiceCompanionFor(event = {}) { return (needToSetCompanions || {})[needToSetCompanionKey(event)] || null }
+  function addPersonalServiceCompanion(event = {}) {
+    const key = needToSetCompanionKey(event)
+    if (!key) return
+    setNeedToSetCompanions((current) => ({ ...(current || {}), [key]: current?.[key] || { type: 'Personal Service', created_at: new Date().toISOString(), completions: {}, notes: '' } }))
+  }
+  function removePersonalServiceCompanion(event = {}) {
+    const key = needToSetCompanionKey(event)
+    setNeedToSetCompanions((current) => { const next={...(current||{})}; delete next[key]; return next })
+  }
+  function personalServiceSteps() {
+    return settings.filter((item) => item.category === 'checklist_setting_step' && item.is_active && String(item.parent_name || '').toLowerCase() === 'personal service').sort((a,b)=>(a.sort_order??999)-(b.sort_order??999))
+  }
+  function togglePersonalServiceStep(event = {}, step = {}) {
+    const key=needToSetCompanionKey(event); if(!key||!step?.id) return
+    setNeedToSetCompanions((current)=>{ const row=current?.[key]||{type:'Personal Service',created_at:new Date().toISOString(),completions:{}}; const old=row.completions?.[step.id]; return {...(current||{}),[key]:{...row,completions:{...(row.completions||{}),[step.id]:old?.completed?{completed:false,completed_at:''}:{completed:true,completed_at:new Date().toISOString()}}}} })
+  }
+
+  function downloadPeopleImportTemplate() {
+    const rows = [
+      { Type:'Client', Matter:'', Name:'', Role:'Client', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
+      { Type:'Court', Matter:'', Name:'', Role:'Court Coordinator', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
+      { Type:'Opposing Counsel', Matter:'', Name:'', Role:'Opposing Counsel', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
+      { Type:'Party', Matter:'', Name:'', Role:'Opposing Party', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' }
+    ]
+    const ws=XLSX.utils.json_to_sheet(rows); ws['!cols']=[12,24,24,22,30,16,26,20,18,10,10,26,16,36].map(w=>({wch:w}))
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'People Import'); XLSX.writeFile(wb,'Mio_People_Import_Template.xlsx')
+  }
+  async function importPeopleSpreadsheet(file) {
+    if(!file) return
+    try {
+      const data=await file.arrayBuffer(); const wb=XLSX.read(data,{type:'array'}); const ws=wb.Sheets[wb.SheetNames[0]]; const rows=XLSX.utils.sheet_to_json(ws,{defval:''})
+      setPeopleImportRows(rows)
+      let clientsAdded=0, courtsAdded=0
+      for (const row of rows) {
+        const type=String(row.Type||'').trim().toLowerCase(); const name=String(row.Name||'').trim(); if(!name) continue
+        if(type==='client') { const {error}=await supabase.from('clients').insert([{name,email:row.Email||null,phone:row.Phone||null,address:row.Address1||null,city:row.City||null,state:row.State||null,zip:row.Zip||null}]); if(!error) clientsAdded++ }
+        if(type==='court') { const {error}=await supabase.from('courts').insert([{court_name:row.CourtName||name,court_number:row.CourtNumber||null,court_coordinator_name:name,court_coordinator_email:row.Email||null,court_phone:row.Phone||null,court_address:row.Address1||null}]); if(!error) courtsAdded++ }
+      }
+      fetchClients(); fetchCourts(); alert(`Imported ${rows.length} people rows. Added ${clientsAdded} client(s) and ${courtsAdded} court record(s). Other party/counsel rows are saved in the Mio people-import directory for matching to matters.`)
+    } catch(error) { alert(`People import failed: ${error?.message||error}`) }
+  }
+  function renderPeopleTemplateSettings() {
+    return <section style={{border:'1px solid #cbd5e1',borderRadius:10,padding:14,background:'#fff'}}><h2>People Template / Bulk Import</h2><p>Download the Excel template, enter courts, coordinators, parties, clients, co-counsel, opposing counsel, email addresses, phone numbers, and mailing addresses, then upload it here.</p><div style={{display:'flex',gap:10,flexWrap:'wrap'}}><button type="button" onClick={downloadPeopleImportTemplate}>Download People Excel Template</button><label style={{display:'inline-flex',alignItems:'center',gap:8,border:'1px solid #cbd5e1',padding:'7px 10px',borderRadius:6,cursor:'pointer'}}>Upload Completed Template<input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={(e)=>importPeopleSpreadsheet(e.target.files?.[0])}/></label></div><div style={{marginTop:10,color:'#64748b'}}>{peopleImportRows.length ? `${peopleImportRows.length} imported people rows are currently stored.` : 'No people spreadsheet has been imported yet.'}</div></section>
+  }
+
   async function saveNeedToSetStepMeta(step, patch = {}) {
     if (!step?.id) return
     const nextDefaultPages = { ...(step.default_pages || {}), ...patch }
@@ -27278,7 +27330,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function renderNeedToSetSettingsDrawer(rows = []) {
     if (!needToSetSettingsOpen) return null
-    const eventTypes = Array.from(new Set(rows.filter((row) => row.event).map((row) => checklistEventCategoryLabel(row.event)).filter(Boolean)))
+    const eventTypes = Array.from(new Set([...rows.filter((row) => row.event).map((row) => checklistEventCategoryLabel(row.event)).filter(Boolean), ...settings.filter((item)=>item.category==='checklist_setting_step').map((item)=>item.parent_name).filter(Boolean), 'Personal Service']))
     const type = needToSetSettingsType || eventTypes[0] || ''
     const steps = settings.filter((item) => item.category === 'checklist_setting_step' && item.is_active && item.parent_name === type).sort((a,b)=>(a.sort_order??999)-(b.sort_order??999))
     const contactRoles = ['Court Coordinator','Court','Client','Opposing Counsel','Opposing Party','Mediator','Other']
@@ -27287,7 +27339,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}><strong>Setting type</strong><select value={type} onChange={(e)=>setNeedToSetSettingsType(e.target.value)}>{eventTypes.map((value)=><option key={value}>{value}</option>)}</select></div>
       <div style={{ marginTop: 10, minWidth: 1100 }}>
         <div style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', background:'#f8fafc', fontWeight:800, fontSize:12 }}><span>#</span><span>Step Name</span><span>Purpose</span><span>Email assigned to step</span><span>Indicators</span></div>
-        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const roles=Array.isArray(meta.email_roles)?meta.email_roles:[]; return <div key={step.id} style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', borderTop:'1px solid #e2e8f0', alignItems:'center' }}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><select value={roles[0]||''} onChange={(e)=>saveNeedToSetStepMeta(step,{email_roles:e.target.value?[e.target.value]:[]})}><option value="">No email</option>{contactRoles.map((role)=><option key={role} value={role}>{role}</option>)}</select><span style={{ color:'#475569' }}>✉➜ sent &nbsp; ✉ response</span></div> })}
+        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const roles=Array.isArray(meta.email_roles)?meta.email_roles:[]; return <div key={step.id} style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', borderTop:'1px solid #e2e8f0', alignItems:'center' }}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><div><input value={roles.join(', ')} placeholder="Court, Client, Opposing Counsel" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),email_roles:e.target.value.split(',').map(v=>v.trim()).filter(Boolean)}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{email_roles:e.target.value.split(',').map(v=>v.trim()).filter(Boolean)})}/><div style={{fontSize:10,color:'#64748b'}}>Separate multiple email labels with commas.</div></div><span style={{ color:'#475569' }}>✉➜ sent &nbsp; ✉ response</span></div> })}
       </div>
     </div>
   }
@@ -27318,6 +27370,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Step Actions — {step.name}</strong><div style={{ display:'flex', gap:6, flexWrap:'wrap', marginTop:8 }}><button onClick={()=>openChecklistStepBilling(event,step.name)}>◷ Add Time</button><button onClick={()=>toggleChecklistStepComplete(eventId,step.id)}>✓ Complete</button><button onClick={()=>{ if(checklistStepCompletion(eventId,step.id)?.completed) toggleChecklistStepComplete(eventId,step.id)}}>⊘ Mark Incomplete</button><button onClick={()=>openNeedToSetEmailThreadsWindow(event,step,stepIndex)}>✉ Open Email</button><button onClick={()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court')}>New Email</button></div></section>
           <section style={{ border:'1px solid #dbe4ee', borderRadius:10, background:'#fff', padding:10 }}><strong>Carry-Forward Information</strong><div style={{ marginTop:7, color:'#334155' }}>{status?.lastBillingDescription || stepBillingNoteValue(stepContext) || 'No carry-forward information has been saved yet.'}</div><textarea value={stepBillingNoteValue(stepContext)} onChange={(e)=>updateStepBillingNoteValue(stepContext,e.target.value)} placeholder="Dates, approvals, conflicts, or information needed by the next step" style={{ width:'100%', minHeight:70, marginTop:8 }}/></section>
         </div>
+        <section style={{ border:'1px solid #cbd5e1', borderRadius:10, background:'#fff', padding:10, marginBottom:10 }}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center'}}><div><strong>Parallel Workflows</strong><div style={{fontSize:12,color:'#64748b'}}>Personal Service can run alongside the hearing, trial, mediation, or other primary Need to Set workflow.</div></div>{personalServiceCompanionFor(event)?<button type="button" onClick={()=>removePersonalServiceCompanion(event)}>Remove Personal Service</button>:<button type="button" onClick={()=>addPersonalServiceCompanion(event)}>+ Add Personal Service</button>}</div>
+          {personalServiceCompanionFor(event)&&<div style={{marginTop:10,border:'2px solid #7c3aed',borderRadius:10,padding:10,background:'#faf5ff'}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong style={{color:'#6d28d9'}}>PERSONAL SERVICE</strong><span style={{fontSize:12}}>Completes in parallel with {checklistEventCategoryLabel(event)}</span></div><div style={{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}}>{personalServiceSteps().map((ps,index)=>{const c=personalServiceCompanionFor(event)?.completions?.[ps.id]?.completed;return <button key={ps.id} type="button" onClick={()=>togglePersonalServiceStep(event,ps)} title={ps.default_pages?.purpose||ps.name} style={{border:`2px solid ${c?'#16a34a':'#7c3aed'}`,background:c?'#dcfce7':'#fff',borderRadius:999,padding:'6px 10px',fontWeight:800}}>{c?'✓':'○'} {index+1}. {ps.name}</button>})}{!personalServiceSteps().length&&<span style={{color:'#7c3aed'}}>Add Personal Service steps in Settings → Need to Set Steps.</span>}</div></div>}
+        </section>
         <section style={{ border:'1px solid #cbd5e1', borderRadius:10, background:'#fff', padding:10 }}><div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}><strong>Email Threads ({allEmails.length})</strong><span style={{ fontSize:12, color:'#64748b' }}>Newest message appears first • red text is their email</span></div><div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(3,Math.max(1,allEmails.length))}, minmax(260px,1fr))`, gap:8, marginTop:8, overflowX:'auto' }}>{allEmails.map((email,index)=>{ const attached=currentIds.has(email.id); const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email)); const messages=needToSetThreadMessages(email); return <article key={email.id||index} style={{ minWidth:260, border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff1f2':'#fff', overflow:'hidden' }}><div style={{ padding:9, borderBottom:'1px solid #e2e8f0', background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6 }}><strong>{needToSetEmailRoleLabel(email)||`Email ${index+1}`}</strong>{attached&&<span style={{ color:'#1d4ed8', fontSize:11, fontWeight:800 }}>Current Step</span>}</div><div style={{ fontSize:12 }}>{email.subject||email.title||'Email thread'}</div>{unread&&<span style={{ color:'#b91c1c', fontSize:11, fontWeight:800 }}>Response received — action needed</span>}</div><div style={{ maxHeight:245, overflow:'auto' }}>{messages.slice(0,6).map((message,msgIndex)=>{ const theirs=needToSetMessageIsTheirs(message,email); return <div key={message.id||msgIndex} style={{ padding:'8px 9px', borderBottom:'1px solid #f1f5f9', color:theirs?'#b91c1c':'#1f2937', background:theirs?'#fffafa':'#fff' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6, fontSize:10, fontWeight:800 }}><span>{theirs?'THEIRS':'MINE'} • {message.from_name||message.from_email||message.from||''}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{ fontSize:12, marginTop:4, whiteSpace:'pre-wrap' }}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{ padding:12, color:'#64748b' }}>No message content has been synchronized yet.</div>}</div><div style={{ display:'flex', gap:6, padding:8 }}><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex)}>Open in Outlook</button><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex,ai.draft_body||'')}>Reply / Send</button></div></article>})}</div></section>
       </div>
     </div>
@@ -27356,7 +27412,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age (oldest first)</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label>
               <label style={{display:'inline-flex',gap:5,alignItems:'center'}}><input type="checkbox" checked={checklistNewEmailOnly} onChange={(e)=>setChecklistNewEmailOnly(e.target.checked)}/> Unread email only</label>
             </div>
-            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>{ const next={}; eventRows.forEach(({event})=>{next[event.id||event.checklist_source_id||event.checklist_id]=true}); setChecklistStepsExpandedByRow(next) }}>Expand All</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Collapse All</button></div>
+            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Expand All</button><button onClick={()=>{ const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=false}); setChecklistStepsExpandedByRow(next) }}>Collapse All</button></div>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(130px,1fr))', gap:7, marginBottom:8 }}>
             <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#eff6ff'}}><strong>{eventRows.length}</strong><span style={{marginLeft:6}}>Need to Set</span></div>
@@ -28548,6 +28604,11 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     })
     setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))
     setShowRequestedReliefBuilder(true)
+  }
+
+  function openRequestedReliefTemplateEditor(template = null) {
+    const source = template || { id:'', name:'New Requested Relief Template', selected_issue_ids: activeRequestedReliefOptions().filter((row)=>!isRequestedReliefOptionRow(row)).map((row)=>row.id), selected_table_ids:[], selected_option_ids:[], table_selections:{} }
+    beginRequestedIssueBuilder({ template: source })
   }
 
   function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null } = {}) {
@@ -30094,7 +30155,7 @@ ${choices}`, '1'))
           <h2>Requested Relief Templates</h2>
           <p style={{ color: '#475569' }}>Open a template here to edit its issues, hierarchy, relief options, selected options, and tables. Saving updates the reusable template used for new matters.</p>
           <div style={{ marginBottom: 10 }}>
-            <button type="button" onClick={() => beginRequestedIssueBuilder({ template: { id: '', name: 'New Requested Relief Template', selected_issue_ids: activeRequestedReliefOptions().filter((row) => !isRequestedReliefOptionRow(row)).map((row) => row.id), selected_table_ids: [] } })}>+ New Template</button>
+            <button type="button" onClick={() => openRequestedReliefTemplateEditor(null)}>+ New Template</button>
           </div>
           {!requestedReliefTemplates.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 18, color: '#64748b' }}>No templates have been saved yet.</div>}
           <div style={{ display: 'grid', gap: 10 }}>
@@ -30103,7 +30164,7 @@ ${choices}`, '1'))
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                   <div><strong>{template.name || 'Unnamed template'}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{(template.selected_issue_ids || template.issue_option_ids || []).length} issue rows • {(template.selected_option_ids || []).length} selected relief options • {(template.selected_table_ids || []).length} tables</div></div>
                   <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-                    <button type="button" onClick={() => beginRequestedIssueBuilder({ template })}>Open / Edit Template</button>
+                    <button type="button" onClick={() => openRequestedReliefTemplateEditor(template)}>Open / Edit Template</button>
                     <button type="button" onClick={() => { if (window.confirm(`Delete template "${template.name || 'Unnamed template'}"?`)) setRequestedReliefTemplates((current) => current.filter((row) => row.id !== template.id)) }} style={{ color: '#b91c1c' }}>Delete</button>
                   </div>
                 </div>
@@ -38420,7 +38481,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </div>
             )}
 
-            {settingsTab === 'options' && (
+            {settingsTab === 'people_template' && renderPeopleTemplateSettings()}
+              {settingsTab === 'options' && (
               <>
                 <h2>Dropdown Options</h2>
                 <p>
