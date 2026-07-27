@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V166'
+const MIO_APP_VERSION = 'Mio V167'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2078,6 +2078,7 @@ function App() {
   const relevanceTocDragRef = useRef(null)
   const enforcementSharedSaveTimersRef = useRef({})
   const enforcementLastSavedJsonRef = useRef({})
+  const enforcementDocumentCatalogRef = useRef({})
   useEffect(() => {
     try {
       localStorage.setItem('caseMioRelevanceTocVisible', String(relevanceTocVisible))
@@ -31536,43 +31537,111 @@ ${choices}`, '1'))
     })))
   }
 
+  function enforcementCatalogEntry(rows = []) {
+    return (Array.isArray(rows) ? rows : []).find((row) => row && row.__mio_document_catalog === true) || null
+  }
+
+  function visibleEnforcementRows(rows = []) {
+    return (Array.isArray(rows) ? rows : []).filter((row) => !(row && row.__mio_document_catalog === true))
+  }
+
+  function enforcementRowsWithCatalog(matterId, rows = []) {
+    const cleanRows = visibleEnforcementRows(rows)
+    const catalog = Array.isArray(enforcementDocumentCatalogRef.current[String(matterId)])
+      ? enforcementDocumentCatalogRef.current[String(matterId)]
+      : []
+    return catalog.length ? [...cleanRows, { __mio_document_catalog: true, documents: catalog }] : cleanRows
+  }
+
+  function mergeSharedDocumentsIntoState(sharedDocs = []) {
+    if (!sharedDocs.length) return
+    setDocuments((current) => {
+      const map = new Map((current || []).map((doc) => [String(doc.id), doc]))
+      sharedDocs.forEach((doc) => map.set(String(doc.id), { ...(map.get(String(doc.id)) || {}), ...doc }))
+      return Array.from(map.values())
+    })
+  }
+
   async function loadSharedEnforcementDocuments(permittedMatterIds = []) {
     if (!session?.user?.id || !permittedMatterIds.length) return
+    const catalogDocs = permittedMatterIds.flatMap((matterId) => (
+      Array.isArray(enforcementDocumentCatalogRef.current[String(matterId)])
+        ? enforcementDocumentCatalogRef.current[String(matterId)]
+        : []
+    ))
+    mergeSharedDocumentsIntoState(catalogDocs)
+
     const { data, error } = await supabase
       .from('case_mio_enforcement_documents')
       .select('matter_id,document_id,metadata,updated_at')
       .in('matter_id', permittedMatterIds)
     if (error) {
-      console.warn('Could not load shared Enforcement documents:', error)
+      console.warn('Could not load dedicated shared Enforcement documents; using the Enforcement shared catalog fallback:', error)
       return
     }
     const sharedDocs = (data || []).map((row) => ({ ...(row.metadata || {}), id: row.document_id, matter_id: row.matter_id })).filter((row) => row.id)
-    if (sharedDocs.length) {
-      setDocuments((current) => {
-        const map = new Map((current || []).map((doc) => [String(doc.id), doc]))
-        sharedDocs.forEach((doc) => map.set(String(doc.id), { ...(map.get(String(doc.id)) || {}), ...doc }))
-        return Array.from(map.values())
-      })
+    sharedDocs.forEach((doc) => {
+      const matterId = String(doc.matter_id)
+      const catalog = Array.isArray(enforcementDocumentCatalogRef.current[matterId]) ? enforcementDocumentCatalogRef.current[matterId] : []
+      const map = new Map(catalog.map((item) => [String(item.id), item]))
+      map.set(String(doc.id), { ...(map.get(String(doc.id)) || {}), ...doc })
+      enforcementDocumentCatalogRef.current[matterId] = Array.from(map.values())
+    })
+    mergeSharedDocumentsIntoState(sharedDocs)
+  }
+
+  async function saveEnforcementDocumentCatalogFallback(doc, reason = 'upload') {
+    const matterId = String(doc.matter_id)
+    const cleanDoc = { ...stripLargeFileData(doc), id: String(doc.id), matter_id: matterId }
+    const currentCatalog = Array.isArray(enforcementDocumentCatalogRef.current[matterId]) ? enforcementDocumentCatalogRef.current[matterId] : []
+    const catalogMap = new Map(currentCatalog.map((item) => [String(item.id), item]))
+    catalogMap.set(String(cleanDoc.id), { ...(catalogMap.get(String(cleanDoc.id)) || {}), ...cleanDoc })
+    const nextCatalog = Array.from(catalogMap.values())
+    enforcementDocumentCatalogRef.current[matterId] = nextCatalog
+
+    const { data, error: loadError } = await supabase
+      .from('case_mio_enforcement_state')
+      .select('violations')
+      .eq('matter_id', matterId)
+      .maybeSingle()
+    if (loadError) {
+      console.error('Could not read Enforcement shared catalog before saving client document:', loadError)
+      return false
     }
+    const visibleRows = visibleEnforcementRows(data?.violations || matterViolations(matterId))
+    const payloadRows = [...visibleRows, { __mio_document_catalog: true, documents: nextCatalog }]
+    const now = new Date().toISOString()
+    const { error } = await supabase.from('case_mio_enforcement_state').upsert({
+      matter_id: matterId,
+      violations: payloadRows,
+      updated_by: session.user.id,
+      updated_at: now
+    }, { onConflict: 'matter_id' })
+    if (error) {
+      console.error('Could not save client document into Enforcement shared catalog:', error)
+      setEnforcementSaveError(error.message || 'Client document did not save to the shared matter catalog.')
+      setEnforcementSaveStatus('NOT SAVED')
+      return false
+    }
+    enforcementLastSavedJsonRef.current[matterId] = JSON.stringify(visibleRows)
+    setEnforcementSaveStatus(`Saved document ${new Date().toLocaleTimeString()}`)
+    return true
   }
 
   async function saveSharedEnforcementDocument(doc, reason = 'upload') {
     if (!session?.user?.id || !doc?.id || !doc?.matter_id) return false
+    const cleanDoc = stripLargeFileData(doc)
     const { error } = await supabase.from('case_mio_enforcement_documents').upsert({
       matter_id: String(doc.matter_id),
       document_id: String(doc.id),
-      metadata: stripLargeFileData(doc),
+      metadata: cleanDoc,
       uploaded_by: session.user.id,
       updated_at: new Date().toISOString(),
       reason
     }, { onConflict: 'matter_id,document_id' })
-    if (error) {
-      console.error('Could not save shared Enforcement document metadata:', error)
-      setEnforcementSaveError(error.message || 'Document metadata did not save.')
-      setEnforcementSaveStatus('NOT SAVED')
-      return false
-    }
-    return true
+    if (error) console.warn('Dedicated Enforcement document table rejected the save; using shared-state catalog fallback:', error)
+    const fallbackSaved = await saveEnforcementDocumentCatalogFallback(doc, reason)
+    return !error || fallbackSaved
   }
 
   async function syncLocalMatterDocumentsToEnforcement(permittedMatterIds = []) {
@@ -31615,8 +31684,13 @@ ${choices}`, '1'))
     const serverRows = {}
     const serverUpdated = {}
     ;(data || []).forEach((row) => {
-      serverRows[String(row.matter_id)] = Array.isArray(row.violations) ? row.violations : []
-      serverUpdated[String(row.matter_id)] = row.updated_at ? new Date(row.updated_at).getTime() : 0
+      const matterId = String(row.matter_id)
+      const rawRows = Array.isArray(row.violations) ? row.violations : []
+      const catalogEntry = enforcementCatalogEntry(rawRows)
+      const catalogDocs = Array.isArray(catalogEntry?.documents) ? catalogEntry.documents.map((doc) => ({ ...doc, matter_id: doc.matter_id || matterId })) : []
+      enforcementDocumentCatalogRef.current[matterId] = catalogDocs
+      serverRows[matterId] = visibleEnforcementRows(rawRows)
+      serverUpdated[matterId] = row.updated_at ? new Date(row.updated_at).getTime() : 0
     })
     let recoveryMatterIds = []
     const recoveryRowsByMatter = {}
@@ -31640,7 +31714,7 @@ ${choices}`, '1'))
       return next
     })
     ;(data || []).forEach((row) => {
-      enforcementLastSavedJsonRef.current[String(row.matter_id)] = JSON.stringify(Array.isArray(row.violations) ? row.violations : [])
+      enforcementLastSavedJsonRef.current[String(row.matter_id)] = JSON.stringify(visibleEnforcementRows(Array.isArray(row.violations) ? row.violations : []))
     })
     // Publish the full matter-document catalog before reading it back so every
     // authorized user sees the same document dropdown and the same exhibit names.
@@ -31664,15 +31738,16 @@ ${choices}`, '1'))
     if (!session?.user?.id || !matterId) return false
     if (!enforcementSharedReady && !options.force) return false
     if (isClientPortalMember() && !clientPortalMatterRows().some((matter) => String(matter.id) === String(matterId))) return false
-    const cleanRows = Array.isArray(rows) ? rows : []
+    const cleanRows = visibleEnforcementRows(Array.isArray(rows) ? rows : [])
+    const rowsForStorage = enforcementRowsWithCatalog(matterId, cleanRows)
     const json = JSON.stringify(cleanRows)
     if (!options.force && enforcementLastSavedJsonRef.current[String(matterId)] === json) return true
     setEnforcementSaveStatus('Saving...')
     setEnforcementSaveError('')
     const now = new Date().toISOString()
     // Keep a recovery snapshot before replacing the current matter state.
-    await supabase.from('case_mio_enforcement_snapshots').insert({ matter_id: matterId, violations: cleanRows, saved_by: session.user.id, saved_at: now, reason: options.reason || 'autosave' })
-    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: cleanRows, updated_by: session.user.id, updated_at: now }, { onConflict: 'matter_id' })
+    await supabase.from('case_mio_enforcement_snapshots').insert({ matter_id: matterId, violations: rowsForStorage, saved_by: session.user.id, saved_at: now, reason: options.reason || 'autosave' })
+    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: rowsForStorage, updated_by: session.user.id, updated_at: now }, { onConflict: 'matter_id' })
     if (error) {
       console.error('Could not save shared Enforcement data:', error)
       setEnforcementSaveError(error.message || 'Supabase rejected the Enforcement save.')
