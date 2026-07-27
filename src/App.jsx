@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V162'
+const MIO_APP_VERSION = 'Mio V163'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -32001,7 +32001,7 @@ ${choices}`, '1'))
 
       function renderLists() {
         tocList.innerHTML = excerpts.map((excerpt, index) => '<button class="tocItem ' + (P.activeExcerptId === excerpt.id ? 'active' : '') + '" data-id="' + esc(excerpt.id) + '"><strong>Excerpt ' + (index + 1) + '</strong><span>' + esc(excerpt.page ? 'Page ' + excerpt.page : 'Page not set') + ' · ' + (excerpt.image_data ? 'Rectangle' : 'Text') + '</span></button>').join('') || '<div class="empty">No excerpts saved.</div>'
-        excerptList.innerHTML = excerpts.map((excerpt, index) => '<article class="excerptCard ' + (P.activeExcerptId === excerpt.id ? 'active' : '') + '" id="ex-' + esc(excerpt.id) + '"><div class="excerptHead"><strong>Violation ' + P.violationNumber + ', Exhibit ' + esc(P.exhibitLabel) + ', Excerpt ' + (index + 1) + '</strong><span>Page ' + esc(excerpt.page || '?') + '</span></div>' + (excerpt.selected_text ? '<div class="excerptText">' + esc(excerpt.selected_text) + '</div>' : '') + (excerpt.image_data ? '<img class="excerptImage" src="' + excerpt.image_data + '">' : '') + '<div class="controls"><button class="btn open" data-page="' + esc(excerpt.page || '1') + '">Open</button><button class="btn up" data-id="' + esc(excerpt.id) + '" ' + (index === 0 ? 'disabled' : '') + '>↑ Earlier</button><button class="btn down" data-id="' + esc(excerpt.id) + '" ' + (index === excerpts.length - 1 ? 'disabled' : '') + '>↓ Later</button></div></article>').join('') || '<div class="empty">No excerpts have been saved for this violation and exhibit.</div>'
+        excerptList.innerHTML = excerpts.map((excerpt, index) => '<article class="excerptCard ' + (P.activeExcerptId === excerpt.id ? 'active' : '') + '" id="ex-' + esc(excerpt.id) + '"><div class="excerptHead"><strong>Violation ' + P.violationNumber + ', Exhibit ' + esc(P.exhibitLabel) + ', Excerpt ' + (index + 1) + '</strong><span>Page ' + esc(excerpt.page || '?') + '</span></div>' + (excerpt.selected_text ? '<div class="excerptText">' + esc(excerpt.selected_text) + '</div>' : '') + (excerpt.image_data ? '<img class="excerptImage" src="' + excerpt.image_data + '">' : '') + '<div class="controls"><button class="btn open" data-page="' + esc(excerpt.page || '1') + '">Open</button><button class="btn up" data-id="' + esc(excerpt.id) + '" ' + (index === 0 ? 'disabled' : '') + '>↑ Earlier</button><button class="btn down" data-id="' + esc(excerpt.id) + '" ' + (index === excerpts.length - 1 ? 'disabled' : '') + '>↓ Later</button><button class="btn delete" data-id="' + esc(excerpt.id) + '">Delete</button></div></article>').join('') || '<div class="empty">No excerpts have been saved for this violation and exhibit.</div>'
         tocList.querySelectorAll('.tocItem').forEach((button) => { button.onclick = () => { const card = document.getElementById('ex-' + button.dataset.id); if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' }) } })
         excerptList.querySelectorAll('.open').forEach((button) => { button.onclick = () => scrollToPage(Number((String(button.dataset.page).match(/\d+/) || ['1'])[0])) })
         excerptList.querySelectorAll('.up,.down').forEach((button) => {
@@ -32016,15 +32016,88 @@ ${choices}`, '1'))
             renderLists()
           }
         })
+        excerptList.querySelectorAll('.delete').forEach((button) => {
+          button.onclick = () => {
+            const index = excerpts.findIndex((excerpt) => String(excerpt.id) === String(button.dataset.id))
+            if (index < 0 || !window.confirm('Delete this excerpt?')) return
+            const deleted = window.opener && window.opener.deleteEnforcementExcerptFromViewer ? window.opener.deleteEnforcementExcerptFromViewer(P.violationId, P.docId, button.dataset.id) : false
+            if (deleted === false) return
+            excerpts.splice(index, 1)
+            renderLists()
+            renderAllSavedHighlights()
+            status.textContent = 'Excerpt deleted and removed from the shared enforcement record.'
+          }
+        })
       }
 
       function selectedTextAndPage() {
         const selection = window.getSelection()
         const text = String(selection && selection.toString ? selection.toString() : '').trim()
-        if (!text) return null
+        if (!text || !selection || !selection.rangeCount) return null
+        const range = selection.getRangeAt(0)
         let element = selection.anchorNode && selection.anchorNode.nodeType === 1 ? selection.anchorNode : selection.anchorNode && selection.anchorNode.parentElement
         const page = element && element.closest ? element.closest('.page') : null
-        return { selected_text: text, page: page && page.dataset.page ? page.dataset.page : String(currentPage) }
+        if (!page) return null
+        const pageRect = page.getBoundingClientRect()
+        const highlight_rects = Array.from(range.getClientRects()).map((rect) => ({
+          x: Math.max(0, (rect.left - pageRect.left) / pageRect.width),
+          y: Math.max(0, (rect.top - pageRect.top) / pageRect.height),
+          width: Math.max(0, rect.width / pageRect.width),
+          height: Math.max(0, rect.height / pageRect.height)
+        })).filter((rect) => rect.width > 0 && rect.height > 0)
+        return { selected_text: text, page: page.dataset.page || String(currentPage), highlight_rects }
+      }
+
+      function addSavedHighlight(wrapper, rect, active) {
+        const node = document.createElement('div')
+        node.className = 'savedHighlight' + (active ? ' activeSavedHighlight' : '')
+        const normalized = Number(rect.x) <= 1 && Number(rect.y) <= 1 && Number(rect.width) <= 1 && Number(rect.height) <= 1
+        Object.assign(node.style, normalized ? {
+          left: (Number(rect.x) * 100) + '%', top: (Number(rect.y) * 100) + '%', width: (Number(rect.width) * 100) + '%', height: (Number(rect.height) * 100) + '%'
+        } : {
+          left: Number(rect.x) + 'px', top: Number(rect.y) + 'px', width: Number(rect.width) + 'px', height: Number(rect.height) + 'px'
+        })
+        wrapper.appendChild(node)
+      }
+
+      function renderSavedHighlightsForPage(pageNumber) {
+        const wrapper = pageWrappers.get(Number(pageNumber))
+        if (!wrapper) return
+        wrapper.querySelectorAll('.savedHighlight').forEach((node) => node.remove())
+        const pageExcerpts = excerpts.filter((excerpt) => Number((String(excerpt.page || '').match(/\d+/) || [0])[0]) === Number(pageNumber))
+        const spans = Array.from(wrapper.querySelectorAll('.sourceTextSpan'))
+        pageExcerpts.forEach((excerpt) => {
+          const active = String(P.activeExcerptId || '') === String(excerpt.id || '')
+          if (Array.isArray(excerpt.highlight_rects) && excerpt.highlight_rects.length) {
+            excerpt.highlight_rects.forEach((rect) => addSavedHighlight(wrapper, rect, active))
+          } else if (excerpt.capture_rect) {
+            addSavedHighlight(wrapper, excerpt.capture_rect, active)
+          } else if (excerpt.selected_text && spans.length) {
+            const parts = spans.map((span) => String(span.textContent || ''))
+            let source = ''
+            const positions = []
+            parts.forEach((part, index) => {
+              if (index) source += ' '
+              const start = source.length
+              source += part
+              positions.push({ start, end: source.length, span: spans[index] })
+            })
+            const needle = String(excerpt.selected_text).replace(/\s+/g, ' ').trim().toLowerCase()
+            const haystack = source.replace(/\s+/g, ' ').toLowerCase()
+            const found = haystack.indexOf(needle)
+            if (found >= 0) {
+              const finish = found + needle.length
+              positions.filter((item) => item.end >= found && item.start <= finish).forEach((item) => {
+                const rect = item.span.getBoundingClientRect(); const pageRect = wrapper.getBoundingClientRect()
+                addSavedHighlight(wrapper, { x:(rect.left-pageRect.left)/pageRect.width, y:(rect.top-pageRect.top)/pageRect.height, width:rect.width/pageRect.width, height:rect.height/pageRect.height }, active)
+              })
+            }
+          }
+        })
+      }
+
+      function renderAllSavedHighlights() {
+        pageWrappers.forEach((wrapper, pageNumber) => renderSavedHighlightsForPage(pageNumber))
       }
 
       function saveCapture() {
@@ -32039,7 +32112,7 @@ ${choices}`, '1'))
             crop.width = Math.max(1, Math.round(capture.width * scaleX))
             crop.height = Math.max(1, Math.round(capture.height * scaleY))
             crop.getContext('2d').drawImage(canvas, capture.x * scaleX, capture.y * scaleY, capture.width * scaleX, capture.height * scaleY, 0, 0, crop.width, crop.height)
-            seed = { page: String(capture.page), selected_text: '', image_data: crop.toDataURL('image/png'), capture_rect: { x: capture.x, y: capture.y, width: capture.width, height: capture.height } }
+            seed = { page: String(capture.page), selected_text: '', image_data: crop.toDataURL('image/png'), capture_rect: { x: capture.x / capture.displayWidth, y: capture.y / capture.displayHeight, width: capture.width / capture.displayWidth, height: capture.height / capture.displayHeight } }
           }
         }
         if (!seed) { status.textContent = mode === 'text' ? 'Select text in the document first.' : 'Draw a rectangle on a page first.'; return }
@@ -32047,6 +32120,7 @@ ${choices}`, '1'))
         if (!saved) { status.textContent = 'The excerpt could not be saved.'; return }
         excerpts.push(saved)
         renderLists()
+        renderSavedHighlightsForPage(Number((String(saved.page || '').match(/\d+/) || [currentPage])[0]))
         status.textContent = 'Excerpt saved. It will sync through the enforcement record in Supabase.'
         const selection = window.getSelection(); if (selection && selection.removeAllRanges) selection.removeAllRanges()
         capture = null
@@ -32114,7 +32188,7 @@ ${choices}`, '1'))
               wrapper.appendChild(canvas); wrapper.appendChild(layer); wrapper.appendChild(label); viewer.appendChild(wrapper)
               pageWrappers.set(pageNumber, wrapper); pageCanvases.set(pageNumber, canvas)
               const context = canvas.getContext('2d'); const renderViewport = page.getViewport({ scale: scale * ratio })
-              return page.render({ canvasContext: context, viewport: renderViewport }).promise.then(() => renderTextLayer(page, viewport, layer)).then(() => attachRectangleCapture(wrapper, pageNumber, viewport.width, viewport.height))
+              return page.render({ canvasContext: context, viewport: renderViewport }).promise.then(() => renderTextLayer(page, viewport, layer)).then(() => { attachRectangleCapture(wrapper, pageNumber, viewport.width, viewport.height); renderSavedHighlightsForPage(pageNumber) })
             })
           }
           return chain.then(() => { scrollToPage(Number(P.activePage) || 1); status.textContent = 'Loaded ' + pdf.numPages + ' page' + (pdf.numPages === 1 ? '' : 's') + '.' })
@@ -32127,7 +32201,7 @@ ${choices}`, '1'))
         const wrapper = document.createElement('div'); wrapper.className = 'page'; wrapper.dataset.page = '1'; wrapper.appendChild(image); viewer.appendChild(wrapper)
         return new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject }).then(() => {
           const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; canvas.getContext('2d').drawImage(image, 0, 0)
-          pageCanvases.set(1, canvas); pageWrappers.set(1, wrapper); attachRectangleCapture(wrapper, 1, wrapper.getBoundingClientRect().width, wrapper.getBoundingClientRect().height); status.textContent = 'Image loaded.'
+          pageCanvases.set(1, canvas); pageWrappers.set(1, wrapper); attachRectangleCapture(wrapper, 1, wrapper.getBoundingClientRect().width, wrapper.getBoundingClientRect().height); renderSavedHighlightsForPage(1); status.textContent = 'Image loaded.'
         })
       }
 
@@ -32143,7 +32217,7 @@ ${choices}`, '1'))
     const safeFile = String(payload.fileName).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const safeViolationTitle = String(payload.violationTitle).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle} — Exhibit Viewer</title><style>
-      *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;background:#f8fafc}.top{height:58px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #dbe3ea;background:#fff;position:sticky;top:0;z-index:20}.title{flex:1;min-width:240px}.sub{font-size:12px;color:#64748b;margin-top:2px}.btn{padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-weight:700}.btn.active{background:#dbeafe;border-color:#2563eb;color:#1d4ed8}.layout{display:grid;grid-template-columns:230px minmax(520px,1fr) 370px;height:calc(100vh - 59px)}.toc,.details{background:#fff;padding:12px;overflow:auto}.toc{border-right:1px solid #dbe3ea}.details{border-left:1px solid #dbe3ea}.viewer{overflow:auto;background:#cbd5e1;padding:18px}.page{position:relative;margin:0 auto 18px;background:#fff;box-shadow:0 3px 14px rgba(15,23,42,.18);width:max-content}.page canvas{display:block}.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1}.textLayer span{color:transparent;position:absolute;white-space:pre;transform-origin:0 0;cursor:text}.textLayer span::selection{background:rgba(37,99,235,.32);color:transparent}.captureBox{position:absolute;border:2px solid #2563eb;background:rgba(37,99,235,.14);pointer-events:none;z-index:10}.tocItem{width:100%;display:grid;text-align:left;gap:3px;padding:9px;border:1px solid #dbe3ea;border-radius:8px;background:#fff;margin-bottom:7px;cursor:pointer}.tocItem.active{border-color:#2563eb;background:#eff6ff}.tocItem span{font-size:12px;color:#64748b}.excerptCard{background:#fff;border:1px solid #dbe3ea;border-radius:10px;padding:10px;margin-bottom:9px}.excerptCard.active{border:2px solid #2563eb;background:#eff6ff}.excerptHead{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.excerptText{margin:9px 0 0;border-left:4px solid #facc15;padding:9px;background:#fefce8;white-space:pre-wrap}.excerptImage{display:block;max-width:100%;margin-top:9px;border:1px solid #cbd5e1;border-radius:6px}.controls{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.empty{padding:18px;color:#64748b}.status{font-size:12px;color:#475569;margin:8px 0}.pageLabel{position:absolute;top:6px;right:8px;background:rgba(15,23,42,.72);color:#fff;border-radius:999px;padding:3px 7px;font-size:11px;z-index:12}.imageOnly{max-width:100%;display:block;margin:auto}.modeHint{padding:8px;border-radius:8px;background:#eff6ff;color:#1e40af;font-size:12px;margin-bottom:10px}</style></head><body><header class="top"><div class="title"><strong>${safeTitle} — ${safeFile}</strong><div class="sub">Violation ${violationNumber}: ${safeViolationTitle}</div></div><button id="textMode" class="btn active">Text Highlight</button><button id="rectMode" class="btn">Rectangle Capture</button><button id="saveBtn" class="btn">Save Selected Excerpt</button><button class="btn" onclick="window.print()">Print</button><button class="btn" onclick="window.close()">Close</button></header><div class="layout"><aside class="toc"><h3>Excerpt TOC</h3><div id="tocList"></div></aside><main id="viewer" class="viewer"><div class="status">Loading document…</div></main><aside class="details"><h3>Violation ${violationNumber} Excerpts</h3><div id="modeHint" class="modeHint">Drag across words in the document, then click Save Selected Excerpt.</div><div id="status" class="status"></div><div id="excerptList"></div></aside></div><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script><script>const P=${JSON.stringify(payload).replace(/</g, '\\u003c')};(${enforcementViewerApp.toString()})(P);<\/script></body></html>`
+      *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;background:#f8fafc}.top{height:58px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #dbe3ea;background:#fff;position:sticky;top:0;z-index:20}.title{flex:1;min-width:240px}.sub{font-size:12px;color:#64748b;margin-top:2px}.btn{padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-weight:700}.btn.active{background:#dbeafe;border-color:#2563eb;color:#1d4ed8}.layout{display:grid;grid-template-columns:230px minmax(520px,1fr) 370px;height:calc(100vh - 59px)}.toc,.details{background:#fff;padding:12px;overflow:auto}.toc{border-right:1px solid #dbe3ea}.details{border-left:1px solid #dbe3ea}.viewer{overflow:auto;background:#cbd5e1;padding:18px}.page{position:relative;margin:0 auto 18px;background:#fff;box-shadow:0 3px 14px rgba(15,23,42,.18);width:max-content}.page canvas{display:block}.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1}.textLayer span{color:transparent;position:absolute;white-space:pre;transform-origin:0 0;cursor:text}.textLayer span::selection{background:rgba(37,99,235,.32);color:transparent}.captureBox{position:absolute;border:2px solid #2563eb;background:rgba(37,99,235,.14);pointer-events:none;z-index:10}.savedHighlight{position:absolute;background:rgba(250,204,21,.38);box-shadow:0 0 0 1px rgba(202,138,4,.35) inset;border-radius:2px;pointer-events:none;z-index:3}.savedHighlight.activeSavedHighlight{background:rgba(250,204,21,.58);box-shadow:0 0 0 2px rgba(37,99,235,.65) inset}.tocItem{width:100%;display:grid;text-align:left;gap:3px;padding:9px;border:1px solid #dbe3ea;border-radius:8px;background:#fff;margin-bottom:7px;cursor:pointer}.tocItem.active{border-color:#2563eb;background:#eff6ff}.tocItem span{font-size:12px;color:#64748b}.excerptCard{background:#fff;border:1px solid #dbe3ea;border-radius:10px;padding:10px;margin-bottom:9px}.excerptCard.active{border:2px solid #2563eb;background:#eff6ff}.excerptHead{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.excerptText{margin:9px 0 0;border-left:4px solid #facc15;padding:9px;background:#fefce8;white-space:pre-wrap}.excerptImage{display:block;max-width:100%;margin-top:9px;border:1px solid #cbd5e1;border-radius:6px}.controls{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.controls .delete{color:#b91c1c;border-color:#fecaca;background:#fff1f2}.empty{padding:18px;color:#64748b}.status{font-size:12px;color:#475569;margin:8px 0}.pageLabel{position:absolute;top:6px;right:8px;background:rgba(15,23,42,.72);color:#fff;border-radius:999px;padding:3px 7px;font-size:11px;z-index:12}.imageOnly{max-width:100%;display:block;margin:auto}.modeHint{padding:8px;border-radius:8px;background:#eff6ff;color:#1e40af;font-size:12px;margin-bottom:10px}</style></head><body><header class="top"><div class="title"><strong>${safeTitle} — ${safeFile}</strong><div class="sub">Violation ${violationNumber}: ${safeViolationTitle}</div></div><button id="textMode" class="btn active">Text Highlight</button><button id="rectMode" class="btn">Rectangle Capture</button><button id="saveBtn" class="btn">Save Selected Excerpt</button><button class="btn" onclick="window.print()">Print</button><button class="btn" onclick="window.close()">Close</button></header><div class="layout"><aside class="toc"><h3>Excerpt TOC</h3><div id="tocList"></div></aside><main id="viewer" class="viewer"><div class="status">Loading document…</div></main><aside class="details"><h3>Violation ${violationNumber} Excerpts</h3><div id="modeHint" class="modeHint">Drag across words in the document, then click Save Selected Excerpt.</div><div id="status" class="status"></div><div id="excerptList"></div></aside></div><script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script><script>const P=${JSON.stringify(payload).replace(/</g, '\\u003c')};(${enforcementViewerApp.toString()})(P);<\/script></body></html>`
     win.document.open()
     win.document.write(html)
     win.document.close()
@@ -32151,6 +32225,7 @@ ${choices}`, '1'))
 
   window.addEnforcementExcerptFromViewer = (violationId, docId, seed = {}) => addEnforcementExcerpt(violationId, docId, seed)
   window.moveEnforcementExcerptFromViewer = (violationId, docId, excerptId, direction) => moveEnforcementExcerpt(violationId, docId, excerptId, Number(direction) || 0)
+  window.deleteEnforcementExcerptFromViewer = (violationId, docId, excerptId) => { deleteEnforcementExcerpt(violationId, docId, excerptId); return true }
 
   function renderEnforcementPage() {
     const clientPortal = isClientPortalMember()
