@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V164'
+const MIO_APP_VERSION = 'Mio V165'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -239,6 +239,27 @@ const appPages = [
   { value: 'ideas', label: 'Website Ideas' },
   { value: 'settings', label: 'Settings' }
 ]
+
+const CLIENT_PAGE_TAB_OPTIONS = {
+  inventory: [],
+  matter_timelines: [],
+  requested_relief: [],
+  enforcement: [
+    { value: 'violations', label: 'Violations' },
+    { value: 'matrix', label: 'Violation-Exhibit Matrix' },
+    { value: 'relevance', label: 'Exhibit Violation Relevance' },
+    { value: 'exhibit-list', label: 'Exhibit List' },
+    { value: 'predicates', label: 'Predicates' }
+  ],
+  calendar: [],
+  checklist: [],
+  need_to_set: [],
+  discovery: [],
+  documents: [],
+  onedrive_files: [],
+  elements: [],
+  people: []
+}
 
 const screenSaverBasePages = [
   { value: 'team', label: 'Team', page: 'team' },
@@ -2034,6 +2055,11 @@ function App() {
   const [expandedViolationIds, setExpandedViolationIds] = useState([])
   const [enforcementAiFile, setEnforcementAiFile] = useState(null)
   const [enforcementWorkspaceTab, setEnforcementWorkspaceTab] = useState('violations')
+  useEffect(() => {
+    if (!isClientPortalMember() || !violationsMatterId) return
+    const allowedTabs = clientAllowedTabs('enforcement', violationsMatterId)
+    if (allowedTabs.length && !allowedTabs.includes(enforcementWorkspaceTab)) setEnforcementWorkspaceTab(allowedTabs[0])
+  }, [currentTeamMember, violationsMatterId, enforcementWorkspaceTab])
   const [enforcementAiStatus, setEnforcementAiStatus] = useState('')
   const [enforcementAiBusy, setEnforcementAiBusy] = useState(false)
   const [enforcementSharedReady, setEnforcementSharedReady] = useState(false)
@@ -2188,6 +2214,7 @@ function App() {
   const [showPageAccessWindow, setShowPageAccessWindow] = useState(false)
   const [pageAccessMember, setPageAccessMember] = useState(null)
   const [pageAccessDraft, setPageAccessDraft] = useState([])
+  const [clientMatterAccessDraft, setClientMatterAccessDraft] = useState({})
 
   const [screenSaverDefaultSeconds, setScreenSaverDefaultSeconds] = useState(() => {
     try {
@@ -3901,6 +3928,22 @@ function App() {
     return Array.from(new Set((Array.isArray(member?.page_access) ? member.page_access : []).map((value) => String(value || '').trim()).filter(Boolean)))
   }
 
+  function parseClientMatterPermission(value) {
+    const match = String(value || '').match(/^client-matter:([^:]+):page:([^:]+)(?::tab:(.+))?$/)
+    return match ? { matterId: match[1], page: match[2], tab: match[3] || '' } : null
+  }
+
+  function clientMatterPermissions(member = currentTeamMember) {
+    return normalizedMemberPages(member).map(parseClientMatterPermission).filter(Boolean)
+  }
+
+  function clientAllowedTabs(pageName, matterId = violationsMatterId, member = currentTeamMember) {
+    const matching = clientMatterPermissions(member).filter((item) => String(item.matterId) === String(matterId) && item.page === pageName)
+    if (!matching.length) return []
+    const explicitTabs = matching.map((item) => item.tab).filter(Boolean)
+    return explicitTabs.length ? Array.from(new Set(explicitTabs)) : (CLIENT_PAGE_TAB_OPTIONS[pageName] || []).map((item) => item.value)
+  }
+
   function isFirmStaffMember(member = currentTeamMember) {
     const email = String(member?.email || session?.user?.email || '').trim().toLowerCase()
     return email.endsWith('@beveridgelawfirm.com')
@@ -3908,13 +3951,14 @@ function App() {
 
   function isClientPortalMember(member = currentTeamMember) {
     const pages = normalizedMemberPages(member)
-    // Firm users must never be converted into the client portal merely because a
-    // page-access record is incomplete or was temporarily saved with one page.
-    return Boolean(member && !isFirmStaffMember(member) && pages.length === 1 && pages[0] === 'enforcement')
+    // Outside users with matter-specific permissions use the client portal.
+    return Boolean(member && !isFirmStaffMember(member) && (pages.some((value) => value.startsWith('client-matter:')) || (pages.length === 1 && pages[0] === 'enforcement')))
   }
 
   function clientPortalMatterRows(member = currentTeamMember) {
     if (!isClientPortalMember(member)) return matters
+    const permissionIds = Array.from(new Set(clientMatterPermissions(member).map((item) => String(item.matterId))))
+    if (permissionIds.length) return matters.filter((matter) => permissionIds.includes(String(matter.id)))
     const email = String(member?.email || session?.user?.email || '').trim().toLowerCase()
     if (!email) return []
     return matters.filter((matter) => String(matterClientEmail(matter) || '').trim().toLowerCase() === email)
@@ -3941,7 +3985,7 @@ function App() {
     setCurrentTeamMember(data || null)
     setUserAccessChecked(true)
     const allowed = getAllowedPages(data)
-    if (isClientPortalMember(data)) setPage('enforcement')
+    if (isClientPortalMember(data)) setPage(allowed[0] || 'enforcement')
     else if (data && allowed.length > 0 && !allowed.includes(page)) setPage(allowed[0])
     return data || null
   }
@@ -3954,7 +3998,10 @@ function App() {
     // Enforcement as their sole page.
     if (isFirmStaffMember(member)) return appPages.map((p) => p.value)
     const pages = normalizedMemberPages(member)
-    return pages.length ? pages : appPages.map((p) => p.value)
+    const matterPages = clientMatterPermissions(member).map((item) => item.page)
+    const ordinaryPages = pages.filter((value) => !value.startsWith('client-matter:'))
+    const combined = Array.from(new Set([...ordinaryPages, ...matterPages]))
+    return combined.length ? combined : appPages.map((p) => p.value)
   }
 
   function canOpenPage(pageName) {
@@ -4907,8 +4954,39 @@ function App() {
 
   function openPageAccessEditor(member) {
     setPageAccessMember(member)
-    setPageAccessDraft(Array.isArray(member.page_access) ? member.page_access : [])
+    const raw = Array.isArray(member.page_access) ? member.page_access : []
+    setPageAccessDraft(raw.filter((value) => !String(value).startsWith('client-matter:')))
+    const draft = {}
+    raw.map(parseClientMatterPermission).filter(Boolean).forEach((permission) => {
+      const matterKey = String(permission.matterId)
+      draft[matterKey] = draft[matterKey] || {}
+      draft[matterKey][permission.page] = draft[matterKey][permission.page] || { enabled: true, tabs: [] }
+      draft[matterKey][permission.page].enabled = true
+      if (permission.tab && !draft[matterKey][permission.page].tabs.includes(permission.tab)) draft[matterKey][permission.page].tabs.push(permission.tab)
+    })
+    setClientMatterAccessDraft(draft)
     setShowPageAccessWindow(true)
+  }
+
+  function toggleClientMatterPage(matterId, pageName) {
+    const key = String(matterId)
+    setClientMatterAccessDraft((current) => {
+      const next = { ...current, [key]: { ...(current[key] || {}) } }
+      const existing = next[key][pageName] || { enabled: false, tabs: [] }
+      next[key][pageName] = { ...existing, enabled: !existing.enabled }
+      return next
+    })
+  }
+
+  function toggleClientMatterTab(matterId, pageName, tabName) {
+    const key = String(matterId)
+    setClientMatterAccessDraft((current) => {
+      const next = { ...current, [key]: { ...(current[key] || {}) } }
+      const existing = next[key][pageName] || { enabled: true, tabs: [] }
+      const tabs = existing.tabs || []
+      next[key][pageName] = { enabled: true, tabs: tabs.includes(tabName) ? tabs.filter((tab) => tab !== tabName) : [...tabs, tabName] }
+      return next
+    })
   }
 
   function togglePageAccessDraft(pageName) {
@@ -4919,9 +4997,19 @@ function App() {
   async function savePageAccessDraft() {
     if (!pageAccessMember) return
 
+    const matterPermissions = []
+    Object.entries(clientMatterAccessDraft || {}).forEach(([matterId, pageMap]) => {
+      Object.entries(pageMap || {}).forEach(([pageName, config]) => {
+        if (!config?.enabled) return
+        const tabs = Array.isArray(config.tabs) ? config.tabs : []
+        if (tabs.length) tabs.forEach((tab) => matterPermissions.push(`client-matter:${matterId}:page:${pageName}:tab:${tab}`))
+        else matterPermissions.push(`client-matter:${matterId}:page:${pageName}`)
+      })
+    })
+    const nextPageAccess = Array.from(new Set([...(pageAccessDraft || []), ...matterPermissions]))
     const { error } = await supabase
       .from('team_members')
-      .update({ page_access: pageAccessDraft })
+      .update({ page_access: nextPageAccess })
       .eq('id', pageAccessMember.id)
 
     if (error) alert(error.message)
@@ -4929,6 +5017,7 @@ function App() {
       setShowPageAccessWindow(false)
       setPageAccessMember(null)
       setPageAccessDraft([])
+      setClientMatterAccessDraft({})
       fetchTeam()
     }
   }
@@ -36017,6 +36106,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         Select the pages this user can access. Choosing a position sets the default boxes,
                         but you can edit them here for this user.
                       </p>
+                      <div style={{display:'flex',gap:8,marginBottom:10}}><button type="button" onClick={()=>setTeamForm({...teamForm,page_access:appPages.map((item)=>item.value)})}>Select all</button><button type="button" onClick={()=>setTeamForm({...teamForm,page_access:[]})}>Deselect all</button></div>
 
                       {appPages.map((appPage) => (
                         <label key={appPage.value} style={{ display: 'block', marginBottom: 8 }}>
@@ -36048,7 +36138,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
             {showPageAccessWindow && pageAccessMember && (
               <Modal title={`Page Access - ${pageAccessMember.first_name || ''} ${pageAccessMember.last_name || ''}`} onClose={() => setShowPageAccessWindow(false)}>
-                <p>Select the pages this user can access.</p>
+                <p><strong>Staff access</strong> applies across Mio. Client access is assigned separately by matter below.</p>
+                <div style={{display:'flex',gap:8,marginBottom:12}}>
+                  <button type="button" onClick={() => setPageAccessDraft(appPages.map((item) => item.value))}>Select all pages</button>
+                  <button type="button" onClick={() => setPageAccessDraft([])}>Deselect all pages</button>
+                </div>
 
                 {appPages.map((appPage) => (
                   <label key={appPage.value} style={{ display: 'block', marginBottom: 8 }}>
@@ -36061,6 +36155,32 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     {appPage.label}
                   </label>
                 ))}
+
+                <div style={{marginTop:22,borderTop:'2px solid #cbd5e1',paddingTop:14}}>
+                  <h3 style={{margin:'0 0 4px'}}>Client Matter Access</h3>
+                  <p style={{marginTop:0,color:'#64748b'}}>Choose each matter separately, then choose the pages and tabs this client may open for that matter.</p>
+                  <div style={{display:'grid',gap:10}}>
+                    {matters.map((matter) => {
+                      const matterId = String(matter.id)
+                      const matterDraft = clientMatterAccessDraft[matterId] || {}
+                      return <details key={matter.id} style={{border:'1px solid #cbd5e1',borderRadius:8,padding:10}}>
+                        <summary style={{cursor:'pointer',fontWeight:800}}>{formatMatterOption(matter)}</summary>
+                        <div style={{marginTop:10,display:'grid',gap:8}}>
+                          {Object.entries(CLIENT_PAGE_TAB_OPTIONS).map(([pageName,tabs]) => {
+                            const config = matterDraft[pageName] || {enabled:false,tabs:[]}
+                            return <div key={pageName} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:9}}>
+                              <label style={{fontWeight:800}}><input type="checkbox" checked={!!config.enabled} onChange={()=>toggleClientMatterPage(matterId,pageName)}/> {appPages.find((item)=>item.value===pageName)?.label || pageName}</label>
+                              {config.enabled && <div style={{margin:'8px 0 0 22px'}}>
+                                <div style={{display:'flex',gap:6,marginBottom:6}}><button type="button" onClick={()=>setClientMatterAccessDraft((current)=>({...current,[matterId]:{...(current[matterId]||{}),[pageName]:{enabled:true,tabs:tabs.map((tab)=>tab.value)}}}))}>All tabs</button><button type="button" onClick={()=>setClientMatterAccessDraft((current)=>({...current,[matterId]:{...(current[matterId]||{}),[pageName]:{enabled:true,tabs:[]}}}))}>No specific tabs</button></div>
+                                {tabs.map((tab)=><label key={tab.value} style={{display:'block',marginBottom:5}}><input type="checkbox" checked={(config.tabs||[]).includes(tab.value)} onChange={()=>toggleClientMatterTab(matterId,pageName,tab.value)}/> {tab.label}</label>)}
+                              </div>}
+                            </div>
+                          })}
+                        </div>
+                      </details>
+                    })}
+                  </div>
+                </div>
 
                 <div style={{ marginTop: 20 }}>
                   <button onClick={savePageAccessDraft}>Save Page Access</button>
@@ -37789,7 +37909,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'need_to_set' && canOpenPage('need_to_set') && (
           <>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed.</p></div><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
+            <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-start',margin:'10px 0 14px'}}><ChecklistCheckboxFilter kind="case" title="Case Status"/><ChecklistCheckboxFilter kind="matter" title="Matter Status"/><ChecklistCheckboxFilter kind="category" title="Case Type / Event Category"/></div>
             {renderNeedToSetCardDashboard()}
           </>
         )}
