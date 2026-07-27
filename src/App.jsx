@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V155'
+const MIO_APP_VERSION = 'Mio V156'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1964,6 +1964,7 @@ function App() {
     catch { return false }
   })
   const [needToSetSettingsOpen, setNeedToSetSettingsOpen] = useState(false)
+  const [needToSetEmailConnectOpen, setNeedToSetEmailConnectOpen] = useState({})
   const [needToSetSettingsType, setNeedToSetSettingsType] = useState('')
   const [needToSetAiByEvent, setNeedToSetAiByEvent] = useState({})
   const [needToSetAiLoading, setNeedToSetAiLoading] = useState({})
@@ -27014,7 +27015,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       id: item?.id || `setting-email-${step.parent_name || 'setting'}-${index}`,
       label: item?.label || item?.name || `Email ${index + 1}`,
       address: item?.address || item?.email || '',
-      role: item?.role || item?.label || 'other'
+      role: item?.role || item?.label || 'other',
+      person_source: item?.person_source || item?.personSource || ''
     })).filter((item) => item.label)
     // Upgrade the V154 per-step assignments without losing existing entries.
     const legacy = Array.isArray(meta.email_assignments) ? meta.email_assignments : []
@@ -27022,7 +27024,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       id: item?.id || `legacy-setting-email-${step.id || step.name}-${index}`,
       label: item?.label || item?.name || `Email ${index + 1}`,
       address: item?.address || item?.email || '',
-      role: item?.role || item?.label || 'other'
+      role: item?.role || item?.label || 'other',
+      person_source: item?.person_source || item?.personSource || ''
     })).filter((item) => item.label)
   }
 
@@ -27039,11 +27042,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function needToSetConfiguredEmailsForStep(event = {}, step = {}, stepIndex = 0) {
-    const live = needToSetEmailsForStep(event, step, stepIndex)
-    const byLabel = new Map(live.map((email) => [String(email.recipient_label || needToSetEmailRoleLabel(email) || '').trim().toLowerCase(), email]))
+    const live = needToSetEmailsForEvent(event)
+    const byLabel = new Map(live.map((email) => [String(email.setting_email_id || email.recipient_label || needToSetEmailRoleLabel(email) || '').trim().toLowerCase(), email]))
     const configured = needToSetConfiguredEmailAssignments(step).map((assignment, index) => {
-      const key = String(assignment.label || '').trim().toLowerCase()
-      const existing = byLabel.get(key)
+      const key = String(assignment.id || assignment.label || '').trim().toLowerCase()
+      const existing = byLabel.get(key) || live.find((email) => String(email.recipient_label || '').trim().toLowerCase() === String(assignment.label || '').trim().toLowerCase())
       if (existing) return existing
       return {
         id: `configured:${step.id || step.name}:${assignment.id || index}`,
@@ -27051,7 +27054,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         setting_email_id: assignment.id,
         recipient_label: assignment.label,
         recipient_role: assignment.role,
-        to: assignment.address || '',
+        person_source: assignment.person_source || '',
+        to: assignment.address || needToSetAutoAddressForCatalog(event, assignment) || '',
         subject: `${checklistEventCategoryLabel(event)} - ${step.name} - ${assignment.label}`,
         step_id: step.id || '',
         step_key: workspaceStepKey(needToSetStepContext(event, step, stepIndex), stepIndex),
@@ -27062,6 +27066,75 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     })
     const configuredLabels = new Set(configured.map((email) => String(email.recipient_label || '').trim().toLowerCase()))
     return [...configured, ...live.filter((email) => !configuredLabels.has(String(email.recipient_label || needToSetEmailRoleLabel(email) || '').trim().toLowerCase()))]
+  }
+
+  function needToSetPeopleOptionsForEvent(event = {}) {
+    const matter = checklistMatterForEvent(event) || {}
+    const extra = matterExtraFor(matter.id) || {}
+    const options = []
+    const add = (source, label, email, personId = '') => {
+      const address = String(email || '').trim()
+      if (!address) return
+      const key = `${source}::${address.toLowerCase()}`
+      if (options.some((item) => item.key === key)) return
+      options.push({ key, source, label: label || address, email: address, personId })
+    }
+    const client = clients.find((item) => String(item.id) === String(matter.client_id)) || {}
+    add('client', `Client — ${client.name || matter.client_name || 'Client'}`, client.email || matter.client_email, client.id)
+    const court = courts.find((item) => String(item.id) === String(matter.court_id || event.court_id)) || {}
+    add('court_coordinator', `Court Coordinator — ${court.court_coordinator_name || checklistCourtName(event) || 'Court'}`, court.court_coordinator_email || checklistCourtCoordinatorEmail(event), court.id)
+    ;(extra.court_people || []).forEach((person, index) => add('court_coordinator', `${person.title || 'Court Contact'} — ${person.name || `Contact ${index + 1}`}`, person.email, person.id || `court-${index}`))
+    ;(extra.opposing_parties || []).forEach((party, index) => {
+      add('opposing_party', `Opposing Party — ${party.name || `Party ${index + 1}`}`, party.email, party.id || `party-${index}`)
+      const counsel = party.counsel || {}
+      add('opposing_counsel', `Opposing Counsel — ${counsel.name || party.name || `Counsel ${index + 1}`}`, counsel.email, counsel.id || `oc-${index}`)
+    })
+    ;(extra.co_counsels || []).forEach((person, index) => add('co_counsel', `Co-Counsel — ${person.name || `Co-Counsel ${index + 1}`}`, person.email, person.id || `co-${index}`))
+    ;(extra.third_parties || []).forEach((person, index) => add('third_party', `${person.title || '3rd Party'} — ${person.name || `Person ${index + 1}`}`, person.email, person.id || `third-${index}`))
+    return options
+  }
+
+  function needToSetAutoAddressForCatalog(event = {}, assignment = {}) {
+    const source = String(assignment.person_source || '').toLowerCase()
+    if (!source) return assignment.address || ''
+    return needToSetPeopleOptionsForEvent(event).find((item) => item.source === source)?.email || assignment.address || ''
+  }
+
+  function materializeNeedToSetEmail(event = {}, step = {}, stepIndex = 0, email = {}, patch = {}) {
+    const context = needToSetEventWorkspaceContext(event)
+    const workspace = normalizeWorkspace(context)
+    const label = String(email.recipient_label || needToSetEmailRoleLabel(email) || 'Email')
+    const existing = (workspace.emails || []).find((item) =>
+      String(item.setting_email_id || '') === String(email.setting_email_id || '') ||
+      String(item.recipient_label || '').trim().toLowerCase() === label.trim().toLowerCase()
+    )
+    if (existing) {
+      patchWorkspaceEmail(context, existing.id, { ...patch, setting_email_id: email.setting_email_id || existing.setting_email_id, recipient_label: label, recipient_role: email.recipient_role || existing.recipient_role, person_source: patch.person_source ?? email.person_source ?? existing.person_source })
+      return existing.id
+    }
+    const newId = crypto?.randomUUID ? crypto.randomUUID() : `email-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    updateWorkspace(context, (current) => ({
+      ...current,
+      emails: [...current.emails, {
+        id: newId,
+        setting_email_id: email.setting_email_id || '',
+        recipient_label: label,
+        recipient_role: email.recipient_role || email.role || '',
+        person_source: patch.person_source ?? email.person_source ?? '',
+        title: `${checklistEventCategoryLabel(event)} — ${label}`,
+        subject: email.subject || `${checklistEventCategoryLabel(event)} - ${label} - ${checklistMatterLabel(event)}`,
+        to: patch.to ?? email.to ?? '', cc: '', body: '', reply_body: '', forward_to: '', forward_body: '',
+        mailbox_email: serviceGraphAuth?.account?.username || '',
+        search_query: [checklistMatterLabel(event), checklistMatterForEvent(event)?.cause_number, label, patch.to || email.to].filter(Boolean).join(' '),
+        search_email: patch.to || email.to || '', search_subject: '', search_date_from: '', search_date_to: '', search_results: [],
+        thread_messages: [], outlook_conversation_id: '', outlook_message_id: '', outlook_web_link: '', last_activity: '',
+        step_id: step.id || '', step_key: workspaceStepKey(stepContext, stepIndex), step_name: step.name || '',
+        status_note: 'Ready to connect an existing Outlook conversation or compose a new email.', notes: '', collapsed: false,
+        send_collapsed: true, compose_mode: 'attach', created_at: new Date().toISOString(), ...patch
+      }]
+    }))
+    return newId
   }
 
   function needToSetEmailSummary(event = {}) {
@@ -27427,7 +27500,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       saveTypeCatalog(needToSetSettingTypeEmailCatalog(latestStep))
     }
     const addCatalogEmail = () => {
-      const next = [...catalog, { id: `setting-email-${Date.now()}-${Math.random().toString(16).slice(2)}`, label: 'New Email', address: '', role: 'other' }]
+      const next = [...catalog, { id: `setting-email-${Date.now()}-${Math.random().toString(16).slice(2)}`, label: 'New Email', address: '', role: 'other', person_source: '' }]
       saveTypeCatalog(next)
     }
     const removeCatalogEmail = (emailId) => {
@@ -27450,7 +27523,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
       <section style={{marginTop:10,border:'1px solid #bfdbfe',borderRadius:10,padding:10,background:'#f8fbff'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}><div><strong>{type} Email Boxes</strong><div style={{fontSize:11,color:'#64748b'}}>These belong to the setting type, not to one individual step. Example: Court, Client, Opposing Counsel.</div></div><button type="button" onClick={addCatalogEmail}>+ Add Email to {type}</button></div>
-        <div style={{display:'grid',gap:6,marginTop:8}}>{catalog.map((email,index)=><div key={email.id} style={{display:'grid',gridTemplateColumns:'34px 180px minmax(260px,1fr) 130px 34px',gap:6,alignItems:'center'}}><strong>{index+1}</strong><input value={email.label||''} placeholder="Court / Client / Opposing Counsel" onChange={(e)=>patchCatalogItem(email.id,{label:e.target.value,role:e.target.value})} onBlur={commitCatalog}/><input type="email" value={email.address||''} placeholder="Default address (optional; can be connected later on the event)" onChange={(e)=>patchCatalogItem(email.id,{address:e.target.value})} onBlur={commitCatalog}/><span style={{fontSize:11,color:'#64748b'}}>Visible in expanded row</span><button type="button" title="Remove email" onClick={()=>removeCatalogEmail(email.id)}>×</button></div>)}{!catalog.length&&<div style={{color:'#64748b',fontSize:12}}>No email boxes have been added to this setting type yet.</div>}</div>
+        <div style={{display:'grid',gap:6,marginTop:8}}>{catalog.map((email,index)=><div key={email.id} style={{display:'grid',gridTemplateColumns:'34px 170px 210px minmax(240px,1fr) 34px',gap:6,alignItems:'center'}}><strong>{index+1}</strong><input value={email.label||''} placeholder="Court / Client / Opposing Counsel" onChange={(e)=>patchCatalogItem(email.id,{label:e.target.value,role:e.target.value})} onBlur={commitCatalog}/><select value={email.person_source||''} onChange={(e)=>{patchCatalogItem(email.id,{person_source:e.target.value}); setTimeout(commitCatalog,0)}} title="Automatically use this type of person from each matter"><option value="">Choose from event manually</option><option value="client">Client from People</option><option value="court_coordinator">Court coordinator from People</option><option value="opposing_counsel">Opposing counsel from People</option><option value="opposing_party">Opposing party from People</option><option value="co_counsel">Co-counsel from People</option><option value="third_party">3rd party from People</option></select><input type="email" value={email.address||''} placeholder="Fallback address only (optional)" onChange={(e)=>patchCatalogItem(email.id,{address:e.target.value})} onBlur={commitCatalog}/><button type="button" title="Remove email" onClick={()=>removeCatalogEmail(email.id)}>×</button></div>)}{!catalog.length&&<div style={{color:'#64748b',fontSize:12}}>No email boxes have been added to this setting type yet.</div>}</div>
       </section>
 
       <div style={{marginTop:10,minWidth:1080}}>
@@ -27484,21 +27557,53 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return <div style={{ borderTop:'2px solid #60a5fa', background: unreadCurrent ? '#fff7f7' : '#f8fbff', padding:10 }}>
       <div style={{display:'grid',gridTemplateColumns:'1.05fr .9fr 1.1fr .85fr .85fr 1fr',gap:8}}>
         {infoCard('Event Overview', <><div><b>Type:</b> {checklistEventCategoryLabel(event)}</div><div><b>Matter:</b> {checklistMatterLabel(event)}</div><div><b>Court:</b> {checklistCourtName(event)||'No court'}</div><div><b>Created:</b> {needToSetShortDate(needToSetCreatedAt(event))}</div><div><b>Last activity:</b> {needToSetLastTimeEntryStatus(event)?.lastAt ? needToSetShortDate(needToSetLastTimeEntryStatus(event).lastAt) : 'None'}</div></>)}
+        {infoCard('Event Actions', <div style={{display:'grid',gap:5}}>{actionButton('Open in Calendar',()=>openNeedToSetEventForSetting(event))}{actionButton('Pause / Resume',()=>toggleNeedToSetPaused(event))}{actionButton('Already Set',()=>markNeedToSetAlreadySet(event))}{actionButton('Cancel Setting',()=>cancelNeedToSetSetting(event),'danger')}{actionButton('Open Matter',()=>matter&&openMatterDashboardInNewWindow(matter))}</div>)}
         {infoCard('Carry-Forward (from prior step)', <><div><b>Step:</b> {status?.previousStepName || 'Prior step'}</div><div>{status?.lastBillingDescription || stepBillingNoteValue(stepContext) || 'No carry-forward details saved.'}</div></>, <button type="button" onClick={()=>openStepDetail(stepContext)} style={{marginTop:8,padding:'4px 7px',fontSize:10}}>View Full Details</button>)}
         {infoCard('Step Purpose', step.default_pages?.purpose || `Complete ${step.name} and preserve the information needed for the next scheduling step.`, <button type="button" onClick={()=>openStepDetail(stepContext)} style={{marginTop:8,padding:'4px 7px',fontSize:10,color:'#1d4ed8'}}>View Step Instructions</button>)}
-        {infoCard('Event Actions', <div style={{display:'grid',gap:5}}>{actionButton('Open in Calendar',()=>openNeedToSetEventForSetting(event))}{actionButton('Pause / Resume',()=>toggleNeedToSetPaused(event))}{actionButton('Already Set',()=>markNeedToSetAlreadySet(event))}{actionButton('Cancel Setting',()=>cancelNeedToSetSetting(event),'danger')}{actionButton('Open Matter',()=>matter&&openMatterDashboardInNewWindow(matter))}</div>)}
         {infoCard('Step Actions', <div style={{display:'grid',gap:5}}>{actionButton('◷ Add Time',()=>openChecklistStepBilling(event,step.name))}{actionButton('✓ Complete Step',()=>toggleChecklistStepComplete(eventId,step.id),'success')}{actionButton('↶ Reopen Step',()=>{if(checklistStepCompletion(eventId,step.id)?.completed)toggleChecklistStepComplete(eventId,step.id)})}{actionButton('✉ Open Email',()=>openNeedToSetEmailThreadsWindow(event,step,stepIndex))}</div>)}
         <section style={{border:'1px solid #ddd6fe',borderRadius:8,background:'#faf5ff',padding:10,minHeight:104}}><strong style={{fontSize:12}}>✦ AI Suggestion</strong><div style={{fontSize:12,lineHeight:1.4,color:'#4c1d95',marginTop:7}}>{ai.summary || 'Review the current step and linked emails for the best next action.'}</div>{(ai.actions||[]).slice(0,3).map((action,index)=><div key={index} style={{fontSize:11,marginTop:4}}>• {action}</div>)}<div style={{display:'grid',gap:5,marginTop:8}}>{actionButton(needToSetAiLoading[id]?'Analyzing…':'Refresh Suggestions',()=>generateNeedToSetAiSuggestion(event),'primary')}{actionButton('Draft Email',()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court',ai.draft_body||''),'primary')}</div></section>
       </div>
-
-      <section style={{marginTop:8,border:'1px solid #dbe4ee',borderRadius:8,background:'#fff',padding:8}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><strong style={{fontSize:12}}>Main Workflow — Step {stepIndex+1} of {steps.length}</strong><span style={{fontSize:10,color:'#64748b'}}>Completion dates are shown beneath completed steps.</span></div><div style={{display:'flex',gap:8,alignItems:'flex-start',marginTop:8,overflowX:'auto'}}>{steps.map((candidate,index)=>renderNeedToSetStepPill(event,candidate,index,steps.length))}</div></section>
 
       <section style={{marginTop:8,border:'1px solid #c4b5fd',borderRadius:8,background:'#faf5ff',padding:8}}>
         <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center'}}><div><strong style={{fontSize:12,color:'#6d28d9'}}>Parallel Workflow — Personal Service</strong><div style={{fontSize:10,color:'#64748b'}}>Runs independently beside the main workflow, with the same step-by-step controls.</div></div>{companion?actionButton('Remove Personal Service',()=>removePersonalServiceCompanion(event),'danger'):actionButton('+ Add Personal Service',()=>addPersonalServiceCompanion(event),'primary')}</div>
         {companion&&<div style={{marginTop:8}}><div style={{display:'flex',gap:8,alignItems:'flex-start',overflowX:'auto'}}>{psSteps.map((ps,index)=>{const completed=!!companion?.completions?.[ps.id]?.completed;const current=index===psCurrentIndex;return <div key={ps.id} style={{minWidth:92,textAlign:'center',position:'relative'}}><button type="button" onClick={()=>togglePersonalServiceStep(event,ps)} title={ps.default_pages?.purpose||ps.name} style={{width:26,height:26,padding:0,borderRadius:999,border:`2px solid ${completed?'#16a34a':current?'#7c3aed':'#c4b5fd'}`,background:completed?'#dcfce7':current?'#ede9fe':'#fff',fontWeight:900,color:completed?'#166534':'#6d28d9'}}>{completed?'✓':index+1}</button><div style={{fontSize:9,fontWeight:current?900:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',marginTop:3}}>{ps.name}</div>{companion?.completions?.[ps.id]?.completed_at&&<div style={{fontSize:8,color:'#15803d'}}>{new Date(companion.completions[ps.id].completed_at).toLocaleDateString()}</div>}<div style={{display:'flex',justifyContent:'center',gap:3,marginTop:4}}><button type="button" onClick={()=>openChecklistStepBilling(event,`Personal Service: ${ps.name}`)} title="Add time" style={{padding:'2px 4px',fontSize:9}}>◷</button><button type="button" onClick={()=>togglePersonalServiceStep(event,ps)} title={completed?'Mark incomplete':'Complete'} style={{padding:'2px 4px',fontSize:9}}>{completed?'↶':'✓'}</button></div></div>})}{!psSteps.length&&<span style={{color:'#7c3aed',fontSize:11}}>Add Personal Service steps in Settings → Need to Set Steps.</span>}</div>{psSteps[psCurrentIndex]&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginTop:8}}>{infoCard('Current Personal Service Step', <><b>{psSteps[psCurrentIndex].name}</b><div>{psSteps[psCurrentIndex].default_pages?.purpose||'Complete this personal-service step.'}</div></>)}{infoCard('Personal Service Step Actions', <div style={{display:'grid',gap:5}}>{actionButton('◷ Add Time',()=>openChecklistStepBilling(event,`Personal Service: ${psSteps[psCurrentIndex].name}`))}{actionButton('✓ Complete Step',()=>togglePersonalServiceStep(event,psSteps[psCurrentIndex]),'success')}</div>)}{infoCard('Personal Service Carry-Forward', companion.notes||'No carry-forward details saved.', <textarea value={companion.notes||''} onChange={(e)=>setNeedToSetCompanions((current)=>({...current,[needToSetCompanionKey(event)]:{...companion,notes:e.target.value}}))} placeholder="Service attempts, process-server details, next action..." style={{width:'100%',minHeight:48,marginTop:6,fontSize:11}}/> )}</div>}</div>}
       </section>
 
-      <section style={{marginTop:8,border:'1px solid #cbd5e1',borderRadius:8,background:'#fff',padding:8}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong style={{fontSize:12}}>Email Threads ({allEmails.length})</strong><span style={{fontSize:10,color:'#64748b'}}>Newest message first • their content is red • blue outline means connected to the current step</span></div><div style={{display:'grid',gridTemplateColumns:`repeat(${Math.min(3,Math.max(1,allEmails.length))},minmax(300px,1fr))`,gap:8,marginTop:8,overflowX:'auto'}}>{allEmails.map((email,index)=>{const label=String(email.recipient_label||needToSetEmailRoleLabel(email)||`Email ${index+1}`);const attached=currentLabels.has(label.toLowerCase());const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email));const messages=needToSetThreadMessages(email);return <article key={email.id||index} style={{minWidth:300,border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`,borderRadius:8,background:unread?'#fff1f2':'#fff',overflow:'hidden'}}><div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc'}}><div style={{display:'flex',justifyContent:'space-between',gap:6}}><strong style={{fontSize:12}}>{label}</strong><span style={{fontSize:10,fontWeight:800,color:unread?'#b91c1c':'#1d4ed8'}}>{unread?'RESPONSE RECEIVED':attached?'CURRENT STEP':'AWAITING RESPONSE'}</span></div><div style={{fontSize:11}}>{email.subject||email.title||'Email thread'}</div><div style={{fontSize:10,color:'#64748b'}}>{email.to||'Email address not connected yet'}</div></div><div style={{maxHeight:250,overflow:'auto'}}>{messages.slice(0,8).map((message,msgIndex)=>{const theirs=needToSetMessageIsTheirs(message,email);return <div key={message.id||msgIndex} style={{padding:'8px 9px',borderBottom:'1px solid #f1f5f9',color:theirs?'#b91c1c':'#1f2937',background:theirs?'#fffafa':'#fff'}}><div style={{display:'flex',justifyContent:'space-between',gap:6,fontSize:10,fontWeight:800}}><span>{message.from_name||message.from_email||message.from||(theirs?'THEIRS':'MINE')}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{fontSize:12,marginTop:4,whiteSpace:'pre-wrap'}}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{padding:12,color:'#64748b',fontSize:11}}>{email.configured_placeholder?'This setting email is ready. Connect an Outlook thread or compose the first message.':'No message content has synchronized yet.'}</div>}</div><div style={{display:'flex',gap:6,padding:8}}>{actionButton('Open in Outlook',()=>openNeedToSetOutlook(email,event,step,stepIndex))}{actionButton('Reply / Send',()=>openNeedToSetOutlook(email,event,step,stepIndex,ai.draft_body||''),'primary')}</div></article>})}{!allEmails.length&&<div style={{color:'#64748b',padding:10}}>No emails have been added to this setting type. Open Need to Set Settings, add the setting emails, and connect them to steps.</div>}</div></section>
+      <section style={{marginTop:8,border:'1px solid #cbd5e1',borderRadius:8,background:'#fff',padding:8}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong style={{fontSize:12}}>Email Threads ({allEmails.length})</strong><span style={{fontSize:10,color:'#64748b'}}>All email boxes stay on one horizontal row • newest message first • their content is red • blue outline means current step</span></div>
+        <div style={{display:'flex',flexWrap:'nowrap',gap:8,marginTop:8,overflowX:'auto',paddingBottom:4}}>
+          {allEmails.map((email,index)=>{
+            const label=String(email.recipient_label||needToSetEmailRoleLabel(email)||`Email ${index+1}`)
+            const attached=currentLabels.has(label.toLowerCase())
+            const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email))
+            const messages=needToSetThreadMessages(email)
+            const assignedStepIndex=Math.max(0,steps.findIndex((candidate,idx)=>needToSetConfiguredEmailAssignments(candidate).some((item)=>String(item.id)===String(email.setting_email_id)||String(item.label).toLowerCase()===label.toLowerCase())))
+            const assignedStep=steps[assignedStepIndex]||step
+            const peopleOptions=needToSetPeopleOptionsForEvent(event)
+            const connectorKey=`${eventId}::${email.setting_email_id||label}`
+            const connectOpen=!!needToSetEmailConnectOpen[connectorKey]
+            const selectedPerson=peopleOptions.find((item)=>item.email.toLowerCase()===String(email.to||'').toLowerCase())
+            const liveEmail=needToSetEmailsForEvent(event).find((item)=>String(item.setting_email_id||'')===String(email.setting_email_id||'')||String(item.recipient_label||'').toLowerCase()===label.toLowerCase())
+            const setAddress=(address,personSource='')=>materializeNeedToSetEmail(event,assignedStep,assignedStepIndex,email,{to:address,search_email:address,person_source:personSource,status_note:address?`Connected to ${address}. Ready to find the Outlook conversation.`:'Email address cleared.'})
+            const openConnector=()=>{ const id=materializeNeedToSetEmail(event,assignedStep,assignedStepIndex,email,{to:email.to||'',compose_mode:'attach',send_collapsed:true}); setNeedToSetEmailConnectOpen((current)=>({...current,[connectorKey]:!current[connectorKey]})); return id }
+            return <article key={email.setting_email_id||email.id||index} style={{flex:'0 0 390px',minWidth:390,maxWidth:390,border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`,borderRadius:8,background:unread?'#fff1f2':'#fff',overflow:'hidden'}}>
+              <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc'}}>
+                <div style={{display:'flex',justifyContent:'space-between',gap:6}}><strong style={{fontSize:12}}>{label}</strong><span style={{fontSize:10,fontWeight:800,color:unread?'#b91c1c':'#1d4ed8'}}>{unread?'RESPONSE RECEIVED':attached?'CURRENT STEP':'AWAITING RESPONSE'}</span></div>
+                <div style={{fontSize:11}}>{email.subject||email.title||'Email thread'}</div>
+                <div style={{fontSize:10,color:'#64748b'}}>{email.to||'Email address not connected yet'}</div>
+              </div>
+              <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:'#fff'}}>
+                <select value={selectedPerson?.key||''} onChange={(e)=>{const person=peopleOptions.find((item)=>item.key===e.target.value); if(person)setAddress(person.email,person.source)}} style={{width:'100%',padding:5,fontSize:11}}><option value="">Connect to a person from this matter…</option>{peopleOptions.map((person)=><option key={person.key} value={person.key}>{person.label} — {person.email}</option>)}</select>
+                <div style={{display:'flex',gap:5,marginTop:5}}><input type="email" defaultValue={email.to||''} placeholder="Type or replace email address" onBlur={(e)=>setAddress(e.target.value,email.person_source||'')} style={{flex:1,minWidth:0,padding:5,fontSize:11}}/><button type="button" onClick={openConnector}>{connectOpen?'Hide connector':'Connect existing thread'}</button></div>
+              </div>
+              {connectOpen&&liveEmail&&<div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>{renderWorkspaceEmailCard(needToSetEventWorkspaceContext(event),liveEmail,index)}</div>}
+              <div style={{maxHeight:250,overflow:'auto'}}>{messages.slice(0,8).map((message,msgIndex)=>{const theirs=needToSetMessageIsTheirs(message,email);return <div key={message.id||msgIndex} style={{padding:'8px 9px',borderBottom:'1px solid #f1f5f9',color:theirs?'#b91c1c':'#1f2937',background:theirs?'#fffafa':'#fff'}}><div style={{display:'flex',justifyContent:'space-between',gap:6,fontSize:10,fontWeight:800}}><span>{message.from_name||message.from_email||message.from||(theirs?'THEIRS':'MINE')}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{fontSize:12,marginTop:4,whiteSpace:'pre-wrap'}}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{padding:12,color:'#64748b',fontSize:11}}>{email.configured_placeholder?'Choose a person or enter an address, then connect the existing Outlook conversation or compose the first message.':'No message content has synchronized yet.'}</div>}</div>
+              <div style={{display:'flex',gap:6,padding:8}}>{actionButton('Open in Outlook',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex))}{actionButton('Reply / Send',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex,ai.draft_body||''),'primary')}</div>
+            </article>
+          })}
+          {!allEmails.length&&<div style={{color:'#64748b',padding:10}}>No emails have been added to this setting type. Open Need to Set Settings, add the setting emails, and connect them to steps.</div>}
+        </div>
+      </section>
     </div>
   }
   function renderNeedToSetFloatingToc(rows = []) {
