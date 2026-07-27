@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V153'
+const MIO_APP_VERSION = 'Mio V154'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -15880,7 +15880,14 @@ async function updateTeamCell(memberId, field, value) {
 
   function toggleChecklistStepsRow(eventId) {
     if (!eventId) return
-    setChecklistStepsExpandedByRow((current) => ({ ...current, [String(eventId)]: current[String(eventId)] === false ? true : false }))
+    // The standalone Need to Set page must always be able to expand even when
+    // the Checklist preference to show steps was previously turned off.
+    setShowNeedToSetSteps(true)
+    setChecklistStepsExpandedByRow((current) => {
+      const key = String(eventId)
+      const currentlyVisible = current[key] !== false
+      return { ...current, [key]: !currentlyVisible }
+    })
   }
 
   function toggleChecklistStepComplete(eventId, stepId) {
@@ -27003,6 +27010,48 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return Array.isArray(workspace.emails) ? workspace.emails : []
   }
 
+
+  function needToSetConfiguredEmailAssignments(step = {}) {
+    const meta = step?.default_pages || {}
+    if (Array.isArray(meta.email_assignments)) {
+      return meta.email_assignments
+        .map((item, index) => ({
+          id: item?.id || `configured-${step.id || step.name}-${index}`,
+          label: item?.label || item?.name || `Email ${index + 1}`,
+          address: item?.address || item?.email || '',
+          role: item?.role || item?.label || 'other'
+        }))
+        .filter((item) => item.label)
+    }
+    const legacyRoles = Array.isArray(meta.email_roles) ? meta.email_roles : []
+    return legacyRoles.map((label, index) => ({ id: `legacy-${step.id || step.name}-${index}`, label, address: '', role: label }))
+  }
+
+  function needToSetConfiguredEmailsForStep(event = {}, step = {}, stepIndex = 0) {
+    const live = needToSetEmailsForStep(event, step, stepIndex)
+    const byLabel = new Map(live.map((email) => [String(email.recipient_label || needToSetEmailRoleLabel(email) || '').trim().toLowerCase(), email]))
+    const configured = needToSetConfiguredEmailAssignments(step).map((assignment, index) => {
+      const key = String(assignment.label || '').trim().toLowerCase()
+      const existing = byLabel.get(key)
+      if (existing) return existing
+      return {
+        id: `configured:${step.id || step.name}:${assignment.id || index}`,
+        configured_placeholder: true,
+        recipient_label: assignment.label,
+        recipient_role: assignment.role,
+        to: assignment.address || '',
+        subject: `${checklistEventCategoryLabel(event)} - ${step.name} - ${assignment.label}`,
+        step_id: step.id || '',
+        step_key: workspaceStepKey(needToSetStepContext(event, step, stepIndex), stepIndex),
+        step_name: step.name,
+        thread_messages: [],
+        status_note: assignment.address ? `Ready to connect or compose with ${assignment.address}` : 'Add or connect the email address for this event.'
+      }
+    })
+    const configuredIds = new Set(configured.map((email) => email.id))
+    return [...configured, ...live.filter((email) => !configuredIds.has(email.id))]
+  }
+
   function needToSetEmailSummary(event = {}) {
     const emails = needToSetEmailsForEvent(event)
     const unread = emails.filter((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email)).length
@@ -27243,7 +27292,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const latest = messages[0] || {}
     const webLink = email.outlook_web_link || email.web_link || latest.web_link || latest.outlook_web_link || ''
     if (webLink) { window.open(webLink, '_blank', 'noopener,noreferrer'); return }
-    openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event), needToSetStepContext(event, step, stepIndex), email.recipient_role || email.role || 'court', draftBody || '')
+    const eventContext = needToSetEventWorkspaceContext(event)
+    const stepContext = needToSetStepContext(event, step, stepIndex)
+    const created = createWorkspaceEmailRecord(eventContext, stepContext, email.recipient_role || email.role || 'court')
+    if (created && (email.to || email.recipient_label)) {
+      patchWorkspaceEmail(eventContext, created.id, {
+        to: email.to || created.to || '',
+        recipient_label: email.recipient_label || created.recipient_label,
+        title: `${step.name} - ${email.recipient_label || created.recipient_label}`,
+        subject: email.subject || created.subject
+      })
+    }
+    openNeedToSetEmailComposeWindow(eventContext, stepContext, email.recipient_role || email.role || 'court', draftBody || '')
   }
 
   async function generateNeedToSetAiSuggestion(event = {}) {
@@ -27333,27 +27393,46 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const eventTypes = Array.from(new Set([...rows.filter((row) => row.event).map((row) => checklistEventCategoryLabel(row.event)).filter(Boolean), ...settings.filter((item)=>item.category==='checklist_setting_step').map((item)=>item.parent_name).filter(Boolean), 'Personal Service']))
     const type = needToSetSettingsType || eventTypes[0] || ''
     const steps = settings.filter((item) => item.category === 'checklist_setting_step' && item.is_active && item.parent_name === type).sort((a,b)=>(a.sort_order??999)-(b.sort_order??999))
-    const contactRoles = ['Court Coordinator','Court','Client','Opposing Counsel','Opposing Party','Mediator','Other']
-    return <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 120, background: '#fff', borderTop: '2px solid #93c5fd', boxShadow: '0 -18px 50px rgba(15,23,42,.18)', maxHeight: '43vh', overflow: 'auto', padding: '12px 18px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><div><strong style={{ fontSize: 18 }}>Need to Set Settings</strong><span style={{ marginLeft: 10, color: '#15803d', background: '#dcfce7', borderRadius: 999, padding: '3px 8px', fontSize: 12 }}>Synced with Settings page</span><div style={{ color: '#64748b', fontSize: 12 }}>Changes here update the same Need to Set step records used on the Settings page.</div></div><button onClick={() => setNeedToSetSettingsOpen(false)}>✕ Close</button></div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}><strong>Setting type</strong><select value={type} onChange={(e)=>setNeedToSetSettingsType(e.target.value)}>{eventTypes.map((value)=><option key={value}>{value}</option>)}</select></div>
-      <div style={{ marginTop: 10, minWidth: 1100 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', background:'#f8fafc', fontWeight:800, fontSize:12 }}><span>#</span><span>Step Name</span><span>Purpose</span><span>Email assigned to step</span><span>Indicators</span></div>
-        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const roles=Array.isArray(meta.email_roles)?meta.email_roles:[]; return <div key={step.id} style={{ display:'grid', gridTemplateColumns:'45px 210px minmax(300px,1fr) 220px 150px', gap:8, padding:'8px 10px', borderTop:'1px solid #e2e8f0', alignItems:'center' }}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><div><input value={roles.join(', ')} placeholder="Court, Client, Opposing Counsel" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),email_roles:e.target.value.split(',').map(v=>v.trim()).filter(Boolean)}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{email_roles:e.target.value.split(',').map(v=>v.trim()).filter(Boolean)})}/><div style={{fontSize:10,color:'#64748b'}}>Separate multiple email labels with commas.</div></div><span style={{ color:'#475569' }}>✉➜ sent &nbsp; ✉ response</span></div> })}
+    const updateAssignment = (step, assignmentIndex, patch) => {
+      const current = needToSetConfiguredEmailAssignments(step)
+      const next = current.map((item, index) => index === assignmentIndex ? { ...item, ...patch } : item)
+      setSettings((items)=>items.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),email_assignments:next}}:item))
+    }
+    const saveAssignments = (step) => {
+      const latest = settings.find((item)=>item.id===step.id) || step
+      saveNeedToSetStepMeta(latest,{ email_assignments: needToSetConfiguredEmailAssignments(latest) })
+    }
+    const addAssignment = (step) => {
+      const current = needToSetConfiguredEmailAssignments(step)
+      const next = [...current,{id:`email-${Date.now()}-${Math.random().toString(16).slice(2)}`,label:'New Email',address:'',role:'other'}]
+      setSettings((items)=>items.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),email_assignments:next}}:item))
+      saveNeedToSetStepMeta(step,{email_assignments:next})
+    }
+    const removeAssignment = (step,index) => {
+      const next=needToSetConfiguredEmailAssignments(step).filter((_,i)=>i!==index)
+      setSettings((items)=>items.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),email_assignments:next}}:item))
+      saveNeedToSetStepMeta(step,{email_assignments:next})
+    }
+    return <div style={{ position:'fixed',left:0,right:0,bottom:0,zIndex:120,background:'#fff',borderTop:'2px solid #93c5fd',boxShadow:'0 -18px 50px rgba(15,23,42,.18)',maxHeight:'52vh',overflow:'auto',padding:'12px 18px' }}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}><div><strong style={{fontSize:18}}>Need to Set Settings</strong><span style={{marginLeft:10,color:'#15803d',background:'#dcfce7',borderRadius:999,padding:'3px 8px',fontSize:12}}>Synced with Settings page</span><div style={{color:'#64748b',fontSize:12}}>Assign named email threads and actual addresses to each step. These become the email boxes shown when a Need to Set row expands.</div></div><button onClick={()=>setNeedToSetSettingsOpen(false)}>✕ Close</button></div>
+      <div style={{display:'flex',gap:10,marginTop:10,alignItems:'center'}}><strong>Setting type</strong><select value={type} onChange={(e)=>setNeedToSetSettingsType(e.target.value)}>{eventTypes.map((value)=><option key={value}>{value}</option>)}</select></div>
+      <div style={{marginTop:10,minWidth:1180}}>
+        <div style={{display:'grid',gridTemplateColumns:'42px 190px minmax(260px,1fr) minmax(520px,1.5fr)',gap:8,padding:'7px 9px',background:'#f8fafc',fontWeight:800,fontSize:12}}><span>#</span><span>Step Name</span><span>Purpose</span><span>Emails assigned to this step</span></div>
+        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const assignments=needToSetConfiguredEmailAssignments(step); return <div key={step.id} style={{display:'grid',gridTemplateColumns:'42px 190px minmax(260px,1fr) minmax(520px,1.5fr)',gap:8,padding:'7px 9px',borderTop:'1px solid #e2e8f0',alignItems:'start'}}><strong>{index+1}</strong><span style={{paddingTop:7}}>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><div><div style={{display:'grid',gap:5}}>{assignments.map((assignment,aIndex)=><div key={assignment.id||aIndex} style={{display:'grid',gridTemplateColumns:'150px minmax(230px,1fr) 78px 28px',gap:5,alignItems:'center'}}><input value={assignment.label||''} placeholder="Court / Client / OC" onChange={(e)=>updateAssignment(step,aIndex,{label:e.target.value,role:e.target.value})} onBlur={()=>saveAssignments(step)}/><input type="email" value={assignment.address||''} placeholder="email@example.com (may be blank until event is created)" onChange={(e)=>updateAssignment(step,aIndex,{address:e.target.value})} onBlur={()=>saveAssignments(step)}/><span style={{fontSize:10,color:'#64748b'}}>✉➜ / ✉</span><button type="button" title="Remove email" onClick={()=>removeAssignment(step,aIndex)}>×</button></div>)}</div><button type="button" onClick={()=>addAssignment(step)} style={{marginTop:6}}>+ Add Email</button></div></div>})}
       </div>
     </div>
   }
   function renderNeedToSetExpandedStepDetail(event = {}) {
     const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
-    if (!checklistStepsRowVisible(eventId)) return null
+    if (checklistStepsExpandedByRow[String(eventId)] === false) return null
     const steps = checklistStepsForEvent(event)
     if (!steps.length) return null
     const status = currentNeedToSetStatus(event)
     const stepIndex = Math.max(0, steps.findIndex((candidate) => candidate.name === status.stepName))
     const step = steps[stepIndex] || steps[0]
     const stepContext = needToSetStepContext(event, step, stepIndex)
-    const allEmails = Array.from(new Map(steps.flatMap((candidate, index) => needToSetEmailsForStep(event, candidate, index)).map((email) => [email.id, email])).values())
-    const currentIds = new Set(needToSetEmailsForStep(event, step, stepIndex).map((email) => email.id))
+    const allEmails = Array.from(new Map(steps.flatMap((candidate, index) => needToSetConfiguredEmailsForStep(event, candidate, index)).map((email) => [email.id, email])).values())
+    const currentIds = new Set(needToSetConfiguredEmailsForStep(event, step, stepIndex).map((email) => email.id))
     const id = checklistNeedToSetRowId(event)
     const ai = needToSetAiByEvent[id] || {}
     const unreadCurrent = allEmails.some((email) => currentIds.has(email.id) && (email.new_email_notice || workspaceEmailHasUnreadActivity(email)))
@@ -27374,7 +27453,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center'}}><div><strong>Parallel Workflows</strong><div style={{fontSize:12,color:'#64748b'}}>Personal Service can run alongside the hearing, trial, mediation, or other primary Need to Set workflow.</div></div>{personalServiceCompanionFor(event)?<button type="button" onClick={()=>removePersonalServiceCompanion(event)}>Remove Personal Service</button>:<button type="button" onClick={()=>addPersonalServiceCompanion(event)}>+ Add Personal Service</button>}</div>
           {personalServiceCompanionFor(event)&&<div style={{marginTop:10,border:'2px solid #7c3aed',borderRadius:10,padding:10,background:'#faf5ff'}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong style={{color:'#6d28d9'}}>PERSONAL SERVICE</strong><span style={{fontSize:12}}>Completes in parallel with {checklistEventCategoryLabel(event)}</span></div><div style={{display:'flex',gap:7,flexWrap:'wrap',marginTop:8}}>{personalServiceSteps().map((ps,index)=>{const c=personalServiceCompanionFor(event)?.completions?.[ps.id]?.completed;return <button key={ps.id} type="button" onClick={()=>togglePersonalServiceStep(event,ps)} title={ps.default_pages?.purpose||ps.name} style={{border:`2px solid ${c?'#16a34a':'#7c3aed'}`,background:c?'#dcfce7':'#fff',borderRadius:999,padding:'6px 10px',fontWeight:800}}>{c?'✓':'○'} {index+1}. {ps.name}</button>})}{!personalServiceSteps().length&&<span style={{color:'#7c3aed'}}>Add Personal Service steps in Settings → Need to Set Steps.</span>}</div></div>}
         </section>
-        <section style={{ border:'1px solid #cbd5e1', borderRadius:10, background:'#fff', padding:10 }}><div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}><strong>Email Threads ({allEmails.length})</strong><span style={{ fontSize:12, color:'#64748b' }}>Newest message appears first • red text is their email</span></div><div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(3,Math.max(1,allEmails.length))}, minmax(260px,1fr))`, gap:8, marginTop:8, overflowX:'auto' }}>{allEmails.map((email,index)=>{ const attached=currentIds.has(email.id); const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email)); const messages=needToSetThreadMessages(email); return <article key={email.id||index} style={{ minWidth:260, border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff1f2':'#fff', overflow:'hidden' }}><div style={{ padding:9, borderBottom:'1px solid #e2e8f0', background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6 }}><strong>{needToSetEmailRoleLabel(email)||`Email ${index+1}`}</strong>{attached&&<span style={{ color:'#1d4ed8', fontSize:11, fontWeight:800 }}>Current Step</span>}</div><div style={{ fontSize:12 }}>{email.subject||email.title||'Email thread'}</div>{unread&&<span style={{ color:'#b91c1c', fontSize:11, fontWeight:800 }}>Response received — action needed</span>}</div><div style={{ maxHeight:245, overflow:'auto' }}>{messages.slice(0,6).map((message,msgIndex)=>{ const theirs=needToSetMessageIsTheirs(message,email); return <div key={message.id||msgIndex} style={{ padding:'8px 9px', borderBottom:'1px solid #f1f5f9', color:theirs?'#b91c1c':'#1f2937', background:theirs?'#fffafa':'#fff' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6, fontSize:10, fontWeight:800 }}><span>{theirs?'THEIRS':'MINE'} • {message.from_name||message.from_email||message.from||''}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{ fontSize:12, marginTop:4, whiteSpace:'pre-wrap' }}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{ padding:12, color:'#64748b' }}>No message content has been synchronized yet.</div>}</div><div style={{ display:'flex', gap:6, padding:8 }}><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex)}>Open in Outlook</button><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex,ai.draft_body||'')}>Reply / Send</button></div></article>})}</div></section>
+        <section style={{ border:'1px solid #cbd5e1', borderRadius:10, background:'#fff', padding:10 }}><div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}><strong>Email Threads ({allEmails.length})</strong><span style={{ fontSize:12, color:'#64748b' }}>Newest message appears first • red text is their email</span></div><div style={{ display:'grid', gridTemplateColumns:`repeat(${Math.min(3,Math.max(1,allEmails.length))}, minmax(260px,1fr))`, gap:8, marginTop:8, overflowX:'auto' }}>{allEmails.map((email,index)=>{ const attached=currentIds.has(email.id); const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email)); const messages=needToSetThreadMessages(email); return <article key={email.id||index} style={{ minWidth:260, border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`, borderRadius:10, background:unread?'#fff1f2':'#fff', overflow:'hidden' }}><div style={{ padding:9, borderBottom:'1px solid #e2e8f0', background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6 }}><strong>{needToSetEmailRoleLabel(email)||`Email ${index+1}`}</strong>{attached&&<span style={{ color:'#1d4ed8', fontSize:11, fontWeight:800 }}>Current Step</span>}</div><div style={{ fontSize:12 }}>{email.subject||email.title||'Email thread'}</div><div style={{fontSize:10,color:'#64748b'}}>{email.to||'Email address not connected yet'}</div>{unread&&<span style={{ color:'#b91c1c', fontSize:11, fontWeight:800 }}>Response received — action needed</span>}</div><div style={{ maxHeight:245, overflow:'auto' }}>{messages.slice(0,6).map((message,msgIndex)=>{ const theirs=needToSetMessageIsTheirs(message,email); return <div key={message.id||msgIndex} style={{ padding:'8px 9px', borderBottom:'1px solid #f1f5f9', color:theirs?'#b91c1c':'#1f2937', background:theirs?'#fffafa':'#fff' }}><div style={{ display:'flex', justifyContent:'space-between', gap:6, fontSize:10, fontWeight:800 }}><span>{theirs?'THEIRS':'MINE'} • {message.from_name||message.from_email||message.from||''}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{ fontSize:12, marginTop:4, whiteSpace:'pre-wrap' }}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{ padding:12, color:'#64748b' }}>{email.configured_placeholder?'This email box is assigned to the step. Connect the address or compose the first message to begin the thread.':'No message content has been synchronized yet.'}</div>}</div><div style={{ display:'flex', gap:6, padding:8 }}><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex)}>Open in Outlook</button><button onClick={()=>openNeedToSetOutlook(email,event,step,stepIndex,ai.draft_body||'')}>Reply / Send</button></div></article>})}</div></section>
       </div>
     </div>
   }
@@ -27412,7 +27491,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age (oldest first)</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label>
               <label style={{display:'inline-flex',gap:5,alignItems:'center'}}><input type="checkbox" checked={checklistNewEmailOnly} onChange={(e)=>setChecklistNewEmailOnly(e.target.checked)}/> Unread email only</label>
             </div>
-            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>setChecklistStepsExpandedByRow({})}>Expand All</button><button onClick={()=>{ const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=false}); setChecklistStepsExpandedByRow(next) }}>Collapse All</button></div>
+            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=true}); setChecklistStepsExpandedByRow(next) }}>Expand All</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=false}); setChecklistStepsExpandedByRow(next) }}>Collapse All</button></div>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(130px,1fr))', gap:7, marginBottom:8 }}>
             <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#eff6ff'}}><strong>{eventRows.length}</strong><span style={{marginLeft:6}}>Need to Set</span></div>
@@ -27431,17 +27510,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               const status=currentNeedToSetStatus(event)
               const steps=checklistStepsForEvent(event)
               const unread=needToSetEventHasNewEmail(event)
-              const expanded=checklistStepsRowVisible(eventId)
+              const expanded=checklistStepsExpandedByRow[String(eventId)] !== false
               const settingType=checklistEventCategoryLabel(event)
               const typeLower=String(settingType||'').toLowerCase()
               const typeBg=typeLower.includes('trial')?'#ede9fe':typeLower.includes('mediat')?'#ccfbf1':typeLower.includes('deadline')?'#dbeafe':'#dbeafe'
               return <section id={needToSetRowDomId(event)} className="nts-row" key={eventId} style={{ border:`1px solid ${unread?'#fca5a5':'#dbe4ee'}`, borderRadius:9, background:unread?'#fff4f4':'#fff', overflow:'visible' }}>
-                <div className="nts-compact-grid" onClick={()=>toggleChecklistStepsRow(eventId)} style={{ cursor:'pointer', padding:'6px 8px', minHeight:54, fontSize:11 }}>
-                  <div style={{minWidth:0}}><div style={{display:'flex',alignItems:'center',gap:5}}><span style={{fontSize:11}}>{expanded?'▾':'▸'}</span><strong style={{color:'#1d4ed8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{checklistMatterLabel(event)}</strong></div><div style={{color:'#64748b',fontSize:9,marginLeft:16}}>{matter?.cause_number||matter?.cause||''}</div></div>
+                <div className="nts-compact-grid" onClick={()=>toggleChecklistStepsRow(eventId)} style={{ cursor:'pointer', padding:'3px 8px', minHeight:34, fontSize:11, lineHeight:1.05 }}>
+                  <div style={{minWidth:0}}><div style={{display:'flex',alignItems:'center',gap:5}}><span style={{fontSize:11}}>{expanded?'▾':'▸'}</span><strong style={{color:'#1d4ed8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{checklistMatterLabel(event)}</strong></div></div>
                   <span style={{display:'inline-flex',justifyContent:'center',padding:'3px 6px',borderRadius:999,background:typeBg,color:'#1e3a8a',fontWeight:900,fontSize:9,textTransform:'uppercase'}}>{settingType}</span>
                   <span title={checklistCourtName(event)||'No court'} style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{checklistCourtName(event)||'No court'}</span>
-                  <span><strong>{status.rowDays}d</strong><div style={{fontSize:8.5,color:'#64748b'}}>{needToSetShortDate(needToSetCreatedAt(event))}</div></span>
-                  <span><strong>{status.timeDays??'—'}d</strong><div style={{fontSize:8.5,color:'#64748b'}}>last activity</div></span>
+                  <span><strong>{status.rowDays}d</strong></span>
+                  <span><strong>{status.timeDays??'—'}d</strong></span>
                   <span style={{padding:'4px 6px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:850,fontSize:9.5,lineHeight:1.15}}>{unread?'Response received — action needed':`Waiting for ${status?.waitingOn||'Court / Client'}`}</span>
                   <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>From: {status?.stepName||'Previous step'}</strong><div title={status?.lastBillingDescription||''} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{status?.lastBillingDescription||'No carry-forward details saved.'}</div></span>
                   <div onClick={(e)=>e.stopPropagation()} style={{display:'flex',alignItems:'flex-start',gap:1,minWidth:0,overflow:'visible',paddingTop:2}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}</div>
