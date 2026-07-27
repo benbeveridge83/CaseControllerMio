@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V160'
+const MIO_APP_VERSION = 'Mio V161'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -31860,18 +31860,29 @@ ${choices}`, '1'))
 
   function addEnforcementExcerpt(violationId, docId, seed = {}) {
     const violation = matterViolations().find((row) => String(row.id) === String(violationId))
-    if (!violation) return
+    if (!violation) return null
     const current = enforcementExcerptsFor(violation, docId)
-    const pageInput = seed.page || window.prompt('Page number or page range for this excerpt:', '')
-    if (pageInput === null) return
-    const selectedText = seed.selected_text || window.prompt('Paste or type the highlighted excerpt text:', '')
-    if (selectedText === null || !String(selectedText).trim()) return
-    const note = Object.prototype.hasOwnProperty.call(seed, 'note') ? seed.note : (window.prompt('Optional note about this excerpt:', '') || '')
+    const hasViewerCapture = Boolean(seed.selected_text || seed.image_data)
+    const pageInput = Object.prototype.hasOwnProperty.call(seed, 'page')
+      ? seed.page
+      : window.prompt('Page number or page range for this excerpt:', '')
+    if (pageInput === null) return null
+    const selectedText = Object.prototype.hasOwnProperty.call(seed, 'selected_text')
+      ? seed.selected_text
+      : (hasViewerCapture ? '' : window.prompt('Paste or type the highlighted excerpt text:', ''))
+    if (selectedText === null) return null
+    if (!String(selectedText || '').trim() && !seed.image_data) return null
+    const note = Object.prototype.hasOwnProperty.call(seed, 'note')
+      ? seed.note
+      : (hasViewerCapture ? '' : (window.prompt('Optional note about this excerpt:', '') || ''))
     const excerpt = {
       id: `excerpt-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       sequence: current.length + 1,
       page: String(pageInput || '').trim(),
       selected_text: String(selectedText || '').trim(),
+      image_data: seed.image_data || '',
+      capture_rect: seed.capture_rect || null,
+      capture_type: seed.image_data ? 'rectangle' : 'text',
       note: String(note || '').trim(),
       anchor: seed.anchor || null,
       created_by: session?.user?.email || session?.user?.id || 'User',
@@ -31887,6 +31898,7 @@ ${choices}`, '1'))
     setRelevanceExpandedViolationIds((values) => Array.from(new Set([...values, String(violationId)])))
     setRelevanceExpandedExhibitKeys((values) => Array.from(new Set([...values, `${violationId}:${docId}`])))
     setRelevanceExpandedExcerptIds((values) => Array.from(new Set([...values, excerpt.id])))
+    return excerpt
   }
 
   function patchEnforcementExcerpt(violationId, docId, excerptId, patch) {
@@ -31913,11 +31925,11 @@ ${choices}`, '1'))
 
   function moveEnforcementExcerpt(violationId, docId, excerptId, direction) {
     const violation = matterViolations().find((row) => String(row.id) === String(violationId))
-    if (!violation) return
+    if (!violation) return false
     const next = [...enforcementExcerptsFor(violation, docId)]
     const index = next.findIndex((excerpt) => String(excerpt.id) === String(excerptId))
     const target = index + direction
-    if (index < 0 || target < 0 || target >= next.length) return
+    if (index < 0 || target < 0 || target >= next.length) return false
     ;[next[index], next[target]] = [next[target], next[index]]
     patchViolation(violationId, {
       excerpts_by_document: {
@@ -31925,6 +31937,7 @@ ${choices}`, '1'))
         [String(docId)]: next.map((excerpt, position) => ({ ...excerpt, sequence: position + 1, updated_at: new Date().toISOString() }))
       }
     })
+    return true
   }
 
   async function openEnforcementExhibitViewer(doc, violation, activeExcerpt = null) {
@@ -31937,19 +31950,239 @@ ${choices}`, '1'))
     const exhibitRows = enforcementExhibitRows(matterViolations(), documents.filter((item) => String(item.matter_id) === String(violationsMatterId)))
     const exhibitIndex = exhibitRows.findIndex((row) => String(row.doc.id) === String(doc.id))
     const exhibitLabel = exhibitIndex >= 0 ? `${(violation.client_exhibit_prefix || 'P').toUpperCase()}-${exhibitIndex + 1}` : 'Pending'
-    const excerpts = enforcementExcerptsFor(violation, doc.id)
-    const safe = (value) => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
-    const pageValue = String(activeExcerpt?.page || '').match(/\d+/)?.[0] || ''
-    const viewerUrl = `${dataUrl}${pageValue ? `#page=${pageValue}` : ''}`
+    const payload = {
+      dataUrl,
+      mime: doc.file_type || doc.mime_type || '',
+      fileName: doc.name || doc.file_name || 'Document',
+      violationId: String(violation.id),
+      docId: String(doc.id),
+      violationNumber,
+      violationTitle: violation.title || 'Untitled violation',
+      exhibitLabel,
+      activeExcerptId: activeExcerpt?.id || '',
+      activePage: String(activeExcerpt?.page || '').match(/\d+/)?.[0] || '',
+      excerpts: enforcementExcerptsFor(violation, doc.id)
+    }
     const win = window.open('', '_blank')
-    if (!win) { window.open(viewerUrl, '_blank'); return }
-    const excerptItems = excerpts.map((excerpt, index) => `<button class="tocItem ${activeExcerpt?.id===excerpt.id?'active':''}" onclick="document.getElementById('excerpt-${safe(excerpt.id)}').scrollIntoView({behavior:'smooth',block:'center'})"><strong>Excerpt ${index+1}</strong><span>${safe(excerpt.page ? `Page ${excerpt.page}` : 'Page not set')}</span></button>`).join('')
-    const excerptCards = excerpts.map((excerpt, index) => `<article class="excerptCard ${activeExcerpt?.id===excerpt.id?'active':''}" id="excerpt-${safe(excerpt.id)}"><div class="excerptHead"><strong>Violation ${violationNumber}, Exhibit ${safe(exhibitLabel)}, Excerpt ${index+1}</strong><span>${safe(excerpt.page ? `Page ${excerpt.page}` : 'Page not set')}</span></div><blockquote>${safe(excerpt.selected_text)}</blockquote>${excerpt.note?`<div class="note">${safe(excerpt.note)}</div>`:''}</article>`).join('') || '<div class="empty">No excerpts have been saved for this violation and exhibit.</div>'
-    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${safe(exhibitLabel)} — ${safe(doc.name||doc.file_name||'Document')}</title><style>body{margin:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;background:#f8fafc}.top{height:56px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid #dbe3ea;background:white;position:sticky;top:0;z-index:5}.layout{display:grid;grid-template-columns:260px minmax(500px,1fr) 360px;height:calc(100vh - 57px)}.toc{border-right:1px solid #dbe3ea;background:white;padding:12px;overflow:auto}.tocItem{width:100%;display:grid;text-align:left;gap:3px;padding:10px;border:1px solid #dbe3ea;border-radius:8px;background:white;margin-bottom:7px;cursor:pointer}.tocItem.active{border-color:#2563eb;background:#eff6ff}.tocItem span{font-size:12px;color:#64748b}.viewer{background:#e2e8f0}.viewer iframe{width:100%;height:100%;border:0;background:white}.details{padding:12px;overflow:auto}.excerptCard{background:white;border:1px solid #dbe3ea;border-radius:10px;padding:12px;margin-bottom:10px}.excerptCard.active{border:2px solid #2563eb;background:#eff6ff}.excerptHead{display:flex;justify-content:space-between;gap:10px}.excerptCard blockquote{margin:12px 0 0;border-left:4px solid #facc15;padding:10px;background:#fefce8}.note{margin-top:8px;color:#475569}.empty{padding:20px;color:#64748b}.btn{padding:7px 11px;border:1px solid #cbd5e1;border-radius:8px;background:white;cursor:pointer}.title{flex:1}.sub{font-size:12px;color:#64748b}</style></head><body><header class="top"><div class="title"><strong>${safe(exhibitLabel)} — ${safe(doc.name||doc.file_name||'Document')}</strong><div class="sub">Violation ${violationNumber}: ${safe(violation.title||'Untitled violation')} · all excerpts shown are specific to this violation</div></div><button class="btn" onclick="document.querySelector('iframe').contentWindow?.print?.()">Print</button><button class="btn" onclick="window.close()">Close</button></header><div class="layout"><aside class="toc"><h3>Excerpt TOC</h3>${excerptItems}</aside><main class="viewer"><iframe src="${safe(viewerUrl)}" title="${safe(doc.name||'Exhibit')}"></iframe></main><aside class="details"><div style="display:flex;justify-content:space-between;align-items:center"><h3>Violation ${violationNumber} Excerpts</h3><button class="btn" onclick="window.opener?.addEnforcementExcerptFromViewer?.('${safe(violation.id)}','${safe(doc.id)}')">+ Save Highlight / Excerpt</button></div><p class="sub">Select text in the PDF viewer, copy it, then use Save Highlight / Excerpt to store the quotation and page for this violation.</p>${excerptCards}</aside></div></body></html>`)
+    if (!win) { alert('Allow pop-ups for Case Controller Mio to open the exhibit viewer.'); return }
+
+    async function enforcementViewerApp(P) {
+      const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs')
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs'
+      const viewer = document.getElementById('viewer')
+      const status = document.getElementById('status')
+      const excerptList = document.getElementById('excerptList')
+      const tocList = document.getElementById('tocList')
+      let mode = 'text'
+      let currentPage = Number(P.activePage) || 1
+      let capture = null
+      let dragStart = null
+      const pageCanvases = new Map()
+      const pageWrappers = new Map()
+      const excerpts = [...(P.excerpts || [])]
+      const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
+
+      function setMode(nextMode) {
+        mode = nextMode
+        capture = null
+        document.querySelectorAll('.captureBox').forEach((node) => node.remove())
+        document.getElementById('textMode').classList.toggle('active', mode === 'text')
+        document.getElementById('rectMode').classList.toggle('active', mode === 'rect')
+        document.getElementById('modeHint').textContent = mode === 'text'
+          ? 'Drag across words in the document, then click Save Selected Excerpt.'
+          : 'Drag a rectangle on a page, then click Save Selected Excerpt.'
+      }
+
+      function scrollToPage(pageNumber) {
+        currentPage = pageNumber
+        pageWrappers.get(pageNumber)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+
+      function renderLists() {
+        tocList.innerHTML = excerpts.map((excerpt, index) => '<button class="tocItem ' + (P.activeExcerptId === excerpt.id ? 'active' : '') + '" data-id="' + esc(excerpt.id) + '"><strong>Excerpt ' + (index + 1) + '</strong><span>' + esc(excerpt.page ? 'Page ' + excerpt.page : 'Page not set') + ' · ' + (excerpt.image_data ? 'Rectangle' : 'Text') + '</span></button>').join('') || '<div class="empty">No excerpts saved.</div>'
+        excerptList.innerHTML = excerpts.map((excerpt, index) => '<article class="excerptCard ' + (P.activeExcerptId === excerpt.id ? 'active' : '') + '" id="ex-' + esc(excerpt.id) + '"><div class="excerptHead"><strong>Violation ' + P.violationNumber + ', Exhibit ' + esc(P.exhibitLabel) + ', Excerpt ' + (index + 1) + '</strong><span>Page ' + esc(excerpt.page || '?') + '</span></div>' + (excerpt.selected_text ? '<div class="excerptText">' + esc(excerpt.selected_text) + '</div>' : '') + (excerpt.image_data ? '<img class="excerptImage" src="' + excerpt.image_data + '">' : '') + (excerpt.note ? '<div class="status">' + esc(excerpt.note) + '</div>' : '') + '<div class="controls"><button class="btn open" data-page="' + esc(excerpt.page || '1') + '">Open</button><button class="btn up" data-id="' + esc(excerpt.id) + '" ' + (index === 0 ? 'disabled' : '') + '>↑ Earlier</button><button class="btn down" data-id="' + esc(excerpt.id) + '" ' + (index === excerpts.length - 1 ? 'disabled' : '') + '>↓ Later</button></div></article>').join('') || '<div class="empty">No excerpts have been saved for this violation and exhibit.</div>'
+        tocList.querySelectorAll('.tocItem').forEach((button) => { button.onclick = () => document.getElementById('ex-' + button.dataset.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) })
+        excerptList.querySelectorAll('.open').forEach((button) => { button.onclick = () => scrollToPage(Number(String(button.dataset.page).match(/\d+/)?.[0] || 1)) })
+        excerptList.querySelectorAll('.up,.down').forEach((button) => {
+          button.onclick = () => {
+            const index = excerpts.findIndex((excerpt) => String(excerpt.id) === String(button.dataset.id))
+            const direction = button.classList.contains('up') ? -1 : 1
+            const target = index + direction
+            if (index < 0 || target < 0 || target >= excerpts.length) return
+            window.opener?.moveEnforcementExcerptFromViewer?.(P.violationId, P.docId, button.dataset.id, direction)
+            ;[excerpts[index], excerpts[target]] = [excerpts[target], excerpts[index]]
+            renderLists()
+          }
+        })
+      }
+
+      function selectedTextAndPage() {
+        const selection = window.getSelection()
+        const text = String(selection?.toString() || '').trim()
+        if (!text) return null
+        let element = selection.anchorNode?.nodeType === 1 ? selection.anchorNode : selection.anchorNode?.parentElement
+        const page = element?.closest?.('.page')
+        return { selected_text: text, page: page?.dataset.page || String(currentPage) }
+      }
+
+      function saveCapture() {
+        let seed = null
+        if (mode === 'text') {
+          seed = selectedTextAndPage()
+        } else if (capture) {
+          const canvas = pageCanvases.get(capture.page)
+          if (canvas) {
+            const scaleX = canvas.width / capture.displayWidth
+            const scaleY = canvas.height / capture.displayHeight
+            const crop = document.createElement('canvas')
+            crop.width = Math.max(1, Math.round(capture.width * scaleX))
+            crop.height = Math.max(1, Math.round(capture.height * scaleY))
+            crop.getContext('2d').drawImage(canvas, capture.x * scaleX, capture.y * scaleY, capture.width * scaleX, capture.height * scaleY, 0, 0, crop.width, crop.height)
+            seed = { page: String(capture.page), selected_text: '', image_data: crop.toDataURL('image/png'), capture_rect: { x: capture.x, y: capture.y, width: capture.width, height: capture.height } }
+          }
+        }
+        if (!seed) {
+          status.textContent = mode === 'text' ? 'Select text in the document first.' : 'Draw a rectangle on a page first.'
+          return
+        }
+        const saved = window.opener?.addEnforcementExcerptFromViewer?.(P.violationId, P.docId, seed)
+        if (!saved) { status.textContent = 'The excerpt could not be saved.'; return }
+        excerpts.push(saved)
+        renderLists()
+        status.textContent = 'Excerpt saved. It will sync through the enforcement record in Supabase.'
+        window.getSelection()?.removeAllRanges()
+        capture = null
+        document.querySelectorAll('.captureBox').forEach((node) => node.remove())
+      }
+
+      function attachRectangleCapture(wrapper, pageNumber, displayWidth, displayHeight) {
+        wrapper.addEventListener('mousedown', (event) => {
+          currentPage = pageNumber
+          if (mode !== 'rect') return
+          event.preventDefault()
+          const rect = wrapper.getBoundingClientRect()
+          dragStart = { page: pageNumber, x: event.clientX - rect.left, y: event.clientY - rect.top }
+          document.querySelectorAll('.captureBox').forEach((node) => node.remove())
+          const box = document.createElement('div')
+          box.className = 'captureBox'
+          wrapper.appendChild(box)
+          dragStart.box = box
+        })
+        wrapper.addEventListener('mousemove', (event) => {
+          if (mode !== 'rect' || !dragStart || dragStart.page !== pageNumber) return
+          const rect = wrapper.getBoundingClientRect()
+          const x = event.clientX - rect.left
+          const y = event.clientY - rect.top
+          const left = Math.max(0, Math.min(dragStart.x, x))
+          const top = Math.max(0, Math.min(dragStart.y, y))
+          const width = Math.min(rect.width, Math.max(dragStart.x, x)) - left
+          const height = Math.min(rect.height, Math.max(dragStart.y, y)) - top
+          Object.assign(dragStart.box.style, { left: left + 'px', top: top + 'px', width: width + 'px', height: height + 'px' })
+          capture = { page: pageNumber, x: left, y: top, width, height, displayWidth, displayHeight }
+        })
+        wrapper.addEventListener('mouseup', () => { dragStart = null })
+        wrapper.addEventListener('mouseleave', () => { if (dragStart?.page === pageNumber) dragStart = null })
+      }
+
+      async function renderPdf() {
+        const pdf = await pdfjsLib.getDocument(P.dataUrl).promise
+        viewer.innerHTML = ''
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+          const page = await pdf.getPage(pageNumber)
+          const baseViewport = page.getViewport({ scale: 1 })
+          const scale = Math.min(1.55, Math.max(0.85, (viewer.clientWidth - 50) / baseViewport.width))
+          const viewport = page.getViewport({ scale })
+          const wrapper = document.createElement('div')
+          wrapper.className = 'page'
+          wrapper.dataset.page = String(pageNumber)
+          wrapper.style.width = viewport.width + 'px'
+          wrapper.style.height = viewport.height + 'px'
+          wrapper.innerHTML = '<div class="pageLabel">Page ' + pageNumber + '</div>'
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.ceil(viewport.width * devicePixelRatio)
+          canvas.height = Math.ceil(viewport.height * devicePixelRatio)
+          canvas.style.width = viewport.width + 'px'
+          canvas.style.height = viewport.height + 'px'
+          wrapper.appendChild(canvas)
+          const context = canvas.getContext('2d')
+          await page.render({ canvasContext: context, viewport, transform: [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0] }).promise
+          const textLayer = document.createElement('div')
+          textLayer.className = 'textLayer'
+          textLayer.style.width = viewport.width + 'px'
+          textLayer.style.height = viewport.height + 'px'
+          wrapper.appendChild(textLayer)
+          const textContent = await page.getTextContent()
+          for (const item of textContent.items) {
+            const transform = pdfjsLib.Util.transform(viewport.transform, item.transform)
+            const fontSize = Math.hypot(transform[2], transform[3])
+            const span = document.createElement('span')
+            span.textContent = item.str
+            span.style.left = transform[4] + 'px'
+            span.style.top = (transform[5] - fontSize) + 'px'
+            span.style.fontSize = fontSize + 'px'
+            span.style.fontFamily = 'sans-serif'
+            textLayer.appendChild(span)
+          }
+          viewer.appendChild(wrapper)
+          pageCanvases.set(pageNumber, canvas)
+          pageWrappers.set(pageNumber, wrapper)
+          attachRectangleCapture(wrapper, pageNumber, viewport.width, viewport.height)
+        }
+        scrollToPage(Number(P.activePage) || 1)
+        status.textContent = 'Loaded ' + pdf.numPages + ' page' + (pdf.numPages === 1 ? '' : 's') + '.'
+      }
+
+      async function renderImage() {
+        viewer.innerHTML = ''
+        const image = document.createElement('img')
+        image.src = P.dataUrl
+        image.className = 'imageOnly'
+        const wrapper = document.createElement('div')
+        wrapper.className = 'page'
+        wrapper.dataset.page = '1'
+        wrapper.appendChild(image)
+        viewer.appendChild(wrapper)
+        await image.decode().catch(() => {})
+        const canvas = document.createElement('canvas')
+        canvas.width = image.naturalWidth
+        canvas.height = image.naturalHeight
+        canvas.getContext('2d').drawImage(image, 0, 0)
+        pageCanvases.set(1, canvas)
+        pageWrappers.set(1, wrapper)
+        attachRectangleCapture(wrapper, 1, wrapper.getBoundingClientRect().width, wrapper.getBoundingClientRect().height)
+        status.textContent = 'Image loaded.'
+      }
+
+      document.getElementById('textMode').onclick = () => setMode('text')
+      document.getElementById('rectMode').onclick = () => setMode('rect')
+      document.getElementById('saveBtn').onclick = saveCapture
+      renderLists()
+      try {
+        if ((P.mime || '').includes('pdf') || String(P.fileName).toLowerCase().endsWith('.pdf')) await renderPdf()
+        else if ((P.mime || '').startsWith('image/')) await renderImage()
+        else {
+          viewer.innerHTML = '<iframe src="' + P.dataUrl + '" style="width:100%;height:100%;border:0;background:#fff"></iframe>'
+          status.textContent = 'Document loaded. Text highlighting and rectangle capture are available for PDFs; rectangle capture is also available for images.'
+        }
+      } catch (error) {
+        viewer.innerHTML = '<div class="empty"><strong>Document could not be rendered.</strong><br>' + esc(error?.message || error) + '</div>'
+        status.textContent = 'Viewer error: ' + (error?.message || error)
+        console.error(error)
+      }
+    }
+
+    const safeTitle = String(exhibitLabel).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const safeFile = String(payload.fileName).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const safeViolationTitle = String(payload.violationTitle).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle} — Exhibit Viewer</title><style>
+      *{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;color:#0f172a;background:#f8fafc}.top{height:58px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #dbe3ea;background:#fff;position:sticky;top:0;z-index:20}.title{flex:1;min-width:240px}.sub{font-size:12px;color:#64748b;margin-top:2px}.btn{padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;font-weight:700}.btn.active{background:#dbeafe;border-color:#2563eb;color:#1d4ed8}.layout{display:grid;grid-template-columns:230px minmax(520px,1fr) 370px;height:calc(100vh - 59px)}.toc,.details{background:#fff;padding:12px;overflow:auto}.toc{border-right:1px solid #dbe3ea}.details{border-left:1px solid #dbe3ea}.viewer{overflow:auto;background:#cbd5e1;padding:18px}.page{position:relative;margin:0 auto 18px;background:#fff;box-shadow:0 3px 14px rgba(15,23,42,.18);width:max-content}.page canvas{display:block}.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1}.textLayer span{color:transparent;position:absolute;white-space:pre;transform-origin:0 0;cursor:text}.textLayer span::selection{background:rgba(37,99,235,.32);color:transparent}.captureBox{position:absolute;border:2px solid #2563eb;background:rgba(37,99,235,.14);pointer-events:none;z-index:10}.tocItem{width:100%;display:grid;text-align:left;gap:3px;padding:9px;border:1px solid #dbe3ea;border-radius:8px;background:#fff;margin-bottom:7px;cursor:pointer}.tocItem.active{border-color:#2563eb;background:#eff6ff}.tocItem span{font-size:12px;color:#64748b}.excerptCard{background:#fff;border:1px solid #dbe3ea;border-radius:10px;padding:10px;margin-bottom:9px}.excerptCard.active{border:2px solid #2563eb;background:#eff6ff}.excerptHead{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.excerptText{margin:9px 0 0;border-left:4px solid #facc15;padding:9px;background:#fefce8;white-space:pre-wrap}.excerptImage{display:block;max-width:100%;margin-top:9px;border:1px solid #cbd5e1;border-radius:6px}.controls{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.empty{padding:18px;color:#64748b}.status{font-size:12px;color:#475569;margin:8px 0}.pageLabel{position:absolute;top:6px;right:8px;background:rgba(15,23,42,.72);color:#fff;border-radius:999px;padding:3px 7px;font-size:11px;z-index:12}.imageOnly{max-width:100%;display:block;margin:auto}.modeHint{padding:8px;border-radius:8px;background:#eff6ff;color:#1e40af;font-size:12px;margin-bottom:10px}</style></head><body><header class="top"><div class="title"><strong>${safeTitle} — ${safeFile}</strong><div class="sub">Violation ${violationNumber}: ${safeViolationTitle}</div></div><button id="textMode" class="btn active">Text Highlight</button><button id="rectMode" class="btn">Rectangle Capture</button><button id="saveBtn" class="btn">Save Selected Excerpt</button><button class="btn" onclick="window.print()">Print</button><button class="btn" onclick="window.close()">Close</button></header><div class="layout"><aside class="toc"><h3>Excerpt TOC</h3><div id="tocList"></div></aside><main id="viewer" class="viewer"><div class="status">Loading document…</div></main><aside class="details"><h3>Violation ${violationNumber} Excerpts</h3><div id="modeHint" class="modeHint">Drag across words in the document, then click Save Selected Excerpt.</div><div id="status" class="status"></div><div id="excerptList"></div></aside></div><script>const P=${JSON.stringify(payload).replace(/</g, '\\u003c')};(${enforcementViewerApp.toString()})(P);<\/script></body></html>`
+    win.document.open()
+    win.document.write(html)
     win.document.close()
   }
 
-  window.addEnforcementExcerptFromViewer = (violationId, docId) => addEnforcementExcerpt(violationId, docId)
+  window.addEnforcementExcerptFromViewer = (violationId, docId, seed = {}) => addEnforcementExcerpt(violationId, docId, seed)
+  window.moveEnforcementExcerptFromViewer = (violationId, docId, excerptId, direction) => moveEnforcementExcerpt(violationId, docId, excerptId, Number(direction) || 0)
 
   function renderEnforcementPage() {
     const clientPortal = isClientPortalMember()
@@ -32039,7 +32272,7 @@ ${choices}`, '1'))
               <div className="enforcement-no-print" style={{display:'flex',gap:7,flexWrap:'wrap'}}><button type="button" onClick={()=>setRelevanceTocVisible(true)}>TOC</button><button type="button" onClick={()=>{setRelevanceExpandedViolationIds(rows.map((row)=>String(row.id)));setRelevanceExpandedExhibitKeys(rows.flatMap((row)=>(row.document_ids||[]).map((docId)=>`${row.id}:${docId}`)));setRelevanceExpandedExcerptIds(rows.flatMap((row)=>(row.document_ids||[]).flatMap((docId)=>enforcementExcerptsFor(row,docId).map((excerpt)=>excerpt.id))))}}>Expand All Excerpts</button><button type="button" onClick={()=>{setRelevanceExpandedExhibitKeys([]);setRelevanceExpandedExcerptIds([])}}>Collapse All Excerpts</button></div>
             </div>
             {relevanceTocVisible&&<aside className="enforcement-no-print" style={{position:'fixed',left:relevanceTocPosition.x,top:relevanceTocPosition.y,width:relevanceTocMinimized?190:285,maxHeight:'62vh',overflow:'auto',zIndex:80,border:'1px solid #cbd5e1',borderRadius:12,background:'#fff',boxShadow:'0 12px 28px rgba(15,23,42,.16)'}}><div onMouseDown={(event)=>{const rect=event.currentTarget.parentElement.getBoundingClientRect();relevanceTocDragRef.current={offsetX:event.clientX-rect.left,offsetY:event.clientY-rect.top}}} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 10px',borderBottom:'1px solid #e2e8f0',cursor:'move',fontWeight:900}}><span>⋮⋮ TOC</span><span><button type="button" onClick={(event)=>{event.stopPropagation();setRelevanceTocMinimized((value)=>!value)}}>{relevanceTocMinimized?'+':'−'}</button><button type="button" onClick={(event)=>{event.stopPropagation();setRelevanceTocVisible(false)}}>×</button></span></div>{!relevanceTocMinimized&&<div style={{padding:8}}>{rows.map((violation,index)=><button key={violation.id} type="button" onClick={()=>document.getElementById(`relevance-violation-${violation.id}`)?.scrollIntoView({behavior:'smooth',block:'start'})} style={{display:'block',width:'100%',textAlign:'left',padding:9,marginBottom:6,border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}><strong>Violation {index+1}</strong><div style={{fontSize:12,marginTop:3}}>{violation.title||'Untitled violation'}</div><small style={{color:'#64748b'}}>{(violation.document_ids||[]).length} exhibits · {(violation.document_ids||[]).reduce((sum,docId)=>sum+enforcementExcerptsFor(violation,docId).length,0)} excerpts</small></button>)}</div>}</aside>}
-            <div style={{display:'grid',gap:12}}>{rows.map((violation,violationIndex)=>{const violationOpen=relevanceExpandedViolationIds.includes(String(violation.id));return <section id={`relevance-violation-${violation.id}`} key={violation.id} style={{border:'1px solid #cbd5e1',borderRadius:12,overflow:'hidden',background:'#fff'}}><header style={{display:'grid',gridTemplateColumns:'125px minmax(280px,1fr) auto',gap:12,alignItems:'center',padding:'12px 14px',background:'#f8fafc'}}><div style={{fontWeight:950,color:'#1d4ed8'}}>Violation {violationIndex+1}</div><div><strong style={{fontSize:16}}>{violation.title||'Untitled violation'}</strong><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{violationPlainPreview(violation.summary||violation.facts,'No summary')}</div></div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:12,color:'#1d4ed8',background:'#eff6ff',padding:'5px 8px',borderRadius:999}}>{(violation.document_ids||[]).length} linked exhibits</span><button type="button" onClick={()=>setRelevanceExpandedViolationIds((values)=>violationOpen?values.filter((id)=>id!==String(violation.id)):Array.from(new Set([...values,String(violation.id)])))}>{violationOpen?'Collapse':'Expand'}</button></div></header>{violationOpen&&<div style={{overflowX:'auto'}}><table className="enforcement-exhibit-table"><thead><tr><th style={{width:125}}>Violation No.</th><th style={{width:105}}>Exhibit</th><th style={{minWidth:230}}>Document Name</th><th style={{minWidth:360}}>Relevance to This Violation</th><th style={{width:110}}>Page(s)</th><th style={{width:150}}>Excerpts</th></tr></thead><tbody>{(violation.document_ids||[]).map((docId)=>{const doc=matterDocs.find((item)=>String(item.id)===String(docId));if(!doc)return null;const key=`${violation.id}:${docId}`;const excerptOpen=relevanceExpandedExhibitKeys.includes(key);const excerpts=enforcementExcerptsFor(violation,docId);return <Fragment key={key}><tr><td><strong>Violation {violationIndex+1}</strong></td><td><strong>{exhibitNumberById[String(docId)]||'Pending'}</strong></td><td><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:850,padding:0,textAlign:'left'}}>{doc.name||doc.file_name||'Document'} ↗</button><div style={{fontSize:11,color:'#64748b'}}>{doc.file_type||doc.mime_type||String(doc.file_name||'').split('.').pop()?.toUpperCase()||'Document'}</div></td><td><textarea value={violation.exhibit_relevance_by_document?.[String(docId)]||''} onChange={(e)=>patchViolation(violation.id,{exhibit_relevance_by_document:{...(violation.exhibit_relevance_by_document||{}),[String(docId)]:e.target.value}})} placeholder="Explain what this exhibit proves and why it is relevant to this violation..." style={{width:'100%',minHeight:84,resize:'vertical'}}/></td><td>{Array.from(new Set(excerpts.map((excerpt)=>excerpt.page).filter(Boolean))).join(', ')||'—'}</td><td><div style={{display:'grid',gap:5}}><button type="button" onClick={()=>setRelevanceExpandedExhibitKeys((values)=>excerptOpen?values.filter((value)=>value!==key):Array.from(new Set([...values,key])))}>{excerpts.length} excerpt{excerpts.length===1?'':'s'} {excerptOpen?'▴':'▾'}</button><button className="enforcement-no-print" type="button" onClick={()=>addEnforcementExcerpt(violation.id,docId)}>+ Add Excerpt</button></div></td></tr>{excerptOpen&&<tr><td></td><td colSpan="5" style={{padding:10,background:'#f8fafc'}}>{excerpts.length?<div style={{display:'grid',gap:8}}>{excerpts.map((excerpt,excerptIndex)=>{const expanded=relevanceExpandedExcerptIds.includes(excerpt.id);return <article key={excerpt.id} style={{border:expanded?'2px solid #2563eb':'1px solid #cbd5e1',borderRadius:10,background:'#fff',overflow:'hidden'}}><header style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px'}}><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))} style={{border:0,background:'transparent',fontWeight:900,textAlign:'left'}}>Violation {violationIndex+1}, Exhibit {exhibitNumberById[String(docId)]||'Pending'}, Excerpt {excerptIndex+1}</button><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:12,color:'#475569'}}>{excerpt.page?`Page ${excerpt.page}`:'Page not set'}</span><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation,excerpt)}>Open at excerpt ↗</button><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))}>{expanded?'▴':'▾'}</button></div></header>{expanded&&<div style={{padding:'0 11px 11px',display:'grid',gap:8}}><textarea value={excerpt.selected_text||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{selected_text:e.target.value})} style={{width:'100%',minHeight:110}}/><div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:8}}><input value={excerpt.page||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{page:e.target.value})} placeholder="Page or range"/><input value={excerpt.note||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{note:e.target.value})} placeholder="Optional note"/></div><div style={{fontSize:11,color:'#64748b'}}>Created by {excerpt.created_by||'User'} · {excerpt.created_at?new Date(excerpt.created_at).toLocaleString():''}</div><div className="enforcement-no-print" style={{display:'flex',gap:6,justifyContent:'flex-end'}}><button type="button" disabled={excerptIndex===0} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,-1)}>↑ Earlier</button><button type="button" disabled={excerptIndex===excerpts.length-1} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,1)}>↓ Later</button><button type="button" onClick={()=>deleteEnforcementExcerpt(violation.id,docId,excerpt.id)} style={{color:'#b91c1c'}}>Delete</button></div></div>}</article>})}</div>:<div style={{padding:12,color:'#64748b'}}>No excerpts saved. Open the exhibit or click Add Excerpt to save a violation-specific quotation and page number.</div>}</td></tr>}</Fragment>})}{!(violation.document_ids||[]).length&&<tr><td colSpan="6" style={{color:'#64748b'}}>No exhibits linked to this violation.</td></tr>}</tbody></table></div>}</section>})}</div>
+            <div style={{display:'grid',gap:12}}>{rows.map((violation,violationIndex)=>{const violationOpen=relevanceExpandedViolationIds.includes(String(violation.id));return <section id={`relevance-violation-${violation.id}`} key={violation.id} style={{border:'1px solid #cbd5e1',borderRadius:12,overflow:'hidden',background:'#fff'}}><header style={{display:'grid',gridTemplateColumns:'125px minmax(280px,1fr) auto',gap:12,alignItems:'center',padding:'12px 14px',background:'#f8fafc'}}><div style={{fontWeight:950,color:'#1d4ed8'}}>Violation {violationIndex+1}</div><div><strong style={{fontSize:16}}>{violation.title||'Untitled violation'}</strong><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{violationPlainPreview(violation.summary||violation.facts,'No summary')}</div></div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:12,color:'#1d4ed8',background:'#eff6ff',padding:'5px 8px',borderRadius:999}}>{(violation.document_ids||[]).length} linked exhibits</span><button type="button" onClick={()=>setRelevanceExpandedViolationIds((values)=>violationOpen?values.filter((id)=>id!==String(violation.id)):Array.from(new Set([...values,String(violation.id)])))}>{violationOpen?'Collapse':'Expand'}</button></div></header>{violationOpen&&<div style={{overflowX:'auto'}}><table className="enforcement-exhibit-table"><thead><tr><th style={{width:125}}>Violation No.</th><th style={{width:105}}>Exhibit</th><th style={{minWidth:230}}>Document Name</th><th style={{minWidth:360}}>Relevance to This Violation</th><th style={{width:110}}>Page(s)</th><th style={{width:150}}>Excerpts</th></tr></thead><tbody>{(violation.document_ids||[]).map((docId)=>{const doc=matterDocs.find((item)=>String(item.id)===String(docId));if(!doc)return null;const key=`${violation.id}:${docId}`;const excerptOpen=relevanceExpandedExhibitKeys.includes(key);const excerpts=enforcementExcerptsFor(violation,docId);return <Fragment key={key}><tr><td><strong>Violation {violationIndex+1}</strong></td><td><strong>{exhibitNumberById[String(docId)]||'Pending'}</strong></td><td><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:850,padding:0,textAlign:'left'}}>{doc.name||doc.file_name||'Document'} ↗</button><div style={{fontSize:11,color:'#64748b'}}>{doc.file_type||doc.mime_type||String(doc.file_name||'').split('.').pop()?.toUpperCase()||'Document'}</div></td><td><textarea value={violation.exhibit_relevance_by_document?.[String(docId)]||''} onChange={(e)=>patchViolation(violation.id,{exhibit_relevance_by_document:{...(violation.exhibit_relevance_by_document||{}),[String(docId)]:e.target.value}})} placeholder="Explain what this exhibit proves and why it is relevant to this violation..." style={{width:'100%',minHeight:84,resize:'vertical'}}/></td><td>{Array.from(new Set(excerpts.map((excerpt)=>excerpt.page).filter(Boolean))).join(', ')||'—'}</td><td><div style={{display:'grid',gap:5}}><button type="button" onClick={()=>setRelevanceExpandedExhibitKeys((values)=>excerptOpen?values.filter((value)=>value!==key):Array.from(new Set([...values,key])))}>{excerpts.length} excerpt{excerpts.length===1?'':'s'} {excerptOpen?'▴':'▾'}</button><button className="enforcement-no-print" type="button" onClick={()=>addEnforcementExcerpt(violation.id,docId)}>+ Add Excerpt</button></div></td></tr>{excerptOpen&&<tr><td></td><td colSpan="5" style={{padding:10,background:'#f8fafc'}}>{excerpts.length?<div style={{display:'grid',gap:8}}>{excerpts.map((excerpt,excerptIndex)=>{const expanded=relevanceExpandedExcerptIds.includes(excerpt.id);return <article key={excerpt.id} style={{border:expanded?'2px solid #2563eb':'1px solid #cbd5e1',borderRadius:10,background:'#fff',overflow:'hidden'}}><header style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px'}}><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))} style={{border:0,background:'transparent',fontWeight:900,textAlign:'left'}}>Violation {violationIndex+1}, Exhibit {exhibitNumberById[String(docId)]||'Pending'}, Excerpt {excerptIndex+1}</button><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:12,color:'#475569'}}>{excerpt.page?`Page ${excerpt.page}`:'Page not set'}</span><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation,excerpt)}>Open at excerpt ↗</button><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))}>{expanded?'▴':'▾'}</button></div></header>{expanded&&<div style={{padding:'0 11px 11px',display:'grid',gap:8}}>{excerpt.image_data&&<img src={excerpt.image_data} alt={`Violation ${violationIndex+1} excerpt capture`} style={{display:'block',maxWidth:'100%',maxHeight:520,border:'1px solid #cbd5e1',borderRadius:8}}/>}<textarea value={excerpt.selected_text||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{selected_text:e.target.value})} placeholder={excerpt.image_data?'Optional text description for this rectangle capture':'Excerpt text'} style={{width:'100%',minHeight:110}}/><div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:8}}><input value={excerpt.page||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{page:e.target.value})} placeholder="Page or range"/><input value={excerpt.note||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{note:e.target.value})} placeholder="Optional note"/></div><div style={{fontSize:11,color:'#64748b'}}>Created by {excerpt.created_by||'User'} · {excerpt.created_at?new Date(excerpt.created_at).toLocaleString():''}</div><div className="enforcement-no-print" style={{display:'flex',gap:6,justifyContent:'flex-end'}}><button type="button" disabled={excerptIndex===0} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,-1)}>↑ Earlier</button><button type="button" disabled={excerptIndex===excerpts.length-1} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,1)}>↓ Later</button><button type="button" onClick={()=>deleteEnforcementExcerpt(violation.id,docId,excerpt.id)} style={{color:'#b91c1c'}}>Delete</button></div></div>}</article>})}</div>:<div style={{padding:12,color:'#64748b'}}>No excerpts saved. Open the exhibit or click Add Excerpt to save a violation-specific quotation and page number.</div>}</td></tr>}</Fragment>})}{!(violation.document_ids||[]).length&&<tr><td colSpan="6" style={{color:'#64748b'}}>No exhibits linked to this violation.</td></tr>}</tbody></table></div>}</section>})}</div>
           </section>}
           {enforcementWorkspaceTab==='exhibit-list'&&<section className="enforcement-card enforcement-tab-panel"><h2>Exhibit List</h2><div className="enforcement-card-subtitle">Numbered automatically by first appearance in the Violation Exhibit Matrix.</div><table className="enforcement-exhibit-table"><thead><tr><th style={{width:90}}>Exhibit</th><th>Document</th><th>Description / Date</th><th>Used for violations</th></tr></thead><tbody>{exhibitRows.map(({doc},index)=><tr key={doc.id}><td><strong>{exhibitPrefix}-{index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button></td><td>{doc.description||doc.date||doc.upload_date||'-'}</td><td>{rows.filter((row)=>(row.document_ids||[]).some((id)=>String(id)===String(doc.id))).map((row)=>`Violation ${rows.findIndex((item)=>String(item.id)===String(row.id))+1}: ${row.title||'Untitled violation'}`).join('; ')}</td></tr>)}{!exhibitRows.length&&<tr><td colSpan="4" style={{color:'#64748b'}}>No exhibits have been added to the matrix.</td></tr>}</tbody></table></section>}
           {enforcementWorkspaceTab==='predicates'&&<section className="enforcement-card enforcement-tab-panel"><div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><h2>Predicates</h2><div className="enforcement-card-subtitle">Select every applicable exhibit type from the Predicates Manual 5.0. Mio shows the manual page reference and can make an initial AI-assisted guess from the document.</div></div>{!clientPortal&&<button type="button" onClick={()=>aiGuessAllEnforcementPredicates(exhibitRows.map((row)=>row.doc))}>AI Guess All Exhibit Predicates</button>}</div><table className="enforcement-exhibit-table"><thead><tr><th style={{width:90}}>Exhibit</th><th style={{minWidth:220}}>Document</th><th className="enforcement-no-print" style={{minWidth:320}}>Predicate types</th><th>Predicate information</th></tr></thead><tbody>{exhibitRows.map(({doc},index)=>{const assignment=predicateAssignmentsForDocument(rows,doc.id);const selectedTypes=ENFORCEMENT_PREDICATE_TYPES.filter((type)=>(assignment.type_ids||[]).includes(type.id));return <tr key={doc.id}><td><strong>{exhibitPrefix}-{index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button>{!clientPortal&&<div style={{marginTop:8}}><button type="button" onClick={()=>aiGuessEnforcementPredicates(doc)}>AI Guess Categories</button></div>}</td><td className="enforcement-no-print"><details><summary style={{cursor:'pointer',fontWeight:800}}>{selectedTypes.length?`${selectedTypes.length} selected`:'Choose predicate types...'}</summary><div className="predicate-picker"><input placeholder="Use browser Find (Ctrl+F) to locate a type" style={{width:'100%',marginBottom:5}} disabled/>{ENFORCEMENT_PREDICATE_TYPES.map((type)=><label key={type.id}><input type="checkbox" checked={(assignment.type_ids||[]).includes(type.id)} onChange={(e)=>updateMatterViolations(violationsMatterId,(current)=>updatePredicateAssignments(current,doc.id,(old)=>({...old,type_ids:e.target.checked?Array.from(new Set([...(old.type_ids||[]),type.id])):(old.type_ids||[]).filter((id)=>id!==type.id)})))}/> {type.label} <small style={{color:'#64748b'}}>(p. {type.page})</small></label>)}</div></details></td><td>{selectedTypes.length?selectedTypes.map((type)=><div className="predicate-ref" key={type.id}><strong>{type.label}</strong> — Predicates Manual 5.0, p. {type.page}<textarea className="enforcement-no-print" value={assignment.notes?.[type.id]||''} onChange={(e)=>updateMatterViolations(violationsMatterId,(current)=>updatePredicateAssignments(current,doc.id,(old)=>({...old,notes:{...(old.notes||{}),[type.id]:e.target.value}})))} placeholder="Add witness, authentication, hearsay, or foundation notes for this exhibit..." style={{display:'block',width:'100%',minHeight:54,marginTop:5}}/></div>):<span style={{color:'#64748b'}}>No predicate types selected.</span>}</td></tr>})}</tbody></table></section>}
