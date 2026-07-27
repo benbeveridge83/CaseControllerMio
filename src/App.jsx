@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V156'
+const MIO_APP_VERSION = 'Mio V157'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2035,6 +2035,7 @@ function App() {
   const [enforcementSharedReady, setEnforcementSharedReady] = useState(false)
   const [enforcementSaveStatus, setEnforcementSaveStatus] = useState('Not loaded')
   const [enforcementSaveError, setEnforcementSaveError] = useState('')
+  const [enforcementMatterSearch, setEnforcementMatterSearch] = useState('')
   const enforcementSharedSaveTimersRef = useRef({})
   const enforcementLastSavedJsonRef = useRef({})
   const [requestedReliefTables, setRequestedReliefTables] = useState(() => {
@@ -31412,6 +31413,23 @@ ${choices}`, '1'))
     return true
   }
 
+  async function syncLocalMatterDocumentsToEnforcement(permittedMatterIds = []) {
+    if (!session?.user?.id || !permittedMatterIds.length) return
+    const allowed = new Set(permittedMatterIds.map(String))
+    const localDocs = (documents || []).filter((doc) => doc?.id && doc?.matter_id && allowed.has(String(doc.matter_id)))
+    if (!localDocs.length) return
+    const payload = localDocs.map((doc) => ({
+      matter_id: String(doc.matter_id),
+      document_id: String(doc.id),
+      metadata: stripLargeFileData(doc),
+      uploaded_by: session.user.id,
+      updated_at: new Date().toISOString(),
+      reason: 'matter-document-catalog-sync'
+    }))
+    const { error } = await supabase.from('case_mio_enforcement_documents').upsert(payload, { onConflict: 'matter_id,document_id' })
+    if (error) console.warn('Could not sync matter documents to Enforcement:', error)
+  }
+
   async function loadSharedEnforcementState() {
     if (!session?.user?.id || !userAccessChecked) return
     setEnforcementSaveStatus('Loading from Supabase...')
@@ -31462,6 +31480,9 @@ ${choices}`, '1'))
     ;(data || []).forEach((row) => {
       enforcementLastSavedJsonRef.current[String(row.matter_id)] = JSON.stringify(Array.isArray(row.violations) ? row.violations : [])
     })
+    // Publish the full matter-document catalog before reading it back so every
+    // authorized user sees the same document dropdown and the same exhibit names.
+    if (!isClientPortalMember()) await syncLocalMatterDocumentsToEnforcement(permittedMatterIds)
     await loadSharedEnforcementDocuments(permittedMatterIds)
     setEnforcementSharedReady(true)
     setEnforcementSaveStatus(recoveryMatterIds.length ? 'Recovered newer browser draft; saving to Supabase...' : 'Loaded from Supabase')
@@ -31677,8 +31698,19 @@ ${choices}`, '1'))
   }
 
   function addTestimonyQa(violation, section) {
-    const sections = (violation.testimony_sections || []).map((row) => row.id === section.id ? { ...row, qas: [...(row.qas || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `qa-${Date.now()}`, question: '', answer: '', exhibit_markers: [] }] } : row)
-    patchViolation(violation.id, { testimony_sections: sections })
+    if (!violationsMatterId || !violation?.id || !section?.id) return
+    // Use the latest state instead of the render-time violation object. This prevents
+    // the first Add New Q/A click from replacing freshly typed rich-text content.
+    updateMatterViolations(violationsMatterId, (rows) => rows.map((row) => {
+      if (String(row.id) !== String(violation.id)) return row
+      return {
+        ...row,
+        updated_at: new Date().toISOString(),
+        testimony_sections: (row.testimony_sections || []).map((currentSection) => String(currentSection.id) === String(section.id)
+          ? { ...currentSection, qas: [...(currentSection.qas || []), { id: crypto?.randomUUID ? crypto.randomUUID() : `qa-${Date.now()}`, question: '', answer: '', exhibit_markers: [] }] }
+          : currentSection)
+      }
+    }))
   }
 
   function enforcementExhibitPrefix(rows, matter) {
@@ -31769,7 +31801,26 @@ ${choices}`, '1'))
 
   function renderEnforcementPage() {
     const clientPortal = isClientPortalMember()
-    const availableMatters = clientPortal ? clientPortalMatterRows() : matters
+    const enforcementMatterIsOpen = (matterRow) => {
+      const status = `${matterRow?.case_status || ''} ${matterRow?.matter_status || ''} ${matterRow?.status || ''}`.trim().toLowerCase()
+      if (!status) return true
+      if (/closed|archived|inactive/.test(status) && !/withdrawing/.test(status)) return false
+      return /open|withdrawing|active/.test(status) || !/closed|archived|inactive/.test(status)
+    }
+    const enforcementClientSortName = (matterRow) => {
+      const last = String(matterRow?.clients?.last_name || '').trim()
+      const first = String(matterRow?.clients?.first_name || '').trim()
+      return `${last}, ${first}`.replace(/^,\s*/, '').trim() || String(matterRow?.name || '')
+    }
+    const availableMatters = (clientPortal ? clientPortalMatterRows() : matters.filter(enforcementMatterIsOpen))
+      .slice()
+      .sort((a, b) => enforcementClientSortName(a).localeCompare(enforcementClientSortName(b), undefined, { sensitivity: 'base' }))
+    const enforcementMatterLabel = (matterRow) => {
+      const client = enforcementClientSortName(matterRow)
+      const cause = matterRow?.cause_number ? ` - ${matterRow.cause_number}` : ''
+      const matterName = matterRow?.name ? ` — ${matterRow.name}` : ''
+      return `${client}${matterName}${cause}`
+    }
     const rows = matterViolations()
     const matter = availableMatters.find((row) => String(row.id) === String(violationsMatterId)) || matters.find((row) => String(row.id) === String(violationsMatterId))
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(violationsMatterId || ''))
@@ -31789,7 +31840,9 @@ ${choices}`, '1'))
     const changeExhibitPrefix = (prefix) => updateMatterViolations(violationsMatterId, (current) => current.map((row) => ({ ...row, client_exhibit_prefix: prefix })))
     const addDocumentToViolation = (violationId, docId) => {
       if (!docId) return
+      const selectedDoc = matterDocs.find((doc) => String(doc.id) === String(docId))
       updateMatterViolations(violationsMatterId, (current) => current.map((row) => row.id === violationId ? { ...row, document_ids: Array.from(new Set([...(row.document_ids || []), docId])) } : row))
+      if (selectedDoc) saveSharedEnforcementDocument(selectedDoc, 'attached-existing-matter-document')
     }
     const removeDocumentFromViolation = (violationId, docId) => updateMatterViolations(violationsMatterId, (current) => current.map((row) => row.id === violationId ? { ...row, document_ids: (row.document_ids || []).filter((id) => String(id) !== String(docId)) } : row))
     return (
@@ -31812,7 +31865,7 @@ ${choices}`, '1'))
         `}</style>
         <div className="enforcement-no-print" style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14}}>
           <div><h1 style={{margin:'0 0 4px'}}>{clientPortal?'Your Enforcement Case':'Enforcement'}</h1><div style={{color:'#64748b'}}>{clientPortal?'Review the violations, exhibits, requested relief, and testimony plan prepared for your matter.':'Add violations, organize a violation-to-exhibit matrix, build the numbered exhibit list, assign predicate foundations, and print the complete court outline.'}</div></div>
-          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>{!clientPortal&&<label>Matter<select value={violationsMatterId} onChange={(e)=>{setViolationsMatterId(e.target.value);setExpandedViolationIds([])}}><option value="">Select matter...</option>{availableMatters.map((row)=><option key={row.id} value={row.id}>{formatMatterOption(row)}</option>)}</select></label>}{!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}<button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}</div>
+          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>{!clientPortal&&<label style={{minWidth:390}}>Matter<input list="enforcement-matter-options" value={enforcementMatterSearch || (matter ? enforcementMatterLabel(matter) : '')} onChange={(e)=>{const text=e.target.value;setEnforcementMatterSearch(text);const match=availableMatters.find((row)=>enforcementMatterLabel(row).toLowerCase()===text.trim().toLowerCase());if(match){setViolationsMatterId(String(match.id));setExpandedViolationIds([]);setEnforcementMatterSearch(enforcementMatterLabel(match))}}} onFocus={(e)=>e.currentTarget.select()} placeholder="Type client last name, first name, matter, or cause number..." autoComplete="off" style={{width:'100%'}}/><datalist id="enforcement-matter-options">{availableMatters.map((row)=><option key={row.id} value={enforcementMatterLabel(row)}/>)}</datalist></label>}{!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}<button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}</div>
         </div>
         {enforcementSaveError&&<div className="enforcement-no-print" style={{border:'2px solid #dc2626',background:'#fef2f2',color:'#991b1b',padding:10,borderRadius:8,marginBottom:12,fontWeight:850}}>Enforcement changes are not reaching Supabase: {enforcementSaveError}. Do not close this tab until this is fixed or use Save now after running the V151 SQL migration.</div>}
         {!clientPortal&&<div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>}
