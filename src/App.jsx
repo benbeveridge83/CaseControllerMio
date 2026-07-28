@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V175'
+const MIO_APP_VERSION = 'Mio V176'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -5286,9 +5286,10 @@ function App() {
   function checklistSelectedFilterValues(kind) {
     const allValues = checklistFilterOptions(kind).map((option) => option.value)
     const current = kind === 'case' ? checklistCaseStatusFilter : kind === 'matter' ? checklistMatterStatusFilter : checklistEventCategoryFilter
+    // null means the user has never configured this filter, so default to All.
+    // An empty array is an intentional None selection and must remain empty after reload.
     if (!Array.isArray(current)) return allValues
-    const clean = current.filter((value) => allValues.includes(value))
-    return clean.length ? clean : allValues
+    return current.filter((value) => allValues.includes(value))
   }
 
   function setChecklistFilter(kind, values) {
@@ -5308,9 +5309,17 @@ function App() {
   function ChecklistCheckboxFilter({ kind, title }) {
     const opts = checklistFilterOptions(kind)
     const selected = checklistSelectedFilterValues(kind)
+    const storageKey = `caseMioNeedToSetFilterOpen_${kind}`
+    const defaultOpen = localStorage.getItem(storageKey) !== 'false'
     return (
-      <div style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}>
-        <div style={{ fontWeight: 'bold' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span></div>
+      <details
+        defaultOpen={defaultOpen}
+        onToggle={(event) => safeSetLocalStorage(storageKey, event.currentTarget.open ? 'true' : 'false')}
+        style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}
+      >
+        <summary style={{ cursor: 'pointer', fontWeight: 'bold', userSelect: 'none' }}>
+          {title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span>
+        </summary>
         <div style={{ display: 'flex', gap: 6, margin: '8px 0 6px' }}>
           <button type="button" onClick={() => setChecklistFilter(kind, opts.map((option) => option.value))}>All</button>
           <button type="button" onClick={() => setChecklistFilter(kind, [])}>None</button>
@@ -5323,7 +5332,7 @@ function App() {
           ))}
           {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No options have been set yet.</div>}
         </div>
-      </div>
+      </details>
     )
   }
 
@@ -27759,21 +27768,123 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'People Import'); XLSX.writeFile(wb,'Mio_People_Import_Template.xlsx')
   }
   async function importPeopleSpreadsheet(file) {
-    if(!file) return
+    if (!file) return
     try {
-      const data=await file.arrayBuffer(); const wb=XLSX.read(data,{type:'array'}); const ws=wb.Sheets[wb.SheetNames[0]]; const rows=XLSX.utils.sheet_to_json(ws,{defval:''})
+      const data = await file.arrayBuffer()
+      const wb = XLSX.read(data, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
       setPeopleImportRows(rows)
-      let clientsAdded=0, courtsAdded=0
-      for (const row of rows) {
-        const type=String(row.Type||'').trim().toLowerCase(); const name=String(row.Name||'').trim(); if(!name) continue
-        if(type==='client') { const {error}=await supabase.from('clients').insert([{name,email:row.Email||null,phone:row.Phone||null,address:row.Address1||null,city:row.City||null,state:row.State||null,zip:row.Zip||null}]); if(!error) clientsAdded++ }
-        if(type==='court') { const {error}=await supabase.from('courts').insert([{court_name:row.CourtName||name,court_number:row.CourtNumber||null,court_coordinator_name:name,court_coordinator_email:row.Email||null,court_phone:row.Phone||null,court_address:row.Address1||null}]); if(!error) courtsAdded++ }
+
+      const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+      const matterSearchText = (matter) => normalize([
+        matter?.id,
+        matter?.display_name,
+        matter?.description,
+        matter?.matter_name,
+        matter?.case_name,
+        matter?.cause_number,
+        matter?.case_number,
+        matter?.clients?.first_name,
+        matter?.clients?.last_name,
+        matter?.clients?.name
+      ].filter(Boolean).join(' '))
+      const findMatter = (row) => {
+        const target = normalize(row.Matter || row['Matter / Cause Number'] || row.CauseNumber || row['Cause Number'])
+        if (!target) return null
+        return matters.find((matter) => {
+          const text = matterSearchText(matter)
+          return text === target || text.includes(target) || target.includes(text)
+        }) || null
       }
-      fetchClients(); fetchCourts(); alert(`Imported ${rows.length} people rows. Added ${clientsAdded} client(s) and ${courtsAdded} court record(s). Other party/counsel rows are saved in the Mio people-import directory for matching to matters.`)
-    } catch(error) { alert(`People import failed: ${error?.message||error}`) }
+
+      let clientsUpdated = 0
+      let opposingCounselUpdated = 0
+      let courtsAdded = 0
+      let unmatched = 0
+
+      for (const row of rows) {
+        const type = normalize(row.Type || row.Role)
+        const name = String(row.Name || '').trim()
+        const email = String(row.Email || '').trim()
+        const phone = String(row.Phone || '').trim()
+        const matchedMatter = findMatter(row)
+
+        if (type.includes('client')) {
+          if (matchedMatter?.client_id) {
+            const patch = {}
+            if (email) patch.email = email
+            if (phone) patch.phone = phone
+            if (row.Address1) patch.address = row.Address1
+            if (row.City) patch.city = row.City
+            if (row.State) patch.state = row.State
+            if (row.Zip) patch.zip = String(row.Zip)
+            if (Object.keys(patch).length) {
+              const { error } = await supabase.from('clients').update(patch).eq('id', matchedMatter.client_id)
+              if (error) throw error
+              clientsUpdated++
+            }
+          } else {
+            unmatched++
+          }
+          continue
+        }
+
+        if (type.includes('opposing counsel') || type === 'oc') {
+          if (matchedMatter?.id) {
+            const patch = {}
+            if (name) patch.opposing_counsel = name
+            if (email) patch.opposing_counsel_email = email
+            if (phone) patch.opposing_counsel_phone = phone
+            if (Object.keys(patch).length) {
+              const { error } = await supabase.from('matters').update(patch).eq('id', matchedMatter.id)
+              if (error) throw error
+              opposingCounselUpdated++
+            }
+          } else {
+            unmatched++
+          }
+          continue
+        }
+
+        if (type.includes('court')) {
+          const { error } = await supabase.from('courts').insert([{
+            court_name: row.CourtName || name,
+            court_number: row.CourtNumber || null,
+            court_coordinator_name: name || null,
+            court_coordinator_email: email || null,
+            court_phone: phone || null,
+            court_address: row.Address1 || null
+          }])
+          if (error) throw error
+          courtsAdded++
+        }
+      }
+
+      await Promise.all([fetchClients(), fetchMatters(), fetchCourts()])
+      alert(`Imported ${rows.length} row(s). Updated ${clientsUpdated} client record(s), ${opposingCounselUpdated} opposing-counsel record(s), and added ${courtsAdded} court record(s). ${unmatched ? `${unmatched} row(s) could not be matched to a matter.` : ''}`)
+    } catch (error) {
+      alert(`People import failed: ${error?.message || error}`)
+    }
   }
   function renderPeopleTemplateSettings() {
-    return <section style={{border:'1px solid #cbd5e1',borderRadius:10,padding:14,background:'#fff'}}><h2>People Template / Bulk Import</h2><p>Download the Excel template, enter courts, coordinators, parties, clients, co-counsel, opposing counsel, email addresses, phone numbers, and mailing addresses, then upload it here.</p><div style={{display:'flex',gap:10,flexWrap:'wrap'}}><button type="button" onClick={downloadPeopleImportTemplate}>Download People Excel Template</button><label style={{display:'inline-flex',alignItems:'center',gap:8,border:'1px solid #cbd5e1',padding:'7px 10px',borderRadius:6,cursor:'pointer'}}>Upload Completed Template<input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={(e)=>importPeopleSpreadsheet(e.target.files?.[0])}/></label></div><div style={{marginTop:10,color:'#64748b'}}>{peopleImportRows.length ? `${peopleImportRows.length} imported people rows are currently stored.` : 'No people spreadsheet has been imported yet.'}</div></section>
+    return (
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, background: '#fff' }}>
+        <h2>Client & Opposing Counsel Email Template</h2>
+        <p>Download the Excel template, enter the matter or cause number, then enter updated client and opposing-counsel names, email addresses, and phone numbers. Uploading the completed file updates the existing matter and client records.</p>
+        <div style={{ padding: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', marginBottom: 12, fontSize: 13 }}>
+          Use one row with <strong>Type = Client</strong> and one row with <strong>Type = Opposing Counsel</strong> for each matter you want to update. The <strong>Matter</strong> cell should contain the cause number or a distinctive part of the matter name.
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button type="button" onClick={downloadPeopleImportTemplate}>Download People Excel Template</button>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, border: '1px solid #cbd5e1', padding: '7px 10px', borderRadius: 6, cursor: 'pointer', background: '#fff' }}>
+            Upload Completed Template
+            <input type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { importPeopleSpreadsheet(e.target.files?.[0]); e.target.value = '' }} />
+          </label>
+        </div>
+        <div style={{ marginTop: 10, color: '#64748b' }}>{peopleImportRows.length ? `${peopleImportRows.length} imported people rows are currently stored.` : 'No people spreadsheet has been imported yet.'}</div>
+      </section>
+    )
   }
 
   async function saveNeedToSetStepMeta(step, patch = {}) {
@@ -39557,6 +39668,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 Matter Table
               </button>
 
+              <button onClick={() => setSettingsTab('people_template')} style={{ marginRight: 10, fontWeight: settingsTab === 'people_template' ? 'bold' : 'normal' }}>
+                Client / OC Emails
+              </button>
+
               <button onClick={() => setSettingsTab('court_table')} style={{ marginRight: 10, fontWeight: settingsTab === 'court_table' ? 'bold' : 'normal' }}>
                 Court Table
               </button>
@@ -39636,6 +39751,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'drafting' && renderDraftingSettings()}
             {settingsTab === 'ai_documents' && renderAiDocumentSettings()}
             {settingsTab === 'fields' && renderUserFieldsSettings()}
+            {settingsTab === 'people_template' && renderPeopleTemplateSettings()}
             {settingsTab === 'billing_rates' && renderBillingSettings()}
             {settingsTab === 'supabase_migration' && renderSupabaseMigrationSettings()}
             {settingsTab === 'clio_mio_rosetta' && renderClioMioRosettaSettings()}
