@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V174'
+const MIO_APP_VERSION = 'Mio V175'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27266,6 +27266,47 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return []
   }
 
+  function needToSetRelevantEmailAssignments(step = {}) {
+    const assignments = needToSetConfiguredEmailAssignments(step)
+    const stepName = String(step?.name || '').toLowerCase()
+    const matches = (item, terms) => {
+      const text = `${item?.role || ''} ${item?.label || ''}`.toLowerCase()
+      return terms.some((term) => text.includes(term))
+    }
+    if (stepName.includes('oc') || stepName.includes('opposing counsel') || stepName.includes('opposing party')) {
+      const filtered = assignments.filter((item) => matches(item, ['opposing', 'counsel', ' oc']))
+      if (filtered.length) return filtered
+    }
+    if (stepName.includes('court')) {
+      const filtered = assignments.filter((item) => matches(item, ['court', 'coordinator']))
+      if (filtered.length) return filtered
+    }
+    if (stepName.includes('client')) {
+      const filtered = assignments.filter((item) => matches(item, ['client']))
+      if (filtered.length) return filtered
+    }
+    if (stepName.includes('mediat')) {
+      const filtered = assignments.filter((item) => matches(item, ['mediat']))
+      if (filtered.length) return filtered
+    }
+    return assignments
+  }
+
+  function needToSetPrimaryRecipientForStep(event = {}, step = {}, stepIndex = 0) {
+    const assignment = needToSetRelevantEmailAssignments(step)[0]
+    if (!assignment) return needToSetRecipientOption(needToSetStepContext(event, step, stepIndex), 'court')
+    const live = needToSetConfiguredEmailsForStep(event, step, stepIndex).find((email) =>
+      String(email.setting_email_id || '') === String(assignment.id || '') ||
+      String(email.recipient_label || '').toLowerCase() === String(assignment.label || '').toLowerCase()
+    )
+    return {
+      role: live?.recipient_role || assignment.role || 'other',
+      label: live?.recipient_label || assignment.label || 'Recipient',
+      email: live?.to || live?.search_email || assignment.address || needToSetAutoAddressForCatalog(event, assignment) || '',
+      name: live?.recipient_label || assignment.label || ''
+    }
+  }
+
   function needToSetConfiguredEmailsForStep(event = {}, step = {}, stepIndex = 0) {
     const live = needToSetEmailsForEvent(event)
     const byLabel = new Map(live.map((email) => [String(email.setting_email_id || email.recipient_label || needToSetEmailRoleLabel(email) || '').trim().toLowerCase(), email]))
@@ -27666,15 +27707,25 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         event: { id, type: checklistEventCategoryLabel(event), title: event.title || event.checklist_title || '', status },
         current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '', data_label: step.default_pages?.data_field_label || step.name, data_value: needToSetStepDataValue(event, step) },
         step_data: needToSetEventStepData(event),
+        authoritative_step_information: needToSetEventStepData(event).filter((item) => String(item.value || '').trim()),
         emails: emails.map((email) => ({ id: email.id, subject: email.subject || email.title || '', role: needToSetEmailRoleLabel(email), unread: !!(email.new_email_notice || workspaceEmailHasUnreadActivity(email)), messages: needToSetThreadMessages(email).slice(0, 8) })),
-        calendar_hint: 'Check Mio calendar for conflicts before proposing dates.'
+        calendar_hint: 'Check Mio calendar for conflicts before proposing dates.',
+        drafting_rules: [
+          'Treat Step Information values as authoritative user-entered facts.',
+          'Use dates and availability from Step Information, not dates inferred from old emails, calendar examples, or prior drafts.',
+          'Draft only to the recipient assigned to the current step.',
+          'For a Check with OC step, address opposing counsel and never the court.'
+        ]
       }
       const { data, error } = await supabase.functions.invoke('need-to-set-assistant', { body: payload })
       if (error) throw error
       setNeedToSetAiByEvent((current) => ({ ...current, [id]: data || {} }))
+      return data || {}
     } catch (error) {
       const unread = emails.find((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email))
-      setNeedToSetAiByEvent((current) => ({ ...current, [id]: { summary: unread ? 'A new response is waiting on the current step.' : `The next step is ${step.name || 'the current step'}.`, actions: unread ? ['Open the newest response', 'Check the calendar for conflicts', 'Draft the next reply'] : ['Draft the next email', 'Review carry-forward information'] } }))
+      const fallback = { summary: unread ? 'A new response is waiting on the current step.' : `The next step is ${step.name || 'the current step'}.`, actions: unread ? ['Open the newest response', 'Check the calendar for conflicts', 'Draft the next reply'] : ['Draft the next email', 'Review Step Information'] }
+      setNeedToSetAiByEvent((current) => ({ ...current, [id]: fallback }))
+      return fallback
     } finally { setNeedToSetAiLoading((current) => ({ ...current, [id]: false })) }
   }
 
@@ -27802,7 +27853,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const step = steps[stepIndex] || steps[0]
     const stepContext = needToSetStepContext(event, step, stepIndex)
     const allEmails = Array.from(new Map(steps.flatMap((candidate, index) => needToSetConfiguredEmailsForStep(event, candidate, index)).map((email) => [String(email.setting_email_id || email.recipient_label || email.id), email])).values())
-    const currentLabels = new Set(needToSetConfiguredEmailsForStep(event, step, stepIndex).map((email) => String(email.recipient_label || needToSetEmailRoleLabel(email) || '').toLowerCase()))
+    const currentAssignments = needToSetRelevantEmailAssignments(step)
+    const currentAssignmentIds = new Set(currentAssignments.map((item) => String(item.id || '')))
+    const currentLabels = new Set(currentAssignments.map((item) => String(item.label || '').toLowerCase()))
     const id = checklistNeedToSetRowId(event)
     const ai = needToSetAiByEvent[id] || {}
     const unreadCurrent = allEmails.some((email) => currentLabels.has(String(email.recipient_label || needToSetEmailRoleLabel(email) || '').toLowerCase()) && (email.new_email_notice || workspaceEmailHasUnreadActivity(email)))
@@ -27821,7 +27874,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         {infoCard('Step Information', <div style={{display:'grid',gap:7,maxHeight:190,overflow:'auto'}}>{steps.map((dataStep,dataIndex)=><label key={dataStep.id} style={{display:'grid',gap:3}}><span style={{fontSize:10,fontWeight:800,color:dataIndex===stepIndex?'#1d4ed8':'#475569'}}>{dataStep.default_pages?.data_field_label || dataStep.name}</span><textarea value={needToSetStepDataValue(event,dataStep)} onChange={(e)=>updateNeedToSetStepDataValue(event,dataStep,e.target.value)} placeholder={`Enter ${dataStep.default_pages?.data_field_label || dataStep.name} information`} style={{width:'100%',minHeight:42,resize:'vertical',fontSize:11,padding:6,border:'1px solid #cbd5e1',borderRadius:6}}/></label>)}</div>)}
         {infoCard('Event Billing Entries', <div style={{maxHeight:190,overflow:'auto',display:'grid',gap:4}}>{steps.flatMap((billingStep,billingIndex)=>stepBillingEntries(needToSetStepContext(event,billingStep,billingIndex)).map((entry)=>({entry,billingStep}))).sort((a,b)=>String(b.entry.date||b.entry.entry_date||b.entry.created_at||'').localeCompare(String(a.entry.date||a.entry.entry_date||a.entry.created_at||''))).map(({entry,billingStep},entryIndex)=><button key={entry.id||entryIndex} type="button" onClick={()=>openStepDetail(needToSetStepContext(event,billingStep,steps.indexOf(billingStep)))} style={{textAlign:'left',padding:'5px 6px',border:'1px solid #e2e8f0',borderRadius:6,background:'#fff',fontSize:10}}><b>{needToSetShortDate(entry.date||entry.entry_date||entry.created_at||'')}</b> — {String(entry.description||entry.notes||entry.activity||'Billing entry').slice(0,120)}</button>)}{!steps.some((billingStep,billingIndex)=>stepBillingEntries(needToSetStepContext(event,billingStep,billingIndex)).length)&&<span style={{color:'#64748b'}}>No billing entries for this event.</span>}</div>)}
         {infoCard('Step Actions', <div style={{display:'grid',gap:5}}>{actionButton('◷ Add Time',()=>openChecklistStepBilling(event,step.name))}{actionButton('✓ Complete Step',()=>toggleChecklistStepComplete(eventId,step.id),'success')}{actionButton('↶ Reopen Step',()=>{if(checklistStepCompletion(eventId,step.id)?.completed)toggleChecklistStepComplete(eventId,step.id)})}{actionButton('✉ Open Email',()=>openNeedToSetEmailThreadsWindow(event,step,stepIndex))}</div>)}
-        <section style={{border:'1px solid #ddd6fe',borderRadius:8,background:'#faf5ff',padding:10,minHeight:104}}><strong style={{fontSize:12}}>✦ AI Suggestion</strong><div style={{fontSize:12,lineHeight:1.4,color:'#4c1d95',marginTop:7}}>{ai.summary || 'Review the current step and linked emails for the best next action.'}</div>{(ai.actions||[]).slice(0,3).map((action,index)=><div key={index} style={{fontSize:11,marginTop:4}}>• {action}</div>)}<div style={{display:'grid',gap:5,marginTop:8}}>{actionButton(needToSetAiLoading[id]?'Analyzing…':'Refresh Suggestions',()=>generateNeedToSetAiSuggestion(event),'primary')}{actionButton('Draft Email',()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court',ai.draft_body||''),'primary')}</div></section>
+        <section style={{border:'1px solid #ddd6fe',borderRadius:8,background:'#faf5ff',padding:10,minHeight:104}}><strong style={{fontSize:12}}>✦ AI Suggestion</strong><div style={{fontSize:12,lineHeight:1.4,color:'#4c1d95',marginTop:7}}>{ai.summary || 'Review the current step and linked emails for the best next action.'}</div>{(ai.actions||[]).slice(0,3).map((action,index)=><div key={index} style={{fontSize:11,marginTop:4}}>• {action}</div>)}<div style={{display:'grid',gap:5,marginTop:8}}>{actionButton(needToSetAiLoading[id]?'Analyzing…':'Refresh Suggestions',()=>generateNeedToSetAiSuggestion(event),'primary')}{actionButton('Draft Email',async()=>{ const freshAi=await generateNeedToSetAiSuggestion(event); const recipient=needToSetPrimaryRecipientForStep(event,step,stepIndex); openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,recipient.role,freshAi?.draft_body||ai.draft_body||'',recipient) },'primary')}</div></section>
       </div>
 
       <section style={{marginTop:8,border:'1px solid #c4b5fd',borderRadius:8,background:'#faf5ff',padding:8}}>
@@ -27834,7 +27887,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{display:'flex',flexWrap:'nowrap',gap:8,marginTop:8,overflowX:'auto',paddingBottom:4}}>
           {allEmails.map((email,index)=>{
             const label=String(email.recipient_label||needToSetEmailRoleLabel(email)||`Email ${index+1}`)
-            const attached=currentLabels.has(label.toLowerCase())
+            const attached=currentAssignmentIds.has(String(email.setting_email_id || '')) || currentLabels.has(label.toLowerCase())
             const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email))
             const messages=needToSetThreadMessages(email)
             const hasOutgoing=messages.some((message)=>String(message.direction||'').toLowerCase()==='outgoing') || !!(email.last_sent_at||email.sent_at||email.status==='sent')
