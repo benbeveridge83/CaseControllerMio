@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V172'
+const MIO_APP_VERSION = 'Mio V174'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27952,6 +27952,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               const matter=checklistMatterForEvent(event)
               const status=currentNeedToSetStatus(event)
               const steps=checklistStepsForEvent(event)
+              const currentStepIndex=Math.max(0,steps.findIndex((candidate)=>candidate.name===status?.stepName))
+              const currentStep=steps[currentStepIndex]||steps[0]||{}
               const unread=needToSetEventHasNewEmail(event)
               const expanded=checklistStepsExpandedByRow[String(eventId)] !== false
               const settingType=checklistEventCategoryLabel(event)
@@ -27965,7 +27967,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   <span><strong>{status.rowDays}d</strong></span>
                   <span><strong>{status.timeDays??'—'}d</strong></span>
                   <span style={{padding:'4px 6px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:850,fontSize:9.5,lineHeight:1.15}}>{unread?'Response received — action needed':`Waiting for ${status?.waitingOn||'Court / Client'}`}</span>
-                  <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>{step?.default_pages?.data_field_label||status?.stepName||'Step information'}</strong><div title={needToSetStepDataValue(event,step)} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{needToSetStepDataValue(event,step)||'No step information entered.'}</div></span>
+                  <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>{currentStep?.default_pages?.data_field_label||status?.stepName||'Step information'}</strong><div title={needToSetStepDataValue(event,currentStep)} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{needToSetStepDataValue(event,currentStep)||'No step information entered.'}</div></span>
                   <div onClick={(e)=>e.stopPropagation()} style={{display:'flex',alignItems:'flex-start',gap:1,minWidth:0,overflow:'visible',paddingTop:2}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}</div>
                 </div>
                 {renderNeedToSetExpandedStepDetail(event)}
