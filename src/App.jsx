@@ -2005,6 +2005,7 @@ function App() {
   const [needToSetAiLoading, setNeedToSetAiLoading] = useState({})
   const [needToSetTocDock, setNeedToSetTocDock] = useState(() => localStorage.getItem('caseMioNeedToSetTocDock') || 'left')
   const [needToSetCompanions, setNeedToSetCompanions] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetCompanions') || '{}') } catch { return {} } })
+  const [needToSetStepData, setNeedToSetStepData] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepData') || '{}') } catch { return {} } })
   const [peopleImportRows, setPeopleImportRows] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioPeopleImportRows') || '[]') } catch { return [] } })
 
   const [withdrawalSteps, setWithdrawalSteps] = useState(() => {
@@ -3355,6 +3356,7 @@ function App() {
   }, [needToSetTocCollapsed])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetTocDock', needToSetTocDock || 'left') } catch {} }, [needToSetTocDock])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetCompanions', JSON.stringify(needToSetCompanions || {})) } catch {} }, [needToSetCompanions])
+  useEffect(() => { try { localStorage.setItem('caseMioNeedToSetStepData', JSON.stringify(needToSetStepData || {})) } catch {} }, [needToSetStepData])
   useEffect(() => { try { localStorage.setItem('caseMioEventAssignmentDefaults', JSON.stringify(eventAssignmentDefaults || {})) } catch {} }, [eventAssignmentDefaults])
   useEffect(() => { try { localStorage.setItem('caseMioPeopleImportRows', JSON.stringify(peopleImportRows || [])) } catch {} }, [peopleImportRows])
   useEffect(() => { try { localStorage.setItem('caseMioSettingsFilter', settingsFilter || 'matter_type') } catch {} }, [settingsFilter])
@@ -27400,8 +27402,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return { role: 'court', label: 'Court', email: context.courtEmail || matterCourtCoordinatorEmail(matter) || matter?.courts?.court_coordinator_email || '', name: context.courtName || matter?.courts?.court_name || 'Court' }
   }
 
-  function createWorkspaceEmailRecord(context = {}, stepContext = {}, role = 'court') {
-    const recipient = needToSetRecipientOption(stepContext, role)
+  function createWorkspaceEmailRecord(context = {}, stepContext = {}, role = 'court', recipientOverride = null) {
+    const recipient = recipientOverride || needToSetRecipientOption(stepContext, role)
     const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
     const stepName = stepLabelForContext(stepContext)
     const stepKey = workspaceStepKey(stepContext, stepContext.stepIndex || '')
@@ -27446,11 +27448,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return emailRecord
   }
 
-  function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court', initialBody = '') {
+  function openNeedToSetEmailComposeWindow(context = {}, stepContext = {}, role = 'court', initialBody = '', recipientOverride = null) {
     let email = null
     try {
-      email = createWorkspaceEmailRecord(context, stepContext, role)
-      const recipient = needToSetRecipientOption(stepContext, role)
+      const recipient = recipientOverride || needToSetRecipientOption(stepContext, role)
+      email = createWorkspaceEmailRecord(context, stepContext, role, recipient)
       const matter = matterForWorkspaceContext(stepContext) || matterForWorkspaceContext(context)
       const stepName = stepLabelForContext(stepContext)
       const safe = (value = '') => escapeEmailHtml(value)
@@ -27560,6 +27562,31 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     setNeedToSetStepBillingNotes((current) => ({ ...(current || {}), [key]: value }))
   }
 
+  function needToSetStepDataKey(event = {}, step = {}) {
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const stepId = step?.id || step?.name || ''
+    return `${eventId}::${stepId}`
+  }
+
+  function needToSetStepDataValue(event = {}, step = {}) {
+    return String((needToSetStepData || {})[needToSetStepDataKey(event, step)] || '')
+  }
+
+  function updateNeedToSetStepDataValue(event = {}, step = {}, value = '') {
+    const key = needToSetStepDataKey(event, step)
+    setNeedToSetStepData((current) => ({ ...(current || {}), [key]: value }))
+  }
+
+  function needToSetEventStepData(event = {}) {
+    return checklistStepsForEvent(event).map((step, index) => ({
+      step_id: step.id,
+      step_index: index,
+      step_name: step.name,
+      label: step.default_pages?.data_field_label || step.name,
+      value: needToSetStepDataValue(event, step)
+    })).filter((item) => item.label || item.value)
+  }
+
 
   function renderNeedToSetStepPill(event = {}, step = {}, stepIndex = 0, totalSteps = 0) {
     const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
@@ -27620,7 +27647,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         subject: email.subject || created.subject
       })
     }
-    openNeedToSetEmailComposeWindow(eventContext, stepContext, email.recipient_role || email.role || 'court', draftBody || '')
+    openNeedToSetEmailComposeWindow(eventContext, stepContext, email.recipient_role || email.role || 'court', draftBody || '', { role: email.recipient_role || email.role || 'other', label: email.recipient_label || needToSetEmailRoleLabel(email) || 'Recipient', email: email.to || email.search_email || '', name: email.recipient_label || '' })
   }
 
   async function generateNeedToSetAiSuggestion(event = {}) {
@@ -27637,7 +27664,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         action: 'suggest',
         matter: checklistMatterForEvent(event),
         event: { id, type: checklistEventCategoryLabel(event), title: event.title || event.checklist_title || '', status },
-        current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '' },
+        current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '', data_label: step.default_pages?.data_field_label || step.name, data_value: needToSetStepDataValue(event, step) },
+        step_data: needToSetEventStepData(event),
         emails: emails.map((email) => ({ id: email.id, subject: email.subject || email.title || '', role: needToSetEmailRoleLabel(email), unread: !!(email.new_email_notice || workspaceEmailHasUnreadActivity(email)), messages: needToSetThreadMessages(email).slice(0, 8) })),
         calendar_hint: 'Check Mio calendar for conflicts before proposing dates.'
       }
@@ -27759,8 +27787,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       </section>
 
       <div style={{marginTop:10,minWidth:1080}}>
-        <div style={{display:'grid',gridTemplateColumns:'42px 200px minmax(300px,1fr) minmax(320px,1fr)',gap:8,padding:'7px 9px',background:'#f8fafc',fontWeight:800,fontSize:12}}><span>#</span><span>Step Name</span><span>Purpose</span><span>Connect setting emails to this step</span></div>
-        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const selectedIds = new Set((meta.email_assignment_ids || []).map(String)); return <div key={step.id} style={{display:'grid',gridTemplateColumns:'42px 200px minmax(300px,1fr) minmax(320px,1fr)',gap:8,padding:'7px 9px',borderTop:'1px solid #e2e8f0',alignItems:'center'}}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><select multiple value={Array.from(selectedIds)} onChange={(e)=>setStepAssignments(step,new Set(Array.from(e.target.selectedOptions).map((option)=>option.value)))} style={{minHeight:34,maxHeight:72,padding:4}} title="Hold Ctrl to select more than one email"><option value="" disabled>{catalog.length?'Select one or more setting emails':'Add setting emails above first'}</option>{catalog.map((email)=><option key={email.id} value={email.id}>{email.label}{email.address?` — ${email.address}`:''}</option>)}</select></div>})}
+        <div style={{display:'grid',gridTemplateColumns:'42px 190px minmax(250px,1fr) minmax(220px,.8fr) minmax(300px,1fr)',gap:8,padding:'7px 9px',background:'#f8fafc',fontWeight:800,fontSize:12}}><span>#</span><span>Step Name</span><span>Purpose</span><span>Data box label</span><span>Connect setting emails to this step</span></div>
+        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const selectedIds = new Set((meta.email_assignment_ids || []).map(String)); return <div key={step.id} style={{display:'grid',gridTemplateColumns:'42px 190px minmax(250px,1fr) minmax(220px,.8fr) minmax(300px,1fr)',gap:8,padding:'7px 9px',borderTop:'1px solid #e2e8f0',alignItems:'center'}}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><input value={meta.data_field_label||''} placeholder="Example: Dates from Court" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),data_field_label:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{data_field_label:e.target.value})}/><select multiple value={Array.from(selectedIds)} onChange={(e)=>setStepAssignments(step,new Set(Array.from(e.target.selectedOptions).map((option)=>option.value)))} style={{minHeight:34,maxHeight:72,padding:4}} title="Hold Ctrl to select more than one email"><option value="" disabled>{catalog.length?'Select one or more setting emails':'Add setting emails above first'}</option>{catalog.map((email)=><option key={email.id} value={email.id}>{email.label}{email.address?` — ${email.address}`:''}</option>)}</select></div>})}
       </div>
     </div>
   }
@@ -27790,8 +27818,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       <div style={{display:'grid',gridTemplateColumns:'1.05fr .9fr 1.1fr .85fr .85fr 1fr',gap:8}}>
         {infoCard('Event Overview', <><div><b>Type:</b> {checklistEventCategoryLabel(event)}</div><div><b>Matter:</b> {checklistMatterLabel(event)}</div><div><b>Court:</b> {checklistCourtName(event)||'No court'}</div><div><b>Created:</b> {needToSetShortDate(needToSetCreatedAt(event))}</div><div><b>Last activity:</b> {needToSetLastTimeEntryStatus(event)?.lastAt ? needToSetShortDate(needToSetLastTimeEntryStatus(event).lastAt) : 'None'}</div></>)}
         {infoCard('Event Actions', <div style={{display:'grid',gap:5}}>{actionButton('Open in Calendar',()=>openNeedToSetEventForSetting(event))}{actionButton('Pause / Resume',()=>toggleNeedToSetPaused(event))}{actionButton('Already Set',()=>markNeedToSetAlreadySet(event))}{actionButton('Cancel Setting',()=>cancelNeedToSetSetting(event),'danger')}{actionButton('Open Matter',()=>matter&&openMatterDashboardInNewWindow(matter))}</div>)}
-        {infoCard('Carry-Forward (from prior step)', <><div><b>Step:</b> {status?.previousStepName || 'Prior step'}</div><div>{status?.lastBillingDescription || stepBillingNoteValue(stepContext) || 'No carry-forward details saved.'}</div></>, <button type="button" onClick={()=>openStepDetail(stepContext)} style={{marginTop:8,padding:'4px 7px',fontSize:10}}>View Full Details</button>)}
-        {infoCard('Step Purpose', step.default_pages?.purpose || `Complete ${step.name} and preserve the information needed for the next scheduling step.`, <button type="button" onClick={()=>openStepDetail(stepContext)} style={{marginTop:8,padding:'4px 7px',fontSize:10,color:'#1d4ed8'}}>View Step Instructions</button>)}
+        {infoCard('Step Information', <div style={{display:'grid',gap:7,maxHeight:190,overflow:'auto'}}>{steps.map((dataStep,dataIndex)=><label key={dataStep.id} style={{display:'grid',gap:3}}><span style={{fontSize:10,fontWeight:800,color:dataIndex===stepIndex?'#1d4ed8':'#475569'}}>{dataStep.default_pages?.data_field_label || dataStep.name}</span><textarea value={needToSetStepDataValue(event,dataStep)} onChange={(e)=>updateNeedToSetStepDataValue(event,dataStep,e.target.value)} placeholder={`Enter ${dataStep.default_pages?.data_field_label || dataStep.name} information`} style={{width:'100%',minHeight:42,resize:'vertical',fontSize:11,padding:6,border:'1px solid #cbd5e1',borderRadius:6}}/></label>)}</div>)}
+        {infoCard('Event Billing Entries', <div style={{maxHeight:190,overflow:'auto',display:'grid',gap:4}}>{steps.flatMap((billingStep,billingIndex)=>stepBillingEntries(needToSetStepContext(event,billingStep,billingIndex)).map((entry)=>({entry,billingStep}))).sort((a,b)=>String(b.entry.date||b.entry.entry_date||b.entry.created_at||'').localeCompare(String(a.entry.date||a.entry.entry_date||a.entry.created_at||''))).map(({entry,billingStep},entryIndex)=><button key={entry.id||entryIndex} type="button" onClick={()=>openStepDetail(needToSetStepContext(event,billingStep,steps.indexOf(billingStep)))} style={{textAlign:'left',padding:'5px 6px',border:'1px solid #e2e8f0',borderRadius:6,background:'#fff',fontSize:10}}><b>{needToSetShortDate(entry.date||entry.entry_date||entry.created_at||'')}</b> — {String(entry.description||entry.notes||entry.activity||'Billing entry').slice(0,120)}</button>)}{!steps.some((billingStep,billingIndex)=>stepBillingEntries(needToSetStepContext(event,billingStep,billingIndex)).length)&&<span style={{color:'#64748b'}}>No billing entries for this event.</span>}</div>)}
         {infoCard('Step Actions', <div style={{display:'grid',gap:5}}>{actionButton('◷ Add Time',()=>openChecklistStepBilling(event,step.name))}{actionButton('✓ Complete Step',()=>toggleChecklistStepComplete(eventId,step.id),'success')}{actionButton('↶ Reopen Step',()=>{if(checklistStepCompletion(eventId,step.id)?.completed)toggleChecklistStepComplete(eventId,step.id)})}{actionButton('✉ Open Email',()=>openNeedToSetEmailThreadsWindow(event,step,stepIndex))}</div>)}
         <section style={{border:'1px solid #ddd6fe',borderRadius:8,background:'#faf5ff',padding:10,minHeight:104}}><strong style={{fontSize:12}}>✦ AI Suggestion</strong><div style={{fontSize:12,lineHeight:1.4,color:'#4c1d95',marginTop:7}}>{ai.summary || 'Review the current step and linked emails for the best next action.'}</div>{(ai.actions||[]).slice(0,3).map((action,index)=><div key={index} style={{fontSize:11,marginTop:4}}>• {action}</div>)}<div style={{display:'grid',gap:5,marginTop:8}}>{actionButton(needToSetAiLoading[id]?'Analyzing…':'Refresh Suggestions',()=>generateNeedToSetAiSuggestion(event),'primary')}{actionButton('Draft Email',()=>openNeedToSetEmailComposeWindow(needToSetEventWorkspaceContext(event),stepContext,'court',ai.draft_body||''),'primary')}</div></section>
       </div>
@@ -27809,6 +27837,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             const attached=currentLabels.has(label.toLowerCase())
             const unread=!!(email.new_email_notice||workspaceEmailHasUnreadActivity(email))
             const messages=needToSetThreadMessages(email)
+            const hasOutgoing=messages.some((message)=>String(message.direction||'').toLowerCase()==='outgoing') || !!(email.last_sent_at||email.sent_at||email.status==='sent')
+            const emailStatus=unread?'RESPONSE RECEIVED':attached?'CURRENT STEP':hasOutgoing?'AWAITING RESPONSE':'NOT STARTED'
             const assignedStepIndex=Math.max(0,steps.findIndex((candidate,idx)=>needToSetConfiguredEmailAssignments(candidate).some((item)=>String(item.id)===String(email.setting_email_id)||String(item.label).toLowerCase()===label.toLowerCase())))
             const assignedStep=steps[assignedStepIndex]||step
             const peopleOptions=needToSetPeopleOptionsForEvent(event)
@@ -27831,13 +27861,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             }
             return <article key={email.setting_email_id||email.id||index} style={{flex:'0 0 390px',minWidth:390,maxWidth:390,border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`,borderRadius:8,background:unread?'#fff1f2':'#fff',overflow:'hidden'}}>
               <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc'}}>
-                <div style={{display:'flex',justifyContent:'space-between',gap:6}}><strong style={{fontSize:12}}>{label}</strong><span style={{fontSize:10,fontWeight:800,color:unread?'#b91c1c':'#1d4ed8'}}>{unread?'RESPONSE RECEIVED':attached?'CURRENT STEP':'AWAITING RESPONSE'}</span></div>
+                <div style={{display:'flex',justifyContent:'space-between',gap:6,alignItems:'center'}}><strong style={{fontSize:12}}>{label}</strong><div style={{display:'flex',gap:5,alignItems:'center'}}><span style={{fontSize:10,fontWeight:800,color:unread?'#b91c1c':hasOutgoing?'#1d4ed8':'#64748b'}}>{emailStatus}</span><button type="button" title="Delete this email box" onClick={()=>{if(window.confirm(`Delete the ${label} email box from this event?`)) removeWorkspaceEmail(needToSetEventWorkspaceContext(event), liveEmail?.id||email.id)}} style={{padding:'2px 6px',fontSize:10,color:'#b91c1c',border:'1px solid #fecaca',background:'#fff1f2',borderRadius:5}}>Delete</button></div></div>
                 <div style={{fontSize:11}}>{email.subject||email.title||'Email thread'}</div>
                 <div style={{fontSize:10,color:'#64748b'}}>{email.to||'Email address not connected yet'}</div>
               </div>
               <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:'#fff'}}>
                 <select value={selectedPerson?.key||''} onChange={(e)=>{const person=peopleOptions.find((item)=>item.key===e.target.value); if(person)setAddress(person.email,person.source)}} style={{width:'100%',padding:5,fontSize:11}}><option value="">Connect to a person from this matter…</option>{peopleOptions.map((person)=><option key={person.key} value={person.key}>{person.label} — {person.email}</option>)}</select>
-                <div style={{display:'flex',gap:5,marginTop:5}}><input type="email" defaultValue={email.to||''} placeholder="Type or replace email address" onBlur={(e)=>setAddress(e.target.value,email.person_source||'')} style={{flex:1,minWidth:0,padding:5,fontSize:11}}/><button type="button" onClick={openConnector}>Connect existing thread</button></div>
+                <div style={{display:'flex',gap:5,marginTop:5}}><input type="email" value={(liveEmail||email).to||''} placeholder="Type or replace email address" onChange={(e)=>setAddress(e.target.value,(liveEmail||email).person_source||'')} style={{flex:1,minWidth:0,padding:5,fontSize:11}}/><button type="button" onClick={openConnector}>Connect existing thread</button></div>
               </div>
               <div style={{maxHeight:250,overflow:'auto'}}>{messages.slice(0,8).map((message,msgIndex)=>{const theirs=needToSetMessageIsTheirs(message,email);return <div key={message.id||msgIndex} style={{padding:'8px 9px',borderBottom:'1px solid #f1f5f9',color:theirs?'#b91c1c':'#1f2937',background:theirs?'#fffafa':'#fff'}}><div style={{display:'flex',justifyContent:'space-between',gap:6,fontSize:10,fontWeight:800}}><span>{message.from_name||message.from_email||message.from||(theirs?'THEIRS':'MINE')}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{fontSize:12,marginTop:4,whiteSpace:'pre-wrap'}}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{padding:12,color:'#64748b',fontSize:11}}>{email.configured_placeholder?'Choose a person or enter an address, then connect the existing Outlook conversation or compose the first message.':'No message content has synchronized yet.'}</div>}</div>
               <div style={{display:'flex',gap:6,padding:8}}>{actionButton('Open in Outlook',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex))}{actionButton('Reply / Send',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex,ai.draft_body||''),'primary')}</div>
@@ -27912,7 +27942,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#f8fafc'}}><strong>{waitingCount}</strong><span style={{marginLeft:6}}>Waiting on Others</span></div>
             <div style={{padding:'7px 10px',border:'1px solid #bbf7d0',borderRadius:9,background:'#f0fdf4'}}><strong>{readyCount}</strong><span style={{marginLeft:6}}>Ready to Confirm</span></div>
           </div>
-          <div className="nts-compact-grid" style={{ padding:'6px 8px', background:'#f8fafc', border:'1px solid #e2e8f0', fontSize:10, fontWeight:900, color:'#475569' }}><span>Matter / Client</span><span>Type</span><span>Court</span><span>Age</span><span>Activity</span><span>Waiting On</span><span>Carry-Forward</span><span>All Steps</span></div>
+          <div className="nts-compact-grid" style={{ padding:'6px 8px', background:'#f8fafc', border:'1px solid #e2e8f0', fontSize:10, fontWeight:900, color:'#475569' }}><span>Matter / Client</span><span>Type</span><span>Court</span><span>Age</span><span>Activity</span><span>Waiting On</span><span>Step Information</span><span>All Steps</span></div>
           <div style={{ display:'grid', gap:4, marginTop:4 }}>
             {rows.map((row)=>{
               if(row.type==='paused_divider') return <div key={row.key} style={{padding:'5px 8px',fontSize:11,fontWeight:900,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>Paused Need to Set events</div>
@@ -27935,7 +27965,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   <span><strong>{status.rowDays}d</strong></span>
                   <span><strong>{status.timeDays??'—'}d</strong></span>
                   <span style={{padding:'4px 6px',borderRadius:7,background:unread?'#fee2e2':'#dcfce7',color:unread?'#b91c1c':'#166534',fontWeight:850,fontSize:9.5,lineHeight:1.15}}>{unread?'Response received — action needed':`Waiting for ${status?.waitingOn||'Court / Client'}`}</span>
-                  <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>From: {status?.stepName||'Previous step'}</strong><div title={status?.lastBillingDescription||''} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{status?.lastBillingDescription||'No carry-forward details saved.'}</div></span>
+                  <span style={{border:'1px solid #e2e8f0',borderRadius:7,padding:'4px 6px',background:'#f8fafc',minWidth:0}}><strong style={{fontSize:9}}>{step?.default_pages?.data_field_label||status?.stepName||'Step information'}</strong><div title={needToSetStepDataValue(event,step)} style={{fontSize:8.5,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{needToSetStepDataValue(event,step)||'No step information entered.'}</div></span>
                   <div onClick={(e)=>e.stopPropagation()} style={{display:'flex',alignItems:'flex-start',gap:1,minWidth:0,overflow:'visible',paddingTop:2}}>{steps.map((step,index)=>renderNeedToSetStepPill(event,step,index,steps.length))}</div>
                 </div>
                 {renderNeedToSetExpandedStepDetail(event)}
