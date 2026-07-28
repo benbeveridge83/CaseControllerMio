@@ -1,8 +1,9 @@
 import React, { Fragment, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V168'
+const MIO_APP_VERSION = 'Mio V172'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1990,6 +1991,15 @@ function App() {
   })
   const [needToSetSettingsOpen, setNeedToSetSettingsOpen] = useState(false)
   const [needToSetEmailConnectOpen, setNeedToSetEmailConnectOpen] = useState({})
+  const [needToSetEmailPopup, setNeedToSetEmailPopup] = useState(null)
+  useEffect(() => {
+    const popup = needToSetEmailPopup?.popup
+    if (!popup) return undefined
+    const timer = window.setInterval(() => {
+      if (popup.closed) setNeedToSetEmailPopup(null)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [needToSetEmailPopup?.popup])
   const [needToSetSettingsType, setNeedToSetSettingsType] = useState('')
   const [needToSetAiByEvent, setNeedToSetAiByEvent] = useState({})
   const [needToSetAiLoading, setNeedToSetAiLoading] = useState({})
@@ -6063,7 +6073,7 @@ function App() {
     const selectedEvent = eventsList.find((event) => String(event.id || event.checklist_source_id || event.checklist_id || '') === checklistTimelineSelectedEventId) || eventsList[0] || null
     const selectedItems = selectedEvent ? checklistTimelineTemplateForEvent(selectedEvent) : []
     const selectedDone = selectedEvent ? selectedItems.filter((item) => eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]?.completed).length : 0
-    const detailWidth = checklistTimelineDetailsOpen ? 330 : 42
+    const detailWidth = checklistTimelineDetailsOpen ? 280 : 42
     const maxEventsByDayNumber = {}
     months.forEach((monthDate) => {
       const y = monthDate.getFullYear(), m = monthDate.getMonth()
@@ -6081,15 +6091,16 @@ function App() {
       const monthEvents = eventsList.filter((event) => { const d = checklistDateObj(event); return d && d.getFullYear() === y && d.getMonth() === m })
       const eventsByDay = {}
       monthEvents.forEach((event) => { const d = checklistDateObj(event).getDate(); eventsByDay[d] = (eventsByDay[d] || 0) + 1 })
-      const dayWidths = Array.from({ length: days }, (_, index) => Math.max(34, Math.min(180, 34 + Math.max(0, (maxEventsByDayNumber[index + 1] || 1) - 1) * 46)))
-      const gridColumns = `190px ${dayWidths.map((w) => `${w}px`).join(' ')}`
+      const dayWidths = Array.from({ length: days }, (_, index) => Math.max(30, Math.min(180, 30 + Math.max(0, (maxEventsByDayNumber[index + 1] || 1) - 1) * 46)))
+      const monthLabelWidth = 160
+      const gridColumns = `${monthLabelWidth}px ${dayWidths.map((w) => `${w}px`).join(' ')}`
       return (
         <section key={`${y}-${m}`} style={{ border: '1px solid #dbe3ec', borderRadius: 10, overflow: 'hidden', background: '#fff', marginBottom: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), background: '#f8fafc', borderBottom: '1px solid #dbe3ec' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: monthLabelWidth + dayWidths.reduce((a, b) => a + b, 0), background: '#f8fafc', borderBottom: '1px solid #dbe3ec' }}>
             <div style={{ padding: '10px 12px', fontWeight: 900, fontSize: 16, position: 'sticky', left: 0, zIndex: 3, background: '#f8fafc' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}</div>
             {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (maxEventsByDayNumber[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: 190 + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: monthLabelWidth + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
             <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.length} event{monthEvents.length === 1 ? '' : 's'}</div></div>
             {Array.from({ length: days }, (_, index) => {
               const dayEvents = monthEvents.filter((event) => checklistDateObj(event).getDate() === index + 1)
@@ -6114,7 +6125,7 @@ function App() {
             {!checklistTimelineDetailsOpen ? <button type="button" onClick={() => setChecklistTimelineDetailsOpen(true)} title="Open event details" style={{ width: 42, height: 48, border: 0, background: '#fff', fontSize: 20 }}>›</button> : selectedEvent ? <div style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><div><span style={{ display: 'inline-block', padding: '3px 7px', borderRadius: 5, color: '#fff', background: checklistTimelineEventColor(selectedEvent), fontSize: 11, fontWeight: 900 }}>{checklistTimelineEventType(selectedEvent).toUpperCase()}</span><h2 style={{ margin: '8px 0 2px', fontSize: 18 }}>{selectedEvent.checklist_title || selectedEvent.title || 'Event'}</h2><div style={{ color: '#475569', fontSize: 13 }}>{checklistMatterLabel(selectedEvent)}</div></div><button type="button" onClick={() => setChecklistTimelineDetailsOpen(false)} style={{ border: 0, background: 'transparent', fontSize: 20 }}>×</button></div><div style={{ marginTop: 12, fontSize: 13, display: 'grid', gap: 6 }}><div>📅 {formatChecklistDate(selectedEvent)}</div>{selectedEvent.start_time && <div>🕘 {formatEventTime(selectedEvent.start_time)}</div>}<div>🏛 {checklistCourtName(selectedEvent) || 'No court listed'}</div></div><div style={{ marginTop: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 13 }}><span>Checklist progress</span><span>{selectedDone} of {selectedItems.length}</span></div><div style={{ height: 7, background: '#e2e8f0', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}><div style={{ width: `${selectedItems.length ? selectedDone / selectedItems.length * 100 : 0}%`, height: '100%', background: '#16a34a' }} /></div></div><div style={{ marginTop: 14, display: 'grid', gap: 7 }}>{selectedItems.map((item) => { const completion = eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]; return <button key={item.id} type="button" onClick={() => toggleChecklistTimelineCompletion(selectedEvent, item)} style={{ display: 'grid', gridTemplateColumns: '30px 1fr auto', alignItems: 'center', gap: 8, textAlign: 'left', padding: 8, border: '1px solid #e2e8f0', borderRadius: 7, background: completion?.completed ? '#f0fdf4' : '#fff' }}><span style={{ width: 28, height: 28, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}` }}><ChecklistTimelineIcon name={item.icon} size={16} color={completion?.completed ? '#fff' : item.color} /></span><span><strong>{item.name}</strong>{completion?.completed && <small style={{ display: 'block', color: '#64748b' }}>Completed {new Date(completion.completed_at).toLocaleDateString()} by {completion.completed_by}</small>}</span><span style={{ color: completion?.completed ? '#16a34a' : '#94a3b8', fontSize: 18 }}>{completion?.completed ? '✓' : '○'}</span></button> })}</div><button type="button" onClick={() => editEvent(events.find((item) => item.id === (selectedEvent.id || selectedEvent.checklist_source_id)) || selectedEvent)} style={{ width: '100%', marginTop: 14, background: '#2563eb', color: '#fff', border: 0, borderRadius: 7, padding: 9, fontWeight: 800 }}>Open Event</button></div> : <div style={{ padding: 16, color: '#64748b' }}>Select an event icon stack to see its details.</div>}
           </aside>
         </div>
-        {checklistTimelineSettingsOpen && <div style={{ borderTop: '1px solid #cbd5e1', background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e2e8f0' }}><div><strong>Event Checklist Settings</strong><div style={{ color: '#64748b', fontSize: 12 }}>Configure the detailed icon, color, requirement, and order for each event type.</div></div><button type="button" onClick={() => setChecklistTimelineSettingsOpen(false)}>Collapse settings⌄</button></div><div style={{ display: 'grid', gridTemplateColumns: '190px minmax(700px,1fr)', minHeight: 250 }}><div style={{ borderRight: '1px solid #e2e8f0', padding: 10 }}>{Object.keys(eventChecklistTemplates).map((type) => <button key={type} type="button" onClick={() => setChecklistTimelineTemplateType(type)} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 6, marginBottom: 4, background: checklistTimelineTemplateType === type ? '#dbeafe' : 'transparent', color: checklistTimelineTemplateType === type ? '#1d4ed8' : '#334155', fontWeight: 800 }}>{type} <span style={{ float: 'right' }}>{(eventChecklistTemplates[type] || []).length}</span></button>)}<button type="button" onClick={() => { const name = window.prompt('New event type name'); if (name?.trim()) { setEventChecklistTemplates((current) => ({ ...current, [name.trim()]: [] })); setChecklistTimelineTemplateType(name.trim()) } }} style={{ width: '100%', marginTop: 8 }}>+ Add event type</button></div><div style={{ padding: 10, overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left', padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Checklist item</th><th style={{ textAlign: 'left', padding: 7 }}>Detailed icon</th><th style={{ textAlign: 'left', padding: 7 }}>Color</th><th style={{ textAlign: 'left', padding: 7 }}>Required</th><th style={{ padding: 7 }}></th></tr></thead><tbody>{(eventChecklistTemplates[checklistTimelineTemplateType] || []).map((item, index) => <tr key={item.id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={item.name} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { name: e.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><label style={{ display: 'flex', alignItems: 'center', gap: 7 }}><ChecklistTimelineIcon name={item.icon} size={19} color={item.color} /><select value={item.icon} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { icon: e.target.value })}>{CHECKLIST_TIMELINE_ICON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="color" value={item.color} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { color: e.target.value })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={Boolean(item.required)} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { required: e.target.checked })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeEventChecklistTemplateItem(checklistTimelineTemplateType, item.id)} title="Delete item">🗑</button></td></tr>)}</tbody></table><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}><button type="button" onClick={() => addEventChecklistTemplateItem(checklistTimelineTemplateType)}>+ Add checklist item</button><button type="button" onClick={() => setEventChecklistTemplates(DEFAULT_EVENT_CHECKLIST_TEMPLATES)}>Reset all defaults</button></div></div></div></div>}
+        {checklistTimelineSettingsOpen && <div style={{ borderTop: '1px solid #cbd5e1', background: '#fff', overflowX: 'auto', maxWidth: '100%' }}><div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e2e8f0' }}><div><strong>Event Checklist Settings</strong><div style={{ color: '#64748b', fontSize: 12 }}>Configure the detailed icon, color, requirement, and order for each event type.</div></div><button type="button" onClick={() => setChecklistTimelineSettingsOpen(false)}>Collapse settings⌄</button></div><div style={{ display: 'grid', gridTemplateColumns: '190px minmax(700px,1fr)', minHeight: 250, minWidth: 890 }}><div style={{ borderRight: '1px solid #e2e8f0', padding: 10 }}>{Object.keys(eventChecklistTemplates).map((type) => <button key={type} type="button" onClick={() => setChecklistTimelineTemplateType(type)} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 6, marginBottom: 4, background: checklistTimelineTemplateType === type ? '#dbeafe' : 'transparent', color: checklistTimelineTemplateType === type ? '#1d4ed8' : '#334155', fontWeight: 800 }}>{type} <span style={{ float: 'right' }}>{(eventChecklistTemplates[type] || []).length}</span></button>)}<button type="button" onClick={() => { const name = window.prompt('New event type name'); if (name?.trim()) { setEventChecklistTemplates((current) => ({ ...current, [name.trim()]: [] })); setChecklistTimelineTemplateType(name.trim()) } }} style={{ width: '100%', marginTop: 8 }}>+ Add event type</button></div><div style={{ padding: 10, overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left', padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Checklist item</th><th style={{ textAlign: 'left', padding: 7 }}>Detailed icon</th><th style={{ textAlign: 'left', padding: 7 }}>Color</th><th style={{ textAlign: 'left', padding: 7 }}>Required</th><th style={{ padding: 7 }}></th></tr></thead><tbody>{(eventChecklistTemplates[checklistTimelineTemplateType] || []).map((item, index) => <tr key={item.id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={item.name} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { name: e.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><label style={{ display: 'flex', alignItems: 'center', gap: 7 }}><ChecklistTimelineIcon name={item.icon} size={19} color={item.color} /><select value={item.icon} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { icon: e.target.value })}>{CHECKLIST_TIMELINE_ICON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="color" value={item.color} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { color: e.target.value })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={Boolean(item.required)} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { required: e.target.checked })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeEventChecklistTemplateItem(checklistTimelineTemplateType, item.id)} title="Delete item">🗑</button></td></tr>)}</tbody></table><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}><button type="button" onClick={() => addEventChecklistTemplateItem(checklistTimelineTemplateType)}>+ Add checklist item</button><button type="button" onClick={() => setEventChecklistTemplates(DEFAULT_EVENT_CHECKLIST_TEMPLATES)}>Reset all defaults</button></div></div></div></div>}
       </div>
     )
   }
@@ -11167,7 +11178,19 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function removeDraftingTemplateFile(fileName) {
-    setDraftingTemplateForm((current) => ({ ...current, files: (current.files || []).filter((file) => file.name !== fileName) }))
+    if (!fileName) return
+    if (!window.confirm(`Remove ${fileName} from this drafting template?`)) return
+    setDraftingTemplateForm((current) => {
+      const next = { ...current, files: (current.files || []).filter((file) => file.name !== fileName) }
+      if (next.id) {
+        setDraftingTemplates((templates) => templates.map((template) => String(template.id) === String(next.id) ? cleanDraftingTemplate({ ...template, files: next.files, updated_at: new Date().toISOString() }) : template))
+      }
+      return next
+    })
+  }
+
+  function removePendingDraftingTemplateFile(fileName, fileIndex) {
+    setDraftingTemplateUploadFiles((current) => Array.from(current || []).filter((file, index) => !(index === fileIndex && file.name === fileName)))
   }
 
   async function saveDraftingTemplate(e) {
@@ -23509,23 +23532,25 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
 
   function renderDraftingSettings() {
     const selectedTagName = draftingTemplateForm.tag_id ? tagFullName(draftingTemplateForm.tag_id) : ''
+    const pendingFiles = Array.from(draftingTemplateUploadFiles || [])
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
-        <form onSubmit={saveDraftingTemplate} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', display: 'grid', gap: 10 }}>
-          <h2>{draftingTemplateForm.id ? 'Edit Drafting Template' : 'Add Drafting Template'}</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.25fr)', gap: 14, alignItems: 'start', width: '100%' }}>
+        <form onSubmit={saveDraftingTemplate} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}>
+          <h2 style={{ marginTop: 0 }}>{draftingTemplateForm.id ? 'Edit Drafting Template' : 'Add Drafting Template'}</h2>
           <LabeledField label="Document Type"><input value={draftingTemplateForm.document_type} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, document_type: e.target.value })} placeholder="Notice of Hearing, Motion to Withdraw, etc." /></LabeledField>
           <LabeledField label="Template Name"><input value={draftingTemplateForm.name} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, name: e.target.value })} placeholder="Template display name" /></LabeledField>
           <LabeledField label="Template Text / Notes"><textarea value={draftingTemplateForm.template_text} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, template_text: e.target.value })} rows={8} placeholder="Paste template text here if available. Uploaded templates are also saved below." /></LabeledField>
-          <LabeledField label="Upload Template File(s)"><input type="file" multiple onChange={(e) => setDraftingTemplateUploadFiles(Array.from(e.target.files || []))} /></LabeledField>
-          {(draftingTemplateForm.files || []).length > 0 && <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8 }}><strong>Saved template files</strong>{(draftingTemplateForm.files || []).map((file) => <div key={file.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 }}><span>{file.name}</span><button type="button" onClick={() => removeDraftingTemplateFile(file.name)}>Remove</button></div>)}</div>}
+          <LabeledField label="Upload Template File(s)"><input type="file" multiple accept=".doc,.docx,.pdf,.rtf,.txt" onChange={(e) => setDraftingTemplateUploadFiles(Array.from(e.target.files || []))} /></LabeledField>
+          {pendingFiles.length > 0 && <div style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: 8, background: '#eff6ff', marginBottom: 10 }}><strong>Files waiting to be saved</strong>{pendingFiles.map((file, index) => <div key={`${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 6, alignItems: 'center', minWidth: 0 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => removePendingDraftingTemplateFile(file.name, index)}>Remove</button></div>)}</div>}
+          {(draftingTemplateForm.files || []).length > 0 && <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 10 }}><strong>Saved template files</strong><div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Remove deletes the file from this template immediately.</div>{(draftingTemplateForm.files || []).map((file, index) => <div key={`${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 6, alignItems: 'center', minWidth: 0 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => removeDraftingTemplateFile(file.name)} style={{ color: '#991b1b' }}>Remove</button></div>)}</div>}
           <LabeledField label="Requirements / Reminders"><textarea value={draftingTemplateForm.requirements} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, requirements: e.target.value })} rows={5} placeholder="Add reminders to review when drafting this document." /></LabeledField>
           <LabeledField label="AI Instructions"><textarea value={draftingTemplateForm.ai_instructions} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, ai_instructions: e.target.value })} rows={5} placeholder="Instructions for the AI for this specific type of draft." /></LabeledField>
           <LabeledField label="Document Tag Applied to Saved Drafts"><select value={draftingTemplateForm.tag_id} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, tag_id: e.target.value })}><option value="">No default tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{tag.label}</option>)}</select>{selectedTagName && <div style={{ fontSize: 12, color: '#475569' }}>Selected: {selectedTagName}</div>}</LabeledField>
-          <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>User fields for this draft</legend><p style={{ color: '#64748b', marginTop: 0 }}>Add fields the user must fill in before drafting, such as setting date, setting time, hearing location, or special relief.</p>{(draftingTemplateForm.fields || []).map((field) => <div key={field.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 6, marginBottom: 6, alignItems: 'center' }}><input value={field.label || ''} onChange={(e) => updateDraftingTemplateField(field.id, { label: e.target.value })} placeholder="Field label" /><input value={field.key || ''} onChange={(e) => updateDraftingTemplateField(field.id, { key: e.target.value })} placeholder="field_key" /><input value={field.help || ''} onChange={(e) => updateDraftingTemplateField(field.id, { help: e.target.value })} placeholder="Help text" /><label><input type="checkbox" checked={!!field.required} onChange={(e) => updateDraftingTemplateField(field.id, { required: e.target.checked })} /> Required</label><button type="button" onClick={() => removeDraftingTemplateField(field.id)}>Remove</button></div>)}<button type="button" onClick={addDraftingTemplateField}>+ Add Field</button></fieldset>
-          <label><input type="checkbox" checked={draftingTemplateForm.is_active !== false} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, is_active: e.target.checked })} /> Active</label>
-          <div style={{ display: 'flex', gap: 8 }}><button type="submit">Save Drafting Template</button><button type="button" onClick={resetDraftingTemplateForm}>Clear</button></div>
+          <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6, minWidth: 0 }}><legend>User fields for this draft</legend><p style={{ color: '#64748b', marginTop: 0 }}>Add fields the user must fill in before drafting, such as setting date, setting time, hearing location, or special relief.</p>{(draftingTemplateForm.fields || []).map((field) => <div key={field.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, 1fr) minmax(110px, 1fr) minmax(130px, 1fr) auto auto', gap: 6, marginBottom: 6, alignItems: 'center', minWidth: 0 }}><input value={field.label || ''} onChange={(e) => updateDraftingTemplateField(field.id, { label: e.target.value })} placeholder="Field label" /><input value={field.key || ''} onChange={(e) => updateDraftingTemplateField(field.id, { key: e.target.value })} placeholder="field_key" /><input value={field.help || ''} onChange={(e) => updateDraftingTemplateField(field.id, { help: e.target.value })} placeholder="Help text" /><label><input type="checkbox" checked={!!field.required} onChange={(e) => updateDraftingTemplateField(field.id, { required: e.target.checked })} /> Required</label><button type="button" onClick={() => removeDraftingTemplateField(field.id)}>Remove</button></div>)}<button type="button" onClick={addDraftingTemplateField}>+ Add Field</button></fieldset>
+          <label style={{ display: 'block', marginTop: 10 }}><input type="checkbox" checked={draftingTemplateForm.is_active !== false} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, is_active: e.target.checked })} /> Active</label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="submit">{draftingTemplateForm.id ? 'Save Changes' : 'Add Template'}</button><button type="button" onClick={resetDraftingTemplateForm}>Clear</button></div>
         </form>
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2>Drafting Templates</h2>{draftingTemplates.length === 0 && <p>No drafting templates have been added yet.</p>}{draftingTemplates.map((template) => <div key={template.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, marginBottom: 10 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}><div><strong>{draftingTemplateLabel(template)}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{template.document_type || 'No document type'} {template.tag_id ? `| Tag: ${tagFullName(template.tag_id)}` : ''}</div><div style={{ fontSize: 12 }}>{(template.fields || []).length} user field(s); {(template.files || []).length} template file(s)</div></div><div><button type="button" onClick={() => editDraftingTemplate(template)}>Edit</button><button type="button" onClick={() => deleteDraftingTemplate(template.id)} style={{ marginLeft: 6 }}>Delete</button></div></div>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>)}</div>
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}><h2 style={{ marginTop: 0 }}>Drafting Templates</h2>{draftingTemplates.length === 0 && <p>No drafting templates have been added yet.</p>}{draftingTemplates.map((template) => <div key={template.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, marginBottom: 10, minWidth: 0 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 260px' }}><strong>{draftingTemplateLabel(template)}</strong><div style={{ fontSize: 12, color: '#64748b', overflowWrap: 'anywhere' }}>{template.document_type || 'No document type'} {template.tag_id ? `| Tag: ${tagFullName(template.tag_id)}` : ''}</div><div style={{ fontSize: 12 }}>{(template.fields || []).length} user field(s); {(template.files || []).length} template file(s)</div></div><div style={{ flex: '0 0 auto' }}><button type="button" onClick={() => editDraftingTemplate(template)}>Edit</button><button type="button" onClick={() => deleteDraftingTemplate(template.id)} style={{ marginLeft: 6 }}>Delete</button></div></div>{(template.files || []).length > 0 && <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}><strong style={{ fontSize: 12 }}>Template files</strong>{(template.files || []).map((file, index) => <div key={`${template.id}-${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginTop: 5, minWidth: 0 }}><span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => { setDraftingTemplateForm(cleanDraftingTemplate(template)); setDraftingTemplateUploadFiles([]); setTimeout(() => removeDraftingTemplateFile(file.name), 0) }} style={{ color: '#991b1b', padding: '4px 8px' }}>Remove</button></div>)}</div>}{template.requirements && <p style={{ overflowWrap: 'anywhere' }}><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p style={{ overflowWrap: 'anywhere' }}><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>)}</div>
       </div>
     )
   }
@@ -27792,7 +27817,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             const selectedPerson=peopleOptions.find((item)=>item.email.toLowerCase()===String(email.to||'').toLowerCase())
             const liveEmail=needToSetEmailsForEvent(event).find((item)=>String(item.setting_email_id||'')===String(email.setting_email_id||'')||String(item.recipient_label||'').toLowerCase()===label.toLowerCase())
             const setAddress=(address,personSource='')=>materializeNeedToSetEmail(event,assignedStep,assignedStepIndex,email,{to:address,search_email:address,person_source:personSource,status_note:address?`Connected to ${address}. Ready to find the Outlook conversation.`:'Email address cleared.'})
-            const openConnector=()=>{ const id=materializeNeedToSetEmail(event,assignedStep,assignedStepIndex,email,{to:email.to||'',compose_mode:'attach',send_collapsed:true}); setNeedToSetEmailConnectOpen((current)=>({...current,[connectorKey]:!current[connectorKey]})); return id }
+            const openConnector=()=>{
+              const id=materializeNeedToSetEmail(event,assignedStep,assignedStepIndex,email,{to:email.to||'',compose_mode:'attach',send_collapsed:true})
+              const popupName=`mio-need-to-set-email-${String(id||connectorKey).replace(/[^a-zA-Z0-9_-]/g,'-')}`
+              const popup=window.open('',popupName,'width=1450,height=920,resizable=yes,scrollbars=yes')
+              if(!popup){ alert('Popup was blocked. Allow popups for Mio, then click Connect existing thread again.'); return id }
+              popup.document.title=`Connect Outlook thread - ${label}`
+              popup.document.body.style.margin='0'
+              popup.document.body.style.background='#f6f8fb'
+              setNeedToSetEmailPopup({popup,event,assignedStep,assignedStepIndex,emailId:id,connectorKey,label})
+              try{popup.focus()}catch{}
+              return id
+            }
             return <article key={email.setting_email_id||email.id||index} style={{flex:'0 0 390px',minWidth:390,maxWidth:390,border:`${attached?2:1}px solid ${attached?'#2563eb':unread?'#fca5a5':'#dbe4ee'}`,borderRadius:8,background:unread?'#fff1f2':'#fff',overflow:'hidden'}}>
               <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:attached?'#eff6ff':unread?'#fff1f2':'#f8fafc'}}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:6}}><strong style={{fontSize:12}}>{label}</strong><span style={{fontSize:10,fontWeight:800,color:unread?'#b91c1c':'#1d4ed8'}}>{unread?'RESPONSE RECEIVED':attached?'CURRENT STEP':'AWAITING RESPONSE'}</span></div>
@@ -27801,9 +27837,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               </div>
               <div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:'#fff'}}>
                 <select value={selectedPerson?.key||''} onChange={(e)=>{const person=peopleOptions.find((item)=>item.key===e.target.value); if(person)setAddress(person.email,person.source)}} style={{width:'100%',padding:5,fontSize:11}}><option value="">Connect to a person from this matter…</option>{peopleOptions.map((person)=><option key={person.key} value={person.key}>{person.label} — {person.email}</option>)}</select>
-                <div style={{display:'flex',gap:5,marginTop:5}}><input type="email" defaultValue={email.to||''} placeholder="Type or replace email address" onBlur={(e)=>setAddress(e.target.value,email.person_source||'')} style={{flex:1,minWidth:0,padding:5,fontSize:11}}/><button type="button" onClick={openConnector}>{connectOpen?'Hide connector':'Connect existing thread'}</button></div>
+                <div style={{display:'flex',gap:5,marginTop:5}}><input type="email" defaultValue={email.to||''} placeholder="Type or replace email address" onBlur={(e)=>setAddress(e.target.value,email.person_source||'')} style={{flex:1,minWidth:0,padding:5,fontSize:11}}/><button type="button" onClick={openConnector}>Connect existing thread</button></div>
               </div>
-              {connectOpen&&liveEmail&&<div style={{padding:8,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>{renderWorkspaceEmailCard(needToSetEventWorkspaceContext(event),liveEmail,index)}</div>}
               <div style={{maxHeight:250,overflow:'auto'}}>{messages.slice(0,8).map((message,msgIndex)=>{const theirs=needToSetMessageIsTheirs(message,email);return <div key={message.id||msgIndex} style={{padding:'8px 9px',borderBottom:'1px solid #f1f5f9',color:theirs?'#b91c1c':'#1f2937',background:theirs?'#fffafa':'#fff'}}><div style={{display:'flex',justifyContent:'space-between',gap:6,fontSize:10,fontWeight:800}}><span>{message.from_name||message.from_email||message.from||(theirs?'THEIRS':'MINE')}</span><span>{needToSetShortDate(message.received_at||message.sent_at||message.created_at||'')}</span></div><div style={{fontSize:12,marginTop:4,whiteSpace:'pre-wrap'}}>{message.body_text||message.body||message.preview||message.snippet||'No message content saved.'}</div></div>})}{!messages.length&&<div style={{padding:12,color:'#64748b',fontSize:11}}>{email.configured_placeholder?'Choose a person or enter an address, then connect the existing Outlook conversation or compose the first message.':'No message content has synchronized yet.'}</div>}</div>
               <div style={{display:'flex',gap:6,padding:8}}>{actionButton('Open in Outlook',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex))}{actionButton('Reply / Send',()=>openNeedToSetOutlook(liveEmail||email,event,assignedStep,assignedStepIndex,ai.draft_body||''),'primary')}</div>
             </article>
@@ -27813,6 +27848,28 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       </section>
     </div>
   }
+  function renderNeedToSetEmailPopup() {
+    const popupState = needToSetEmailPopup
+    const popup = popupState?.popup
+    if (!popup || popup.closed) return null
+    const context = needToSetEventWorkspaceContext(popupState.event)
+    const popupEmail = needToSetEmailsForEvent(popupState.event).find((item) => String(item.id || '') === String(popupState.emailId || ''))
+      || needToSetEmailsForEvent(popupState.event).find((item) => String(item.setting_email_id || '') === String(popupState.connectorKey?.split('::')[1] || ''))
+    if (!popupEmail) return null
+    return createPortal(
+      <div style={{minHeight:'100vh',padding:18,fontFamily:'Inter, Segoe UI, Arial, sans-serif',color:'#0f172a',boxSizing:'border-box'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,marginBottom:12,padding:'12px 16px',background:'#0f72c9',color:'#fff',borderRadius:10}}>
+          <div><strong style={{fontSize:18}}>Connect existing Outlook thread</strong><div style={{fontSize:12,opacity:.9}}>{checklistMatterLabel(popupState.event)} · {popupState.label}</div></div>
+          <button type="button" onClick={()=>{try{popup.close()}catch{};setNeedToSetEmailPopup(null)}} style={{border:'1px solid rgba(255,255,255,.65)',background:'#fff',color:'#0f72c9',borderRadius:8,padding:'8px 12px',fontWeight:800}}>Close window</button>
+        </div>
+        <div style={{background:'#fff',border:'1px solid #dbe4ee',borderRadius:12,padding:14,boxShadow:'0 12px 32px rgba(15,23,42,.10)'}}>
+          {renderWorkspaceEmailCard(context,popupEmail,0)}
+        </div>
+      </div>,
+      popup.document.body
+    )
+  }
+
   function renderNeedToSetFloatingToc(rows = []) {
     const items = rows.filter((row) => row.type !== 'paused_divider' && row.event).map((row) => ({ event: row.event, steps: checklistStepsForEvent(row.event) }))
     if (!items.length) return null
@@ -27890,6 +27947,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         {needToSetTocDock==='right'&&renderNeedToSetFloatingToc(rows)}
       </div>
       {renderNeedToSetSettingsDrawer(rows)}
+      {renderNeedToSetEmailPopup()}
     </>
   }
 
@@ -35821,7 +35879,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           z-index: 1;
         }
       `}</style>
-      {!isClientPortalMember() && <aside style={{ width: 190, minHeight: '100vh', background: '#f2f2f2', padding: 20 }}>
+      {!isClientPortalMember() && <aside style={{ width: 190, flex: '0 0 190px', boxSizing: 'border-box', minHeight: '100vh', background: '#f2f2f2', padding: 20 }}>
         <h3>Case Controller</h3>
 
         {canOpenPage('team') && (
@@ -35978,7 +36036,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </button>
       </aside>}
 
-      <main className={isClientPortalMember() ? 'mio-client-portal' : ''} style={{ flex: 1, padding: isClientPortalMember() ? 24 : 20, minWidth: 0, width: isClientPortalMember() ? '100vw' : 'calc(100vw - 190px)' }}>
+      <main className={isClientPortalMember() ? 'mio-client-portal' : ''} style={{ flex: '1 1 auto', padding: isClientPortalMember() ? 24 : 20, minWidth: 0, maxWidth: isClientPortalMember() ? '100vw' : 'calc(100vw - 190px)', width: isClientPortalMember() ? '100vw' : 'auto', boxSizing: 'border-box', overflowX: 'hidden' }}>
         {!isClientPortalMember() && <p>Logged in as: {session.user.email}</p>}
 
         {!isClientPortalMember() && <button
