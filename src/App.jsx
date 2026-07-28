@@ -2,7 +2,7 @@ import React, { Fragment, useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V167'
+const MIO_APP_VERSION = 'Mio V168'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -11260,17 +11260,60 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setDraftingStatus('Draft created with local fallback. Update the draft-document edge function for full AI drafting from template files and matter documents.')
   }
 
+  function escapeDraftWordHtml(value) {
+    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  }
+
+  function draftingWordFileName(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    return `${template?.document_type || template?.name || 'Draft'} - ${matter?.name || matter?.cause_number || 'Matter'}.doc`.replace(/[\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim()
+  }
+
+  function buildDraftWordHtml(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    const title = template?.document_type || template?.name || 'Draft Document'
+    const body = String(draftingOutput || '').trim().split(/\n{2,}/).map((block) => `<p>${block.split('\n').map(escapeDraftWordHtml).join('<br>') || '&nbsp;'}</p>`).join('')
+    return `<!doctype html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>${escapeDraftWordHtml(title)}</title><style>@page{size:8.5in 11in;margin:1in}body{font-family:"Times New Roman",serif;font-size:12pt;line-height:2;margin:0;color:#000}p{margin:0 0 12pt}.mio-meta{font-family:Arial,sans-serif;font-size:9pt;color:#666;border-bottom:1px solid #ddd;padding-bottom:8pt;margin-bottom:18pt;line-height:1.25}</style></head><body><div class="mio-meta">Generated in Case Controller Mio for ${escapeDraftWordHtml(matter ? formatMatterOption(matter) : '')}. Template: ${escapeDraftWordHtml(draftingTemplateLabel(template || {}))}.</div>${body}</body></html>`
+  }
+
+  function buildDraftWordDataUrl(lockedMatterId = '') {
+    const encoded = btoa(unescape(encodeURIComponent(buildDraftWordHtml(lockedMatterId))))
+    return `data:application/msword;base64,${encoded}`
+  }
+
+  function downloadCurrentDraftWord(lockedMatterId = '') {
+    if (!String(draftingOutput || '').trim()) { alert('Generate or enter draft text before downloading.'); return }
+    const link = document.createElement('a')
+    link.href = buildDraftWordDataUrl(lockedMatterId)
+    link.download = draftingWordFileName(lockedMatterId)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setDraftingStatus('Word document downloaded. It can be opened and edited in Microsoft Word.')
+  }
+
+  function viewCurrentDraftWord(lockedMatterId = '') {
+    if (!String(draftingOutput || '').trim()) { alert('Generate or enter draft text before opening the viewer.'); return }
+    const previewWindow = window.open('', '_blank')
+    if (!previewWindow) { alert('Your browser blocked the draft viewer. Allow pop-ups for Mio and try again.'); return }
+    const fileName = draftingWordFileName(lockedMatterId)
+    const wordDataUrl = buildDraftWordDataUrl(lockedMatterId)
+    const bodyHtml = buildDraftWordHtml(lockedMatterId).match(/<body>([\s\S]*)<\/body>/)?.[1] || ''
+    previewWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeDraftWordHtml(fileName)}</title><style>body{margin:0;background:#e5e7eb;font-family:Arial,sans-serif}.bar{position:sticky;top:0;background:#fff;border-bottom:1px solid #cbd5e1;padding:10px 16px;display:flex;justify-content:space-between}.page{width:8.5in;min-height:11in;margin:24px auto;background:#fff;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:1in;box-sizing:border-box;font-family:"Times New Roman",serif;font-size:12pt;line-height:2}.page p{margin:0 0 12pt}.mio-meta{font-family:Arial,sans-serif;font-size:9pt;color:#666;border-bottom:1px solid #ddd;padding-bottom:8pt;margin-bottom:18pt;line-height:1.25}@media print{.bar{display:none}.page{box-shadow:none;margin:0}}</style></head><body><div class="bar"><strong>${escapeDraftWordHtml(fileName)}</strong><div><button onclick="window.print()">Print</button> <a href="${wordDataUrl}" download="${escapeDraftWordHtml(fileName)}"><button>Download Word</button></a> <button onclick="window.close()">Close</button></div></div><div class="page">${bodyHtml}</div></body></html>`)
+    previewWindow.document.close()
+  }
+
   function saveCurrentDraftToDocuments(lockedMatterId = '') {
     const matter = draftingSelectedMatter(lockedMatterId)
     const template = draftingSelectedTemplate()
     if (!matter || !template || !String(draftingOutput || '').trim()) { alert('Generate or enter draft text before saving.'); return }
-    const docId = `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const draftText = String(draftingOutput || '')
-    const fileName = `${template.document_type || template.name || 'Draft'} - ${matter.name || matter.cause_number || 'Matter'}.txt`.replace(/[\\/:*?"<>|]+/g, '-')
-    const encoded = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(draftText))) : ''
+    const fileName = draftingWordFileName(lockedMatterId)
+    const wordHtml = buildDraftWordHtml(lockedMatterId)
     const tagIds = template.tag_id ? tagAndParentIds([template.tag_id]) : []
-    setDocuments((current) => [{ id: docId, matter_id: matter.id, name: fileName.replace(/\.txt$/i, ''), date: dateToInputValue(new Date()), description: `Draft generated from ${draftingTemplateLabel(template)}.`, status: 'Draft', tag_ids: tagIds, document_field_values: { ...(draftingSelection.field_values || {}), draft_type: template.document_type || template.name || '' }, upload_date: dateToInputValue(new Date()), file_name: fileName, original_file_name: fileName, file_type: 'text/plain', file_size: draftText.length, file_data: `data:text/plain;base64,${encoded}`, ...emptyDocumentAiReview }, ...current])
-    setDraftingStatus('Draft saved to the Documents page/tab with the template tag applied.')
+    setDocuments((current) => [{ id: `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`, matter_id: matter.id, name: fileName.replace(/\.doc$/i, ''), date: dateToInputValue(new Date()), description: `Editable Word draft generated from ${draftingTemplateLabel(template)}.`, status: 'Draft', tag_ids: tagIds, document_field_values: { ...(draftingSelection.field_values || {}), draft_type: template.document_type || template.name || '', requirements_reminders: template.requirements || '', ai_instructions: template.ai_instructions || '' }, upload_date: dateToInputValue(new Date()), file_name: fileName, original_file_name: fileName, file_type: 'application/msword', file_size: wordHtml.length, file_data: buildDraftWordDataUrl(lockedMatterId), ...emptyDocumentAiReview }, ...current])
+    setDraftingStatus('Word draft saved to this matter’s Documents tab. You can open or download it from Saved Drafts or Documents.')
   }
 
   async function prepareBulkDocuments(fileList, forcedMatterId = '', options = {}) {
@@ -23499,7 +23542,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       <div style={{ display: 'grid', gap: 14 }}>
         {!embedded && <h1>Drafting</h1>}
         <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Begin Drafting</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)', gap: 12 }}><LabeledField label="Matter">{lockedMatterId ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4 }}>{matter ? formatMatterOption(matter) : 'Matter not found'}</div> : <SmartMatterSelect value={draftingSelection.matter_id} onChange={(value) => setDraftingSelection({ ...draftingSelection, matter_id: value })} placeholder="Select matter" />}</LabeledField><LabeledField label="Document Type / Template"><select value={draftingSelection.template_id} onChange={(e) => setDraftingSelection({ ...draftingSelection, template_id: e.target.value, field_values: {} })}><option value="">Select drafting template</option>{activeTemplates.map((item) => <option key={item.id} value={item.id}>{draftingTemplateLabel(item)}</option>)}</select></LabeledField></div>
-          {template && <div style={{ marginTop: 12, display: 'grid', gap: 10 }}><div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, background: '#f8fafc' }}><strong>{draftingTemplateLabel(template)}</strong>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>{(template.fields || []).length > 0 && <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>Draft fields</legend><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 10 }}>{(template.fields || []).map((field) => <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}><input value={(draftingSelection.field_values || {})[field.key] || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.help || ''} /></LabeledField>)}</div></fieldset>}<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => generateDraftForMatter(lockedMatterId)}>Draft for Matter</button><button type="button" onClick={() => saveCurrentDraftToDocuments(lockedMatterId)} disabled={!draftingOutput}>Save Draft to Documents</button><button type="button" onClick={() => { setDraftingOutput(''); setDraftingStatus('') }}>Clear Draft</button></div>{draftingStatus && <div style={{ color: '#334155', fontWeight: 'bold' }}>{draftingStatus}</div>}<LabeledField label="Draft Text"><textarea value={draftingOutput} onChange={(e) => setDraftingOutput(e.target.value)} rows={20} placeholder="Generated draft will appear here and can be edited before saving to Documents." /></LabeledField></div>}
+          {template && <div style={{ marginTop: 12, display: 'grid', gap: 10 }}><div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, background: '#f8fafc' }}><strong>{draftingTemplateLabel(template)}</strong>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>{(template.fields || []).length > 0 && <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>Draft fields</legend><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 10 }}>{(template.fields || []).map((field) => <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}><input value={(draftingSelection.field_values || {})[field.key] || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.help || ''} /></LabeledField>)}</div></fieldset>}<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => generateDraftForMatter(lockedMatterId)}>Draft for Matter</button><button type="button" onClick={() => viewCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>View Word Draft</button><button type="button" onClick={() => downloadCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>Download Word</button><button type="button" onClick={() => saveCurrentDraftToDocuments(lockedMatterId)} disabled={!draftingOutput}>Save Word to Matter Documents</button><button type="button" onClick={() => { setDraftingOutput(''); setDraftingStatus('') }}>Clear Draft</button></div>{draftingStatus && <div style={{ color: '#334155', fontWeight: 'bold' }}>{draftingStatus}</div>}<LabeledField label="Draft Text"><textarea value={draftingOutput} onChange={(e) => setDraftingOutput(e.target.value)} rows={20} placeholder="Generated draft will appear here and can be edited before viewing, downloading, or saving as a Word document." /></LabeledField></div>}
         </div>
         <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Saved Drafts for This Matter</h2>{!matterId && <p>Select a matter to see saved drafts.</p>}{matterId && matterDrafts.length === 0 && <p>No drafts saved for this matter yet.</p>}{matterDrafts.map((doc) => <div key={doc.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><strong>{doc.name || doc.file_name}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{doc.date || doc.upload_date || ''} {doc.tag_ids?.length ? `| ${doc.tag_ids.map((tagId) => tagFullName(tagId)).filter(Boolean).join(', ')}` : ''}</div><div>{doc.description}</div></div><div><button type="button" onClick={() => viewDocument(doc)}>Open</button><button type="button" onClick={() => downloadDocument(doc)} style={{ marginLeft: 6 }}>Download</button></div></div>)}</div>
       </div>
