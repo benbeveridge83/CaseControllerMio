@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V176'
+const MIO_APP_VERSION = 'Mio V177'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -3698,9 +3698,20 @@ function App() {
   useEffect(() => {
     if (!session?.user?.email || !userAccessChecked || !isClientPortalMember()) return
     const allowedPages = getAllowedPages()
-    if (!allowedPages.includes(page)) setPage(allowedPages[0] || 'enforcement')
-    const rows = clientPortalMatterRows()
-    if (!rows.some((matter) => String(matter.id) === String(violationsMatterId))) setViolationsMatterId(rows[0]?.id || '')
+    if (!allowedPages.includes(page)) {
+      setPage(allowedPages[0] || 'enforcement')
+      return
+    }
+    if (page !== 'enforcement') return
+    const rows = clientPortalPageMatterRows('enforcement')
+    const requestedMatterId = hashParamValue('matter', '')
+    const requestedIsAllowed = rows.some((matter) => String(matter.id) === String(requestedMatterId))
+    const currentIsAllowed = rows.some((matter) => String(matter.id) === String(violationsMatterId))
+    const nextMatterId = requestedIsAllowed ? String(requestedMatterId) : (currentIsAllowed ? String(violationsMatterId) : String(rows[0]?.id || ''))
+    if (nextMatterId && String(violationsMatterId) !== nextMatterId) setViolationsMatterId(nextMatterId)
+    if (nextMatterId && requestedMatterId !== nextMatterId && typeof window !== 'undefined') {
+      window.history.replaceState(null, '', `#enforcement?matter=${encodeURIComponent(nextMatterId)}`)
+    }
   }, [session?.user?.email, userAccessChecked, currentTeamMember, matters, page, violationsMatterId])
 
   useEffect(() => {
@@ -3993,6 +4004,19 @@ function App() {
     const email = String(member?.email || session?.user?.email || '').trim().toLowerCase()
     if (!email) return []
     return matters.filter((matter) => String(matterClientEmail(matter) || '').trim().toLowerCase() === email)
+  }
+
+  function clientPortalPageMatterRows(pageName, member = currentTeamMember) {
+    const allRows = clientPortalMatterRows(member)
+    if (!isClientPortalMember(member)) return allRows
+    const permissions = clientMatterPermissions(member)
+    if (!permissions.length) return allRows
+    const allowedIds = new Set(
+      permissions
+        .filter((item) => item.page === pageName)
+        .map((item) => String(item.matterId))
+    )
+    return allRows.filter((matter) => allowedIds.has(String(matter.id)))
   }
 
   async function checkCurrentUserAccess(email) {
@@ -32796,7 +32820,7 @@ ${choices}`, '1'))
       const first = String(matterRow?.clients?.first_name || '').trim()
       return `${last}, ${first}`.replace(/^,\s*/, '').trim() || String(matterRow?.name || '')
     }
-    const availableMatters = (clientPortal ? clientPortalMatterRows() : matters.filter(enforcementMatterIsOpen))
+    const availableMatters = (clientPortal ? clientPortalPageMatterRows('enforcement') : matters.filter(enforcementMatterIsOpen))
       .slice()
       .sort((a, b) => enforcementClientSortName(a).localeCompare(enforcementClientSortName(b), undefined, { sensitivity: 'base' }))
     const enforcementMatterLabel = (matterRow) => {
@@ -32849,11 +32873,24 @@ ${choices}`, '1'))
         `}</style>
         <div className="enforcement-no-print" style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:14}}>
           <div><h1 style={{margin:'0 0 4px'}}>{clientPortal?'Your Enforcement Case':'Enforcement'}</h1><div style={{color:'#64748b'}}>{clientPortal?'Review the violations, exhibits, requested relief, and testimony plan prepared for your matter.':'Add violations, organize a violation-to-exhibit matrix, build the numbered exhibit list, assign predicate foundations, and print the complete court outline.'}</div></div>
-          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>{!clientPortal&&<label style={{minWidth:390}}>Matter<input list="enforcement-matter-options" value={enforcementMatterSearch || (matter ? enforcementMatterLabel(matter) : '')} onChange={(e)=>{const text=e.target.value;setEnforcementMatterSearch(text);const match=availableMatters.find((row)=>enforcementMatterLabel(row).toLowerCase()===text.trim().toLowerCase());if(match){setViolationsMatterId(String(match.id));setExpandedViolationIds([]);setEnforcementMatterSearch(enforcementMatterLabel(match))}}} onFocus={(e)=>e.currentTarget.select()} placeholder="Type client last name, first name, matter, or cause number..." autoComplete="off" style={{width:'100%'}}/><datalist id="enforcement-matter-options">{availableMatters.map((row)=><option key={row.id} value={enforcementMatterLabel(row)}/>)}</datalist></label>}{!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}<button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}</div>
+          <div style={{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}}>
+            {clientPortal ? (
+              <label style={{minWidth:390,maxWidth:620}}><strong>Matter</strong>
+                <select value={violationsMatterId || ''} onChange={(e)=>{const nextMatterId=String(e.target.value||'');if(!nextMatterId)return;setViolationsMatterId(nextMatterId);setExpandedViolationIds([]);setEnforcementMatterSearch('');setEnforcementWorkspaceTab((current)=>{const tabs=clientAllowedTabs('enforcement',nextMatterId);return tabs.includes(current)?current:(tabs[0]||'violations')});if(typeof window!=='undefined')window.history.replaceState(null,'',`#enforcement?matter=${encodeURIComponent(nextMatterId)}`)}} style={{width:'100%',marginTop:4}}>
+                  {availableMatters.map((row)=><option key={row.id} value={String(row.id)}>{enforcementMatterLabel(row)}</option>)}
+                </select>
+                {availableMatters.length>1&&<small style={{display:'block',marginTop:4,color:'#64748b'}}>Select any matter you have permission to view.</small>}
+              </label>
+            ) : (
+              <label style={{minWidth:390}}>Matter<input list="enforcement-matter-options" value={enforcementMatterSearch || (matter ? enforcementMatterLabel(matter) : '')} onChange={(e)=>{const text=e.target.value;setEnforcementMatterSearch(text);const match=availableMatters.find((row)=>enforcementMatterLabel(row).toLowerCase()===text.trim().toLowerCase());if(match){setViolationsMatterId(String(match.id));setExpandedViolationIds([]);setEnforcementMatterSearch(enforcementMatterLabel(match));if(typeof window!=='undefined')window.history.replaceState(null,'',`#enforcement?matter=${encodeURIComponent(match.id)}`)}}} onFocus={(e)=>e.currentTarget.select()} placeholder="Type client last name, first name, matter, or cause number..." autoComplete="off" style={{width:'100%'}}/><datalist id="enforcement-matter-options">{availableMatters.map((row)=><option key={row.id} value={enforcementMatterLabel(row)}/>)}</datalist></label>
+            )}
+            {!clientPortal&&<button type="button" onClick={addViolation} disabled={!violationsMatterId}>+ Add Violation</button>}
+            <button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}
+          </div>
         </div>
         {enforcementSaveError&&<div className="enforcement-no-print" style={{border:'2px solid #dc2626',background:'#fef2f2',color:'#991b1b',padding:10,borderRadius:8,marginBottom:12,fontWeight:850}}>Enforcement changes are not reaching Supabase: {enforcementSaveError}. Do not close this tab until this is fixed or use Save now after running the V151 SQL migration.</div>}
         {!clientPortal&&<div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>}
-        {!violationsMatterId&&<div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>Select a matter to begin an enforcement outline.</div>}
+        {!violationsMatterId&&<div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>{clientPortal?'You do not currently have Enforcement access for any matter.':'Select a matter to begin an enforcement outline.'}</div>}
         {violationsMatterId&&rows.length>0&&<nav className="enforcement-workspace-tabs enforcement-screen-only" aria-label="Enforcement workspace sections">{[
           ['violations','Violations'],
           ['matrix','Violation-Exhibit Matrix'],
