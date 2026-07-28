@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V177'
+const MIO_APP_VERSION = 'Mio V178'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2088,6 +2088,8 @@ function App() {
   })
   const relevanceTocDragRef = useRef(null)
   const enforcementSharedSaveTimersRef = useRef({})
+  const enforcementSaveInFlightRef = useRef({})
+  const enforcementSaveQueuedRef = useRef({})
   const enforcementLastSavedJsonRef = useRef({})
   const enforcementDocumentCatalogRef = useRef({})
   useEffect(() => {
@@ -31867,11 +31869,10 @@ ${choices}`, '1'))
   }
 
   function enforcementRowsWithCatalog(matterId, rows = []) {
-    const cleanRows = visibleEnforcementRows(rows)
-    const catalog = Array.isArray(enforcementDocumentCatalogRef.current[String(matterId)])
-      ? enforcementDocumentCatalogRef.current[String(matterId)]
-      : []
-    return catalog.length ? [...cleanRows, { __mio_document_catalog: true, documents: catalog }] : cleanRows
+    // V178: keep the Enforcement state row small. Documents belong in
+    // case_mio_enforcement_documents and must not be copied into the large
+    // violations JSON payload on every keystroke/save.
+    return visibleEnforcementRows(rows)
   }
 
   function mergeSharedDocumentsIntoState(sharedDocs = []) {
@@ -31912,41 +31913,19 @@ ${choices}`, '1'))
   }
 
   async function saveEnforcementDocumentCatalogFallback(doc, reason = 'upload') {
+    // V178: Never rewrite the entire Enforcement violations row merely to save
+    // one document. That old fallback caused oversized, overlapping POSTs and
+    // produced the 520/504 response that Chrome displayed as a CORS failure.
     const matterId = String(doc.matter_id)
     const cleanDoc = { ...stripLargeFileData(doc), id: String(doc.id), matter_id: matterId }
     const currentCatalog = Array.isArray(enforcementDocumentCatalogRef.current[matterId]) ? enforcementDocumentCatalogRef.current[matterId] : []
     const catalogMap = new Map(currentCatalog.map((item) => [String(item.id), item]))
     catalogMap.set(String(cleanDoc.id), { ...(catalogMap.get(String(cleanDoc.id)) || {}), ...cleanDoc })
-    const nextCatalog = Array.from(catalogMap.values())
-    enforcementDocumentCatalogRef.current[matterId] = nextCatalog
-
-    const { data, error: loadError } = await supabase
-      .from('case_mio_enforcement_state')
-      .select('violations')
-      .eq('matter_id', matterId)
-      .maybeSingle()
-    if (loadError) {
-      console.error('Could not read Enforcement shared catalog before saving client document:', loadError)
-      return false
-    }
-    const visibleRows = visibleEnforcementRows(data?.violations || matterViolations(matterId))
-    const payloadRows = [...visibleRows, { __mio_document_catalog: true, documents: nextCatalog }]
-    const now = new Date().toISOString()
-    const { error } = await supabase.from('case_mio_enforcement_state').upsert({
-      matter_id: matterId,
-      violations: payloadRows,
-      updated_by: session.user.id,
-      updated_at: now
-    }, { onConflict: 'matter_id' })
-    if (error) {
-      console.error('Could not save client document into Enforcement shared catalog:', error)
-      setEnforcementSaveError(error.message || 'Client document did not save to the shared matter catalog.')
-      setEnforcementSaveStatus('NOT SAVED')
-      return false
-    }
-    enforcementLastSavedJsonRef.current[matterId] = JSON.stringify(visibleRows)
-    setEnforcementSaveStatus(`Saved document ${new Date().toLocaleTimeString()}`)
-    return true
+    enforcementDocumentCatalogRef.current[matterId] = Array.from(catalogMap.values())
+    try {
+      localStorage.setItem(`caseMioEnforcementDocumentCatalog:${matterId}`, JSON.stringify(enforcementDocumentCatalogRef.current[matterId]))
+    } catch {}
+    return false
   }
 
   async function saveSharedEnforcementDocument(doc, reason = 'upload') {
@@ -31960,9 +31939,12 @@ ${choices}`, '1'))
       updated_at: new Date().toISOString(),
       reason
     }, { onConflict: 'matter_id,document_id' })
-    if (error) console.warn('Dedicated Enforcement document table rejected the save; using shared-state catalog fallback:', error)
-    const fallbackSaved = await saveEnforcementDocumentCatalogFallback(doc, reason)
-    return !error || fallbackSaved
+    if (error) {
+      console.warn('Dedicated Enforcement document save failed. The document remains available in this browser and will retry later:', error)
+      await saveEnforcementDocumentCatalogFallback(doc, reason)
+      return false
+    }
+    return true
   }
 
   async function syncLocalMatterDocumentsToEnforcement(permittedMatterIds = []) {
@@ -32059,33 +32041,70 @@ ${choices}`, '1'))
     if (!session?.user?.id || !matterId) return false
     if (!enforcementSharedReady && !options.force) return false
     if (isClientPortalMember() && !clientPortalMatterRows().some((matter) => String(matter.id) === String(matterId))) return false
+
+    const key = String(matterId)
     const cleanRows = visibleEnforcementRows(Array.isArray(rows) ? rows : [])
-    const rowsForStorage = enforcementRowsWithCatalog(matterId, cleanRows)
     const json = JSON.stringify(cleanRows)
-    if (!options.force && enforcementLastSavedJsonRef.current[String(matterId)] === json) return true
+    if (!options.force && enforcementLastSavedJsonRef.current[key] === json) return true
+
+    // Only one request per matter may be in flight. Keep the newest state queued.
+    if (enforcementSaveInFlightRef.current[key]) {
+      enforcementSaveQueuedRef.current[key] = { rows: cleanRows, options: { ...options, force: true } }
+      return true
+    }
+    enforcementSaveInFlightRef.current[key] = true
     setEnforcementSaveStatus('Saving...')
     setEnforcementSaveError('')
+
+    let saved = false
+    let lastError = null
     const now = new Date().toISOString()
-    // Keep a recovery snapshot before replacing the current matter state.
-    await supabase.from('case_mio_enforcement_snapshots').insert({ matter_id: matterId, violations: rowsForStorage, saved_by: session.user.id, saved_at: now, reason: options.reason || 'autosave' })
-    const { error } = await supabase.from('case_mio_enforcement_state').upsert({ matter_id: matterId, violations: rowsForStorage, updated_by: session.user.id, updated_at: now }, { onConflict: 'matter_id' })
-    if (error) {
-      console.error('Could not save shared Enforcement data:', error)
-      setEnforcementSaveError(error.message || 'Supabase rejected the Enforcement save.')
-      setEnforcementSaveStatus('NOT SAVED')
-      try { localStorage.setItem('caseMioViolationsByMatterEmergencyBackup', JSON.stringify({ saved_at: now, matter_id: matterId, violations: cleanRows })) } catch {}
-      return false
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt) await new Promise((resolve) => window.setTimeout(resolve, attempt * 1200))
+        const { error } = await supabase
+          .from('case_mio_enforcement_state')
+          .upsert({ matter_id: matterId, violations: cleanRows, updated_by: session.user.id, updated_at: now }, { onConflict: 'matter_id' })
+        if (!error) {
+          saved = true
+          break
+        }
+        lastError = error
+        console.warn(`Enforcement save attempt ${attempt + 1} failed:`, error)
+      }
+
+      if (!saved) {
+        const message = lastError?.message || 'Supabase could not complete the Enforcement save.'
+        console.error('Could not save shared Enforcement data:', lastError)
+        setEnforcementSaveError(message)
+        setEnforcementSaveStatus('NOT SAVED')
+        try { localStorage.setItem('caseMioViolationsByMatterEmergencyBackup', JSON.stringify({ saved_at: now, matter_id: matterId, violations: cleanRows })) } catch {}
+        return false
+      }
+
+      enforcementLastSavedJsonRef.current[key] = json
+      setEnforcementSaveStatus(`Saved ${new Date().toLocaleTimeString()}`)
+
+      // Snapshots are useful, but they must not block or multiply every autosave.
+      if (options.reason === 'manual-save' || options.reason === 'browser-recovery') {
+        supabase.from('case_mio_enforcement_snapshots').insert({ matter_id: matterId, violations: cleanRows, saved_by: session.user.id, saved_at: now, reason: options.reason }).then(({ error }) => {
+          if (error) console.warn('Enforcement snapshot save failed after the main save succeeded:', error)
+        })
+      }
+      return true
+    } finally {
+      enforcementSaveInFlightRef.current[key] = false
+      const queued = enforcementSaveQueuedRef.current[key]
+      delete enforcementSaveQueuedRef.current[key]
+      if (queued) window.setTimeout(() => saveSharedEnforcementMatter(matterId, queued.rows, queued.options), 50)
     }
-    enforcementLastSavedJsonRef.current[String(matterId)] = json
-    setEnforcementSaveStatus(`Saved ${new Date().toLocaleTimeString()}`)
-    return true
   }
 
   async function saveCurrentEnforcementNow() {
     if (!violationsMatterId) return
     clearTimeout(enforcementSharedSaveTimersRef.current[violationsMatterId])
     const ok = await saveSharedEnforcementMatter(violationsMatterId, matterViolations(violationsMatterId), { force: true, reason: 'manual-save' })
-    if (!ok) alert('The Enforcement page did not save to Supabase. Do not close this tab. Check the red save warning and run the V151 SQL migration.')
+    if (!ok) alert('The Enforcement page did not save to Supabase. Do not close this tab. Check the red save warning and try Save now again after a few seconds.')
   }
 
   useEffect(() => {
@@ -32101,7 +32120,7 @@ ${choices}`, '1'))
       if (!allowedIds.has(String(matterId))) return
       clearTimeout(enforcementSharedSaveTimersRef.current[matterId])
       setEnforcementSaveStatus('Unsaved changes...')
-      enforcementSharedSaveTimersRef.current[matterId] = window.setTimeout(() => saveSharedEnforcementMatter(matterId, rows), 250)
+      enforcementSharedSaveTimersRef.current[matterId] = window.setTimeout(() => saveSharedEnforcementMatter(matterId, rows), 1500)
     })
   }, [violationsByMatter, enforcementSharedReady, session?.user?.id, currentTeamMember, matters])
 
@@ -32888,7 +32907,7 @@ ${choices}`, '1'))
             <button type="button" onClick={saveCurrentEnforcementNow} disabled={!violationsMatterId} style={{fontWeight:900}}>Save now</button><span style={{fontSize:12,fontWeight:800,color:enforcementSaveError?'#b91c1c':enforcementSaveStatus.startsWith('Saved')?'#15803d':'#92400e'}} title={enforcementSaveError||enforcementSaveStatus}>{enforcementSaveStatus}</span><button type="button" onClick={printEnforcement} disabled={!rows.length}>Print Court Outline</button>{!clientPortal&&violationsMatterId&&<button type="button" onClick={()=>navigator.clipboard?.writeText(`${window.location.origin}${window.location.pathname}#enforcement?matter=${encodeURIComponent(violationsMatterId)}`)}>Copy client page link</button>}
           </div>
         </div>
-        {enforcementSaveError&&<div className="enforcement-no-print" style={{border:'2px solid #dc2626',background:'#fef2f2',color:'#991b1b',padding:10,borderRadius:8,marginBottom:12,fontWeight:850}}>Enforcement changes are not reaching Supabase: {enforcementSaveError}. Do not close this tab until this is fixed or use Save now after running the V151 SQL migration.</div>}
+        {enforcementSaveError&&<div className="enforcement-no-print" style={{border:'2px solid #dc2626',background:'#fef2f2',color:'#991b1b',padding:10,borderRadius:8,marginBottom:12,fontWeight:850}}>Enforcement changes are not reaching Supabase: {enforcementSaveError}. Do not close this tab until this is fixed or use Save now again after the connection recovers.</div>}
         {!clientPortal&&<div className="enforcement-no-print" style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:12,padding:12,marginBottom:14}}><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><strong>AI import from Motion to Enforce</strong><div style={{fontSize:13,color:'#475569',marginTop:3}}>Upload a motion or completed template. Mio will add the order description, exact order language, violations, requested relief/penalties, legal arguments, counterarguments, and proposed testimony structure.</div></div><button type="button" onClick={downloadEnforcementTemplate}>Download fillable content template</button></div><div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:10}}><input type="file" accept=".pdf,.txt,application/pdf,text/plain" onChange={(e)=>setEnforcementAiFile(e.target.files?.[0]||null)}/><button type="button" onClick={analyzeEnforcementMotion} disabled={!violationsMatterId||!enforcementAiFile||enforcementAiBusy}>{enforcementAiBusy?'Analyzing...':'Analyze and Add Violations'}</button>{enforcementAiStatus&&<span style={{fontWeight:700,color:'#334155'}}>{enforcementAiStatus}</span>}</div></div>}
         {!violationsMatterId&&<div style={{border:'1px dashed #cbd5e1',borderRadius:10,padding:24,color:'#64748b'}}>{clientPortal?'You do not currently have Enforcement access for any matter.':'Select a matter to begin an enforcement outline.'}</div>}
         {violationsMatterId&&rows.length>0&&<nav className="enforcement-workspace-tabs enforcement-screen-only" aria-label="Enforcement workspace sections">{[
