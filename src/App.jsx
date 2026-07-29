@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V179'
+const MIO_APP_VERSION = 'Mio V180'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -3721,15 +3721,28 @@ function App() {
     safeSetLocalStorage('caseControllerDocuments', JSON.stringify(safeDocuments))
     if (!isClientPortalMember()) {
       try { saveMioStateKey('caseControllerDocuments', JSON.stringify(safeDocuments)) } catch {}
-      return
     }
-    if (!session?.user?.id || !userAccessChecked) return
-    const allowedMatterIds = new Set(clientPortalMatterRows().map((matter) => String(matter.id)))
-    const timer = window.setTimeout(() => {
-      safeDocuments
-        .filter((doc) => doc?.id && doc?.matter_id && allowedMatterIds.has(String(doc.matter_id)))
-        .forEach((doc) => saveSharedEnforcementDocument(doc, 'client-document-save'))
-    }, 450)
+    if (!session?.user?.id || !userAccessChecked || !safeDocuments.length) return
+
+    // V180: the attorney's complete matter-document records are the source of
+    // truth for the client Enforcement catalog. V179 returned before publishing
+    // attorney documents, so old blank catalog rows stayed blank forever.
+    // Republish whenever Documents finishes loading or changes. Client uploads
+    // are also published, but only for matters the client may access.
+    const permittedMatterIds = isClientPortalMember()
+      ? clientPortalMatterRows().map((matter) => String(matter.id))
+      : matters.map((matter) => String(matter.id))
+    const allowedMatterIds = new Set(permittedMatterIds)
+    const publishable = safeDocuments.filter((doc) => doc?.id && doc?.matter_id && allowedMatterIds.has(String(doc.matter_id)))
+    if (!publishable.length) return
+
+    const timer = window.setTimeout(async () => {
+      if (!isClientPortalMember()) {
+        await syncLocalMatterDocumentsToEnforcement(permittedMatterIds)
+      } else {
+        for (const doc of publishable) await saveSharedEnforcementDocument(doc, 'client-document-save')
+      }
+    }, 700)
     return () => window.clearTimeout(timer)
   }, [documents, session?.user?.id, userAccessChecked, currentTeamMember, matters])
 
@@ -31906,7 +31919,10 @@ ${choices}`, '1'))
       console.warn('Could not load dedicated shared Enforcement documents; using the Enforcement shared catalog fallback:', error)
       return
     }
-    const sharedDocs = (data || []).map((row) => ({ ...(row.metadata || {}), id: row.document_id, matter_id: row.matter_id })).filter((row) => row.id)
+    const sharedDocs = (data || []).map((row) => {
+      const metadata = row?.metadata && !Array.isArray(row.metadata) ? row.metadata : {}
+      return { ...metadata, id: row.document_id, matter_id: row.matter_id }
+    }).filter((row) => row.id)
     sharedDocs.forEach((doc) => {
       const matterId = String(doc.matter_id)
       const catalog = Array.isArray(enforcementDocumentCatalogRef.current[matterId]) ? enforcementDocumentCatalogRef.current[matterId] : []
@@ -31957,14 +31973,27 @@ ${choices}`, '1'))
     const allowed = new Set(permittedMatterIds.map(String))
     const localDocs = (documents || []).filter((doc) => doc?.id && doc?.matter_id && allowed.has(String(doc.matter_id)))
     if (!localDocs.length) return
-    const payload = localDocs.map((doc) => ({
-      matter_id: String(doc.matter_id),
-      document_id: String(doc.id),
-      metadata: stripLargeFileData(doc),
-      uploaded_by: session.user.id,
-      updated_at: new Date().toISOString(),
-      reason: 'matter-document-catalog-sync'
-    }))
+    const payload = localDocs.map((doc) => {
+      const clean = stripLargeFileData(doc)
+      const normalized = {
+        ...clean,
+        id: String(doc.id),
+        matter_id: String(doc.matter_id),
+        name: clean.name || clean.document_name || clean.title || clean.file_name || clean.original_file_name || 'Document',
+        file_name: clean.file_name || clean.original_file_name || clean.name || '',
+        original_file_name: clean.original_file_name || clean.file_name || clean.name || '',
+        file_path: clean.file_path || clean.storage_path || clean.supabase_path || clean.path || '',
+        storage_path: clean.storage_path || clean.file_path || clean.supabase_path || clean.path || ''
+      }
+      return {
+        matter_id: String(doc.matter_id),
+        document_id: String(doc.id),
+        metadata: normalized,
+        uploaded_by: session.user.id,
+        updated_at: new Date().toISOString(),
+        reason: 'matter-document-catalog-sync-v180'
+      }
+    })
     const { error } = await supabase.from('case_mio_enforcement_documents').upsert(payload, { onConflict: 'matter_id,document_id' })
     if (error) console.warn('Could not sync matter documents to Enforcement:', error)
   }
