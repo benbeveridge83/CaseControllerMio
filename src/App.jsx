@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V180'
+const MIO_APP_VERSION = 'Mio V181'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2066,6 +2066,9 @@ function App() {
   const [expandedViolationIds, setExpandedViolationIds] = useState([])
   const [enforcementAiFile, setEnforcementAiFile] = useState(null)
   const [enforcementWorkspaceTab, setEnforcementWorkspaceTab] = useState('violations')
+  const [enforcementReportBusy, setEnforcementReportBusy] = useState('')
+  const [enforcementReportStatus, setEnforcementReportStatus] = useState('')
+  const [enforcementReportOptions, setEnforcementReportOptions] = useState({ addExhibitStamp: false, addBatesStamp: false, batesPrefix: 'BATES-', batesStart: 1 })
   useEffect(() => {
     if (!isClientPortalMember() || !violationsMatterId) return
     const allowedTabs = clientAllowedTabs('enforcement', violationsMatterId)
@@ -32906,6 +32909,177 @@ ${choices}`, '1'))
       if (selectedDoc) saveSharedEnforcementDocument(selectedDoc, 'attached-existing-matter-document')
     }
     const removeDocumentFromViolation = (violationId, docId) => updateMatterViolations(violationsMatterId, (current) => current.map((row) => row.id === violationId ? { ...row, document_ids: (row.document_ids || []).filter((id) => String(id) !== String(docId)) } : row))
+    const safeReportName = (value, fallback = 'file') => String(value || fallback).replace(/[\\/:*?\"<>|]+/g, '_').replace(/\s+/g, ' ').trim() || fallback
+    const documentDownloadName = (doc, fallback = 'Document.pdf') => safeReportName(doc?.original_file_name || doc?.file_name || doc?.name || fallback)
+    const triggerEnforcementDownload = (blob, fileName) => {
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+    }
+    const loadEnforcementScript = (src, ready) => new Promise((resolve, reject) => {
+      if (ready()) return resolve()
+      const existing = Array.from(document.scripts).find((script) => script.src === src)
+      if (existing) { existing.addEventListener('load', resolve, { once: true }); existing.addEventListener('error', reject, { once: true }); return }
+      const script = document.createElement('script')
+      script.src = src
+      script.async = true
+      script.onload = resolve
+      script.onerror = () => reject(new Error(`Could not load ${src}`))
+      document.head.appendChild(script)
+    })
+    const ensureEnforcementReportLibraries = async () => {
+      await loadEnforcementScript('https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js', () => !!window.PDFLib)
+      await loadEnforcementScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', () => !!window.JSZip)
+    }
+    const dataUrlToReportBytes = (dataUrl) => {
+      if (typeof dataUrlToUint8Array === 'function') return dataUrlToUint8Array(dataUrl)
+      const base64 = String(dataUrl || '').split(',')[1] || ''
+      const binary = atob(base64)
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    }
+    const fetchEnforcementDocumentBytes = async (doc) => {
+      const dataUrl = doc?.file_data || await loadDocumentFileDataUrl(doc)
+      if (!dataUrl) throw new Error(`No downloadable file was found for ${documentDownloadName(doc)}.`)
+      return dataUrlToReportBytes(dataUrl)
+    }
+    const isPdfExhibit = (doc) => /\.pdf$/i.test(documentDownloadName(doc)) || /pdf/i.test(String(doc?.file_type || doc?.mime_type || doc?.type || ''))
+    const addPdfBookmarks = (pdfDoc, bookmarkRows) => {
+      if (!bookmarkRows.length || !window.PDFLib) return
+      const { PDFName, PDFString } = window.PDFLib
+      const context = pdfDoc.context
+      const outlineRef = context.nextRef()
+      const itemRefs = bookmarkRows.map(() => context.nextRef())
+      bookmarkRows.forEach((row, index) => {
+        const dict = context.obj({
+          Title: PDFString.of(row.title),
+          Parent: outlineRef,
+          Dest: [pdfDoc.getPage(row.pageIndex).ref, PDFName.of('Fit')]
+        })
+        if (index > 0) dict.set(PDFName.of('Prev'), itemRefs[index - 1])
+        if (index < itemRefs.length - 1) dict.set(PDFName.of('Next'), itemRefs[index + 1])
+        context.assign(itemRefs[index], dict)
+      })
+      context.assign(outlineRef, context.obj({ Type: PDFName.of('Outlines'), First: itemRefs[0], Last: itemRefs[itemRefs.length - 1], Count: itemRefs.length }))
+      pdfDoc.catalog.set(PDFName.of('Outlines'), outlineRef)
+      pdfDoc.catalog.set(PDFName.of('PageMode'), PDFName.of('UseOutlines'))
+    }
+    const buildCombinedExhibitPdf = async (docs, options = {}, labelById = {}) => {
+      await ensureEnforcementReportLibraries()
+      const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+      const output = await PDFDocument.create()
+      const font = await output.embedFont(StandardFonts.Helvetica)
+      const bold = await output.embedFont(StandardFonts.HelveticaBold)
+      const bookmarks = []
+      let batesNumber = Number(options.batesStart || 1)
+      for (const doc of docs) {
+        if (!isPdfExhibit(doc)) continue
+        const originalBytes = await fetchEnforcementDocumentBytes(doc)
+        const source = await PDFDocument.load(originalBytes, { ignoreEncryption: true })
+        const copied = await output.copyPages(source, source.getPageIndices())
+        const firstPageIndex = output.getPageCount()
+        const sourceName = documentDownloadName(doc)
+        bookmarks.push({ title: sourceName, pageIndex: firstPageIndex })
+        copied.forEach((page) => {
+          output.addPage(page)
+          const { width, height } = page.getSize()
+          if (options.addExhibitStamp) {
+            const stamp = `EXHIBIT ${labelById[String(doc.id)] || ''}`.trim()
+            page.drawRectangle({ x: 24, y: height - 52, width: Math.max(118, bold.widthOfTextAtSize(stamp, 11) + 18), height: 26, borderWidth: 1.5, borderColor: rgb(.72, .08, .08), color: rgb(1, .97, .97), opacity: .92 })
+            page.drawText(stamp, { x: 33, y: height - 43, size: 11, font: bold, color: rgb(.65, .04, .04) })
+          }
+          if (options.addBatesStamp) {
+            const text = `${options.batesPrefix || 'BATES-'}${String(batesNumber).padStart(6, '0')}`
+            page.drawText(text, { x: width - font.widthOfTextAtSize(text, 9) - 24, y: 18, size: 9, font, color: rgb(.15, .15, .15) })
+            batesNumber += 1
+          }
+        })
+      }
+      if (!output.getPageCount()) throw new Error('None of the selected exhibits are PDF files that can be combined.')
+      addPdfBookmarks(output, bookmarks)
+      output.setTitle('Enforcement Exhibits')
+      output.setSubject('Combined enforcement exhibits with source-filename bookmarks')
+      return await output.save()
+    }
+    const makeExhibitListPdf = async () => {
+      await ensureEnforcementReportLibraries()
+      const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+      const pdf = await PDFDocument.create()
+      const font = await pdf.embedFont(StandardFonts.Helvetica)
+      const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
+      let page = pdf.addPage([612, 792])
+      let y = 748
+      page.drawText('Exhibit List', { x: 42, y, size: 20, font: bold })
+      y -= 24
+      page.drawText(matter ? enforcementMatterLabel(matter) : 'Enforcement Matter', { x: 42, y, size: 10, font, color: rgb(.3, .35, .42) })
+      y -= 28
+      for (let index = 0; index < exhibitRows.length; index += 1) {
+        if (y < 70) { page = pdf.addPage([612, 792]); y = 748 }
+        const doc = exhibitRows[index].doc
+        const violations = rows.map((row, rowIndex) => (row.document_ids || []).some((id) => String(id) === String(doc.id)) ? `V${rowIndex + 1}` : '').filter(Boolean).join(', ')
+        page.drawText(`${exhibitPrefix}-${index + 1}`, { x: 42, y, size: 11, font: bold })
+        page.drawText(documentDownloadName(doc), { x: 102, y, size: 10, font, maxWidth: 350 })
+        page.drawText(violations || '-', { x: 480, y, size: 10, font })
+        y -= 20
+      }
+      return await pdf.save()
+    }
+    const downloadExhibitListReport = async () => {
+      setEnforcementReportBusy('list'); setEnforcementReportStatus('Creating exhibit list...')
+      try { const bytes = await makeExhibitListPdf(); triggerEnforcementDownload(new Blob([bytes], { type: 'application/pdf' }), `${safeReportName(matter?.name || 'Enforcement')}_Exhibit_List.pdf`); setEnforcementReportStatus('Exhibit list downloaded.') }
+      catch (error) { console.error(error); setEnforcementReportStatus(error.message || 'Could not create exhibit list.') }
+      finally { setEnforcementReportBusy('') }
+    }
+    const downloadAllExhibits = async (mode) => {
+      setEnforcementReportBusy(`all-${mode}`); setEnforcementReportStatus('Preparing exhibits...')
+      try {
+        await ensureEnforcementReportLibraries()
+        if (mode === 'combined') {
+          const bytes = await buildCombinedExhibitPdf(exhibitRows.map((row) => row.doc), enforcementReportOptions, exhibitNumberById)
+          triggerEnforcementDownload(new Blob([bytes], { type: 'application/pdf' }), `${safeReportName(matter?.name || 'Enforcement')}_All_Exhibits.pdf`)
+        } else {
+          const zip = new window.JSZip()
+          for (const { doc } of exhibitRows) zip.file(documentDownloadName(doc), await fetchEnforcementDocumentBytes(doc))
+          const blob = await zip.generateAsync({ type: 'blob' })
+          triggerEnforcementDownload(blob, `${safeReportName(matter?.name || 'Enforcement')}_Exhibits_Separate.zip`)
+        }
+        setEnforcementReportStatus('Exhibit download complete.')
+      } catch (error) { console.error(error); setEnforcementReportStatus(error.message || 'Could not download exhibits.') }
+      finally { setEnforcementReportBusy('') }
+    }
+    const downloadViolationExhibitReport = async (combineWithinViolation, includeMasterCombined) => {
+      setEnforcementReportBusy('violations'); setEnforcementReportStatus('Building violation exhibit folders...')
+      try {
+        await ensureEnforcementReportLibraries()
+        const zip = new window.JSZip()
+        const masterDocs = []
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+          const violation = rows[rowIndex]
+          const docs = (violation.document_ids || []).map((id) => matterDocs.find((doc) => String(doc.id) === String(id))).filter(Boolean)
+          const folderName = safeReportName(`Violation ${rowIndex + 1} - ${violation.title || 'Untitled Violation'}`)
+          const folder = zip.folder(folderName)
+          if (combineWithinViolation && docs.some(isPdfExhibit)) {
+            const bytes = await buildCombinedExhibitPdf(docs, enforcementReportOptions, exhibitNumberById)
+            folder.file(`${folderName} - Combined Exhibits.pdf`, bytes)
+          } else {
+            for (const doc of docs) folder.file(documentDownloadName(doc), await fetchEnforcementDocumentBytes(doc))
+          }
+          masterDocs.push(...docs)
+        }
+        if (includeMasterCombined && masterDocs.some(isPdfExhibit)) {
+          const bytes = await buildCombinedExhibitPdf(masterDocs, enforcementReportOptions, exhibitNumberById)
+          zip.file('All Violations - All Exhibits Combined.pdf', bytes)
+        }
+        zip.file('README.txt', 'Each violation folder contains the exhibits linked to that violation. Combined PDFs include Adobe bookmark entries using the original source filenames. An exhibit used for more than one violation appears in each applicable violation section.')
+        triggerEnforcementDownload(await zip.generateAsync({ type: 'blob' }), `${safeReportName(matter?.name || 'Enforcement')}_Exhibit_Violation_Report.zip`)
+        setEnforcementReportStatus('Exhibit violation report downloaded.')
+      } catch (error) { console.error(error); setEnforcementReportStatus(error.message || 'Could not create violation exhibit report.') }
+      finally { setEnforcementReportBusy('') }
+    }
     return (
       <div className="enforcement-page">
         <style>{`
@@ -32949,7 +33123,8 @@ ${choices}`, '1'))
           ['matrix','Violation-Exhibit Matrix'],
           ['relevance','Exhibit Violation Relevance'],
           ['exhibit-list','Exhibit List'],
-          ['predicates','Predicates']
+          ['predicates','Predicates'],
+          ['reports','Reports']
         ].map(([id,label])=><button key={id} type="button" className={`enforcement-workspace-tab ${enforcementWorkspaceTab===id?'active':''}`} onClick={()=>setEnforcementWorkspaceTab(id)}>{label}</button>)}</nav>}
         {violationsMatterId&&rows.length>0&&<>
           {enforcementWorkspaceTab==='matrix'&&<section className="enforcement-card enforcement-screen-only enforcement-tab-panel"><div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}><div><h2>Violation Exhibit Matrix</h2><div className="enforcement-card-subtitle">Each row is a violation. Add matter documents in the cells to the right. The first appearance of each document controls its exhibit-list order.</div></div><label>Client is <select value={exhibitPrefix} onChange={(e)=>changeExhibitPrefix(e.target.value)}><option value="P">Petitioner (P-)</option><option value="R">Respondent (R-)</option></select></label></div>
@@ -32964,6 +33139,15 @@ ${choices}`, '1'))
             <div style={{display:'grid',gap:12}}>{rows.map((violation,violationIndex)=>{const violationOpen=relevanceExpandedViolationIds.includes(String(violation.id));return <section id={`relevance-violation-${violation.id}`} key={violation.id} style={{border:'1px solid #cbd5e1',borderRadius:12,overflow:'hidden',background:'#fff'}}><header style={{display:'grid',gridTemplateColumns:'125px minmax(280px,1fr) auto',gap:12,alignItems:'center',padding:'12px 14px',background:'#f8fafc'}}><div style={{fontWeight:950,color:'#1d4ed8'}}>Violation {violationIndex+1}</div><div><strong style={{fontSize:16}}>{violation.title||'Untitled violation'}</strong><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{violationPlainPreview(violation.summary||violation.facts,'No summary')}</div></div><div style={{display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:12,color:'#1d4ed8',background:'#eff6ff',padding:'5px 8px',borderRadius:999}}>{(violation.document_ids||[]).length} linked exhibits</span><button type="button" onClick={()=>setRelevanceExpandedViolationIds((values)=>violationOpen?values.filter((id)=>id!==String(violation.id)):Array.from(new Set([...values,String(violation.id)])))}>{violationOpen?'Collapse':'Expand'}</button></div></header>{violationOpen&&<div style={{overflowX:'auto'}}><table className="enforcement-exhibit-table"><thead><tr><th style={{width:125}}>Violation No.</th><th style={{width:105}}>Exhibit</th><th style={{minWidth:230}}>Document Name</th><th style={{minWidth:360}}>Relevance to This Violation</th><th style={{width:110}}>Page(s)</th><th style={{width:150}}>Excerpts</th></tr></thead><tbody>{(violation.document_ids||[]).map((docId,docIndex)=>{const doc=matterDocs.find((item)=>String(item.id)===String(docId));if(!doc)return null;const key=`${violation.id}:${docId}`;const excerptOpen=relevanceExpandedExhibitKeys.includes(key);const excerpts=enforcementExcerptsFor(violation,docId);return <Fragment key={key}><tr><td><strong>Violation {violationIndex+1}</strong></td><td><div style={{display:'flex',alignItems:'center',gap:5}}><strong>{exhibitNumberById[String(docId)]||'Pending'}</strong>{!clientPortal&&<span className="enforcement-no-print" style={{display:'inline-flex',gap:3}}><button type="button" disabled={docIndex===0} onClick={()=>{const ids=[...(violation.document_ids||[])];[ids[docIndex-1],ids[docIndex]]=[ids[docIndex],ids[docIndex-1]];patchViolation(violation.id,{document_ids:ids})}} title="Move exhibit up within this violation">↑</button><button type="button" disabled={docIndex===(violation.document_ids||[]).length-1} onClick={()=>{const ids=[...(violation.document_ids||[])];[ids[docIndex+1],ids[docIndex]]=[ids[docIndex],ids[docIndex+1]];patchViolation(violation.id,{document_ids:ids})}} title="Move exhibit down within this violation">↓</button></span>}</div></td><td><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:850,padding:0,textAlign:'left'}}>{doc.name||doc.file_name||'Document'} ↗</button><div style={{fontSize:11,color:'#64748b'}}>{doc.file_type||doc.mime_type||String(doc.file_name||'').split('.').pop()?.toUpperCase()||'Document'}</div></td><td><textarea value={violation.exhibit_relevance_by_document?.[String(docId)]||''} onChange={(e)=>patchViolation(violation.id,{exhibit_relevance_by_document:{...(violation.exhibit_relevance_by_document||{}),[String(docId)]:e.target.value}})} placeholder="Explain what this exhibit proves and why it is relevant to this violation..." style={{width:'100%',minHeight:84,resize:'vertical'}}/></td><td>{Array.from(new Set(excerpts.map((excerpt)=>excerpt.page).filter(Boolean))).join(', ')||'—'}</td><td><div style={{display:'grid',gap:5}}><button type="button" onClick={()=>setRelevanceExpandedExhibitKeys((values)=>excerptOpen?values.filter((value)=>value!==key):Array.from(new Set([...values,key])))}>{excerpts.length} excerpt{excerpts.length===1?'':'s'} {excerptOpen?'▴':'▾'}</button><button className="enforcement-no-print" type="button" onClick={()=>addEnforcementExcerpt(violation.id,docId)}>+ Add Excerpt</button></div></td></tr>{excerptOpen&&<tr><td></td><td colSpan="5" style={{padding:10,background:'#f8fafc'}}>{excerpts.length?<div style={{display:'grid',gap:8}}>{excerpts.map((excerpt,excerptIndex)=>{const expanded=relevanceExpandedExcerptIds.includes(excerpt.id);return <article key={excerpt.id} style={{border:expanded?'2px solid #2563eb':'1px solid #cbd5e1',borderRadius:10,background:'#fff',overflow:'hidden'}}><header style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',padding:'9px 11px'}}><div style={{display:'flex',alignItems:'center',gap:8,minWidth:0,flex:1}}><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))} style={{border:0,background:'transparent',fontWeight:900,textAlign:'left',whiteSpace:'nowrap'}}>Violation {violationIndex+1}, Exhibit {exhibitNumberById[String(docId)]||'Pending'}, Excerpt {excerptIndex+1}</button><input value={excerpt.title||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{title:e.target.value})} placeholder="Add excerpt heading" style={{minWidth:180,flex:1,fontWeight:900,color:'#1d4ed8',border:'1px solid #bfdbfe',background:'#eff6ff'}}/></div><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:12,color:'#475569'}}>{excerpt.page?`Page ${excerpt.page}`:'Page not set'}</span><button type="button" onClick={()=>openEnforcementExhibitViewer(doc,violation,excerpt)}>Open at excerpt ↗</button><button type="button" onClick={()=>setRelevanceExpandedExcerptIds((values)=>expanded?values.filter((id)=>id!==excerpt.id):Array.from(new Set([...values,excerpt.id])))}>{expanded?'▴':'▾'}</button></div></header>{expanded&&<div style={{padding:'0 11px 11px',display:'grid',gap:8}}>{excerpt.image_data&&<img src={excerpt.image_data} alt={`Violation ${violationIndex+1} excerpt capture`} style={{display:'block',maxWidth:'100%',maxHeight:520,border:'1px solid #cbd5e1',borderRadius:8}}/>}<div style={{display:'grid',gap:5}}><strong style={{color:'#1d4ed8'}}>Displayed Excerpt</strong><textarea value={Object.prototype.hasOwnProperty.call(excerpt,'display_text')?excerpt.display_text:(excerpt.selected_text||'')} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{display_text:e.target.value})} placeholder={excerpt.image_data?'Add the text or description to display for this rectangle capture':'Edit the text shown on this relevance page'} style={{width:'100%',minHeight:110}}/></div><div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:8}}><input value={excerpt.page||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{page:e.target.value})} placeholder="Page or range"/><input value={excerpt.note||''} onChange={(e)=>patchEnforcementExcerpt(violation.id,docId,excerpt.id,{note:e.target.value})} placeholder="Optional note"/></div><div style={{fontSize:11,color:'#64748b'}}>Created by {excerpt.created_by||'User'} · {excerpt.created_at?new Date(excerpt.created_at).toLocaleString():''}</div><div className="enforcement-no-print" style={{display:'flex',gap:6,justifyContent:'flex-end'}}><button type="button" disabled={excerptIndex===0} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,-1)}>↑ Earlier</button><button type="button" disabled={excerptIndex===excerpts.length-1} onClick={()=>moveEnforcementExcerpt(violation.id,docId,excerpt.id,1)}>↓ Later</button><button type="button" onClick={()=>deleteEnforcementExcerpt(violation.id,docId,excerpt.id)} style={{color:'#b91c1c'}}>Delete</button></div></div>}</article>})}</div>:<div style={{padding:12,color:'#64748b'}}>No excerpts saved. Open the exhibit or click Add Excerpt to save a violation-specific quotation and page number.</div>}</td></tr>}</Fragment>})}{!(violation.document_ids||[]).length&&<tr><td colSpan="6" style={{color:'#64748b'}}>No exhibits linked to this violation.</td></tr>}</tbody></table></div>}</section>})}</div>
           </section>}
           {enforcementWorkspaceTab==='exhibit-list'&&<section className="enforcement-card enforcement-tab-panel"><h2>Exhibit List</h2><div className="enforcement-card-subtitle">Numbered automatically by first appearance in the Violation Exhibit Matrix.</div><table className="enforcement-exhibit-table"><thead><tr><th style={{width:90}}>Exhibit</th><th>Document</th><th>Description / Date</th><th>Used for violations</th></tr></thead><tbody>{exhibitRows.map(({doc},index)=><tr key={doc.id}><td><strong>{exhibitPrefix}-{index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button></td><td>{doc.description||doc.date||doc.upload_date||'-'}</td><td>{rows.filter((row)=>(row.document_ids||[]).some((id)=>String(id)===String(doc.id))).map((row)=>`Violation ${rows.findIndex((item)=>String(item.id)===String(row.id))+1}: ${row.title||'Untitled violation'}`).join('; ')}</td></tr>)}{!exhibitRows.length&&<tr><td colSpan="4" style={{color:'#64748b'}}>No exhibits have been added to the matrix.</td></tr>}</tbody></table></section>}
+          {enforcementWorkspaceTab==='reports'&&<section className="enforcement-card enforcement-tab-panel"><h2>Reports</h2><div className="enforcement-card-subtitle">Download the exhibit list, all exhibits, or violation-organized exhibit packages. Original filenames are retained and used as Adobe bookmark names in combined PDFs.</div>
+            <div style={{display:'grid',gap:12}}>
+              <div style={{border:'1px solid #dbe3ea',borderRadius:10,padding:12}}><h3 style={{margin:'0 0 5px'}}>Exhibit List</h3><div style={{color:'#64748b',fontSize:13,marginBottom:10}}>Creates a PDF list showing each exhibit number, original filename, and the violations where it is used.</div><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={downloadExhibitListReport}>{enforcementReportBusy==='list'?'Creating...':'Download Exhibit List'}</button></div>
+              <div style={{border:'1px solid #dbe3ea',borderRadius:10,padding:12}}><h3 style={{margin:'0 0 5px'}}>All Exhibits</h3><div style={{color:'#64748b',fontSize:13,marginBottom:10}}>Download every exhibit separately in a ZIP or combine all PDF exhibits into one bookmarked PDF.</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={()=>downloadAllExhibits('separate')}>Download Separately (.zip)</button><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={()=>downloadAllExhibits('combined')}>Combine All PDFs</button></div></div>
+              <div style={{border:'1px solid #dbe3ea',borderRadius:10,padding:12}}><h3 style={{margin:'0 0 5px'}}>Exhibit Violation Report</h3><div style={{color:'#64748b',fontSize:13,marginBottom:10}}>Creates a ZIP with a folder for each violation. Each folder is named for the violation and contains only the exhibits linked to that violation.</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={()=>downloadViolationExhibitReport(false,false)}>Separate Files by Violation</button><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={()=>downloadViolationExhibitReport(true,false)}>Combine Within Each Violation</button><button type="button" disabled={!!enforcementReportBusy||!exhibitRows.length} onClick={()=>downloadViolationExhibitReport(true,true)}>Combine Each Violation + Master PDF</button></div></div>
+              <div style={{border:'1px solid #bfdbfe',background:'#eff6ff',borderRadius:10,padding:12}}><h3 style={{margin:'0 0 8px'}}>PDF Stamp Options</h3><div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center'}}><label><input type="checkbox" checked={enforcementReportOptions.addExhibitStamp} onChange={(e)=>setEnforcementReportOptions((current)=>({...current,addExhibitStamp:e.target.checked}))}/> Add exhibit stamp</label><label><input type="checkbox" checked={enforcementReportOptions.addBatesStamp} onChange={(e)=>setEnforcementReportOptions((current)=>({...current,addBatesStamp:e.target.checked}))}/> Add Bates stamps</label><label>Bates prefix <input value={enforcementReportOptions.batesPrefix} onChange={(e)=>setEnforcementReportOptions((current)=>({...current,batesPrefix:e.target.value}))} style={{width:130}}/></label><label>Starting number <input type="number" min="1" value={enforcementReportOptions.batesStart} onChange={(e)=>setEnforcementReportOptions((current)=>({...current,batesStart:Math.max(1,Number(e.target.value)||1)}))} style={{width:90}}/></label></div><div style={{fontSize:12,color:'#475569',marginTop:8}}>Stamps are applied only when PDFs are combined. Separate-file downloads retain the original files unchanged.</div></div>
+              {enforcementReportStatus&&<div style={{fontWeight:800,color:/could not|no downloadable|none/i.test(enforcementReportStatus)?'#b91c1c':'#166534'}}>{enforcementReportStatus}</div>}
+            </div>
+          </section>}
           {enforcementWorkspaceTab==='predicates'&&<section className="enforcement-card enforcement-tab-panel"><div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><h2>Predicates</h2><div className="enforcement-card-subtitle">Select every applicable exhibit type from the Predicates Manual 5.0. Mio shows the manual page reference and can make an initial AI-assisted guess from the document.</div></div>{!clientPortal&&<button type="button" onClick={()=>aiGuessAllEnforcementPredicates(exhibitRows.map((row)=>row.doc))}>AI Guess All Exhibit Predicates</button>}</div><table className="enforcement-exhibit-table"><thead><tr><th style={{width:90}}>Exhibit</th><th style={{minWidth:220}}>Document</th><th className="enforcement-no-print" style={{minWidth:320}}>Predicate types</th><th>Predicate information</th></tr></thead><tbody>{exhibitRows.map(({doc},index)=>{const assignment=predicateAssignmentsForDocument(rows,doc.id);const selectedTypes=ENFORCEMENT_PREDICATE_TYPES.filter((type)=>(assignment.type_ids||[]).includes(type.id));return <tr key={doc.id}><td><strong>{exhibitPrefix}-{index+1}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button>{!clientPortal&&<div style={{marginTop:8}}><button type="button" onClick={()=>aiGuessEnforcementPredicates(doc)}>AI Guess Categories</button></div>}</td><td className="enforcement-no-print"><details><summary style={{cursor:'pointer',fontWeight:800}}>{selectedTypes.length?`${selectedTypes.length} selected`:'Choose predicate types...'}</summary><div className="predicate-picker"><input placeholder="Use browser Find (Ctrl+F) to locate a type" style={{width:'100%',marginBottom:5}} disabled/>{ENFORCEMENT_PREDICATE_TYPES.map((type)=><label key={type.id}><input type="checkbox" checked={(assignment.type_ids||[]).includes(type.id)} onChange={(e)=>updateMatterViolations(violationsMatterId,(current)=>updatePredicateAssignments(current,doc.id,(old)=>({...old,type_ids:e.target.checked?Array.from(new Set([...(old.type_ids||[]),type.id])):(old.type_ids||[]).filter((id)=>id!==type.id)})))}/> {type.label} <small style={{color:'#64748b'}}>(p. {type.page})</small></label>)}</div></details></td><td>{selectedTypes.length?selectedTypes.map((type)=><div className="predicate-ref" key={type.id}><strong>{type.label}</strong> — Predicates Manual 5.0, p. {type.page}<textarea className="enforcement-no-print" value={assignment.notes?.[type.id]||''} onChange={(e)=>updateMatterViolations(violationsMatterId,(current)=>updatePredicateAssignments(current,doc.id,(old)=>({...old,notes:{...(old.notes||{}),[type.id]:e.target.value}})))} placeholder="Add witness, authentication, hearsay, or foundation notes for this exhibit..." style={{display:'block',width:'100%',minHeight:54,marginTop:5}}/></div>):<span style={{color:'#64748b'}}>No predicate types selected.</span>}</td></tr>})}</tbody></table></section>}
         </>}
         {violationsMatterId&&rows.length>0&&enforcementWorkspaceTab==='violations'&&<div className="enforcement-shell enforcement-screen-only enforcement-tab-panel"><aside className="enforcement-toc"><strong style={{display:'block',margin:'3px 4px 9px'}}>VIOLATIONS</strong>{rows.map((violation,index)=><button key={violation.id} type="button" className={`enforcement-toc-item ${activeViolation?.id===violation.id?'active':''}`} onClick={()=>setActiveViolation(violation.id)}><div style={{display:'flex',gap:8,alignItems:'start'}}><strong>Violation {index+1}</strong><span><strong>{violation.title||'Untitled violation'}</strong><small style={{display:'block',color:'#64748b',marginTop:3}}>{violationPlainPreview(violation.summary||violation.facts,'No summary')}</small></span></div></button>)}</aside>{activeViolation&&(()=>{const violation=activeViolation;const linkedDocs=(violation.document_ids||[]).map((id)=>matterDocs.find((doc)=>String(doc.id)===String(id))).filter(Boolean);return <main className="enforcement-workspace"><div style={{display:'grid',gridTemplateColumns:'120px minmax(260px,1fr) auto',gap:8,alignItems:'center',marginBottom:10}}><strong>Violation {rows.findIndex((row)=>String(row.id)===String(violation.id))+1}</strong><input value={violation.title||''} onChange={(e)=>patchViolation(violation.id,{title:e.target.value})} style={{flex:1,fontSize:18,fontWeight:900}}/>{!clientPortal&&<button type="button" onClick={()=>deleteViolation(violation.id)} style={{color:'#b91c1c'}}>Delete Violation</button>}</div>{sectionRow('Violation Summary',violationPlainPreview(violation.summary||violation.facts),<RichTextBox value={violation.summary||''} onChange={(value)=>patchViolation(violation.id,{summary:value})} placeholder="Briefly summarize the violation..." minHeight={110}/>,true)}{sectionRow('Order Description and Exact Language',violationPlainPreview(violation.order_text||violation.order_description),<div style={{display:'grid',gap:10}}><RichTextBox value={violation.order_description||''} onChange={(value)=>patchViolation(violation.id,{order_description:value})} placeholder="Identify the order, date, court, page, paragraph, and provision..." minHeight={90}/><RichTextBox value={violation.order_text||''} onChange={(value)=>patchViolation(violation.id,{order_text:value})} placeholder="Paste the exact enforceable order language..." minHeight={130}/></div>)}{sectionRow('Violation Facts / Explanation',violationPlainPreview(violation.facts),<RichTextBox value={violation.facts||''} onChange={(value)=>patchViolation(violation.id,{facts:value})} placeholder="Describe the act or omission, dates, notice, ability to comply, and evidence..." minHeight={150}/>)}{sectionRow('Relief Requested',violationPlainPreview(violation.relief_requested),<RichTextBox value={violation.relief_requested||''} onChange={(value)=>patchViolation(violation.id,{relief_requested:value})} placeholder="State the contempt findings, penalties, fees, compliance orders, clarification, or other relief requested..." minHeight={130}/>)}{sectionRow(`Exhibits (${linkedDocs.length})`,linkedDocs.map((doc)=>doc.name||doc.file_name).join('; ')||'No exhibits added',<div><div className="enforcement-no-print" style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}><select defaultValue="" onChange={(e)=>{addDocumentToViolation(violation.id,e.target.value);e.target.value=''}}><option value="">Add document already attached to matter...</option>{matterDocs.filter((doc)=>!(violation.document_ids||[]).some((id)=>String(id)===String(doc.id))).map((doc)=><option key={doc.id} value={doc.id}>{doc.name||doc.file_name||'Document'}</option>)}</select><label style={{cursor:'pointer'}}><span style={{border:'1px solid #cbd5e1',borderRadius:6,padding:'7px 10px',background:'#fff'}}>Upload and add exhibit</span><input type="file" multiple style={{display:'none'}} onChange={(e)=>{uploadViolationExhibits(violation,e.target.files);e.target.value=''}}/></label></div><table className="enforcement-exhibit-table"><thead><tr><th>Exhibit No.</th><th>Document</th><th>Description / Date</th><th style={{minWidth:300}}>Why this exhibit is relevant to this violation</th><th className="enforcement-no-print">Actions</th></tr></thead><tbody>{linkedDocs.map((doc)=><tr key={doc.id}><td><strong>{exhibitNumberById[String(doc.id)]||'Pending'}</strong></td><td><button type="button" onClick={()=>viewDocument(doc)} style={{border:0,background:'transparent',color:'#1d4ed8',fontWeight:800,padding:0}}>{doc.name||doc.file_name||'Document'}</button></td><td>{doc.description||doc.date||doc.upload_date||'-'}</td><td>{violation.exhibit_relevance_by_document?.[String(doc.id)]||<span style={{color:'#64748b'}}>Add the explanation on the Exhibit Violation Relevance tab.</span>}</td><td className="enforcement-no-print"><button type="button" onClick={()=>removeDocumentFromViolation(violation.id,doc.id)} style={{color:'#b91c1c'}}>Delete</button></td></tr>)}{!linkedDocs.length&&<tr><td colSpan="5" style={{color:'#64748b'}}>No exhibits added.</td></tr>}</tbody></table></div>)}{sectionRow(`Testimony Q/A (${(violation.testimony_sections||[]).length} headings)`,(violation.testimony_sections||[]).map((row)=>row.heading).join('; ')||'No testimony headings',<div><div className="enforcement-no-print" style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}><button type="button" onClick={()=>addViolationTestimonySection(violation)}>+ Add New Heading</button></div><div style={{display:'grid',gap:12}}>{(violation.testimony_sections||[]).map((section)=><section key={section.id} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:10,background:'#f8fafc'}}><div style={{display:'flex',gap:8,marginBottom:8}}><input value={section.heading||''} onChange={(e)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,heading:e.target.value}:row)})} style={{flex:1,fontWeight:850}}/><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).filter((row)=>row.id!==section.id)})} style={{color:'#b91c1c'}}>Delete heading</button></div><div style={{display:'grid',gap:8}}>{((section.qas&&section.qas.length)?section.qas:[{id:`legacy-${section.id}`,question:'',answer:violationPlainPreview(section.questions_answers,'')}]).map((qa,qi)=><div key={qa.id||qi} style={{display:'grid',gridTemplateColumns:'minmax(220px,1fr) minmax(260px,1fr) auto',gap:8,alignItems:'start',border:'1px solid #dbe3ea',borderRadius:8,padding:8,background:'#fff'}}><RichTextBox value={qa.question||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,question:value}:item)}:row)})} placeholder="Question" minHeight={74}/><div><RichTextBox value={qa.answer||''} onChange={(value)=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,answer:value}:item)}:row)})} placeholder="Expected answer" minHeight={74}/>{linkedDocs.length>0&&<div className="enforcement-no-print" style={{display:'flex',gap:5,flexWrap:'wrap',marginTop:5}}>{linkedDocs.map((doc)=><button key={doc.id} type="button" className="enforcement-marker-button" onClick={()=>{const marker=`<p><strong>[INTRODUCE EXHIBIT ${exhibitNumberById[String(doc.id)]||''}: ${doc.name||doc.file_name||'Document'}]</strong></p>`;patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).map((item)=>item.id===qa.id?{...item,answer:`${item.answer||''}${marker}`}:item)}:row)})}}>Insert {exhibitNumberById[String(doc.id)]}</button>)}</div>}</div><button className="enforcement-no-print" type="button" onClick={()=>patchViolation(violation.id,{testimony_sections:(violation.testimony_sections||[]).map((row)=>row.id===section.id?{...row,qas:(row.qas||[]).filter((item)=>item.id!==qa.id)}:row)})} style={{color:'#b91c1c'}}>Delete</button></div>)}</div><button className="enforcement-no-print" type="button" onClick={()=>addTestimonyQa(violation,section)} style={{marginTop:8}}>+ Add New Q/A</button></section>)}</div></div>)}{sectionRow('Legal Arguments / Authority',violationPlainPreview(violation.legal_arguments),<RichTextBox value={violation.legal_arguments||''} onChange={(value)=>patchViolation(violation.id,{legal_arguments:value})} placeholder="Add statutes, rules, cases, elements, burdens, and argument notes..." minHeight={150}/>)}{sectionRow('Possible Counterarguments / Testimony',violationPlainPreview(violation.counter_arguments),<RichTextBox value={violation.counter_arguments||''} onChange={(value)=>patchViolation(violation.id,{counter_arguments:value})} placeholder="Identify likely defenses, contrary testimony, impeachment points, and planned responses..." minHeight={150}/>)}</main>})()}</div>}
