@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V181'
+const MIO_APP_VERSION = 'Mio V182'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -32942,9 +32942,17 @@ ${choices}`, '1'))
       const binary = atob(base64)
       return Uint8Array.from(binary, (char) => char.charCodeAt(0))
     }
-    const fetchEnforcementDocumentBytes = async (doc) => {
+    const fetchEnforcementDocumentBytes = async (doc, options = {}) => {
       const dataUrl = doc?.file_data || await loadDocumentFileDataUrl(doc)
-      if (!dataUrl) throw new Error(`No downloadable file was found for ${documentDownloadName(doc)}.`)
+      if (!dataUrl) {
+        const message = `No downloadable file was found for ${documentDownloadName(doc)}.`
+        if (options.allowMissing) {
+          if (Array.isArray(options.missingFiles)) options.missingFiles.push(documentDownloadName(doc))
+          console.warn(message, doc)
+          return null
+        }
+        throw new Error(message)
+      }
       return dataUrlToReportBytes(dataUrl)
     }
     const isPdfExhibit = (doc) => /\.pdf$/i.test(documentDownloadName(doc)) || /pdf/i.test(String(doc?.file_type || doc?.mime_type || doc?.type || ''))
@@ -32978,8 +32986,16 @@ ${choices}`, '1'))
       let batesNumber = Number(options.batesStart || 1)
       for (const doc of docs) {
         if (!isPdfExhibit(doc)) continue
-        const originalBytes = await fetchEnforcementDocumentBytes(doc)
-        const source = await PDFDocument.load(originalBytes, { ignoreEncryption: true })
+        const originalBytes = await fetchEnforcementDocumentBytes(doc, { allowMissing: true, missingFiles: options.missingFiles })
+        if (!originalBytes) continue
+        let source
+        try {
+          source = await PDFDocument.load(originalBytes, { ignoreEncryption: true })
+        } catch (error) {
+          if (Array.isArray(options.missingFiles)) options.missingFiles.push(`${documentDownloadName(doc)} (could not be read as a PDF)`)
+          console.warn('Skipping unreadable PDF exhibit in report:', documentDownloadName(doc), error)
+          continue
+        }
         const copied = await output.copyPages(source, source.getPageIndices())
         const firstPageIndex = output.getPageCount()
         const sourceName = documentDownloadName(doc)
@@ -33039,11 +33055,21 @@ ${choices}`, '1'))
       try {
         await ensureEnforcementReportLibraries()
         if (mode === 'combined') {
-          const bytes = await buildCombinedExhibitPdf(exhibitRows.map((row) => row.doc), enforcementReportOptions, exhibitNumberById)
+          const missingFiles = []
+          const bytes = await buildCombinedExhibitPdf(exhibitRows.map((row) => row.doc), { ...enforcementReportOptions, missingFiles }, exhibitNumberById)
           triggerEnforcementDownload(new Blob([bytes], { type: 'application/pdf' }), `${safeReportName(matter?.name || 'Enforcement')}_All_Exhibits.pdf`)
+          if (missingFiles.length) setEnforcementReportStatus(`Combined PDF downloaded. Skipped ${missingFiles.length} missing or unreadable file(s): ${missingFiles.join(', ')}`)
         } else {
           const zip = new window.JSZip()
-          for (const { doc } of exhibitRows) zip.file(documentDownloadName(doc), await fetchEnforcementDocumentBytes(doc))
+          const missingFiles = []
+          for (const { doc } of exhibitRows) {
+            const bytes = await fetchEnforcementDocumentBytes(doc, { allowMissing: true, missingFiles })
+            if (bytes) zip.file(documentDownloadName(doc), bytes)
+          }
+          if (missingFiles.length) zip.file('MISSING_FILES.txt', `The following exhibit records did not have downloadable file content and were skipped:
+
+${missingFiles.map((name) => `- ${name}`).join('\n')}
+`)
           const blob = await zip.generateAsync({ type: 'blob' })
           triggerEnforcementDownload(blob, `${safeReportName(matter?.name || 'Enforcement')}_Exhibits_Separate.zip`)
         }
@@ -33057,26 +33083,43 @@ ${choices}`, '1'))
         await ensureEnforcementReportLibraries()
         const zip = new window.JSZip()
         const masterDocs = []
+        const missingFiles = []
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
           const violation = rows[rowIndex]
           const docs = (violation.document_ids || []).map((id) => matterDocs.find((doc) => String(doc.id) === String(id))).filter(Boolean)
           const folderName = safeReportName(`Violation ${rowIndex + 1} - ${violation.title || 'Untitled Violation'}`)
           const folder = zip.folder(folderName)
           if (combineWithinViolation && docs.some(isPdfExhibit)) {
-            const bytes = await buildCombinedExhibitPdf(docs, enforcementReportOptions, exhibitNumberById)
-            folder.file(`${folderName} - Combined Exhibits.pdf`, bytes)
+            try {
+              const bytes = await buildCombinedExhibitPdf(docs, { ...enforcementReportOptions, missingFiles }, exhibitNumberById)
+              folder.file(`${folderName} - Combined Exhibits.pdf`, bytes)
+            } catch (error) {
+              if (!/None of the selected exhibits/.test(String(error?.message || ''))) throw error
+              folder.file('NO_DOWNLOADABLE_PDFS.txt', 'No downloadable PDF files were available for this violation. See the root MISSING_FILES.txt file for details.')
+            }
           } else {
-            for (const doc of docs) folder.file(documentDownloadName(doc), await fetchEnforcementDocumentBytes(doc))
+            for (const doc of docs) {
+              const bytes = await fetchEnforcementDocumentBytes(doc, { allowMissing: true, missingFiles })
+              if (bytes) folder.file(documentDownloadName(doc), bytes)
+            }
           }
           masterDocs.push(...docs)
         }
         if (includeMasterCombined && masterDocs.some(isPdfExhibit)) {
-          const bytes = await buildCombinedExhibitPdf(masterDocs, enforcementReportOptions, exhibitNumberById)
-          zip.file('All Violations - All Exhibits Combined.pdf', bytes)
+          try {
+            const bytes = await buildCombinedExhibitPdf(masterDocs, { ...enforcementReportOptions, missingFiles }, exhibitNumberById)
+            zip.file('All Violations - All Exhibits Combined.pdf', bytes)
+          } catch (error) {
+            if (!/None of the selected exhibits/.test(String(error?.message || ''))) throw error
+          }
         }
-        zip.file('README.txt', 'Each violation folder contains the exhibits linked to that violation. Combined PDFs include Adobe bookmark entries using the original source filenames. An exhibit used for more than one violation appears in each applicable violation section.')
+        zip.file('README.txt', 'Each violation folder contains the exhibits linked to that violation. Combined PDFs include Adobe bookmark entries using the original source filenames. An exhibit used for more than one violation appears in each applicable violation section. Missing files do not stop the report; they are listed in MISSING_FILES.txt.')
+        if (missingFiles.length) zip.file('MISSING_FILES.txt', `The following exhibit records did not have downloadable file content or could not be read and were skipped:
+
+${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
+`)
         triggerEnforcementDownload(await zip.generateAsync({ type: 'blob' }), `${safeReportName(matter?.name || 'Enforcement')}_Exhibit_Violation_Report.zip`)
-        setEnforcementReportStatus('Exhibit violation report downloaded.')
+        setEnforcementReportStatus(missingFiles.length ? `Exhibit violation report downloaded. ${Array.from(new Set(missingFiles)).length} missing or unreadable file(s) were skipped and listed in MISSING_FILES.txt.` : 'Exhibit violation report downloaded.')
       } catch (error) { console.error(error); setEnforcementReportStatus(error.message || 'Could not create violation exhibit report.') }
       finally { setEnforcementReportBusy('') }
     }
