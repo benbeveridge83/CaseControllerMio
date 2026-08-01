@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V184'
+const MIO_APP_VERSION = 'Mio V185'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27805,14 +27805,126 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function downloadPeopleImportTemplate() {
-    const rows = [
-      { Type:'Client', Matter:'', Name:'', Role:'Client', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
-      { Type:'Court', Matter:'', Name:'', Role:'Court Coordinator', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
-      { Type:'Opposing Counsel', Matter:'', Name:'', Role:'Opposing Counsel', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' },
-      { Type:'Party', Matter:'', Name:'', Role:'Opposing Party', Email:'', Phone:'', Address1:'', Address2:'', City:'', State:'TX', Zip:'', CourtName:'', CourtNumber:'', Notes:'' }
-    ]
-    const ws=XLSX.utils.json_to_sheet(rows); ws['!cols']=[12,24,24,22,30,16,26,20,18,10,10,26,16,36].map(w=>({wch:w}))
-    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'People Import'); XLSX.writeFile(wb,'Mio_People_Import_Template.xlsx')
+    const value = (item, ...keys) => {
+      for (const key of keys) {
+        const next = item?.[key]
+        if (next !== undefined && next !== null && String(next).trim()) return String(next).trim()
+      }
+      return ''
+    }
+    const row = (matterLabel, type, role, person = {}, extra = {}) => ({
+      Type: type,
+      Matter: matterLabel,
+      Name: value(person, 'name'),
+      Role: role,
+      Email: value(person, 'email'),
+      Phone: value(person, 'phone', 'phone2'),
+      Address1: value(person, 'address'),
+      Address2: '',
+      City: value(person, 'city'),
+      State: value(person, 'state') || 'TX',
+      Zip: value(person, 'zip'),
+      CourtName: extra.CourtName || '',
+      CourtNumber: extra.CourtNumber || '',
+      Notes: value(person, 'notes')
+    })
+    const rows = []
+    const sortedMatters = [...(matters || [])].sort((a, b) => {
+      const aName = String(a?.name || a?.display_name || a?.matter_name || '')
+      const bName = String(b?.name || b?.display_name || b?.matter_name || '')
+      return aName.localeCompare(bName)
+    })
+
+    sortedMatters.forEach((matter) => {
+      const matterName = value(matter, 'name', 'display_name', 'matter_name', 'case_name') || 'Unnamed matter'
+      const causeNumber = value(matter, 'cause_number', 'case_number')
+      const matterLabel = causeNumber ? `${matterName} | ${causeNumber}` : matterName
+      const client = matter?.clients || clients.find((item) => String(item.id) === String(matter?.client_id)) || {}
+      const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || value(client, 'name')
+      const court = matter?.courts || courts.find((item) => String(item.id) === String(matter?.court_id)) || {}
+      const extra = matterExtraFor(matter.id)
+      const parties = Array.isArray(extra?.opposing_parties) ? extra.opposing_parties : []
+      const courtPeople = Array.isArray(extra?.court_people) ? extra.court_people : []
+
+      rows.push(row(matterLabel, 'Client', 'Client', {
+        ...client,
+        name: clientName,
+        email: value(client, 'email') || value(matter, 'client_email'),
+        phone: value(client, 'phone') || value(matter, 'client_phone')
+      }))
+
+      const existingParties = parties.length ? parties : [{}]
+      existingParties.forEach((party, index) => {
+        rows.push(row(matterLabel, 'Party', `Opposing Party ${index + 1}`, {
+          ...party,
+          name: value(party, 'name') || (index === 0 ? value(matter, 'opposing_party', 'opposing_party_name') : ''),
+          email: value(party, 'email') || (index === 0 ? value(matter, 'opposing_party_email') : ''),
+          phone: value(party, 'phone') || (index === 0 ? value(matter, 'opposing_party_phone') : '')
+        }))
+      })
+
+      const counselCandidates = []
+      const addCounsel = (counsel = {}) => {
+        const normalized = {
+          ...counsel,
+          name: value(counsel, 'name'),
+          email: value(counsel, 'email'),
+          phone: value(counsel, 'phone', 'phone2'),
+          address: value(counsel, 'address'),
+          notes: value(counsel, 'firm_name') ? `Firm: ${value(counsel, 'firm_name')}` : value(counsel, 'notes')
+        }
+        if (!normalized.name && !normalized.email && !normalized.phone) return
+        const key = `${normalized.name}|${normalized.email}|${normalized.phone}`.toLowerCase()
+        if (!counselCandidates.some((item) => item.__key === key)) counselCandidates.push({ ...normalized, __key: key })
+      }
+      addCounsel({ name: value(matter, 'opposing_counsel'), email: value(matter, 'opposing_counsel_email'), phone: value(matter, 'opposing_counsel_phone') })
+      parties.forEach((party) => addCounsel(party?.counsel || {}))
+      ;(extra?.prior_counsels || []).forEach(addCounsel)
+      ;(extra?.co_counsels || []).forEach(addCounsel)
+      for (let index = 0; index < 5; index += 1) {
+        const counsel = counselCandidates[index] || {}
+        rows.push(row(matterLabel, 'Opposing Counsel', `Opposing Counsel ${index + 1}`, counsel))
+      }
+
+      const courtName = value(court, 'court_name')
+      const courtNumber = value(court, 'court_number')
+      rows.push(row(matterLabel, 'Court', 'Court Coordinator (Presiding Court)', {
+        name: value(court, 'court_coordinator'),
+        email: value(court, 'court_coordinator_email'),
+        phone: value(court, 'court_coordinator_phone'),
+        address: value(court, 'court_address')
+      }, { CourtName: courtName, CourtNumber: courtNumber }))
+      rows.push(row(matterLabel, 'Court', 'Court Coordinator (Associate Court)', {
+        name: value(court, 'associate_court_coordinator', 'associate_coordinator'),
+        email: value(court, 'associate_court_coordinator_email', 'associate_coordinator_email'),
+        phone: value(court, 'associate_court_coordinator_phone', 'associate_coordinator_phone'),
+        address: value(court, 'court_address')
+      }, { CourtName: courtName, CourtNumber: courtNumber }))
+
+      ;['Court Reporter (Presiding Court)', 'Court Reporter (Associate Court)'].forEach((role) => {
+        const saved = courtPeople.find((person) => String(person?.title || '').trim().toLowerCase() === role.toLowerCase()) || {}
+        rows.push(row(matterLabel, 'Court', role, saved, { CourtName: courtName, CourtNumber: courtNumber }))
+      })
+
+      const otherCourtPeople = courtPeople.filter((person) => {
+        const role = String(person?.title || '').trim().toLowerCase()
+        return role && !DEFAULT_COURT_PEOPLE.some((defaultPerson) => defaultPerson.title.toLowerCase() === role)
+      })
+      otherCourtPeople.forEach((person) => rows.push(row(matterLabel, 'Court', value(person, 'title') || 'Court Person', person, { CourtName: courtName, CourtNumber: courtNumber })))
+
+      rows.push(row(matterLabel, 'Mediator', 'Mediator', { email: value(extra, 'mediator_email') }))
+      ;(extra?.third_parties || []).filter((person) => value(person, 'name', 'email', 'phone')).forEach((person, index) => {
+        rows.push(row(matterLabel, 'Third Party', value(person, 'title') || `Third Party ${index + 1}`, person))
+      })
+    })
+
+    const ws = XLSX.utils.json_to_sheet(rows)
+    ws['!cols'] = [18,38,26,34,34,18,28,20,18,10,10,30,18,42].map((wch) => ({ wch }))
+    ws['!autofilter'] = { ref: `A1:N${Math.max(2, rows.length + 1)}` }
+    ws['!freeze'] = { xSplit: 0, ySplit: 1 }
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'People Import')
+    XLSX.writeFile(wb, 'Mio_V185_All_Matters_People_Template.xlsx')
   }
   async function importPeopleSpreadsheet(file) {
     if (!file) return
@@ -27917,13 +28029,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function renderPeopleTemplateSettings() {
     return (
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, background: '#fff' }}>
-        <h2>Client & Opposing Counsel Email Template</h2>
-        <p>Download the Excel template, enter the matter or cause number, then enter updated client and opposing-counsel names, email addresses, and phone numbers. Uploading the completed file updates the existing matter and client records.</p>
+        <h2>All Matters People & Email Template</h2>
+        <p>Download a workbook containing every Mio matter and its default people rows. Existing names, emails, phone numbers, addresses, court information, and saved matter people are filled in so missing information is easy to identify.</p>
         <div style={{ padding: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', marginBottom: 12, fontSize: 13 }}>
-          Use one row with <strong>Type = Client</strong> and one row with <strong>Type = Opposing Counsel</strong> for each matter you want to update. The <strong>Matter</strong> cell should contain the cause number or a distinctive part of the matter name.
+          Each matter includes its client, opposing party rows, <strong>five opposing-counsel rows</strong>, presiding and associate court coordinators, presiding and associate court reporters, mediator, and any additional saved court people or third parties. Keep the Matter value unchanged when filling gaps so the completed workbook can be matched back to the correct Mio matter.
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button type="button" onClick={downloadPeopleImportTemplate}>Download People Excel Template</button>
+          <button type="button" onClick={downloadPeopleImportTemplate}>Download All-Matters People Template</button>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, border: '1px solid #cbd5e1', padding: '7px 10px', borderRadius: 6, cursor: 'pointer', background: '#fff' }}>
             Upload Completed Template
             <input type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { importPeopleSpreadsheet(e.target.files?.[0]); e.target.value = '' }} />
