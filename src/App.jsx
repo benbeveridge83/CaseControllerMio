@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V188'
+const MIO_APP_VERSION = 'Mio V189'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1683,6 +1683,19 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioOneDriveFileTags') || '{}') }
     catch { return {} }
   })
+  const [oneDriveMatterImportConfig, setOneDriveMatterImportConfig] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('caseMioOneDriveMatterImportConfig') || 'null') || {
+        rootPath: '/All Matters/1. Open Cases',
+        efileNames: 'efile, e-file, efiles, e-filed, efiled',
+        applyDetailedTags: false
+      }
+    } catch {
+      return { rootPath: '/All Matters/1. Open Cases', efileNames: 'efile, e-file, efiles, e-filed, efiled', applyDetailedTags: false }
+    }
+  })
+  const [oneDriveMatterImportRows, setOneDriveMatterImportRows] = useState([])
+  const [oneDriveMatterImportStatus, setOneDriveMatterImportStatus] = useState('')
 
   const [tags, setTags] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseControllerTags') || '[]') }
@@ -12984,6 +12997,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <button type="button" onClick={selectAllShownDocuments}>Select all shown</button>
           <button type="button" onClick={deselectAllShownDocuments}>Deselect all shown</button>
           <button type="button" onClick={() => applyTagsToDocuments(selectedDocumentIds)}>Add selected tags to checked documents</button>
+          <button type="button" onClick={scanSelectedDocumentsForTagsWithAi} disabled={bulkAiProgress.running || !selectedDocumentIds.length}>{bulkAiProgress.running ? 'Scanning documents...' : 'Scan checked documents for tags/fields'}</button>
           <button type="button" onClick={downloadSelectedDocuments}>Download selected documents</button>
           <button type="button" onClick={deleteSelectedDocuments}>Delete selected documents</button>
         </div>
@@ -19921,6 +19935,189 @@ useEffect(() => {
     }
   }
 
+  function normalizeCauseForOneDriveImport(value = '') {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  }
+
+  function recognizedEfileFolderNames() {
+    return String(oneDriveMatterImportConfig.efileNames || '')
+      .split(/[,\n]/)
+      .map((name) => String(name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, ''))
+      .filter(Boolean)
+  }
+
+  function isRecognizedEfileFolderName(name = '') {
+    const normalized = String(name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+    return recognizedEfileFolderNames().includes(normalized)
+  }
+
+  function efiledTagId() {
+    const exact = tags.find((tag) => String(tag?.name || '').trim().toLowerCase() === 'efiled' && !tag?.parent_id)
+      || tags.find((tag) => String(tagFullName(tag.id) || tag?.name || '').trim().toLowerCase() === 'efiled')
+    return exact?.id || ''
+  }
+
+  async function graphChildrenForFolder(folderId) {
+    const result = await graphFetch(`/me/drive/items/${encodeURIComponent(folderId)}/children?$top=200`, { allowInteractive: true })
+    return Array.isArray(result?.value) ? result.value : []
+  }
+
+  async function collectOneDriveFilesRecursive(folder, parentPath = '', depth = 0) {
+    if (!folder?.id || depth > 8) return []
+    const children = await graphChildrenForFolder(folder.id)
+    const rows = []
+    for (const child of children) {
+      const childPath = oneDriveJoinPath(parentPath, child.name || '')
+      if (child.folder) rows.push(...await collectOneDriveFilesRecursive(child, childPath, depth + 1))
+      else rows.push({ ...child, source_path: childPath })
+    }
+    return rows
+  }
+
+  function mattersLinkedByCause(primaryMatter) {
+    if (!primaryMatter) return []
+    const cause = normalizeCauseForOneDriveImport(primaryMatter.cause_number || primaryMatter.cause || primaryMatter.case_number || '')
+    if (!cause) return [primaryMatter]
+    const linked = matters.filter((matter) => normalizeCauseForOneDriveImport(matter.cause_number || matter.cause || matter.case_number || '') === cause)
+    return linked.length ? linked : [primaryMatter]
+  }
+
+  async function scanOneDriveMatterFoldersForEfileDocuments() {
+    const rootPath = String(oneDriveMatterImportConfig.rootPath || oneDrivePath || '').trim()
+    if (!rootPath) { alert('Enter the OneDrive root folder containing the client or matter folders.'); return }
+    setOneDriveBusy(true)
+    setOneDriveMatterImportStatus('Scanning matter folders...')
+    try {
+      localStorage.setItem('caseMioOneDriveMatterImportConfig', JSON.stringify(oneDriveMatterImportConfig))
+      const rootChildren = await graphFetch(`/me/drive/root:/${oneDriveEncodePath(rootPath)}:/children?$top=200`, { allowInteractive: true })
+      const matterFolders = (rootChildren?.value || []).filter((item) => item.folder)
+      const foundRows = []
+      let folderIndex = 0
+      for (const matterFolder of matterFolders) {
+        folderIndex += 1
+        setOneDriveMatterImportStatus(`Scanning ${folderIndex} of ${matterFolders.length}: ${matterFolder.name}`)
+        const primaryMatter = matchMatterForFolderName(matterFolder.name)
+        if (!primaryMatter) continue
+        const childFolders = (await graphChildrenForFolder(matterFolder.id)).filter((item) => item.folder && isRecognizedEfileFolderName(item.name))
+        for (const efileFolder of childFolders) {
+          const files = await collectOneDriveFilesRecursive(efileFolder, oneDriveJoinPath(rootPath, matterFolder.name, efileFolder.name))
+          const linkedMatters = mattersLinkedByCause(primaryMatter)
+          for (const file of files) {
+            for (const linkedMatter of linkedMatters) {
+              const alreadyImported = documents.some((doc) => String(doc?.source_onedrive_item_id || '') === String(file.id) && String(doc?.matter_id || '') === String(linkedMatter.id))
+              foundRows.push({
+                id: `od-import-${file.id}-${linkedMatter.id}`,
+                selected: !alreadyImported,
+                alreadyImported,
+                source_item_id: file.id,
+                source_web_url: file.webUrl || '',
+                source_download_url: file['@microsoft.graph.downloadUrl'] || '',
+                source_path: file.source_path || '',
+                file_name: file.name || 'OneDrive file',
+                mime_type: file.file?.mimeType || 'application/octet-stream',
+                size: file.size || 0,
+                modified_at: file.lastModifiedDateTime || '',
+                matter_id: linkedMatter.id,
+                matched_folder: matterFolder.name,
+                efile_folder: efileFolder.name,
+                cause_number: linkedMatter.cause_number || linkedMatter.cause || linkedMatter.case_number || ''
+              })
+            }
+          }
+        }
+      }
+      setOneDriveMatterImportRows(foundRows)
+      setOneDriveMatterImportStatus(`Scan complete: ${foundRows.length} proposed document-to-matter link(s), ${foundRows.filter((row) => !row.alreadyImported).length} new.`)
+    } catch (error) {
+      setOneDriveMatterImportStatus(`Scan failed: ${error.message || error}`)
+    } finally {
+      setOneDriveBusy(false)
+    }
+  }
+
+  async function downloadOneDriveImportFile(row) {
+    let downloadUrl = row.source_download_url
+    if (!downloadUrl) {
+      const metadata = await graphFetch(`/me/drive/items/${encodeURIComponent(row.source_item_id)}`, { allowInteractive: true })
+      downloadUrl = metadata?.['@microsoft.graph.downloadUrl'] || ''
+    }
+    if (!downloadUrl) throw new Error(`No download URL was available for ${row.file_name}.`)
+    const response = await fetch(downloadUrl)
+    if (!response.ok) throw new Error(`Download failed for ${row.file_name} (${response.status}).`)
+    const blob = await response.blob()
+    return new File([blob], row.file_name, { type: row.mime_type || blob.type || 'application/octet-stream', lastModified: row.modified_at ? new Date(row.modified_at).getTime() : Date.now() })
+  }
+
+  async function importSelectedOneDriveEfileDocuments() {
+    const rows = oneDriveMatterImportRows.filter((row) => row.selected && !row.alreadyImported)
+    if (!rows.length) { alert('Select at least one new OneDrive document link to import.'); return }
+    const requiredTagId = efiledTagId()
+    if (!requiredTagId) { alert('Mio could not find the top-level “efiled” tag. Create that tag first, then import.'); return }
+    setOneDriveBusy(true)
+    const grouped = new Map()
+    rows.forEach((row) => {
+      if (!grouped.has(row.source_item_id)) grouped.set(row.source_item_id, [])
+      grouped.get(row.source_item_id).push(row)
+    })
+    const savedRows = []
+    let completed = 0
+    try {
+      for (const linkedRows of grouped.values()) {
+        const first = linkedRows[0]
+        setOneDriveMatterImportStatus(`Importing ${completed + 1} of ${grouped.size}: ${first.file_name}`)
+        const file = await downloadOneDriveImportFile(first)
+        const firstDocId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const storedPayload = await uploadMioDocumentFile(file, firstDocId, first.matter_id)
+        for (let index = 0; index < linkedRows.length; index += 1) {
+          const row = linkedRows[index]
+          const docId = index === 0 ? firstDocId : `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
+          savedRows.push(withEmptyDocumentAiReview({
+            id: docId,
+            matter_id: row.matter_id,
+            name: String(row.file_name || '').replace(/\.[^/.]+$/, ''),
+            date: row.modified_at ? dateToInputValue(new Date(row.modified_at)) : '',
+            description: `Imported from OneDrive e-file folder: ${row.source_path}`,
+            status: 'Neither',
+            tag_ids: tagAndParentIds([requiredTagId]),
+            document_field_values: {},
+            upload_date: dateToInputValue(new Date()),
+            file_name: row.file_name,
+            original_file_name: row.file_name,
+            file_type: row.mime_type,
+            file_size: row.size,
+            source_type: 'onedrive-efile-import',
+            source_onedrive_item_id: row.source_item_id,
+            source_onedrive_path: row.source_path,
+            source_onedrive_web_url: row.source_web_url,
+            source_modified_at: row.modified_at,
+            ...storedPayload
+          }))
+        }
+        completed += 1
+      }
+      setDocuments((current) => [...savedRows, ...current])
+      setOneDriveMatterImportRows((current) => current.map((row) => rows.some((picked) => picked.id === row.id) ? { ...row, selected: false, alreadyImported: true } : row))
+      setOneDriveMatterImportStatus(`Imported ${savedRows.length} document-to-matter record(s). Every imported document received the required “efiled” tag. Detailed tagging was left for later review.`)
+    } catch (error) {
+      setOneDriveMatterImportStatus(`Import stopped: ${error.message || error}. ${savedRows.length} record(s) were prepared before the error.`)
+      if (savedRows.length) setDocuments((current) => [...savedRows, ...current])
+    } finally {
+      setOneDriveBusy(false)
+    }
+  }
+
+  async function scanSelectedDocumentsForTagsWithAi() {
+    const selected = documents.filter((doc) => selectedDocumentIds.includes(doc.id))
+    if (!selected.length) { alert('Check at least one document first.'); return }
+    setBulkAiProgress({ running: true, total: selected.length, done: 0, current: '' })
+    for (let index = 0; index < selected.length; index += 1) {
+      const doc = selected[index]
+      setBulkAiProgress({ running: true, total: selected.length, done: index, current: doc.name || doc.file_name || '' })
+      try { await analyzeAiForSavedDocument(doc.id, doc.matter_id, { focus: 'tags_and_fields' }) } catch (error) { console.warn('Document tag scan failed:', error) }
+    }
+    setBulkAiProgress({ running: false, total: selected.length, done: selected.length, current: '' })
+  }
+
   function renderOneDriveFilesPage() {
     const selected = selectedOneDriveItem()
     const parentPath = oneDriveParentPathFromItem()
@@ -19956,6 +20153,36 @@ useEffect(() => {
             </div>
           )}
           {oneDriveNote && <div style={{ marginTop: 8, color: '#475569' }}>{oneDriveNote}</div>}
+        </section>
+
+        <section style={{ border: '1px solid #93c5fd', borderRadius: 8, padding: 12, background: '#eff6ff', marginBottom: 14 }}>
+          <h2 style={{ margin: '0 0 8px' }}>Import e-file folders into Matter Documents</h2>
+          <p style={{ margin: '0 0 10px', color: '#475569' }}>Choose the root containing the client/matter folders. Mio scans each matching folder for recognized e-file subfolders, matches the matter, and also proposes the same files for every Mio matter with the same cause number.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(280px, 1fr) auto auto', gap: 8, alignItems: 'end' }}>
+            <LabeledField label="Client/matter folders root">
+              <input value={oneDriveMatterImportConfig.rootPath} onChange={(e) => setOneDriveMatterImportConfig((current) => ({ ...current, rootPath: e.target.value }))} placeholder="/All Matters/1. Open Cases" />
+            </LabeledField>
+            <LabeledField label="Recognized e-file folder names">
+              <input value={oneDriveMatterImportConfig.efileNames} onChange={(e) => setOneDriveMatterImportConfig((current) => ({ ...current, efileNames: e.target.value }))} placeholder="efile, e-file, efiles, e-filed, efiled" />
+            </LabeledField>
+            <button type="button" onClick={scanOneDriveMatterFoldersForEfileDocuments} disabled={oneDriveBusy}>Scan folders</button>
+            <button type="button" onClick={importSelectedOneDriveEfileDocuments} disabled={oneDriveBusy || !oneDriveMatterImportRows.some((row) => row.selected && !row.alreadyImported)} style={{ fontWeight: 'bold' }}>Import selected</button>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 13 }}><strong>Tag rule:</strong> every imported document always receives the top-level <strong>efiled</strong> tag. All other tags and fields are optional and can be scanned later from Matter &gt; Documents.</div>
+          {oneDriveMatterImportStatus && <div style={{ marginTop: 8, color: '#334155' }}>{oneDriveMatterImportStatus}</div>}
+          {oneDriveMatterImportRows.length > 0 && (
+            <div style={{ overflow: 'auto', maxHeight: 420, marginTop: 10, border: '1px solid #bfdbfe', background: '#fff' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}>
+                <thead><tr style={{ background: '#dbeafe' }}><th>Import</th><th>File</th><th>Matched folder</th><th>E-file folder</th><th>Mio matter</th><th>Cause #</th><th>Status</th><th>OneDrive path</th></tr></thead>
+                <tbody>{oneDriveMatterImportRows.map((row) => <tr key={row.id} style={{ borderTop: '1px solid #dbeafe' }}>
+                  <td style={{ padding: 6 }}><input type="checkbox" checked={!!row.selected} disabled={row.alreadyImported} onChange={(e) => setOneDriveMatterImportRows((current) => current.map((item) => item.id === row.id ? { ...item, selected: e.target.checked } : item))} /></td>
+                  <td style={{ padding: 6 }}>{row.file_name}</td><td style={{ padding: 6 }}>{row.matched_folder}</td><td style={{ padding: 6 }}>{row.efile_folder}</td>
+                  <td style={{ padding: 6 }}><SmartMatterSelect value={row.matter_id} onChange={(value) => setOneDriveMatterImportRows((current) => current.map((item) => item.id === row.id ? { ...item, matter_id: value, cause_number: billingMatterCauseNumber(value) } : item))} style={{ width: 260 }} /></td>
+                  <td style={{ padding: 6 }}>{row.cause_number || '—'}</td><td style={{ padding: 6 }}>{row.alreadyImported ? 'Already imported' : 'Ready'}</td><td style={{ padding: 6, fontSize: 12 }}>{row.source_path}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
