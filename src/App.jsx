@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V187'
+const MIO_APP_VERSION = 'Mio V188'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27855,7 +27855,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       const parties = Array.isArray(extra?.opposing_parties) ? extra.opposing_parties : []
       const courtPeople = Array.isArray(extra?.court_people) ? extra.court_people : []
       let rowsAddedForMatter = 0
-      const push = (nextRow) => { rows.push(nextRow); rowsAddedForMatter += 1 }
+      const push = (nextRow) => { rows.push({ ...nextRow, MatterId: matter?.id || '' }); rowsAddedForMatter += 1 }
 
       if (selected.client) {
         push(row(matterLabel, 'Client', 'Client', {
@@ -27942,8 +27942,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     })
 
     const ws = XLSX.utils.json_to_sheet(rows)
-    ws['!cols'] = [18,38,26,34,34,18,28,20,18,10,10,30,18,42].map((wch) => ({ wch }))
-    ws['!autofilter'] = { ref: `A1:N${Math.max(2, rows.length + 1)}` }
+    ws['!cols'] = [18,38,26,34,34,18,28,20,18,10,10,30,18,42,38].map((wch) => ({ wch }))
+    ws['!autofilter'] = { ref: `A1:O${Math.max(2, rows.length + 1)}` }
     ws['!freeze'] = { xSplit: 0, ySplit: 1 }
     const matterWs = XLSX.utils.json_to_sheet(matterListRows)
     matterWs['!cols'] = [{ wch: 44 }, { wch: 36 }, { wch: 20 }, { wch: 38 }]
@@ -27952,37 +27952,55 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'People Import')
     XLSX.utils.book_append_sheet(wb, matterWs, 'Matter List')
-    XLSX.writeFile(wb, 'Mio_V187_Selected_People_Template.xlsx')
+    XLSX.writeFile(wb, 'Mio_V188_Selected_People_Template.xlsx')
   }
   async function importPeopleSpreadsheet(file) {
     if (!file) return
     try {
       const data = await file.arrayBuffer()
       const wb = XLSX.read(data, { type: 'array' })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+      const peopleWs = wb.Sheets['People Import'] || wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(peopleWs, { defval: '' })
+      const matterListWs = wb.Sheets['Matter List']
+      const matterListRows = matterListWs ? XLSX.utils.sheet_to_json(matterListWs, { defval: '' }) : []
       setPeopleImportRows(rows)
 
       const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
-      const matterSearchText = (matter) => normalize([
-        matter?.id,
-        matter?.display_name,
-        matter?.description,
-        matter?.matter_name,
-        matter?.case_name,
-        matter?.cause_number,
-        matter?.case_number,
+      const exactMatterById = new Map((matters || []).filter((matter) => matter?.id).map((matter) => [String(matter.id), matter]))
+      const matterIdByTemplateLabel = new Map(matterListRows.map((item) => [String(item.Matter || '').trim(), String(item.MatterId || '').trim()]).filter(([label, id]) => label && id))
+      const causeNumberFor = (matter) => normalize(matter?.cause_number || matter?.case_number || '')
+      const matterNameFor = (matter) => normalize(matter?.name || matter?.display_name || matter?.matter_name || matter?.case_name || matter?.description || '')
+      const clientNameFor = (matter) => normalize([
         matter?.clients?.first_name,
         matter?.clients?.last_name,
         matter?.clients?.name
       ].filter(Boolean).join(' '))
       const findMatter = (row) => {
-        const target = normalize(row.Matter || row['Matter / Cause Number'] || row.CauseNumber || row['Cause Number'])
-        if (!target) return null
-        return matters.find((matter) => {
-          const text = matterSearchText(matter)
-          return text === target || text.includes(target) || target.includes(text)
-        }) || null
+        const directId = String(row.MatterId || row['Matter ID'] || '').trim()
+        if (directId && exactMatterById.has(directId)) return exactMatterById.get(directId)
+
+        const templateLabel = String(row.Matter || row['Matter / Cause Number'] || '').trim()
+        const mappedId = matterIdByTemplateLabel.get(templateLabel)
+        if (mappedId && exactMatterById.has(mappedId)) return exactMatterById.get(mappedId)
+
+        const explicitCause = normalize(row.CauseNumber || row['Cause Number'] || (templateLabel.includes('|') ? templateLabel.split('|').pop() : ''))
+        if (explicitCause) {
+          const causeMatches = (matters || []).filter((matter) => causeNumberFor(matter) === explicitCause)
+          if (causeMatches.length === 1) return causeMatches[0]
+        }
+
+        const labelName = normalize(templateLabel.includes('|') ? templateLabel.split('|').slice(0, -1).join('|') : templateLabel)
+        if (labelName) {
+          const nameMatches = (matters || []).filter((matter) => matterNameFor(matter) === labelName)
+          if (nameMatches.length === 1) return nameMatches[0]
+        }
+
+        const rowName = normalize(row.Name)
+        if (rowName) {
+          const clientMatches = (matters || []).filter((matter) => clientNameFor(matter) === rowName)
+          if (clientMatches.length === 1) return clientMatches[0]
+        }
+        return null
       }
 
       let clientsUpdated = 0
@@ -28097,7 +28115,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <h2>All Matters People & Email Template</h2>
         <p>Download a workbook containing every Mio matter and its default people rows. Existing names, emails, phone numbers, addresses, court information, and saved matter people are filled in so missing information is easy to identify.</p>
         <div style={{ padding: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', marginBottom: 12, fontSize: 13 }}>
-          Use <strong>Choose People Types</strong> to include or exclude clients, opposing parties, opposing counsel, court personnel, mediators, and third parties. Every Mio matter is always included, and selected types are prefilled with existing Mio information. Keep the Matter value unchanged when filling gaps so the completed workbook can be matched back to the correct Mio matter.
+          Use <strong>Choose People Types</strong> to include or exclude clients, opposing parties, opposing counsel, court personnel, mediators, and third parties. Every Mio matter is always included, and selected types are prefilled with existing Mio information. The template includes a stable MatterId for each row, so Mio can match the upload back to the correct matter even when matter names are similar. Do not delete or change the MatterId column.
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ position: 'relative' }}>
@@ -40332,7 +40350,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </div>
             )}
 
-            {settingsTab === 'people_template' && renderPeopleTemplateSettings()}
               {settingsTab === 'options' && (
               <>
                 <h2>Dropdown Options</h2>
