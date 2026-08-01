@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V189'
+const MIO_APP_VERSION = 'Mio V190'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -27643,8 +27643,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       if (options.some((item) => item.key === key)) return
       options.push({ key, source, label: label || address, email: address, personId })
     }
-    const client = clients.find((item) => String(item.id) === String(matter.client_id)) || {}
-    add('client', `Client — ${client.name || matter.client_name || 'Client'}`, client.email || matter.client_email, client.id)
+    const client = matter.clients || matter.client || clients.find((item) => String(item.id) === String(matter.client_id || matter.client_id_fk || '')) || {}
+    const clientDisplayName = [client.first_name, client.last_name].filter(Boolean).join(' ').trim() || client.name || matter.client_name || matter.matter_client_name || 'Client'
+    const clientEmail = client.email || client.primary_email || matter.client_email || matter.matter_client_email || ''
+    add('client', `Client — ${clientDisplayName}`, clientEmail, client.id || matter.client_id || '')
     const court = courts.find((item) => String(item.id) === String(matter.court_id || event.court_id)) || {}
     add('court_coordinator', `Court Coordinator — ${court.court_coordinator_name || checklistCourtName(event) || 'Court'}`, court.court_coordinator_email || checklistCourtCoordinatorEmail(event), court.id)
     ;(extra.court_people || []).forEach((person, index) => add('court_coordinator', `${person.title || 'Court Contact'} — ${person.name || `Contact ${index + 1}`}`, person.email, person.id || `court-${index}`))
@@ -27994,7 +27996,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         action: 'suggest',
         matter: checklistMatterForEvent(event),
         event: { id, type: checklistEventCategoryLabel(event), title: event.title || event.checklist_title || '', status },
-        current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '', data_label: step.default_pages?.data_field_label || step.name, data_value: needToSetStepDataValue(event, step) },
+        current_step: { index: stepIndex, name: step.name, purpose: step.default_pages?.purpose || '', ai_instructions: step.default_pages?.ai_instructions || '', data_label: step.default_pages?.data_field_label || step.name, data_value: needToSetStepDataValue(event, step) },
         step_data: needToSetEventStepData(event),
         authoritative_step_information: needToSetEventStepData(event).filter((item) => String(item.value || '').trim()),
         emails: emails.map((email) => ({ id: email.id, subject: email.subject || email.title || '', role: needToSetEmailRoleLabel(email), unread: !!(email.new_email_notice || workspaceEmailHasUnreadActivity(email)), messages: needToSetThreadMessages(email).slice(0, 8) })),
@@ -28003,6 +28005,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           'Treat Step Information values as authoritative user-entered facts.',
           'Use dates and availability from Step Information, not dates inferred from old emails, calendar examples, or prior drafts.',
           'Draft only to the recipient assigned to the current step.',
+          'Follow the saved AI instructions for the current step when they are present.',
           'For a Check with OC step, address opposing counsel and never the court.'
         ]
       }
@@ -28439,9 +28442,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{display:'grid',gap:6,marginTop:8}}>{catalog.map((email,index)=><div key={email.id} style={{display:'grid',gridTemplateColumns:'34px 170px 210px minmax(240px,1fr) 34px',gap:6,alignItems:'center'}}><strong>{index+1}</strong><input value={email.label||''} placeholder="Court / Client / Opposing Counsel" onChange={(e)=>patchCatalogItem(email.id,{label:e.target.value,role:e.target.value})} onBlur={commitCatalog}/><select value={email.person_source||''} onChange={(e)=>{patchCatalogItem(email.id,{person_source:e.target.value}); setTimeout(commitCatalog,0)}} title="Automatically use this type of person from each matter"><option value="">Choose from event manually</option><option value="client">Client from People</option><option value="court_coordinator">Court coordinator from People</option><option value="opposing_counsel">Opposing counsel from People</option><option value="opposing_party">Opposing party from People</option><option value="co_counsel">Co-counsel from People</option><option value="third_party">3rd party from People</option></select><input type="email" value={email.address||''} placeholder="Fallback address only (optional)" onChange={(e)=>patchCatalogItem(email.id,{address:e.target.value})} onBlur={commitCatalog}/><button type="button" title="Remove email" onClick={()=>removeCatalogEmail(email.id)}>×</button></div>)}{!catalog.length&&<div style={{color:'#64748b',fontSize:12}}>No email boxes have been added to this setting type yet.</div>}</div>
       </section>
 
-      <div style={{marginTop:10,minWidth:1080}}>
-        <div style={{display:'grid',gridTemplateColumns:'42px 190px minmax(250px,1fr) minmax(220px,.8fr) minmax(300px,1fr)',gap:8,padding:'7px 9px',background:'#f8fafc',fontWeight:800,fontSize:12}}><span>#</span><span>Step Name</span><span>Purpose</span><span>Data box label</span><span>Connect setting emails to this step</span></div>
-        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const selectedIds = new Set((meta.email_assignment_ids || []).map(String)); return <div key={step.id} style={{display:'grid',gridTemplateColumns:'42px 190px minmax(250px,1fr) minmax(220px,.8fr) minmax(300px,1fr)',gap:8,padding:'7px 9px',borderTop:'1px solid #e2e8f0',alignItems:'center'}}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><input value={meta.data_field_label||''} placeholder="Example: Dates from Court" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),data_field_label:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{data_field_label:e.target.value})}/><select multiple value={Array.from(selectedIds)} onChange={(e)=>setStepAssignments(step,new Set(Array.from(e.target.selectedOptions).map((option)=>option.value)))} style={{minHeight:34,maxHeight:72,padding:4}} title="Hold Ctrl to select more than one email"><option value="" disabled>{catalog.length?'Select one or more setting emails':'Add setting emails above first'}</option>{catalog.map((email)=><option key={email.id} value={email.id}>{email.label}{email.address?` — ${email.address}`:''}</option>)}</select></div>})}
+      <div style={{marginTop:10,minWidth:1320}}>
+        <div style={{display:'grid',gridTemplateColumns:'42px 170px minmax(220px,.8fr) minmax(220px,.75fr) minmax(310px,1.15fr) minmax(280px,1fr)',gap:8,padding:'7px 9px',background:'#f8fafc',fontWeight:800,fontSize:12}}><span>#</span><span>Step Name</span><span>Purpose</span><span>Data box label</span><span>AI instructions for this step</span><span>Connect setting emails to this step</span></div>
+        {steps.map((step,index)=>{ const meta=step.default_pages||{}; const selectedIds = new Set((meta.email_assignment_ids || []).map(String)); return <div key={step.id} style={{display:'grid',gridTemplateColumns:'42px 170px minmax(220px,.8fr) minmax(220px,.75fr) minmax(310px,1.15fr) minmax(280px,1fr)',gap:8,padding:'7px 9px',borderTop:'1px solid #e2e8f0',alignItems:'center'}}><strong>{index+1}</strong><span>{step.name}</span><input value={meta.purpose||''} placeholder="Why this step is performed" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),purpose:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{purpose:e.target.value})}/><input value={meta.data_field_label||''} placeholder="Example: Dates from Court" onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),data_field_label:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{data_field_label:e.target.value})}/><textarea value={meta.ai_instructions||''} placeholder="Tell AI what to do, what information to use, tone, recipients, follow-up rules, or what result completes this step." onChange={(e)=>setSettings((current)=>current.map((item)=>item.id===step.id?{...item,default_pages:{...(item.default_pages||{}),ai_instructions:e.target.value}}:item))} onBlur={(e)=>saveNeedToSetStepMeta(step,{ai_instructions:e.target.value})} style={{minHeight:58,resize:'vertical',padding:6}}/><select multiple value={Array.from(selectedIds)} onChange={(e)=>setStepAssignments(step,new Set(Array.from(e.target.selectedOptions).map((option)=>option.value)))} style={{minHeight:58,maxHeight:88,padding:4}} title="Hold Ctrl to select more than one email"><option value="" disabled>{catalog.length?'Select one or more setting emails':'Add setting emails above first'}</option>{catalog.map((email)=><option key={email.id} value={email.id}>{email.label}{email.address?` — ${email.address}`:''}</option>)}</select></div>})}
       </div>
     </div>
   }
