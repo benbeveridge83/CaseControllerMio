@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V191'
+const MIO_APP_VERSION = 'Mio V192'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1698,6 +1698,7 @@ function App() {
   const [oneDriveMatterImportStatus, setOneDriveMatterImportStatus] = useState('')
   const [oneDriveMatterQuickImportId, setOneDriveMatterQuickImportId] = useState('')
   const [oneDriveImportStep, setOneDriveImportStep] = useState(1)
+  const [oneDriveExpandedImportFolders, setOneDriveExpandedImportFolders] = useState({})
   const [pendingOneDriveAiScanIds, setPendingOneDriveAiScanIds] = useState([])
 
   const [tags, setTags] = useState(() => {
@@ -20083,7 +20084,7 @@ useEffect(() => {
       }
       setOneDriveMatterImportRows(foundRows)
       setOneDriveImportStep(2)
-      setOneDriveMatterImportStatus(`Scan complete: ${foundRows.length} proposed document-to-matter link(s), ${foundRows.filter((row) => !row.alreadyImported).length} new.`)
+      setOneDriveMatterImportStatus(`Scan complete: ${new Set(foundRows.map((row) => `${row.matched_folder}||${row.efile_folder}`)).size} e-file folder(s), ${new Set(foundRows.map((row) => row.source_item_id)).size} unique file(s), ${foundRows.filter((row) => !row.alreadyImported).length} new matter-document link(s).`)
     } catch (error) {
       setOneDriveMatterImportStatus(`Scan failed: ${error.message || error}`)
     } finally {
@@ -20234,21 +20235,66 @@ useEffect(() => {
             <label><input type="checkbox" checked={!!oneDriveMatterImportConfig.applyDetailedTags} onChange={(e) => setOneDriveMatterImportConfig({ ...oneDriveMatterImportConfig, applyDetailedTags: e.target.checked })} /> Scan detailed tags after import</label>
           </div>
           {oneDriveMatterImportStatus && <div style={{ marginTop: 10, fontWeight: 700, color: '#334155' }}>{oneDriveMatterImportStatus}</div>}
-          {oneDriveMatterImportRows.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                <button type="button" onClick={() => setOneDriveMatterImportRows((rows) => rows.map((row) => !row.alreadyImported ? { ...row, selected: true } : row))}>Select all new</button>
-                <button type="button" onClick={() => setOneDriveMatterImportRows((rows) => rows.map((row) => ({ ...row, selected: false }))}>Deselect all</button>
-                <button type="button" onClick={() => { setOneDriveImportStep(3); importSelectedOneDriveEfileDocuments() }} disabled={oneDriveBusy || !oneDriveMatterImportRows.some((row) => row.selected && !row.alreadyImported)} style={{ fontWeight: 800 }}>Import selected</button>
+          {oneDriveMatterImportRows.length > 0 && (() => {
+            const folderGroups = Array.from(oneDriveMatterImportRows.reduce((map, row) => {
+              const key = `${row.matched_folder}||${row.efile_folder}`
+              if (!map.has(key)) map.set(key, { key, matched_folder: row.matched_folder, efile_folder: row.efile_folder, rows: [] })
+              map.get(key).rows.push(row)
+              return map
+            }, new Map()).values()).map((group) => {
+              const uniqueFiles = Array.from(new Map(group.rows.map((row) => [row.source_item_id, row])).values())
+              const matterIds = Array.from(new Set(group.rows.map((row) => String(row.matter_id))))
+              const causeNumbers = Array.from(new Set(group.rows.map((row) => row.cause_number).filter(Boolean)))
+              const newRows = group.rows.filter((row) => !row.alreadyImported)
+              const selectedRows = newRows.filter((row) => row.selected)
+              return { ...group, uniqueFiles, matterIds, causeNumbers, newRows, selectedRows }
+            }).sort((a, b) => String(a.matched_folder || '').localeCompare(String(b.matched_folder || '')))
+            const selectFolder = (group, selected) => setOneDriveMatterImportRows((rows) => rows.map((row) => (
+              row.matched_folder === group.matched_folder && row.efile_folder === group.efile_folder && !row.alreadyImported
+                ? { ...row, selected }
+                : row
+            )))
+            return (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
+                  <button type="button" onClick={() => setOneDriveMatterImportRows((rows) => rows.map((row) => !row.alreadyImported ? { ...row, selected: true } : row))}>Select all new folders</button>
+                  <button type="button" onClick={() => setOneDriveMatterImportRows((rows) => rows.map((row) => ({ ...row, selected: false })))}>Deselect all</button>
+                  <button type="button" onClick={() => { setOneDriveImportStep(3); importSelectedOneDriveEfileDocuments() }} disabled={oneDriveBusy || !oneDriveMatterImportRows.some((row) => row.selected && !row.alreadyImported)} style={{ fontWeight: 800 }}>Import selected folders</button>
+                  <span style={{ color: '#475569', fontSize: 13 }}>{folderGroups.length} folder match(es)</span>
+                </div>
+                <div style={{ border: '1px solid #bfdbfe', borderRadius: 10, background: 'white', overflow: 'hidden' }}>
+                  <table cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead style={{ background: '#eff6ff' }}><tr><th>Pick</th><th>OneDrive matter folder</th><th>E-file folder</th><th>Proposed Mio matter(s)</th><th>Cause</th><th>Files</th><th>Status</th><th>Review</th></tr></thead>
+                    <tbody>{folderGroups.map((group) => {
+                      const allNewSelected = group.newRows.length > 0 && group.newRows.every((row) => row.selected)
+                      const someNewSelected = group.newRows.some((row) => row.selected)
+                      const expanded = !!oneDriveExpandedImportFolders[group.key]
+                      return <Fragment key={group.key}>
+                        <tr style={{ borderTop: '1px solid #dbeafe', background: group.newRows.length ? '#fff' : '#f8fafc' }}>
+                          <td><input type="checkbox" checked={allNewSelected} ref={(node) => { if (node) node.indeterminate = !allNewSelected && someNewSelected }} disabled={!group.newRows.length} onChange={(e) => selectFolder(group, e.target.checked)} /></td>
+                          <td><strong>{group.matched_folder}</strong></td>
+                          <td>{group.efile_folder}</td>
+                          <td>{group.matterIds.map((matterId) => <div key={matterId}>{matterLabel(matterId)}</div>)}</td>
+                          <td>{group.causeNumbers.join(', ') || '—'}</td>
+                          <td><strong>{group.uniqueFiles.length}</strong> unique<div style={{ fontSize: 12, color: '#64748b' }}>{group.newRows.length} new link(s)</div></td>
+                          <td>{group.newRows.length ? (group.selectedRows.length ? `${group.selectedRows.length} selected` : 'Ready') : 'Already imported'}</td>
+                          <td><button type="button" onClick={() => setOneDriveExpandedImportFolders((current) => ({ ...current, [group.key]: !expanded }))}>{expanded ? 'Hide files' : 'Review files'}</button></td>
+                        </tr>
+                        {expanded && <tr><td colSpan="8" style={{ padding: 0, background: '#f8fbff' }}>
+                          <div style={{ maxHeight: 280, overflow: 'auto', padding: 10 }}>
+                            <table cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                              <thead><tr><th>File</th><th>Linked matter</th><th>Status</th><th>Path</th></tr></thead>
+                              <tbody>{group.rows.map((row) => <tr key={row.id} style={{ borderTop: '1px solid #e2e8f0' }}><td><label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={!!row.selected} disabled={row.alreadyImported} onChange={(e) => setOneDriveMatterImportRows((rows) => rows.map((item) => item.id === row.id ? { ...item, selected: e.target.checked } : item))} />{row.file_name}</label></td><td>{matterLabel(row.matter_id)}</td><td>{row.alreadyImported ? 'Already imported' : 'New'}</td><td style={{ color: '#64748b' }}>{row.source_path}</td></tr>)}</tbody>
+                            </table>
+                          </div>
+                        </td></tr>}
+                      </Fragment>
+                    })}</tbody>
+                  </table>
+                </div>
               </div>
-              <div style={{ maxHeight: 340, overflow: 'auto', border: '1px solid #bfdbfe', borderRadius: 8, background: 'white' }}>
-                <table cellPadding="7" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead><tr><th>Pick</th><th>OneDrive file</th><th>Mio matter</th><th>Cause</th><th>Status</th></tr></thead>
-                  <tbody>{oneDriveMatterImportRows.map((row) => <tr key={row.id} style={{ borderTop: '1px solid #e2e8f0' }}><td><input type="checkbox" checked={!!row.selected} disabled={row.alreadyImported} onChange={(e) => setOneDriveMatterImportRows((rows) => rows.map((item) => item.id === row.id ? { ...item, selected: e.target.checked } : item))} /></td><td><div style={{ fontWeight: 700 }}>{row.file_name}</div><small>{row.source_path}</small></td><td>{matterLabel(row.matter_id)}</td><td>{row.cause_number || '—'}</td><td>{row.alreadyImported ? 'Already imported' : 'Ready'}</td></tr>)}</tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            )
+          })()}
         </section>
         <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
