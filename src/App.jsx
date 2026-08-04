@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V192'
+const MIO_APP_VERSION = 'Mio V194'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1963,6 +1963,8 @@ function App() {
     catch { return {} }
   })
   const [refreshingNeedSetEmails, setRefreshingNeedSetEmails] = useState(false)
+  const [needToSetEmailRefreshStatus, setNeedToSetEmailRefreshStatus] = useState('')
+  const needToSetAutoEmailRefreshRef = useRef(false)
   const [settingWorkspaces, setSettingWorkspaces] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioSettingWorkspaces') || '{}') }
     catch { return {} }
@@ -3367,6 +3369,20 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioSettingWorkspaces', JSON.stringify(settingWorkspaces)) } catch {}
   }, [settingWorkspaces])
+
+  useEffect(() => {
+    if (page !== 'need_to_set') {
+      needToSetAutoEmailRefreshRef.current = false
+      return
+    }
+    if (!serviceGraphAuth?.connected || needToSetAutoEmailRefreshRef.current) return
+    needToSetAutoEmailRefreshRef.current = true
+    setNeedToSetEmailRefreshStatus('Automatically checking Outlook for new responses...')
+    const timer = window.setTimeout(() => {
+      refreshAllNeedToSetEmailThreads({ automatic: true })
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [page, serviceGraphAuth?.connected, session?.user?.id])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioChecklistStepsExpandedByRow', JSON.stringify(checklistStepsExpandedByRow)) } catch {}
@@ -5706,18 +5722,34 @@ function App() {
     return filteredChecklistEvents('need_date').some((event) => checklistEventHasNewEmail(event))
   }
 
-  async function refreshAllNeedToSetEmailThreads() {
+  async function refreshAllNeedToSetEmailThreads({ automatic = false } = {}) {
     const rows = filteredChecklistEvents('need_date')
+    let linkedThreadCount = 0
+    let refreshedThreadCount = 0
+    let failedThreadCount = 0
     setRefreshingNeedSetEmails(true)
+    setNeedToSetEmailRefreshStatus(automatic ? 'Automatically checking Outlook for new responses...' : 'Checking Outlook for new responses...')
     try {
       for (const event of rows) {
         const context = checklistWorkspaceContextForEvent(event)
         const emails = workspaceEmailsForContext(context).filter((email) => email.outlook_conversation_id || email.outlook_message_id)
+        linkedThreadCount += emails.length
         for (const email of emails) {
-          try { await loadWorkspaceOutlookThread(context, email) }
-          catch (error) { console.warn('Could not refresh one setting email thread:', error) }
+          try {
+            await loadWorkspaceOutlookThread(context, email)
+            refreshedThreadCount += 1
+          } catch (error) {
+            failedThreadCount += 1
+            console.warn('Could not refresh one setting email thread:', error)
+          }
         }
       }
+      if (!linkedThreadCount) setNeedToSetEmailRefreshStatus('No connected Outlook threads were available to refresh.')
+      else if (failedThreadCount) setNeedToSetEmailRefreshStatus(`Checked ${refreshedThreadCount} connected thread(s). ${failedThreadCount} could not be refreshed.`)
+      else setNeedToSetEmailRefreshStatus(`Outlook check complete — refreshed ${refreshedThreadCount} connected thread(s). New responses are highlighted in red below.`)
+    } catch (error) {
+      console.error('Need to Set email refresh failed:', error)
+      setNeedToSetEmailRefreshStatus(`Outlook refresh failed: ${error.message || error}`)
     } finally {
       setRefreshingNeedSetEmails(false)
     }
@@ -27744,7 +27776,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function needToSetPeopleOptionsForEvent(event = {}) {
-    const matter = checklistMatterForEvent(event) || {}
+    // Need-to-Set events can retain a lightweight/stale matter snapshot that does
+    // not include the current linked client.  Always merge it with the canonical
+    // Matters/Clients records so every email visible on People is selectable.
+    const eventMatter = checklistMatterForEvent(event) || {}
+    const matterId = event?.matter_id || eventMatter?.id || event?.checklist_matter?.id || event?.matter?.id || event?.matters?.id || ''
+    const currentMatter = matters.find((item) => String(item.id) === String(matterId)) || {}
+    const matter = {
+      ...eventMatter,
+      ...currentMatter,
+      clients: currentMatter.clients || eventMatter.clients || eventMatter.client || null,
+      courts: currentMatter.courts || eventMatter.courts || null
+    }
     const extra = matterExtraFor(matter.id) || {}
     const options = []
     const add = (source, label, email, personId = '') => {
@@ -27754,20 +27797,24 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       if (options.some((item) => item.key === key)) return
       options.push({ key, source, label: label || address, email: address, personId })
     }
-    const client = matter.clients || matter.client || clients.find((item) => String(item.id) === String(matter.client_id || matter.client_id_fk || '')) || {}
+    const linkedClientId = matter.client_id || matter.client_id_fk || eventMatter.client_id || eventMatter.client_id_fk || ''
+    const client = clients.find((item) => String(item.id) === String(linkedClientId)) || matter.clients || matter.client || {}
     const clientDisplayName = [client.first_name, client.last_name].filter(Boolean).join(' ').trim() || client.name || matter.client_name || matter.matter_client_name || 'Client'
     const clientEmail = client.email || client.primary_email || matter.client_email || matter.matter_client_email || ''
     add('client', `Client — ${clientDisplayName}`, clientEmail, client.id || matter.client_id || '')
-    const court = courts.find((item) => String(item.id) === String(matter.court_id || event.court_id)) || {}
-    add('court_coordinator', `Court Coordinator — ${court.court_coordinator_name || checklistCourtName(event) || 'Court'}`, court.court_coordinator_email || checklistCourtCoordinatorEmail(event), court.id)
+    const court = courts.find((item) => String(item.id) === String(matter.court_id || event.court_id)) || matter.courts || {}
+    add('court_coordinator', `Court Coordinator — ${court.court_coordinator_name || court.court_coordinator || court.court_name || checklistCourtName(event) || 'Court'}`, court.court_coordinator_email || matter.courts?.court_coordinator_email || checklistCourtCoordinatorEmail(event), court.id)
     ;(extra.court_people || []).forEach((person, index) => add('court_coordinator', `${person.title || 'Court Contact'} — ${person.name || `Contact ${index + 1}`}`, person.email, person.id || `court-${index}`))
     ;(extra.opposing_parties || []).forEach((party, index) => {
       add('opposing_party', `Opposing Party — ${party.name || `Party ${index + 1}`}`, party.email, party.id || `party-${index}`)
       const counsel = party.counsel || {}
       add('opposing_counsel', `Opposing Counsel — ${counsel.name || party.name || `Counsel ${index + 1}`}`, counsel.email, counsel.id || `oc-${index}`)
     })
+    ;(extra.prior_counsels || []).forEach((person, index) => add('prior_counsel', `Prior Counsel — ${person.name || `Prior Counsel ${index + 1}`}`, person.email, person.id || `prior-${index}`))
     ;(extra.co_counsels || []).forEach((person, index) => add('co_counsel', `Co-Counsel — ${person.name || `Co-Counsel ${index + 1}`}`, person.email, person.id || `co-${index}`))
     ;(extra.third_parties || []).forEach((person, index) => add('third_party', `${person.title || '3rd Party'} — ${person.name || `Person ${index + 1}`}`, person.email, person.id || `third-${index}`))
+    ;(matterPeople || []).filter((person) => String(person.matter_id) === String(matter.id)).forEach((person, index) => add('third_party', `${person.designation || person.title || '3rd Party'} — ${person.name || `Person ${index + 1}`}`, person.email, person.id || `saved-person-${index}`))
+    add('mediator', `Mediator — ${extra.mediator_name || matter.mediator_name || 'Mediator'}`, extra.mediator_email || matter.mediator_email, extra.mediator_id || '')
     return options
   }
 
@@ -28703,8 +28750,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <label><strong>Sort by </strong><select value={checklistNeedToSetSortMode} onChange={(e)=>setChecklistNeedToSetSortMode(e.target.value)}><option value="manual">Total Age (oldest first)</option><option value="billing_oldest">Last Billing Entry</option><option value="step_oldest">Longest on Current Step</option><option value="last_activity">Days Since Last Activity</option></select></label>
               <label style={{display:'inline-flex',gap:5,alignItems:'center'}}><input type="checkbox" checked={checklistNewEmailOnly} onChange={(e)=>setChecklistNewEmailOnly(e.target.checked)}/> Unread email only</label>
             </div>
-            <div style={{ display:'flex',gap:6 }}><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=true}); setChecklistStepsExpandedByRow(next) }}>Expand All</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=false}); setChecklistStepsExpandedByRow(next) }}>Collapse All</button></div>
+            <div style={{ display:'flex',gap:6,alignItems:'center',flexWrap:'wrap' }}><button type="button" onClick={()=>refreshAllNeedToSetEmailThreads()} disabled={refreshingNeedSetEmails||!serviceGraphAuth?.connected} title={serviceGraphAuth?.connected?'Check every connected Need to Set Outlook conversation now':'Connect Microsoft before refreshing Outlook email'} style={{background:unreadCount?'#fee2e2':'#eff6ff',border:`1px solid ${unreadCount?'#fca5a5':'#93c5fd'}`,color:unreadCount?'#991b1b':'#1d4ed8',fontWeight:850}}>{refreshingNeedSetEmails?'↻ Refreshing Emails...':`↻ Refresh Emails${unreadCount?` (${unreadCount} new)`:''}`}</button><button onClick={()=>setNeedToSetSettingsOpen(true)}>⚙ Settings</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=true}); setChecklistStepsExpandedByRow(next) }}>Expand All</button><button onClick={()=>{ setShowNeedToSetSteps(true); const next={}; eventRows.forEach(({event})=>{next[String(event.id||event.checklist_source_id||event.checklist_id)]=false}); setChecklistStepsExpandedByRow(next) }}>Collapse All</button></div>
           </div>
+          {needToSetEmailRefreshStatus&&<div role="status" style={{marginBottom:8,padding:'7px 10px',border:`1px solid ${unreadCount?'#fecaca':'#bfdbfe'}`,borderRadius:8,background:unreadCount?'#fff1f2':'#eff6ff',color:unreadCount?'#991b1b':'#1e3a8a',fontSize:11,fontWeight:750}}>{unreadCount?`⚠ ${unreadCount} Need to Set event(s) have a response you have not reviewed. `:''}{needToSetEmailRefreshStatus}</div>}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(130px,1fr))', gap:7, marginBottom:8 }}>
             <div style={{padding:'7px 10px',border:'1px solid #bfdbfe',borderRadius:9,background:'#eff6ff'}}><strong>{eventRows.length}</strong><span style={{marginLeft:6}}>Need to Set</span></div>
             <div style={{padding:'7px 10px',border:'1px solid #fecaca',borderRadius:9,background:'#fff1f2'}}><strong>{unreadCount}</strong><span style={{marginLeft:6}}>Immediate Attention</span></div>
@@ -39207,7 +39255,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'need_to_set' && canOpenPage('need_to_set') && (
           <>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed. Connected Outlook threads refresh automatically when this page opens.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
             <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-start',margin:'10px 0 14px'}}><ChecklistCheckboxFilter kind="case" title="Case Status"/><ChecklistCheckboxFilter kind="matter" title="Matter Status"/><ChecklistCheckboxFilter kind="category" title="Case Type / Event Category"/></div>
             {renderNeedToSetCardDashboard()}
           </>
