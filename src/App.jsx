@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V205'
+const MIO_APP_VERSION = 'Mio V206'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
@@ -1950,6 +1950,9 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioInvoices') || '[]') }
     catch { return [] }
   })
+  const [selectedFinanceInvoice, setSelectedFinanceInvoice] = useState(null)
+  const [invoiceDocumentBusy, setInvoiceDocumentBusy] = useState(false)
+  const [invoiceSendDraft, setInvoiceSendDraft] = useState({ recipient_email: '', sender_email: '', subject: '' })
   const [mioTrustTransactions, setMioTrustTransactions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioTrustTransactions') || '[]') }
     catch { return [] }
@@ -3463,6 +3466,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioInvoices', JSON.stringify(mioInvoices || [])) } catch {}
   }, [mioInvoices])
+
+  useEffect(() => {
+    if (session?.user?.id) loadMioInvoicesFromDatabase()
+  }, [session?.user?.id])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
@@ -16051,6 +16058,362 @@ async function updateTeamCell(memberId, field, value) {
     return `MIO-${year}-${String(maxSequence + bulkInvoiceSequenceRef.current).padStart(4, '0')}`
   }
 
+  async function reserveMioInvoiceNumber() {
+    const { data, error } = await supabase.rpc('next_mio_invoice_number')
+    if (error) throw new Error(`Mio could not reserve a unique invoice number. ${error.message || error}`)
+    if (!data) throw new Error('Mio did not receive an invoice number from the database.')
+    return String(data)
+  }
+
+  function invoiceDatabasePayload(invoice = {}) {
+    return {
+      id: invoice.id,
+      user_id: session?.user?.id,
+      invoice_number: invoice.invoice_number,
+      invoice_type: invoice.invoice_type === 'trust_request' ? 'trust_request' : 'services',
+      matter_id: String(invoice.matter_id || ''),
+      client_id: String(invoice.client_id || ''),
+      client_name: invoice.client_name || '',
+      matter_name: invoice.matter_name || '',
+      matter_number: invoice.matter_number || '',
+      matter_description: invoice.matter_description || '',
+      issue_date: invoice.issue_date || new Date().toISOString().slice(0, 10),
+      due_date: invoice.due_date || null,
+      status: ['draft','outstanding','paid','void'].includes(invoice.status) ? invoice.status : 'draft',
+      subtotal: financeNumber(invoice.subtotal),
+      total: financeNumber(invoice.total),
+      amount_paid: financeNumber(invoice.amount_paid),
+      balance: invoiceBalanceAmount(invoice),
+      line_items: Array.isArray(invoice.line_items) ? invoice.line_items : [],
+      source_snapshot_date: invoice.source_snapshot_date || null,
+      source_wip_amount: financeNumber(invoice.source_wip_amount),
+      recipient_email: invoice.recipient_email || '',
+      sender_email: invoice.sender_email || '',
+      email_subject: invoice.email_subject || '',
+      payment_url: invoice.payment_url || '',
+      payment_request_id: String(invoice.payment_request_id || ''),
+      emailed_at: invoice.emailed_at || null,
+      email_error: invoice.email_error || '',
+      email_history: Array.isArray(invoice.email_history) ? invoice.email_history : [],
+      created_at: invoice.created_at || new Date().toISOString(),
+      updated_at: invoice.updated_at || new Date().toISOString()
+    }
+  }
+
+  function invoiceFromDatabaseRow(row = {}) {
+    return { ...row, line_items: Array.isArray(row.line_items) ? row.line_items : [], email_history: Array.isArray(row.email_history) ? row.email_history : [] }
+  }
+
+  async function recordInvoiceEvent(invoice, eventType, details = {}, amount = null, providerEventId = '') {
+    if (!invoice?.id || !session?.user?.id) return
+    const payload = { invoice_id: invoice.id, user_id: session.user.id, event_type: eventType, details, occurred_at: new Date().toISOString() }
+    if (amount !== null && amount !== undefined) payload.amount = financeNumber(amount)
+    if (providerEventId) payload.provider_event_id = String(providerEventId)
+    const { error } = await supabase.from('mio_invoice_events').insert(payload)
+    if (error && String(error.code || '') !== '23505') console.warn('Invoice audit event could not be saved:', error)
+  }
+
+  async function persistMioInvoiceRecord(invoice, eventType = '', details = {}) {
+    if (!session?.user?.id) throw new Error('Sign in before creating or updating an invoice.')
+    const payload = invoiceDatabasePayload(invoice)
+    const { data, error } = await supabase.from('mio_invoices').upsert(payload, { onConflict: 'id' }).select('*').single()
+    if (error) throw new Error(`Mio could not save the invoice record. ${error.message || error}`)
+    const saved = invoiceFromDatabaseRow(data)
+    setMioInvoices((current) => [saved, ...(current || []).filter((row) => String(row.id) !== String(saved.id))])
+    if (eventType) await recordInvoiceEvent(saved, eventType, details)
+    return saved
+  }
+
+  async function loadMioInvoicesFromDatabase() {
+    if (!session?.user?.id) return
+    const { data, error } = await supabase.from('mio_invoices').select('*').order('issue_date', { ascending: false }).order('created_at', { ascending: false })
+    if (error) { console.warn('Could not load database invoice records:', error); return }
+    if (!Array.isArray(data) || !data.length) return
+    const databaseRows = data.map(invoiceFromDatabaseRow)
+    setMioInvoices((current) => {
+      const dbIds = new Set(databaseRows.map((row) => String(row.id)))
+      return [...databaseRows, ...(current || []).filter((row) => !dbIds.has(String(row.id)))]
+    })
+  }
+
+  function billingInvoiceMatter(invoice) {
+    return matters.find((matter) => String(matter.id) === String(invoice?.matter_id || '')) || null
+  }
+
+  function billingMatterNumber(matter = {}) {
+    const mapping = clioMioRosetta?.[String(matter?.id || '')] || {}
+    return mapping.clio_display_number || mapping.clio_matter_number || matter.clio_display_number || matter.clio_matter_number || matter.cause_number || ''
+  }
+
+  function billingEscapeHtml(value) {
+    return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  }
+
+  function billingDocumentFileName(invoice) {
+    const type = invoice?.invoice_type === 'trust_request' ? 'Trust_Request' : 'Invoice'
+    return `${type}_${String(invoice?.invoice_number || 'Draft').replace(/[^A-Za-z0-9._-]+/g, '_')}.pdf`
+  }
+
+  async function ensureBillingPdfLibrary() {
+    if (window.PDFLib) return
+    await new Promise((resolve, reject) => {
+      const src = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'
+      const existing = Array.from(document.scripts).find((script) => script.src === src)
+      if (existing) { existing.addEventListener('load', resolve, { once: true }); existing.addEventListener('error', reject, { once: true }); return }
+      const script = document.createElement('script')
+      script.src = src
+      script.async = true
+      script.onload = resolve
+      script.onerror = () => reject(new Error('Mio could not load the PDF generator.'))
+      document.head.appendChild(script)
+    })
+  }
+
+  async function buildInvoicePdfBytes(invoice, matter = billingInvoiceMatter(invoice)) {
+    await ensureBillingPdfLibrary()
+    const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+    const pdf = await PDFDocument.create()
+    const regular = await pdf.embedFont(StandardFonts.Helvetica)
+    const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
+    const pageWidth = 612
+    const pageHeight = 792
+    const margin = 54
+    const blue = rgb(0.78, 0.85, 0.97)
+    const dark = rgb(0.06, 0.09, 0.16)
+    const gray = rgb(0.38, 0.45, 0.55)
+    const linkBlue = rgb(0.1, 0.3, 0.72)
+    const formatDate = (value) => {
+      const raw = financeDateOnly(value)
+      if (!raw) return ''
+      const [year, month, day] = raw.split('-')
+      return `${month}/${day}/${year}`
+    }
+    const wrap = (text, font, size, width) => {
+      const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+      if (!words.length) return ['']
+      const lines = []
+      let line = ''
+      words.forEach((word) => {
+        const candidate = line ? `${line} ${word}` : word
+        if (font.widthOfTextAtSize(candidate, size) <= width) line = candidate
+        else { if (line) lines.push(line); line = word }
+      })
+      if (line) lines.push(line)
+      return lines
+    }
+    let page = null
+    let y = 0
+    let pageNumber = 0
+    const addPage = () => {
+      page = pdf.addPage([pageWidth, pageHeight])
+      pageNumber += 1
+      y = pageHeight - margin
+      return page
+    }
+    const drawText = (text, x, options = {}) => {
+      const size = options.size || 10
+      const font = options.bold ? bold : regular
+      page.drawText(String(text ?? ''), { x, y: options.y ?? y, size, font, color: options.color || dark })
+    }
+    const drawWrapped = (text, x, width, options = {}) => {
+      const size = options.size || 10
+      const lineHeight = options.lineHeight || size + 3
+      const font = options.bold ? bold : regular
+      wrap(text, font, size, width).forEach((line) => { drawText(line, x, { ...options, y }); y -= lineHeight })
+    }
+    const moneyText = (value) => `$${financeNumber(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    addPage()
+    const documentTitle = invoice.invoice_type === 'trust_request' ? 'TRUST REQUEST' : 'INVOICE'
+    drawText(lawFirmProfile.firm_name || 'Beveridge Law Firm', margin, { size: 20, bold: true })
+    const titleWidth = bold.widthOfTextAtSize(documentTitle, 20)
+    drawText(documentTitle, pageWidth - margin - titleWidth, { size: 20, bold: true })
+    y -= 28
+    const addressLines = String(lawFirmProfile.address || '').split(/\r?\n/).filter(Boolean)
+    ;[...addressLines, lawFirmProfile.phone ? `Phone: ${lawFirmProfile.phone}` : '', lawFirmProfile.email ? `Email: ${lawFirmProfile.email}` : ''].filter(Boolean).forEach((line) => { drawText(line, margin, { size: 9 }); y -= 12 })
+    const metaX = 410
+    let metaY = pageHeight - margin - 28
+    ;[`${documentTitle === 'INVOICE' ? 'Invoice' : 'Trust Request'} # ${invoice.invoice_number}`, `Date: ${formatDate(invoice.issue_date)}`, invoice.due_date ? `Due: ${formatDate(invoice.due_date)}` : 'Due Upon Receipt'].forEach((line) => { page.drawText(line, { x: metaX, y: metaY, size: 10, font: regular, color: dark }); metaY -= 14 })
+    y -= 22
+    drawText(invoice.client_name || matterClientName(matter) || 'Client', margin, { size: 11, bold: true }); y -= 20
+    drawText(invoice.matter_number || billingMatterNumber(matter), margin, { size: 14, bold: true }); y -= 22
+    drawText(invoice.matter_description || matter?.matter_subtype || matter?.matter_type || invoice.matter_name || matter?.name || '', margin, { size: 13, bold: true }); y -= 28
+
+    const lines = Array.isArray(invoice.line_items) && invoice.line_items.length ? invoice.line_items : [{ description: invoice.invoice_type === 'trust_request' ? 'Trust / IOLTA retainer deposit' : 'Professional services', amount: invoice.total }]
+    if (invoice.invoice_type === 'trust_request') {
+      drawText('Outstanding Trust Request', margin, { size: 12, bold: true }); y -= 18
+      page.drawRectangle({ x: margin, y: y - 4, width: pageWidth - margin * 2, height: 22, color: blue })
+      drawText('Date', margin + 12, { y: y + 3, size: 9, bold: true }); drawText('Notes', margin + 145, { y: y + 3, size: 9, bold: true }); drawText('Total', pageWidth - margin - 50, { y: y + 3, size: 9, bold: true }); y -= 23
+      lines.forEach((line) => { drawText(formatDate(line.date || invoice.issue_date), margin + 12, { size: 9 }); drawText(line.description || '', margin + 145, { size: 9 }); drawText(moneyText(line.amount), pageWidth - margin - 58, { size: 9 }); y -= 18 })
+    } else {
+      page.drawRectangle({ x: margin, y: y - 4, width: pageWidth - margin * 2, height: 22, color: blue })
+      const headers = [['Date', margin + 6], ['Professional', margin + 72], ['Description', margin + 155], ['Hours', 423], ['Rate', 468], ['Total', 526]]
+      headers.forEach(([label, x]) => drawText(label, x, { y: y + 3, size: 8, bold: true })); y -= 23
+      for (const line of lines) {
+        const descriptionLines = wrap(line.description || 'Professional services', regular, 8.5, 195)
+        const rowHeight = Math.max(20, descriptionLines.length * 11 + 5)
+        if (y - rowHeight < 170) { addPage(); drawText(`Invoice # ${invoice.invoice_number} - continued`, margin, { size: 11, bold: true }); y -= 28 }
+        drawText(formatDate(line.date), margin + 6, { size: 8.5 })
+        drawText(line.professional || line.attorney || '', margin + 72, { size: 8.5 })
+        descriptionLines.forEach((description, index) => drawText(description, margin + 155, { y: y - index * 11, size: 8.5 }))
+        drawText(line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours).toFixed(2), 423, { size: 8.5 })
+        drawText(line.rate === '' || line.rate === undefined ? '' : moneyText(line.rate), 468, { size: 8.5 })
+        drawText(moneyText(line.amount), 526, { size: 8.5 })
+        y -= rowHeight
+      }
+    }
+    y -= 8
+    page.drawLine({ start: { x: margin + 290, y }, end: { x: pageWidth - margin, y }, thickness: 0.6, color: gray }); y -= 18
+    const totalRows = [['Subtotal', invoice.subtotal], ['Total', invoice.total], ['Payments Received', -financeNumber(invoice.amount_paid)], [invoice.invoice_type === 'trust_request' ? 'Trust Request Amount Required' : 'Balance Owing', invoiceBalanceAmount(invoice)]]
+    totalRows.forEach(([label, value], index) => {
+      const rowFont = index === totalRows.length - 1 ? bold : regular
+      const labelText = String(label)
+      const amountText = moneyText(value)
+      drawText(labelText, 500 - rowFont.widthOfTextAtSize(labelText, 10), { size: 10, bold: index === totalRows.length - 1 })
+      drawText(amountText, pageWidth - margin - rowFont.widthOfTextAtSize(amountText, 10), { size: 10, bold: index === totalRows.length - 1 })
+      y -= 18
+    })
+    if (invoice.payment_url) {
+      y -= 8
+      drawText('Pay securely with LawPay', margin, { size: 12, bold: true, color: linkBlue }); y -= 15
+      drawWrapped(invoice.payment_url, margin, pageWidth - margin * 2, { size: 8, lineHeight: 10, color: linkBlue })
+    }
+    y -= 18
+    drawText('Statement of Account', margin, { size: 15, bold: true }); y -= 22
+    drawText(`New charges: ${moneyText(invoice.total)}     Payments received: ${moneyText(invoice.amount_paid)}     Total amount outstanding: ${moneyText(invoiceBalanceAmount(invoice))}`, margin, { size: 9 })
+    page.drawText(`Please make all amounts payable to: ${lawFirmProfile.firm_name || 'Beveridge Law Firm'}`, { x: margin, y: 58, size: 9, font: regular, color: dark })
+    const pages = pdf.getPages()
+    pages.forEach((pdfPage, index) => pdfPage.drawText(`Page ${index + 1} of ${pages.length}`, { x: pageWidth / 2 - 24, y: 28, size: 8, font: regular, color: gray }))
+    return await pdf.save()
+  }
+
+  function billingBytesToBase64(bytes) {
+    let binary = ''
+    const chunk = 0x8000
+    for (let index = 0; index < bytes.length; index += chunk) binary += String.fromCharCode(...bytes.subarray(index, index + chunk))
+    return btoa(binary)
+  }
+
+  async function openInvoicePdf(invoice, mode = 'open') {
+    setInvoiceDocumentBusy(true)
+    try {
+      const bytes = await buildInvoicePdfBytes(invoice)
+      const blob = new Blob([bytes], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      if (mode === 'download') {
+        const link = document.createElement('a'); link.href = url; link.download = billingDocumentFileName(invoice); document.body.appendChild(link); link.click(); link.remove()
+      } else {
+        const opened = window.open(url, '_blank', 'noopener,noreferrer')
+        if (!opened) alert('Allow popups for Mio so the invoice PDF can open. You can also use Download PDF.')
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), mode === 'download' ? 2500 : 120000)
+      await recordInvoiceEvent(invoice, mode === 'download' ? 'pdf_downloaded' : 'pdf_opened', { file_name: billingDocumentFileName(invoice) })
+    } catch (error) { alert(`Mio could not create the PDF. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
+  async function ensureInvoiceLawPayLink(matter, invoice) {
+    if (invoice.payment_url) return invoice
+    const isTrust = invoice.invoice_type === 'trust_request'
+    const accountKey = isTrust ? 'trust' : 'operating'
+    const paymentPageUrl = String(isTrust ? lawPaySettings?.trust_page_url : lawPaySettings?.operating_page_url || '').trim()
+    if (!paymentPageUrl) throw new Error(`Configure and save the LawPay ${isTrust ? 'Trust/IOLTA' : 'Operating'} hosted payment-page URL before sending this document.`)
+    const client = lawPayMatterClient(matter)
+    const recipient = invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || ''
+    const { data, error } = await supabase.functions.invoke('lawpay-gateway', {
+      body: {
+        action: 'create_link', payment_page_url: paymentPageUrl, account_key: accountKey,
+        amount_cents: Math.round(invoiceBalanceAmount(invoice) * 100),
+        reference: `${matter?.name || invoice.matter_name || 'Matter'}${matter?.cause_number ? ` - ${matter.cause_number}` : ''}`,
+        invoice_number: invoice.invoice_number, payer_name: lawPayClientName(client, matter), payer_email: recipient,
+        payer_phone: client?.phone || matter?.client_phone || '', matter_id: invoice.matter_id,
+        matter_name: matter?.name || invoice.matter_name || '', client_id: client?.id || invoice.client_id || null,
+        client_name: lawPayClientName(client, matter) || invoice.client_name || '', lock_amount: true, lock_reference: true
+      }
+    })
+    if (error) throw error
+    if (!data?.url) throw new Error(data?.error || 'LawPay did not return a payment link.')
+    const linked = { ...invoice, payment_url: data.url, payment_request_id: String(data.request_id || data.id || ''), updated_at: new Date().toISOString() }
+    return await persistMioInvoiceRecord(linked, 'lawpay_link_created', { account_key: accountKey, payment_request_id: linked.payment_request_id })
+  }
+
+  async function sendInvoiceDocumentEmail(matter, invoice, options = {}) {
+    if (!matter) throw new Error('The invoice matter could not be found.')
+    const recipient = String(options.recipient_email || invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '').trim()
+    let sender = String(options.sender_email || invoice.sender_email || financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || '').trim()
+    if (!recipient) throw new Error('Enter a recipient email address.')
+    if (!sender && serviceGraphAuth?.account?.username) sender = serviceGraphAuth.account.username
+    if (!serviceGraphAuth?.connected || serviceGraphConfig.mode !== 'live') {
+      localStorage.setItem('caseMioPendingInvoiceRecipient', recipient)
+      await getMicrosoftGraphToken({ allowInteractive: true })
+      sender = sender || serviceGraphAuth?.account?.username || ''
+    }
+    if (!sender) throw new Error('Select the Microsoft billing mailbox after connecting Microsoft.')
+    let linkedInvoice = { ...invoice, recipient_email: recipient, sender_email: sender }
+    linkedInvoice = await ensureInvoiceLawPayLink(matter, linkedInvoice)
+    const templateKey = linkedInvoice.invoice_type === 'trust_request' ? (financeInvoicesForMatter(matter).some((row) => row.invoice_type === 'trust_request' && String(row.id) !== String(linkedInvoice.id)) ? 'replenishment' : 'initial_trust') : 'service_invoice'
+    const template = renderBillingTemplate(templateKey, {
+      client_name: matterClientName(matter) || linkedInvoice.client_name || 'Client', matter_name: matter.name || linkedInvoice.matter_name || 'Matter',
+      invoice_number: linkedInvoice.invoice_number, amount: money(invoiceBalanceAmount(linkedInvoice)), due_date: linkedInvoice.due_date || '',
+      trust_balance: money(clientFinanceNumbers(matter).trust), retainer_target: money(matterRetainerTarget(matter)), payment_link: linkedInvoice.payment_url
+    })
+    const subject = String(options.subject || linkedInvoice.email_subject || template.subject || `${linkedInvoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice'} ${linkedInvoice.invoice_number}`).trim()
+    const introductoryText = String(options.message || template.body || '').trim()
+    const pdfBytes = await buildInvoicePdfBytes(linkedInvoice, matter)
+    const paymentButton = linkedInvoice.payment_url ? `<p style="margin:24px 0"><a href="${billingEscapeHtml(linkedInvoice.payment_url)}" style="display:inline-block;background:#1d4ed8;color:#fff;text-decoration:none;padding:12px 20px;border-radius:7px;font-weight:700">Pay securely with LawPay</a></p><p style="font-size:12px;color:#64748b">If the button does not open, copy this secure link:<br><a href="${billingEscapeHtml(linkedInvoice.payment_url)}">${billingEscapeHtml(linkedInvoice.payment_url)}</a></p>` : ''
+    const html = `<div style="font-family:Segoe UI,Arial,sans-serif;color:#0f172a;line-height:1.55;max-width:680px"><p>Hello ${billingEscapeHtml(matterClientName(matter) || linkedInvoice.client_name || 'Client')},</p><p>${billingEscapeHtml(introductoryText).replace(/\n/g, '<br>')}</p><div style="border:1px solid #cbd5e1;border-radius:10px;padding:16px;margin:18px 0;background:#f8fafc"><strong>${billingEscapeHtml(linkedInvoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice')} ${billingEscapeHtml(linkedInvoice.invoice_number)}</strong><br>Amount: ${billingEscapeHtml(money(invoiceBalanceAmount(linkedInvoice)))}<br>Due: ${billingEscapeHtml(linkedInvoice.due_date || 'Upon receipt')}</div>${paymentButton}<p>The complete PDF is attached for your records.</p><p>Thank you,<br>${billingEscapeHtml(lawFirmProfile.firm_name || 'Beveridge Law Firm')}</p></div>`
+    await graphFetch(`${graphMailboxBase(sender)}/sendMail`, {
+      method: 'POST', allowInteractive: true,
+      body: JSON.stringify({ message: { subject, body: { contentType: 'HTML', content: html }, toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }], attachments: [{ '@odata.type': '#microsoft.graph.fileAttachment', name: billingDocumentFileName(linkedInvoice), contentType: 'application/pdf', contentBytes: billingBytesToBase64(pdfBytes) }] }, saveToSentItems: true })
+    })
+    const sentAt = new Date().toISOString()
+    const historyEntry = { sent_at: sentAt, sender_email: sender, recipient_email: recipient, subject, attachment_name: billingDocumentFileName(linkedInvoice), payment_url: linkedInvoice.payment_url }
+    const sentInvoice = { ...linkedInvoice, status: linkedInvoice.status === 'draft' ? 'outstanding' : linkedInvoice.status, sender_email: sender, recipient_email: recipient, email_subject: subject, emailed_at: sentAt, email_error: '', email_history: [...(linkedInvoice.email_history || []), historyEntry], updated_at: sentAt }
+    const saved = await persistMioInvoiceRecord(sentInvoice, 'email_sent', historyEntry)
+    setFinanceEmailSettings({ sender_email: sender })
+    await loadLawPayWorkspace()
+    return saved
+  }
+
+  function openFinanceInvoice(invoice, matter = billingInvoiceMatter(invoice)) {
+    setSelectedFinanceInvoice(invoice)
+    setInvoiceSendDraft({
+      recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || localStorage.getItem('caseMioPendingInvoiceRecipient') || '',
+      sender_email: invoice.sender_email || financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || '',
+      subject: invoice.email_subject || renderBillingTemplate(invoice.invoice_type === 'trust_request' ? 'replenishment' : 'service_invoice', { invoice_number: invoice.invoice_number, matter_name: matter?.name || invoice.matter_name || '' }).subject
+    })
+  }
+
+  async function sendSelectedInvoiceEmail() {
+    if (!selectedFinanceInvoice) return
+    const matter = billingInvoiceMatter(selectedFinanceInvoice)
+    setInvoiceDocumentBusy(true)
+    try {
+      const sent = await sendInvoiceDocumentEmail(matter, selectedFinanceInvoice, invoiceSendDraft)
+      setSelectedFinanceInvoice(sent)
+      alert(`${sent.invoice_number} was emailed to ${sent.recipient_email} with its PDF and LawPay link.`)
+    } catch (error) {
+      if (!/sign-in started/i.test(String(error?.message || error))) alert(`The invoice was not sent. ${error?.message || error}`)
+    } finally { setInvoiceDocumentBusy(false) }
+  }
+
+  async function refreshSelectedInvoicePayment() {
+    if (!selectedFinanceInvoice?.id) return
+    setInvoiceDocumentBusy(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
+      if (error) throw error
+      if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
+      await loadLawPayWorkspace()
+      const { data: refreshed, error: refreshError } = await supabase.from('mio_invoices').select('*').eq('id', selectedFinanceInvoice.id).single()
+      if (refreshError) throw refreshError
+      const next = invoiceFromDatabaseRow(refreshed)
+      setSelectedFinanceInvoice(next)
+      setMioInvoices((current) => (current || []).map((invoice) => String(invoice.id) === String(next.id) ? next : invoice))
+      alert(invoiceBalanceAmount(next) <= 0.005 ? 'Payment confirmed. The invoice and matter ledger are now updated.' : `No completed payment is recorded yet. Current balance: ${money(invoiceBalanceAmount(next))}.`)
+    } catch (error) { alert(`Mio could not refresh the LawPay payment status. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
   function financeSenderOptions() {
     const values = new Set()
     const add = (value) => {
@@ -16102,21 +16465,25 @@ async function updateTeamCell(memberId, field, value) {
     if (!recipient) return alert('Enter the client email address.')
     if (!sender) return alert('Select the billing email address Mio should send from.')
     if (!trustRequestDraft.approved) return alert('Review the invoice and email, then check the approval box before sending.')
-    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) return alert('Reconnect Microsoft before sending the trust request.')
-
     const client = lawPayMatterClient(matter)
-    const invoiceNumber = nextMioInvoiceNumber()
+    setTrustRequestBusy(true)
+    let draftInvoice = null
+    try {
+      const invoiceNumber = await reserveMioInvoiceNumber()
     const now = new Date()
     const due = new Date(now)
     due.setDate(due.getDate() + 10)
     const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}`
-    const draftInvoice = {
+    draftInvoice = {
       id: invoiceId,
       invoice_number: invoiceNumber,
       invoice_type: 'trust_request',
       matter_id: matter.id,
       client_id: matter.client_id || client?.id || '',
       client_name: matterClientName(matter) || matter.matter_client_name || '',
+      matter_name: matter.name || matter.matter_name || '',
+      matter_number: billingMatterNumber(matter),
+      matter_description: matter.matter_subtype || matter.matter_type || '',
       issue_date: now.toISOString().slice(0, 10),
       due_date: due.toISOString().slice(0, 10),
       status: 'draft',
@@ -16124,95 +16491,33 @@ async function updateTeamCell(memberId, field, value) {
       total: amount,
       amount_paid: 0,
       balance: amount,
-      line_items: [{ description: 'Trust / IOLTA retainer replenishment', amount }],
+      line_items: [{ date: now.toISOString().slice(0, 10), description: 'Trust / IOLTA retainer replenishment', amount }],
       recipient_email: recipient,
       sender_email: sender,
       email_subject: trustRequestDraft.subject,
       created_at: now.toISOString(),
       updated_at: now.toISOString()
     }
-    const draftInvoices = [draftInvoice, ...(mioInvoices || [])]
-    setMioInvoices(draftInvoices)
-    setTrustRequestBusy(true)
-    let emailSent = false
-    try {
-      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify(draftInvoices), { throwOnError: true })
-      let paymentUrl = ''
-      let paymentRequestId = ''
-      const trustPageUrl = String(lawPaySettings?.trust_page_url || '').trim()
-      if (trustPageUrl) {
-        const { data, error } = await supabase.functions.invoke('lawpay-gateway', {
-          body: {
-            action: 'create_link',
-            payment_page_url: trustPageUrl,
-            account_key: 'trust',
-            amount_cents: Math.round(amount * 100),
-            reference: `${matter.name || matter.matter_name || 'Matter'}${matter.cause_number ? ` - ${matter.cause_number}` : ''}`,
-            invoice_number: invoiceNumber,
-            payer_name: lawPayClientName(client, matter),
-            payer_email: recipient,
-            payer_phone: client?.phone || matter?.client_phone || '',
-            matter_id: matter.id,
-            matter_name: matter.name || matter.matter_name || '',
-            client_id: client?.id || matter.client_id || null,
-            client_name: lawPayClientName(client, matter),
-            lock_amount: true,
-            lock_reference: true
-          }
-        })
-        if (error) throw error
-        if (!data?.url) throw new Error(data?.error || 'LawPay did not return a trust payment link.')
-        paymentUrl = data.url
-        paymentRequestId = data.request_id || data.id || ''
-      }
-
-      const bodyLines = [
-        `Hello ${matterClientName(matter) || 'Client'},`,
-        '',
-        String(trustRequestDraft.message || '').trim(),
-        '',
-        `Invoice: ${invoiceNumber}`,
-        `Trust replenishment requested: ${money(amount)}`,
-        `Due: ${due.toLocaleDateString()}`,
-        paymentUrl ? `Secure LawPay link: ${paymentUrl}` : 'Please contact our office to arrange payment.',
-        '',
-        lawFirmProfile.firm_name || 'Beveridge Law Firm'
-      ].filter((line, index, list) => line !== '' || (index > 0 && list[index - 1] !== ''))
-      await graphFetch(`${graphMailboxBase(sender)}/sendMail`, {
-        method: 'POST',
-        body: JSON.stringify({
-          message: {
-            subject: trustRequestDraft.subject || `Trust replenishment request - ${invoiceNumber}`,
-            body: { contentType: 'Text', content: bodyLines.join('\n') },
-            toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }]
-          },
-          saveToSentItems: true
-        })
-      })
-      emailSent = true
-
-      const sentAt = new Date().toISOString()
-      const completedInvoice = { ...draftInvoice, status: 'outstanding', payment_url: paymentUrl, payment_request_id: paymentRequestId, emailed_at: sentAt, updated_at: sentAt }
-      const nextInvoices = [completedInvoice, ...(mioInvoices || []).filter((item) => String(item.id) !== String(invoiceId))]
-      setMioInvoices(nextInvoices)
-      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify(nextInvoices), { throwOnError: true })
-      setFinanceEmailSettings({ sender_email: sender })
+      draftInvoice = await persistMioInvoiceRecord(draftInvoice, 'invoice_created', { invoice_type: 'trust_request' })
+      const completedInvoice = await sendInvoiceDocumentEmail(matter, draftInvoice, { recipient_email: recipient, sender_email: sender, subject: trustRequestDraft.subject, message: trustRequestDraft.message })
       setShowTrustRequestForm(false)
       setClientFinanceView('invoices')
-      await loadLawPayWorkspace()
-      alert(`${invoiceNumber} was approved and emailed to ${recipient}${paymentUrl ? ' with a secure LawPay trust link' : ''}.`)
+      setSelectedFinanceInvoice(completedInvoice)
+      alert(`${completedInvoice.invoice_number} was emailed to ${recipient} with the trust-request PDF and secure LawPay link.`)
     } catch (error) {
       const failedAt = new Date().toISOString()
-      setMioInvoices((current) => current.map((invoice) => String(invoice.id) === String(invoiceId) ? { ...invoice, status: emailSent ? 'outstanding' : 'draft', emailed_at: emailSent ? failedAt : '', email_error: error?.message || String(error), updated_at: failedAt } : invoice))
-      alert(emailSent
-        ? `The trust request email was sent, but Mio could not finish saving its sent status. Do not resend it until the invoice record is reconciled. ${error?.message || error}`
-        : `The trust request was not emailed. The invoice remains a draft so it can be reviewed and retried. ${error?.message || error}`)
+      if (draftInvoice) {
+        const failed = { ...draftInvoice, status: 'draft', email_error: error?.message || String(error), updated_at: failedAt }
+        setMioInvoices((current) => [failed, ...(current || []).filter((invoice) => String(invoice.id) !== String(failed.id))])
+        persistMioInvoiceRecord(failed, 'email_failed', { error: failed.email_error }).catch(() => {})
+      }
+      if (!/sign-in started/i.test(String(error?.message || error))) alert(`The trust request was not emailed. It remains a draft for review and retry. ${error?.message || error}`)
     } finally {
       setTrustRequestBusy(false)
     }
   }
 
-  function createInvoiceFromClientWip(matter) {
+  async function createInvoiceFromClientWip(matter) {
     const finance = clientFinanceNumbers(matter)
     const amount = Number(finance.wip.toFixed(2))
     if (amount <= 0) return alert('There is no work in progress available to invoice for this matter.')
@@ -16221,6 +16526,7 @@ async function updateTeamCell(memberId, field, value) {
       billing_entry_id: entry.id,
       date: entry.date || '',
       description: entry.description || entry.matter_step || 'Professional services',
+      professional: billingUserName(entry.user_id),
       hours: financeNumber(entry.billing_time),
       rate: financeNumber(entry.rate),
       amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
@@ -16234,12 +16540,19 @@ async function updateTeamCell(memberId, field, value) {
     const due = new Date(now)
     due.setDate(due.getDate() + 30)
     const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}`
+    let invoiceNumber = ''
+    try { invoiceNumber = await reserveMioInvoiceNumber() }
+    catch (error) { return alert(error?.message || String(error)) }
     const invoice = {
       id: invoiceId,
-      invoice_number: nextMioInvoiceNumber(),
+      invoice_number: invoiceNumber,
+      invoice_type: 'services',
       matter_id: matter.id,
       client_id: matter.client_id || '',
       client_name: matterClientName(matter) || matter.matter_client_name || '',
+      matter_name: matter.name || matter.matter_name || '',
+      matter_number: billingMatterNumber(matter),
+      matter_description: matter.matter_subtype || matter.matter_type || '',
       issue_date: now.toISOString().slice(0, 10),
       due_date: due.toISOString().slice(0, 10),
       status: 'outstanding',
@@ -16253,16 +16566,23 @@ async function updateTeamCell(memberId, field, value) {
       created_at: now.toISOString(),
       updated_at: now.toISOString()
     }
-    setMioInvoices((current) => [invoice, ...(current || [])])
+    let savedInvoice = invoice
     const entryIds = new Set(entryLines.map((line) => String(line.billing_entry_id)).filter(Boolean))
     if (entryIds.size) {
       setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) ? { ...entry, invoice_id: invoiceId, invoice_number: invoice.invoice_number, invoiced_at: now.toISOString() } : entry))
     }
-    setClientFinanceView('invoices')
-    alert(`${invoice.invoice_number} was created for ${money(amount)}. It will remain outstanding until paid from trust or another payment is recorded.`)
+    try {
+      savedInvoice = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'work_in_progress', line_item_count: lineItems.length })
+      setClientFinanceView('invoices')
+      openFinanceInvoice(savedInvoice, matter)
+      alert(`${savedInvoice.invoice_number} was created for ${money(amount)}. Open, download, print, or email it from the invoice window.`)
+    } catch (error) {
+      if (entryIds.size) setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) && String(entry.invoice_id) === String(invoiceId) ? { ...entry, invoice_id: '', invoice_number: '', invoiced_at: '' } : entry))
+      alert(error?.message || String(error))
+    }
   }
 
-  function applyTrustToInvoice(matter, invoice) {
+  async function applyTrustToInvoice(matter, invoice) {
     const balance = invoiceBalanceAmount(invoice)
     const trustAvailable = clientFinanceNumbers(matter).trust
     if (balance <= 0.005) return alert('This invoice is already paid.')
@@ -16275,7 +16595,8 @@ async function updateTeamCell(memberId, field, value) {
     const now = new Date().toISOString()
     const paid = financeNumber(invoice.amount_paid) + amount
     const nextBalance = Math.max(0, financeNumber(invoice.total) - paid)
-    setMioInvoices((current) => current.map((item) => String(item.id) === String(invoice.id) ? { ...item, amount_paid: Number(paid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: nextBalance <= 0.005 ? 'paid' : 'outstanding', updated_at: now } : item))
+    const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: nextBalance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
+    setMioInvoices((current) => current.map((item) => String(item.id) === String(invoice.id) ? paidInvoice : item))
     setMioTrustTransactions((current) => [{
       id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}`,
       matter_id: matter.id,
@@ -16291,6 +16612,8 @@ async function updateTeamCell(memberId, field, value) {
       source: 'Mio invoice payment',
       created_at: now
     }, ...(current || [])])
+    try { await persistMioInvoiceRecord(paidInvoice, 'trust_applied', { source: 'client_trust', amount }, amount) }
+    catch (error) { alert(`The trust ledger was updated locally, but the invoice database record could not be saved. ${error?.message || error}`) }
   }
 
   function wipReviewLinesForMatter(matter) {
@@ -16300,6 +16623,7 @@ async function updateTeamCell(memberId, field, value) {
       billing_entry_id: entry.id,
       date: entry.date || '',
       description: entry.description || entry.matter_step || 'Professional services',
+      professional: billingUserName(entry.user_id),
       hours: financeNumber(entry.billing_time),
       rate: financeNumber(entry.rate),
       amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
@@ -16338,7 +16662,7 @@ async function updateTeamCell(memberId, field, value) {
     }) }))
   }
 
-  function createReviewedWipInvoice(matter, lines) {
+  async function createReviewedWipInvoice(matter, lines) {
     const cleanLines = (lines || []).map((line) => ({ ...line, amount: Math.max(0, financeNumber(line.amount)) })).filter((line) => line.amount > 0.005)
     const amount = Number(cleanLines.reduce((sum, line) => sum + line.amount, 0).toFixed(2))
     if (amount <= 0) throw new Error('The reviewed WIP has no billable amount.')
@@ -16348,11 +16672,14 @@ async function updateTeamCell(memberId, field, value) {
     const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const invoice = {
       id: invoiceId,
-      invoice_number: nextMioInvoiceNumber(),
+      invoice_number: await reserveMioInvoiceNumber(),
       invoice_type: 'services',
       matter_id: matter.id,
       client_id: matter.client_id || '',
       client_name: matterClientName(matter) || matter.matter_client_name || '',
+      matter_name: matter.name || matter.matter_name || '',
+      matter_number: billingMatterNumber(matter),
+      matter_description: matter.matter_subtype || matter.matter_type || '',
       issue_date: now.toISOString().slice(0, 10),
       due_date: due.toISOString().slice(0, 10),
       status: 'outstanding',
@@ -16368,12 +16695,12 @@ async function updateTeamCell(memberId, field, value) {
     }
     const entryIds = new Set(cleanLines.map((line) => String(line.billing_entry_id || '')).filter(Boolean))
     setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) ? { ...entry, invoice_id: invoiceId, invoice_number: invoice.invoice_number, invoiced_at: now.toISOString() } : entry))
-    setMioInvoices((current) => [invoice, ...(current || [])])
-    setBulkWipReview((current) => ({ ...current, invoice }))
-    return invoice
+    const saved = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'bulk_wip_review', line_item_count: cleanLines.length })
+    setBulkWipReview((current) => ({ ...current, invoice: saved }))
+    return saved
   }
 
-  function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
+  async function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
     const trustAvailable = clientFinanceNumbers(matter).trust
     const amount = Math.min(invoiceBalanceAmount(invoice), trustAvailable)
     if (amount <= 0.005) throw new Error('No available trust funds can be applied to this invoice.')
@@ -16388,26 +16715,14 @@ async function updateTeamCell(memberId, field, value) {
       amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number,
       memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now
     }, ...(current || [])])
-    return paidInvoice
+    return await persistMioInvoiceRecord(paidInvoice, 'trust_applied', { source: 'bulk_billing', amount }, amount)
   }
 
   async function emailServiceInvoice(matter, invoice) {
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
     const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
     if (!recipient) throw new Error('No client email is saved for this matter.')
-    if (!sender) throw new Error('No billing sender email is configured.')
-    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) throw new Error('Reconnect Microsoft before emailing invoices.')
-    const template = renderBillingTemplate('service_invoice', {
-      client_name: matterClientName(matter) || 'Client', matter_name: matter.name || 'Matter', invoice_number: invoice.invoice_number,
-      amount: money(invoiceBalanceAmount(invoice)), due_date: invoice.due_date || '', trust_balance: money(clientFinanceNumbers(matter).trust)
-    })
-    const detailLines = (invoice.line_items || []).map((line) => `${line.date ? `${line.date} - ` : ''}${line.description}: ${money(line.amount)}`)
-    const body = [`Hello ${matterClientName(matter) || 'Client'},`, '', template.body, '', ...detailLines, '', `Invoice total: ${money(invoice.total)}`, `Outstanding: ${money(invoiceBalanceAmount(invoice))}`, '', lawFirmProfile.firm_name || 'Beveridge Law Firm'].join('\n')
-    await graphFetch(`${graphMailboxBase(sender)}/sendMail`, { method: 'POST', body: JSON.stringify({ message: { subject: template.subject, body: { contentType: 'Text', content: body }, toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }] }, saveToSentItems: true }) })
-    const sentAt = new Date().toISOString()
-    const emailed = { ...invoice, sender_email: sender, recipient_email: recipient, email_subject: template.subject, emailed_at: sentAt, updated_at: sentAt }
-    setMioInvoices((current) => current.map((row) => String(row.id) === String(invoice.id) ? emailed : row))
-    return emailed
+    return await sendInvoiceDocumentEmail(matter, invoice, { recipient_email: recipient, sender_email: sender })
   }
 
   function payMatterOutstandingFromTrust(matter, { confirm = true } = {}) {
@@ -16447,8 +16762,8 @@ async function updateTeamCell(memberId, field, value) {
     setBulkBillingBusy(true)
     try {
       let invoice = bulkWipReview.invoice
-      if (!invoice) invoice = createReviewedWipInvoice(matter, bulkWipReview.lines)
-      if (action === 'pay') invoice = payInvoiceFromTrustWithoutPrompt(matter, invoice)
+      if (!invoice) invoice = await createReviewedWipInvoice(matter, bulkWipReview.lines)
+      if (action === 'pay') invoice = await payInvoiceFromTrustWithoutPrompt(matter, invoice)
       if (action === 'email') invoice = await emailServiceInvoice(matter, invoice)
       await saveMioStateKeyNow('caseMioInvoices', JSON.stringify([invoice, ...(mioInvoices || []).filter((row) => String(row.id) !== String(invoice.id))]), { throwOnError: true })
       setBulkBillingResult(`${invoice.invoice_number} ${action === 'pay' ? 'was paid from trust' : action === 'email' ? 'was emailed to the client' : 'was created'}.`)
@@ -16464,28 +16779,21 @@ async function updateTeamCell(memberId, field, value) {
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
     const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
     if (!recipient) throw new Error('No client email is saved.')
-    if (!sender) throw new Error('No billing sender email is configured.')
-    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) throw new Error('Reconnect Microsoft before sending replenishment requests.')
     const now = new Date()
     const due = new Date(now)
     due.setDate(due.getDate() + 10)
-    const invoiceNumber = nextMioInvoiceNumber()
+    const invoiceNumber = await reserveMioInvoiceNumber()
     const client = lawPayMatterClient(matter)
-    let paymentUrl = ''
-    let paymentRequestId = ''
-    const trustPageUrl = String(lawPaySettings?.trust_page_url || '').trim()
-    if (trustPageUrl) {
-      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'create_link', payment_page_url: trustPageUrl, account_key: 'trust', amount_cents: Math.round(amount * 100), reference: `${matter.name || 'Matter'}${matter.cause_number ? ` - ${matter.cause_number}` : ''}`, invoice_number: invoiceNumber, payer_name: lawPayClientName(client, matter), payer_email: recipient, payer_phone: client?.phone || matter?.client_phone || '', matter_id: matter.id, matter_name: matter.name || '', client_id: client?.id || matter.client_id || null, client_name: lawPayClientName(client, matter), lock_amount: true, lock_reference: true } })
-      if (error) throw error
-      if (!data?.url) throw new Error(data?.error || 'LawPay did not return a trust payment link.')
-      paymentUrl = data.url
-      paymentRequestId = data.request_id || data.id || ''
-    }
-    const finance = clientFinanceNumbers(matter)
-    const template = renderBillingTemplate('replenishment', { client_name: matterClientName(matter) || 'Client', matter_name: matter.name || 'Matter', amount: money(amount), trust_balance: money(finance.trust), retainer_target: money(matterRetainerTarget(matter)), invoice_number: invoiceNumber, due_date: due.toISOString().slice(0, 10), payment_link: paymentUrl })
-    const body = [`Hello ${matterClientName(matter) || 'Client'},`, '', template.body, '', `Invoice: ${invoiceNumber}`, `Amount requested: ${money(amount)}`, `Due: ${due.toLocaleDateString()}`, paymentUrl ? `Secure LawPay link: ${paymentUrl}` : 'Please contact our office to arrange payment.', '', lawFirmProfile.firm_name || 'Beveridge Law Firm'].join('\n')
-    await graphFetch(`${graphMailboxBase(sender)}/sendMail`, { method: 'POST', body: JSON.stringify({ message: { subject: template.subject, body: { contentType: 'Text', content: body }, toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }] }, saveToSentItems: true }) })
-    return { id: crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`, invoice_number: invoiceNumber, invoice_type: 'trust_request', matter_id: matter.id, client_id: matter.client_id || client?.id || '', client_name: matterClientName(matter) || '', issue_date: now.toISOString().slice(0, 10), due_date: due.toISOString().slice(0, 10), status: 'outstanding', subtotal: amount, total: amount, amount_paid: 0, balance: amount, line_items: [{ description: 'Trust / IOLTA retainer replenishment', amount }], recipient_email: recipient, sender_email: sender, email_subject: template.subject, payment_url: paymentUrl, payment_request_id: paymentRequestId, emailed_at: new Date().toISOString(), created_at: now.toISOString(), updated_at: new Date().toISOString() }
+    const draft = await persistMioInvoiceRecord({
+      id: crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      invoice_number: invoiceNumber, invoice_type: 'trust_request', matter_id: matter.id, client_id: matter.client_id || client?.id || '',
+      client_name: matterClientName(matter) || '', matter_name: matter.name || matter.matter_name || '',
+      matter_number: billingMatterNumber(matter), matter_description: matter.matter_subtype || matter.matter_type || '',
+      issue_date: now.toISOString().slice(0, 10), due_date: due.toISOString().slice(0, 10), status: 'draft', subtotal: amount, total: amount,
+      amount_paid: 0, balance: amount, line_items: [{ date: now.toISOString().slice(0, 10), description: 'Trust / IOLTA retainer replenishment', amount }],
+      recipient_email: recipient, sender_email: sender, created_at: now.toISOString(), updated_at: now.toISOString()
+    }, 'invoice_created', { source: 'bulk_replenishment' })
+    return await sendInvoiceDocumentEmail(matter, draft, { recipient_email: recipient, sender_email: sender })
   }
 
   async function replenishSelectedMatters(matterIds) {
@@ -16599,9 +16907,9 @@ async function updateTeamCell(memberId, field, value) {
         <LabeledField label="Email subject"><input value={trustRequestDraft.subject} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, subject: event.target.value, approved: false }))} /></LabeledField>
       </div>
       <LabeledField label="Email message"><textarea rows="3" value={trustRequestDraft.message} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, message: event.target.value, approved: false }))} style={{ width: '100%', boxSizing: 'border-box' }} /></LabeledField>
-      <section style={{ border: '1px solid #cbd5e1', borderRadius: 9, background: '#fff', padding: 12, marginTop: 10 }}><strong>Invoice/email preview</strong><div style={{ marginTop: 6 }}>Trust / IOLTA retainer replenishment: <strong>{money(previewAmount)}</strong></div><div>To: {trustRequestDraft.recipient_email || 'Client email required'}</div><div>From: {trustRequestDraft.sender_email || 'Billing email required'}</div><div>Payment: {lawPaySettings?.trust_page_url ? 'Secure LawPay trust link will be included' : 'No LawPay trust page is configured; the email will ask the client to contact the office'}</div></section>
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 9, background: '#fff', padding: 12, marginTop: 10 }}><strong>Invoice/email preview</strong><div style={{ marginTop: 6 }}>Trust / IOLTA retainer replenishment: <strong>{money(previewAmount)}</strong></div><div>To: {trustRequestDraft.recipient_email || 'Client email required'}</div><div>From: {trustRequestDraft.sender_email || 'Billing email required'}</div><div>PDF: A printable trust-request PDF will be attached.</div><div>Payment: {lawPaySettings?.trust_page_url ? 'Secure LawPay trust link will be included' : 'Configure the LawPay Trust/IOLTA payment-page URL before sending'}</div><div style={{ color: serviceGraphAuth?.connected ? '#166534' : '#b45309', fontWeight: 700, marginTop: 5 }}>{serviceGraphAuth?.connected ? `Microsoft connected: ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || ''}` : 'Microsoft must be connected before sending'}</div>{!serviceGraphAuth?.connected && <button type="button" onClick={connectMicrosoftGraph} style={{ marginTop: 7 }}>Connect Microsoft</button>}</section>
       <label style={{ display: 'flex', alignItems: 'start', gap: 8, marginTop: 12, fontWeight: 700 }}><input type="checkbox" checked={!!trustRequestDraft.approved} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, approved: event.target.checked }))} /> I reviewed and approve this invoice amount, recipient, sender, and email.</label>
-      <button type="submit" className="btnPrimary" disabled={trustRequestBusy || !trustRequestDraft.approved} style={{ marginTop: 12 }}>{trustRequestBusy ? 'Creating and sending…' : 'Approve, create invoice & email client'}</button>
+      <button type="submit" className="btnPrimary" disabled={trustRequestBusy || !trustRequestDraft.approved || !lawPaySettings?.trust_page_url} style={{ marginTop: 12 }}>{trustRequestBusy ? 'Creating PDF and sending…' : serviceGraphAuth?.connected ? 'Approve, create PDF & email client' : 'Connect Microsoft, then send'}</button>
     </form>
   }
 
@@ -16639,9 +16947,40 @@ async function updateTeamCell(memberId, field, value) {
     </section>
   }
 
+  function renderInvoiceDocumentModal() {
+    if (!selectedFinanceInvoice) return null
+    const invoice = selectedFinanceInvoice
+    const matter = billingInvoiceMatter(invoice)
+    return createPortal(<div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.64)', display: 'grid', placeItems: 'center', padding: 20 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedFinanceInvoice(null) }}>
+      <section style={{ width: 'min(1020px,96vw)', maxHeight: '94vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(0,0,0,.35)', padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start' }}><div><h2 style={{ margin: 0 }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice'} {invoice.invoice_number}</h2><div className="hint">{invoice.client_name || matterClientName(matter)} — {invoice.matter_name || matter?.name || ''}</div></div><button type="button" onClick={() => setSelectedFinanceInvoice(null)}>Close</button></div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
+          <button type="button" className="btnPrimary" onClick={() => openInvoicePdf(invoice, 'open')} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Generating…' : 'Open / Print PDF'}</button>
+          <button type="button" onClick={() => openInvoicePdf(invoice, 'download')} disabled={invoiceDocumentBusy}>Download PDF</button>
+          {invoice.payment_url && <button type="button" onClick={() => window.open(invoice.payment_url, '_blank', 'noopener,noreferrer')}>Open LawPay test link</button>}
+          {invoice.payment_request_id && <button type="button" onClick={refreshSelectedInvoicePayment} disabled={invoiceDocumentBusy}>Sync / verify payment</button>}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10, padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10 }}>
+          <div><strong>Issued</strong><br/>{invoice.issue_date}</div><div><strong>Due</strong><br/>{invoice.due_date || 'Upon receipt'}</div><div><strong>Status</strong><br/>{invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(invoice.total)}</div><div><strong>Paid</strong><br/>{money(invoice.amount_paid)}</div><div><strong>Balance</strong><br/>{money(invoiceBalanceAmount(invoice))}</div>
+        </div>
+        <h3>Line items</h3>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', background: '#dbeafe', borderBottom: '1px solid #bfdbfe' }}>{label}</th>)}</tr></thead><tbody>{(invoice.line_items || []).map((line, index) => <tr key={line.billing_entry_id || index}><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.date || invoice.issue_date}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.professional || line.attorney || ''}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.description}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '' : money(line.rate)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}</tbody></table></div>
+        {invoice.payment_url && <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: '#eff6ff', border: '1px solid #93c5fd' }}><strong>LawPay payment link</strong><div style={{ overflowWrap: 'anywhere', marginTop: 5 }}><a href={invoice.payment_url} target="_blank" rel="noreferrer">{invoice.payment_url}</a></div></div>}
+        <section style={{ marginTop: 16, border: '1px solid #cbd5e1', borderRadius: 10, padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Email or test-send</h3><div className="hint">The email includes the PDF attachment and a visible LawPay payment button.</div></div><div style={{ color: serviceGraphAuth?.connected ? '#166534' : '#b45309', fontWeight: 700 }}>{serviceGraphAuth?.connected ? `Microsoft connected: ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || ''}` : 'Microsoft not connected'}</div></div>
+          {!serviceGraphAuth?.connected && <button type="button" onClick={connectMicrosoftGraph} style={{ marginTop: 10 }}>Connect Microsoft</button>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 10, marginTop: 12 }}><label>Send to<input type="email" value={invoiceSendDraft.recipient_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, recipient_email: event.target.value }))} placeholder="Your email for a test" /></label><label>Send from<select value={invoiceSendDraft.sender_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, sender_email: event.target.value }))}><option value="">Select Microsoft mailbox…</option>{financeSenderOptions().map((email) => <option key={email} value={email}>{email}</option>)}</select></label></div>
+          <label style={{ display: 'grid', gap: 4, marginTop: 10 }}>Subject<input value={invoiceSendDraft.subject} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, subject: event.target.value }))} /></label>
+          <button type="button" className="btnPrimary" onClick={sendSelectedInvoiceEmail} disabled={invoiceDocumentBusy || !invoiceSendDraft.recipient_email} style={{ marginTop: 12 }}>{invoiceDocumentBusy ? 'Generating and sending…' : 'Send PDF + LawPay link'}</button>
+        </section>
+        {!!invoice.email_history?.length && <section style={{ marginTop: 16 }}><h3>Email history</h3>{invoice.email_history.slice().reverse().map((entry, index) => <div key={`${entry.sent_at}-${index}`} style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{new Date(entry.sent_at).toLocaleString()} — {entry.sender_email} → {entry.recipient_email}<br/><small>{entry.subject}</small></div>)}</section>}
+      </section>
+    </div>, document.body)
+  }
+
   function renderClientFinanceInvoices(matter, finance) {
-    return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Outstanding invoices can be paid from available client trust funds.</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div>
-      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Action'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}>{invoice.invoice_number}{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.status === 'draft' ? 'Awaiting/requires review' : invoiceBalanceAmount(invoice) > 0.005 ? <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005}>Pay from trust</button> : 'Paid'}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
+    return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Click an invoice number to view its line items, open/print/download the PDF, test-send it, or open its LawPay link.</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div>
+      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)}>Open</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
+      {renderInvoiceDocumentModal()}
     </section>
   }
 
@@ -38134,6 +38473,54 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return matter?.client_name || matter?.client || ''
   }
 
+  async function reconcileLawPayInvoicePayments(requests = [], transactions = []) {
+    if (!session?.user?.id) return
+    const { data: databaseInvoices, error } = await supabase.from('mio_invoices').select('*').neq('status', 'void')
+    if (error || !Array.isArray(databaseInvoices)) return
+    const updatedInvoices = []
+    const newTrustRows = []
+    for (const rawInvoice of databaseInvoices) {
+      const invoice = invoiceFromDatabaseRow(rawInvoice)
+      const request = requests.find((row) => (invoice.payment_request_id && String(row.id) === String(invoice.payment_request_id)) || (row.invoice_number && String(row.invoice_number) === String(invoice.invoice_number)))
+      if (!request) continue
+      const matchedTransactions = transactions.filter((transaction) => {
+        if (request.gateway_transaction_id && String(transaction.gateway_transaction_id) === String(request.gateway_transaction_id)) return true
+        const reference = `${transaction.reference || ''} ${transaction.raw?.invoice_number || ''}`.toLowerCase()
+        return !!invoice.invoice_number && reference.includes(String(invoice.invoice_number).toLowerCase())
+      })
+      const successful = matchedTransactions.filter((transaction) => /success|succeed|complete|completed|paid|settled|captured/.test(String(transaction.status || '').toLowerCase()))
+      const requestPaid = /paid|complete|completed|succeeded|settled/.test(String(request.status || '').toLowerCase()) || !!request.paid_at
+      if (!successful.length && !requestPaid) continue
+      const transactionPaid = successful.reduce((sum, transaction) => {
+        const type = String(transaction.transaction_type || '').toLowerCase()
+        const amount = Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount))
+        return sum + (/refund|chargeback|reversal/.test(type) ? -amount : amount)
+      }, 0)
+      const paidAmount = Math.max(0, transactionPaid || (requestPaid ? financeNumber(request.amount_cents) / 100 : 0))
+      if (paidAmount <= financeNumber(invoice.amount_paid) + 0.005) continue
+      const amountPaid = Math.min(financeNumber(invoice.total), paidAmount)
+      const balance = Math.max(0, financeNumber(invoice.total) - amountPaid)
+      const updated = { ...invoice, amount_paid: Number(amountPaid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: new Date().toISOString() }
+      const { data: saved, error: saveError } = await supabase.from('mio_invoices').update(invoiceDatabasePayload(updated)).eq('id', invoice.id).select('*').single()
+      if (saveError) { console.warn('LawPay invoice reconciliation failed:', saveError); continue }
+      updatedInvoices.push(invoiceFromDatabaseRow(saved))
+      const providerId = successful[0]?.gateway_transaction_id || request.gateway_transaction_id || `lawpay-request:${request.id}`
+      await recordInvoiceEvent(updated, 'lawpay_payment_recorded', { payment_request_id: request.id, transaction_ids: successful.map((row) => row.gateway_transaction_id).filter(Boolean), amount: amountPaid }, amountPaid, providerId)
+      if (invoice.invoice_type === 'trust_request') {
+        const transaction = successful.find((row) => !/refund|chargeback|reversal/.test(String(row.transaction_type || '').toLowerCase())) || successful[0]
+        newTrustRows.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${invoice.id}`, matter_id: invoice.matter_id, client_id: invoice.client_id || '', date: financeDateOnly(transaction?.occurred_at || request.paid_at || new Date().toISOString()), direction: 'in', transaction_type: 'lawpay', amount: Number(amountPaid.toFixed(2)), payer_payee: transaction?.payer_name || transaction?.payer_email || request.payer_name || request.payer_email || invoice.client_name || '', reference: invoice.invoice_number, memo: `LawPay trust deposit for ${invoice.invoice_number}`, invoice_id: invoice.id, lawpay_transaction_id: transaction?.gateway_transaction_id || request.gateway_transaction_id || String(request.id), payment_request_id: String(request.id), source: 'LawPay', created_at: transaction?.occurred_at || request.paid_at || new Date().toISOString() })
+      }
+    }
+    if (updatedInvoices.length) setMioInvoices((current) => {
+      const replacements = new Map(updatedInvoices.map((invoice) => [String(invoice.id), invoice]))
+      return (current || []).map((invoice) => replacements.get(String(invoice.id)) || invoice)
+    })
+    if (newTrustRows.length) setMioTrustTransactions((current) => {
+      const existing = new Set((current || []).map((row) => String(row.lawpay_transaction_id || row.payment_request_id || '')).filter(Boolean))
+      return [...newTrustRows.filter((row) => !existing.has(String(row.lawpay_transaction_id)) && !existing.has(String(row.payment_request_id))), ...(current || [])]
+    })
+  }
+
   async function loadLawPayWorkspace() {
     try {
       const [settingsResult, requestsResult, transactionsResult] = await Promise.all([
@@ -38146,6 +38533,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       }
       if (!requestsResult.error) setLawPayPaymentRequests(requestsResult.data || [])
       if (!transactionsResult.error) setLawPayTransactions(transactionsResult.data || [])
+      if (!requestsResult.error && !transactionsResult.error) await reconcileLawPayInvoicePayments(requestsResult.data || [], transactionsResult.data || [])
     } catch (error) {
       console.error('Load LawPay workspace failed:', error)
     }
