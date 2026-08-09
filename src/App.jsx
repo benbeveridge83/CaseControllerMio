@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V204'
+const MIO_APP_VERSION = 'Mio V205'
+const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2006,6 +2007,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioRetainerReplenishmentTargets') || '{}') }
     catch { return {} }
   })
+  const [mioBillingCutoverDate, setMioBillingCutoverDate] = useState(() => {
+    try { return localStorage.getItem('caseMioBillingCutoverDate') || DEFAULT_MIO_BILLING_CUTOVER_DATE }
+    catch { return DEFAULT_MIO_BILLING_CUTOVER_DATE }
+  })
   const [bulkBillingFilters, setBulkBillingFilters] = useState({ case_status: 'all', matter_status: 'all', search: '' })
   const [bulkBillingSort, setBulkBillingSort] = useState({ field: 'matter', direction: 'asc' })
   const [bulkBillingSelectedIds, setBulkBillingSelectedIds] = useState([])
@@ -2876,6 +2881,7 @@ function App() {
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
       caseMioRetainerReplenishmentTargets: { setter: setRetainerReplenishmentTargets, kind: 'object', fallback: {} },
+      caseMioBillingCutoverDate: { setter: (value) => setMioBillingCutoverDate(String(value || DEFAULT_MIO_BILLING_CUTOVER_DATE)), kind: 'string', fallback: DEFAULT_MIO_BILLING_CUTOVER_DATE },
       caseMioBulkBillingSelectedCaseTypes: { setter: (value) => setBulkBillingSelectedCaseTypes(Array.isArray(value) ? value : ['__all__']), kind: 'array', fallback: ['__all__'] },
       caseMioBulkBillingVisibleColumns: { setter: (value) => setBulkBillingVisibleColumns({ ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_BULK_BILLING_VISIBLE_COLUMNS },
       caseMioBankAccountRoles: { setter: setBankAccountRoles, kind: 'object', fallback: {} },
@@ -3478,6 +3484,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioRetainerReplenishmentTargets', JSON.stringify(retainerReplenishmentTargets || {})) } catch {}
   }, [retainerReplenishmentTargets])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioBillingCutoverDate', mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE) } catch {}
+  }, [mioBillingCutoverDate])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioBulkBillingSelectedCaseTypes', JSON.stringify(bulkBillingSelectedCaseTypes || [])) } catch {}
@@ -15859,6 +15869,13 @@ async function updateTeamCell(memberId, field, value) {
     return financeDateOnly(row?.date || row?.occurred_at || row?.created_at) > financeDateOnly(snapshot.snapshot_date)
   }
 
+  function financeBillingEntryAfterCutover(entry) {
+    const cutover = financeDateOnly(mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
+    if (!cutover) return true
+    const entryDate = financeDateOnly(entry?.date || entry?.entry_date || entry?.occurred_at || entry?.created_at)
+    return !!entryDate && entryDate > cutover
+  }
+
   function invoiceBalanceAmount(invoice) {
     const total = financeNumber(invoice?.total)
     const paid = financeNumber(invoice?.amount_paid)
@@ -15945,10 +15962,16 @@ async function updateTeamCell(memberId, field, value) {
     const snapshotOutstanding = financeNumber(snapshot?.outstanding_balance)
     const matterEntries = (billingEntries || []).filter((entry) => String(entry?.matter_id || '') === String(matter?.id || '') && !entry.non_billable && !entry.do_not_bill)
     const uninvoicedEntries = matterEntries.filter((entry) => !entry.invoice_id)
-    const newerUninvoicedEntries = hasSnapshot ? uninvoicedEntries.filter((entry) => financeRowAfterSnapshot(entry, snapshot)) : uninvoicedEntries
+    // Clio received all Mio billing entries dated on or before the cutover date.
+    // The current Clio snapshot remains the baseline, while Mio adds only its own
+    // still-uninvoiced entries after that date. Using the later snapshot-import date
+    // here incorrectly hid Mio work performed between July 25 and the report import.
+    const newerUninvoicedEntries = uninvoicedEntries.filter(financeBillingEntryAfterCutover)
     const newerInvoices = financeInvoicesForMatter(matter).filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot) || invoice.source_snapshot_date === snapshot.snapshot_date)
     const convertedSnapshotWip = newerInvoices.reduce((sum, invoice) => sum + financeNumber(invoice.source_wip_amount), 0)
-    const wip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0) + billingTotals(newerUninvoicedEntries).amount
+    const clioBaselineWip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0)
+    const mioPostCutoverWip = billingTotals(newerUninvoicedEntries).amount
+    const wip = clioBaselineWip + mioPostCutoverWip
     const ledgerRows = clientFinanceLedgerRows(matter)
     const currentLedgerRows = hasSnapshot ? ledgerRows.filter((row) => financeRowAfterSnapshot(row, snapshot)) : ledgerRows
     const snapshotOutstandingPayments = currentLedgerRows
@@ -15970,6 +15993,9 @@ async function updateTeamCell(memberId, field, value) {
       snapshotTrust,
       snapshotWip,
       snapshotOutstanding,
+      clioBaselineWip,
+      mioPostCutoverWip,
+      billingCutoverDate: mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE,
       trust,
       minimumBalance,
       wip: safeWip,
@@ -16622,8 +16648,8 @@ async function updateTeamCell(memberId, field, value) {
   function renderClientFinanceWip(matter, finance) {
     const totals = billingTotals(finance.uninvoicedEntries)
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Work in progress</h3><div className="hint">Billable work completed but not yet placed on an invoice</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button></div>
-      {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Snapshot WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.snapshotWip)}</strong>. Newer Mio billing and invoices are applied after that baseline.</div>}
-      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No newer itemized Mio billing entries. Any WIP above comes from the saved financial snapshot.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Itemized Mio WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
+      {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Clio baseline WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.clioBaselineWip)}</strong>. Mio adds <strong>{money(finance.mioPostCutoverWip)}</strong> from still-uninvoiced billing entries dated after {finance.billingCutoverDate}. Entries on or before that cutover are excluded because they were transferred to Clio.</div>}
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the saved Clio snapshot.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Clio baseline WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
     </section>
   }
 
@@ -27748,6 +27774,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return matter?.id ? `#matter_dashboard:${encodeURIComponent(matter.id)}` : ''
   }
 
+  function matterFinanceDashboardUrl(matter) {
+    return matter?.id ? `#matter_dashboard:${encodeURIComponent(matter.id)}?tab=finances` : ''
+  }
+
   function openMatterDashboardInNewWindow(matter) {
     const url = matterDashboardUrl(matter)
     if (!url) return
@@ -36233,7 +36263,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function mappedMioIdForSnapshot(row = {}) {
-    if (row.mio_matter_id) return String(row.mio_matter_id)
     const rowClioId = String(row.clio_matter_id || '')
     const rowNumber = normalizeClioMatterNumber(row.clio_matter_number || '')
     const rowPrefix = clioMatterNumberPrefix(rowNumber)
@@ -36242,13 +36271,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const mappedNumber = normalizeClioMatterNumber(mapping?.clio_matter_number || mapping?.display_number || '')
       return (!!rowClioId && mappedId === rowClioId) || (!!rowNumber && mappedNumber === rowNumber) || (!!rowPrefix && clioMatterNumberPrefix(mappedNumber) === rowPrefix)
     })
-    return found ? String(found[0]) : ''
+    // A confirmed Rosetta link must override an older snapshot's inferred Mio id.
+    // This lets a corrected Clio link repair display immediately and prevents a
+    // same-client matter (such as Murski modification/enforcement) claiming the row.
+    return found ? String(found[0]) : String(row.mio_matter_id || '')
   }
 
   function financialSnapshotMatchesMatter(row = {}, matter = {}) {
     const matterId = String(matter?.id || '')
     if (!matterId) return false
-    if (String(row.mio_matter_id || '') === matterId || mappedMioIdForSnapshot(row) === matterId) return true
+    const resolvedMioMatterId = mappedMioIdForSnapshot(row)
+    if (resolvedMioMatterId) return resolvedMioMatterId === matterId
 
     const matterCause = financialIdentityText(matter?.cause_number || '').replace(/\s+/g, '')
     const rowMatterText = [row.clio_matter_number, row.matter_name, row.raw_report_row?.Matter, row.raw_report_row?.['Matter Number'], row.raw_report_row?.['Matter Name']].filter(Boolean).join(' ')
@@ -36257,11 +36290,19 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
     const matterClient = financialNameSignature(matterFinancialClientName(matter))
     const rowClient = financialNameSignature(row.clio_client_name || row.client_name || row.raw_report_row?.Client || row.raw_report_row?.['Client Name'])
-    if (matterClient && rowClient && matterClient === rowClient) return true
+    if (matterClient && rowClient && matterClient === rowClient) {
+      const sameClientMatters = matters.filter((candidate) => financialNameSignature(matterFinancialClientName(candidate)) === rowClient)
+      if (sameClientMatters.length === 1) return true
+    }
 
     const matterLabel = financialIdentityText(matter?.name || matter?.matter_name || '')
     const rowLabel = financialIdentityText(rowMatterText)
-    return !!matterLabel && matterLabel.length >= 6 && !!rowLabel && (rowLabel.includes(matterLabel) || matterLabel.includes(rowLabel))
+    if (!matterLabel || matterLabel.length < 6 || !rowLabel || (!rowLabel.includes(matterLabel) && !matterLabel.includes(rowLabel))) return false
+    const sameLabelMatters = matters.filter((candidate) => {
+      const candidateLabel = financialIdentityText(candidate?.name || candidate?.matter_name || '')
+      return !!candidateLabel && (rowLabel.includes(candidateLabel) || candidateLabel.includes(rowLabel))
+    })
+    return sameLabelMatters.length === 1
   }
 
   function bestMioMatterForFinancialIdentity(identity = {}) {
@@ -36277,7 +36318,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       matter_name: identity.matter_name || identity.matter || '',
       raw_report_row: identity.raw_report_row || {}
     }
-    return matters.find((matter) => financialSnapshotMatchesMatter(pseudoSnapshot, matter)) || null
+    const candidates = matters.filter((matter) => financialSnapshotMatchesMatter(pseudoSnapshot, matter))
+    return candidates.length === 1 ? candidates[0] : null
   }
 
   function clioReportKind(report) {
@@ -38335,7 +38377,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         trustMinusMinimumMinusWip: finance.trustMinusMinimumMinusWip,
         trustMinusMinimumMinusWipMinusOutstanding: finance.trustMinusMinimumMinusWipMinusOutstanding,
         retainerTarget: matterRetainerTarget(matter),
-        replenishment: matterReplenishmentAmount(matter)
+        replenishment: matterReplenishmentAmount(matter),
+        finance
       }
     }).filter((row) => {
       const matter = row.matter
@@ -38370,7 +38413,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
     const renderBulkBillingCell = (row, column) => {
       const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
-      if (column.key === 'matter') return <td key={column.key} style={baseStyle}><strong>{row.matterName}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
+      if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ fontWeight: 800 }}>{row.matterName}</a><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
+      if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}<div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div></td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
       if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
@@ -38392,6 +38436,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <LabeledField label="Search"><input value={bulkBillingFilters.search} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, or cause #" /></LabeledField>
           <LabeledField label="Case status"><select value={bulkBillingFilters.case_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All</option>{caseStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
           <LabeledField label="Matter status"><select value={bulkBillingFilters.matter_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All</option>{matterStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
+          <LabeledField label="Mio WIP starts after"><input type="date" value={mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE} onChange={(event) => setMioBillingCutoverDate(event.target.value || DEFAULT_MIO_BILLING_CUTOVER_DATE)} title="Entries on or before this date were transferred to Clio and are excluded from Mio WIP." /></LabeledField>
           <div style={{ position: 'relative', minWidth: 210 }}>
             <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 4 }}>Case type</div>
             <button type="button" onClick={() => setBulkBillingCaseTypeMenuOpen((open) => !open)} style={{ width: '100%', textAlign: 'left', minHeight: 30 }}>Case type: {caseTypeSelectionLabel} ▾</button>
