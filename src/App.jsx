@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V200'
+const MIO_APP_VERSION = 'Mio V201'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1952,6 +1952,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioTrustTransactions') || '[]') }
     catch { return [] }
   })
+  const [clioHistoricalFinancialArchive, setClioHistoricalFinancialArchive] = useState([])
+  const [clioMigrationPreview, setClioMigrationPreview] = useState(null)
+  const [clioMigrationBusy, setClioMigrationBusy] = useState(false)
+  const [clioMigrationMessage, setClioMigrationMessage] = useState('')
   const [clientFinanceView, setClientFinanceView] = useState('overview')
   const [showClientFinanceTransactionForm, setShowClientFinanceTransactionForm] = useState(false)
   const [clientFinanceTransactionDraft, setClientFinanceTransactionDraft] = useState({
@@ -3456,6 +3460,11 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
   }, [mioTrustTransactions])
+
+  useEffect(() => {
+    if (session?.user?.id) loadClioHistoricalFinancialArchive()
+    else setClioHistoricalFinancialArchive([])
+  }, [session?.user?.id])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioFinanceEmailSettings', JSON.stringify(financeEmailSettings || {})) } catch {}
@@ -15761,19 +15770,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function latestTrustSnapshotForMatter(matter = {}) {
-    const matterId = String(matter?.id || '')
-    const matterCause = normalizeClioMatterNumber(matter?.cause_number || '')
-    const matterName = String(matter?.name || '').toLowerCase().trim()
-    const matterClient = String(matter?.matter_client_name || `${matter?.clients?.first_name || ''} ${matter?.clients?.last_name || ''}`.trim()).toLowerCase().trim()
-    const candidates = (clioSnapshotRows || []).filter((row) => {
-      if (!row) return false
-      if (matterId && String(row.mio_matter_id || '') === matterId) return true
-      const rowNumber = normalizeClioMatterNumber(row.clio_matter_number || '')
-      if (matterCause && rowNumber && (rowNumber === matterCause || clioMatterNumberPrefix(rowNumber) === clioMatterNumberPrefix(matterCause))) return true
-      const rowName = String(row.matter_name || row.client_name || '').toLowerCase().trim()
-      if (matterName && rowName && (rowName.includes(matterName) || matterName.includes(rowName))) return true
-      return !!matterClient && !!rowName && (rowName.includes(matterClient) || matterClient.includes(rowName))
-    })
+    const candidates = (clioSnapshotRows || []).filter((row) => financialSnapshotMatchesMatter(row, matter))
     return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
   }
 
@@ -16577,12 +16574,22 @@ async function updateTeamCell(memberId, field, value) {
     </section>
   }
 
+  function renderClientFinanceClioHistory(matter) {
+    const rows = (clioHistoricalFinancialArchive || [])
+      .filter((row) => String(row.matter_id || '') === String(matter?.id || ''))
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.source_row_number || 0) - Number(a.source_row_number || 0))
+    return <section className="card">
+      <div><h3 style={{ margin: 0 }}>Clio historical archive</h3><div className="hint">Read-only invoices, payments, trust transactions, and activities from before Mio's cutover snapshot. These rows do not change current balances.</div></div>
+      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse' }}><thead><tr>{['Date','Type','Invoice / reference','Description','Amount','Balance','Source file'].map((label) => <th key={label} style={{ textAlign: ['Amount','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.report_kind}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.invoice_number || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.description || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(row.amount)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(row.balance)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontSize: 11 }}>{row.source_file}</td></tr>)}{!rows.length && <tr><td colSpan="7" className="empty">No Clio historical rows have been imported for this matter.</td></tr>}</tbody></table></div>
+    </section>
+  }
+
   function renderClientDashboardFinances(matter) {
     if (!matter) return null
     const finance = clientFinanceNumbers(matter)
     const tabButton = (value, label) => <button type="button" onClick={() => setClientFinanceView(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '7px 12px', background: clientFinanceView === value ? '#1d4ed8' : '#fff', color: clientFinanceView === value ? '#fff' : '#334155', fontWeight: clientFinanceView === value ? 800 : 600 }}>{label}</button>
     return <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}</div></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}{tabButton('clio_history', 'Clio history')}</div></div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12 }}>
         {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Snapshot ${finance.snapshot.snapshot_date} plus newer activity` : 'Recorded deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
         {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
@@ -16597,6 +16604,7 @@ async function updateTeamCell(memberId, field, value) {
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
       {clientFinanceView === 'wip' && renderClientFinanceWip(matter, finance)}
+      {clientFinanceView === 'clio_history' && renderClientFinanceClioHistory(matter)}
     </div>
   }
 
@@ -36150,8 +36158,73 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function clioMatterNumberPrefix(value) {
-    const match = String(value || '').match(/\b(\d{5})\b/)
+    const raw = value && typeof value === 'object' ? (value.display_number || value.number || '') : value
+    const match = String(raw || '').match(/\b(\d{5})\b/)
     return match ? match[1] : ''
+  }
+
+  function financialIdentityText(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\b(esq|jr|sr|ii|iii|iv|matter|client)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+  }
+
+  function financialNameSignature(value) {
+    return financialIdentityText(value).split(/\s+/).filter(Boolean).sort().join(' ')
+  }
+
+  function matterFinancialClientName(matter = {}) {
+    return matter?.matter_client_name || matter?.client_name || `${matter?.clients?.first_name || ''} ${matter?.clients?.last_name || ''}`.trim()
+  }
+
+  function mappedMioIdForSnapshot(row = {}) {
+    if (row.mio_matter_id) return String(row.mio_matter_id)
+    const rowClioId = String(row.clio_matter_id || '')
+    const rowNumber = normalizeClioMatterNumber(row.clio_matter_number || '')
+    const rowPrefix = clioMatterNumberPrefix(rowNumber)
+    const found = Object.entries(clioMioRosetta || {}).find(([, mapping]) => {
+      const mappedId = String(mapping?.clio_matter_id || mapping?.clioMatterId || '')
+      const mappedNumber = normalizeClioMatterNumber(mapping?.clio_matter_number || mapping?.display_number || '')
+      return (!!rowClioId && mappedId === rowClioId) || (!!rowNumber && mappedNumber === rowNumber) || (!!rowPrefix && clioMatterNumberPrefix(mappedNumber) === rowPrefix)
+    })
+    return found ? String(found[0]) : ''
+  }
+
+  function financialSnapshotMatchesMatter(row = {}, matter = {}) {
+    const matterId = String(matter?.id || '')
+    if (!matterId) return false
+    if (String(row.mio_matter_id || '') === matterId || mappedMioIdForSnapshot(row) === matterId) return true
+
+    const matterCause = financialIdentityText(matter?.cause_number || '').replace(/\s+/g, '')
+    const rowMatterText = [row.clio_matter_number, row.matter_name, row.raw_report_row?.Matter, row.raw_report_row?.['Matter Number'], row.raw_report_row?.['Matter Name']].filter(Boolean).join(' ')
+    const rowMatterCompact = financialIdentityText(rowMatterText).replace(/\s+/g, '')
+    if (matterCause && matterCause.length >= 5 && rowMatterCompact.includes(matterCause)) return true
+
+    const matterClient = financialNameSignature(matterFinancialClientName(matter))
+    const rowClient = financialNameSignature(row.clio_client_name || row.client_name || row.raw_report_row?.Client || row.raw_report_row?.['Client Name'])
+    if (matterClient && rowClient && matterClient === rowClient) return true
+
+    const matterLabel = financialIdentityText(matter?.name || matter?.matter_name || '')
+    const rowLabel = financialIdentityText(rowMatterText)
+    return !!matterLabel && matterLabel.length >= 6 && !!rowLabel && (rowLabel.includes(matterLabel) || matterLabel.includes(rowLabel))
+  }
+
+  function bestMioMatterForFinancialIdentity(identity = {}) {
+    const directId = String(identity.mio_matter_id || '')
+    if (directId) {
+      const direct = matters.find((matter) => String(matter.id) === directId)
+      if (direct) return direct
+    }
+    const pseudoSnapshot = {
+      clio_matter_id: identity.clio_matter_id || '',
+      clio_matter_number: identity.clio_matter_number || identity.matter || '',
+      clio_client_name: identity.client_name || identity.client || '',
+      matter_name: identity.matter_name || identity.matter || '',
+      raw_report_row: identity.raw_report_row || {}
+    }
+    return matters.find((matter) => financialSnapshotMatchesMatter(pseudoSnapshot, matter)) || null
   }
 
   function clioReportKind(report) {
@@ -36239,7 +36312,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function reportRowToSnapshot(row, report, options = {}) {
     const kind = clioReportKind(report)
-    const clioMatterNumber = normalizeClioMatterNumber(valueFromReportRow(row, ['Matter', 'Matter Number', 'Matter No.', 'Matter Number/Name', 'Matter ID', 'Matter Id', 'Matter Name', 'Client Matter', 'matter', 'matter_number', 'display_number']))
+    const rawMatterValue = valueFromReportRow(row, ['Matter', 'Matter Number', 'Matter No.', 'Matter Number/Name', 'Matter ID', 'Matter Id', 'Matter Name', 'Client Matter', 'matter', 'matter_number', 'display_number'])
+    const clioMatterNumber = normalizeClioMatterNumber(rawMatterValue)
     if (!clioMatterNumber) return null
     const clioPrefix = clioMatterNumberPrefix(clioMatterNumber)
     const matchingClio = clioMatters.find((m) => {
@@ -36251,11 +36325,21 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const mappedNumber = normalizeClioMatterNumber(mapping?.clio_matter_number || mapping?.display_number || '')
       return (!!mappedId && mappedId === String(matchingClio?.id || '')) || (!!mappedNumber && (mappedNumber === clioMatterNumber || clioMatterNumberPrefix(mappedNumber) === clioPrefix))
     })
-    const mioMatterId = matchingRosetta ? matchingRosetta[0] : ''
-    const matchingMio = mioMatterId ? matters.find((m) => String(m.id) === String(mioMatterId)) : null
+    let mioMatterId = matchingRosetta ? matchingRosetta[0] : ''
+    let matchingMio = mioMatterId ? matters.find((m) => String(m.id) === String(mioMatterId)) : null
     const reportDate = extractDateFromReportName(report?.name, report?.updated_at || report?.created_at)
     const snapshotDate = options.snapshotDate || reportDate
     const clientName = valueFromReportRow(row, ['Client', 'Client Name', 'client']) || matchingClio?.client?.name || matchingMio?.client_name || ''
+    if (!matchingMio) {
+      matchingMio = bestMioMatterForFinancialIdentity({
+        clio_matter_id: matchingClio?.id,
+        clio_matter_number: clioMatterNumber,
+        matter: rawMatterValue,
+        client_name: clientName,
+        raw_report_row: row
+      })
+      if (matchingMio) mioMatterId = String(matchingMio.id)
+    }
     const canonicalClioMatterNumber = normalizeClioMatterNumber(matchingClio?.display_number || clioMatterNumber)
     const enrichment = clioSnapshotEnrichmentForMatterNumber(canonicalClioMatterNumber || clioMatterNumber)
     const base = {
@@ -36827,6 +36911,194 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } finally {
       setClioSnapshotLoading(false)
     }
+  }
+
+  function clioMigrationReportKind(fileName, rows = []) {
+    const name = String(fileName || '').toLowerCase()
+    const headers = Object.keys(rows[0] || {}).join(' ').toLowerCase()
+    const haystack = `${name} ${headers}`
+    if (/trust[ _-]*management/.test(name)) return 'trust_management'
+    if (/matter[ _-]*balance[ _-]*summary/.test(name)) return 'matter_balance_summary'
+    if (/accounts?[ _-]*receivable|\ba[ _/-]*r\b/.test(name)) return 'accounts_receivable'
+    if (/trust.*(ledger|transaction|activity)|client.*trust.*ledger/.test(haystack)) return 'trust_transactions'
+    if (/payment|allocation|receipt/.test(name)) return 'payments'
+    if (/invoice|\bbill(s|ing)?\b/.test(name)) return 'invoices'
+    if (/activit|time entr|expense entr|productivity/.test(name)) return 'activities'
+    return 'financial_archive'
+  }
+
+  async function rowsFromClioMigrationFile(file) {
+    const name = String(file?.name || '').toLowerCase()
+    if (/\.xlsx?$/.test(name)) {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      return XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false })
+    }
+    return parseClioCsv(await file.text())
+  }
+
+  function archiveRowFromClioReport(row, fileName, reportKind, rowIndex) {
+    const matterText = valueFromReportRow(row, ['Matter', 'Matter Number', 'Matter No.', 'Matter Number/Name', 'Matter Name', 'Client Matter', 'display_number'])
+    const clientName = valueFromReportRow(row, ['Client', 'Client Name', 'Contact', 'Payer'])
+    const clioMatterNumber = normalizeClioMatterNumber(matterText)
+    const matchedMatter = bestMioMatterForFinancialIdentity({ clio_matter_number: clioMatterNumber, matter: matterText, client_name: clientName, raw_report_row: row })
+    const date = financeDateOnly(valueFromReportRow(row, ['Date', 'Transaction Date', 'Issue Date', 'Invoice Date', 'Payment Date', 'Activity Date', 'Created At', 'Created']))
+    const invoiceNumber = valueFromReportRow(row, ['Invoice Number', 'Bill Number', 'Invoice #', 'Bill #', 'Number'])
+    const amount = moneyFromReportRow(row, ['Amount', 'Total', 'Invoice Total', 'Payment Amount', 'Credit', 'Deposit', 'Funds In', 'Debit', 'Withdrawal', 'Funds Out'])
+    const balance = moneyFromReportRow(row, ['Balance', 'Outstanding Balance', 'Invoice Balance', 'Remaining Balance', 'A/R'])
+    const sourceKey = [fileName, rowIndex, clioMatterNumber, invoiceNumber, date, amount, balance].join('|')
+    return {
+      id: `clio-history:${session?.user?.id || 'unknown'}:${financialIdentityText(sourceKey).replace(/\s+/g, '-').slice(0, 180)}`,
+      user_id: session?.user?.id,
+      source: 'Clio historical import',
+      source_file: fileName,
+      report_kind: reportKind,
+      source_row_number: rowIndex + 2,
+      matter_id: matchedMatter?.id || null,
+      matter_name: matchedMatter?.name || matterText || '',
+      client_name: clientName || matterFinancialClientName(matchedMatter),
+      clio_matter_number: clioMatterNumber,
+      date: date || null,
+      invoice_number: invoiceNumber,
+      amount,
+      balance,
+      description: valueFromReportRow(row, ['Description', 'Memo', 'Details', 'Activity Description', 'Line Item']),
+      raw_report_row: row,
+      imported_at: new Date().toISOString()
+    }
+  }
+
+  async function loadClioHistoricalFinancialArchive() {
+    if (!session?.user?.id) return
+    const { data, error } = await supabase
+      .from('clio_financial_history')
+      .select('id,user_id,source,source_file,report_kind,source_row_number,matter_id,matter_name,client_name,clio_matter_number,date,invoice_number,amount,balance,description,imported_at')
+      .eq('user_id', session.user.id)
+      .order('date', { ascending: false, nullsFirst: false })
+      .limit(20000)
+    if (error) {
+      if (!/does not exist|schema cache/i.test(error.message || '')) console.error('Clio historical archive load failed:', error)
+      return
+    }
+    setClioHistoricalFinancialArchive(Array.isArray(data) ? data : [])
+  }
+
+  async function stageClioHistoricalMigration(event) {
+    const files = Array.from(event?.target?.files || [])
+    if (!files.length) return
+    setClioMigrationBusy(true)
+    setClioMigrationMessage('')
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      const baselineMap = new Map()
+      const archiveRows = []
+      const fileSummaries = []
+      for (const file of files) {
+        const rows = await rowsFromClioMigrationFile(file)
+        const reportKind = clioMigrationReportKind(file.name, rows)
+        let baselineCount = 0
+        let archiveCount = 0
+        if (['trust_management', 'matter_balance_summary', 'accounts_receivable'].includes(reportKind)) {
+          const report = { id: `manual:${file.name}:${file.lastModified || Date.now()}`, name: file.name, kind: reportKind, updated_at: new Date(file.lastModified || Date.now()).toISOString() }
+          rows.map((row) => reportRowToSnapshot(row, report, { snapshotDate: today })).filter(Boolean).forEach((snapshot) => {
+            const key = currentSnapshotMergeKey(snapshot)
+            baselineMap.set(key, mergeSnapshotRow(baselineMap.get(key), { ...snapshot, source_method: 'manual_clio_cutover_import', acquisition_status: 'staged_cutover' }))
+            baselineCount += 1
+          })
+        } else {
+          rows.forEach((row, index) => archiveRows.push(archiveRowFromClioReport(row, file.name, reportKind, index)))
+          archiveCount = rows.length
+        }
+        fileSummaries.push({ name: file.name, kind: reportKind, rows: rows.length, baselineCount, archiveCount })
+      }
+      const baselineRows = Array.from(baselineMap.values()).map((row) => ({ ...row, snapshot_date: today, source_method: 'manual_clio_cutover_import', acquisition_status: 'ready_to_import', updated_at: new Date().toISOString() }))
+      const matchedBaseline = baselineRows.filter((row) => row.mio_matter_id).length
+      const matchedArchive = archiveRows.filter((row) => row.matter_id).length
+      setClioMigrationPreview({ cutoverDate: today, files: fileSummaries, baselineRows, archiveRows, matchedBaseline, matchedArchive })
+      setClioMigrationMessage(`Staged ${baselineRows.length} opening snapshot row(s) and ${archiveRows.length} historical archive row(s). Review matching before importing.`)
+    } catch (error) {
+      setClioMigrationMessage(`Could not read the selected reports: ${error.message || error}`)
+      setClioMigrationPreview(null)
+    } finally {
+      setClioMigrationBusy(false)
+      if (event?.target) event.target.value = ''
+    }
+  }
+
+  async function commitClioHistoricalMigration() {
+    const preview = clioMigrationPreview
+    if (!preview) return
+    const unmatchedBaseline = preview.baselineRows.filter((row) => !row.mio_matter_id).length
+    const unmatchedArchive = preview.archiveRows.filter((row) => !row.matter_id).length
+    if ((unmatchedBaseline || unmatchedArchive) && !window.confirm(`${unmatchedBaseline} opening row(s) and ${unmatchedArchive} history row(s) are not matched to a Mio matter. Import the matched data and retain the unmatched rows for later correction?`)) return
+    if (!window.confirm(`Import the staged Clio financial migration dated ${preview.cutoverDate}? Existing rows with the same identifiers will be updated, not duplicated.`)) return
+    setClioMigrationBusy(true)
+    try {
+      if (preview.baselineRows.length) {
+        const { error } = await supabase.from('clio_matter_financial_snapshots').upsert(preview.baselineRows, { onConflict: 'user_id,snapshot_date,clio_matter_number' })
+        if (error) throw error
+      }
+      if (preview.archiveRows.length) {
+        for (let start = 0; start < preview.archiveRows.length; start += 500) {
+          const batch = preview.archiveRows.slice(start, start + 500)
+          const { error: archiveError } = await supabase.from('clio_financial_history').upsert(batch, { onConflict: 'id' })
+          if (archiveError) throw archiveError
+        }
+      }
+      await loadClioFinancialSnapshots({ ignoreDateFilters: true })
+      await loadClioHistoricalFinancialArchive()
+      setClioMigrationMessage(`Imported ${preview.baselineRows.length} opening snapshot row(s) and ${preview.archiveRows.length} historical archive row(s).`)
+      setClioMigrationPreview(null)
+    } catch (error) {
+      setClioMigrationMessage(`Import failed without clearing the staged preview: ${error.message || error}`)
+    } finally {
+      setClioMigrationBusy(false)
+    }
+  }
+
+  function downloadClioMigrationExceptions() {
+    const preview = clioMigrationPreview
+    if (!preview) return
+    const rows = [
+      ...preview.baselineRows.filter((row) => !row.mio_matter_id).map((row) => ({ type: 'Opening snapshot', source_file: row.source_report_name, source_row: '', clio_matter: row.clio_matter_number, client: row.clio_client_name, amount: row.matter_trust_funds, reason: 'No Mio matter match' })),
+      ...preview.archiveRows.filter((row) => !row.matter_id).map((row) => ({ type: row.report_kind, source_file: row.source_file, source_row: row.source_row_number, clio_matter: row.clio_matter_number, client: row.client_name, amount: row.amount, reason: 'No Mio matter match' }))
+    ]
+    const sheet = XLSX.utils.json_to_sheet(rows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Unmatched')
+    XLSX.writeFile(workbook, `Mio-Clio-Migration-Exceptions-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
+  function renderClioHistoricalMigrationPanel() {
+    const preview = clioMigrationPreview
+    const unmatchedBaseline = preview ? preview.baselineRows.length - preview.matchedBaseline : 0
+    const unmatchedArchive = preview ? preview.archiveRows.length - preview.matchedArchive : 0
+    const archiveMatched = (clioHistoricalFinancialArchive || []).filter((row) => row.matter_id).length
+    return <div style={{ display: 'grid', gap: 14 }}>
+      <section className="card">
+        <h2 style={{ marginTop: 0 }}>Clio historical migration</h2>
+        <p>Use this once to establish Mio's opening balances and preserve the prior Clio audit trail. Current calculations use the opening snapshot; older detailed rows remain read-only history so they cannot be double-counted.</p>
+        <ol style={{ lineHeight: 1.7 }}>
+          <li>Export a current <strong>Trust Management</strong> report and a current <strong>Matter Balance Summary (all dates)</strong>.</li>
+          <li>Export all-date <strong>trust ledger/transactions</strong>, <strong>bills or invoices</strong>, <strong>payments</strong>, and <strong>activities/time entries</strong>.</li>
+          <li>Select all CSV/XLSX files below. Mio stages and matches them before anything is committed.</li>
+        </ol>
+        <input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple onChange={stageClioHistoricalMigration} disabled={clioMigrationBusy} />
+        {clioMigrationMessage && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e3a8a', borderRadius: 8, padding: 10 }}>{clioMigrationMessage}</div>}
+      </section>
+      <section className="card">
+        <h3 style={{ marginTop: 0 }}>Saved migration status</h3>
+        <div><strong>Opening snapshot rows loaded:</strong> {clioSnapshotRows.length}</div>
+        <div><strong>Historical archive rows:</strong> {clioHistoricalFinancialArchive.length} ({archiveMatched} matched to matters)</div>
+        <div><strong>Cutover rule:</strong> snapshot balances control through the cutover date; only later Mio activity changes current totals.</div>
+      </section>
+      {preview && <section className="card">
+        <h3 style={{ marginTop: 0 }}>Staged import review</h3>
+        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}><span><strong>Opening:</strong> {preview.baselineRows.length} ({preview.matchedBaseline} matched, {unmatchedBaseline} unmatched)</span><span><strong>History:</strong> {preview.archiveRows.length} ({preview.matchedArchive} matched, {unmatchedArchive} unmatched)</span><span><strong>Cutover:</strong> {preview.cutoverDate}</span></div>
+        <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr>{['File','Detected type','Rows','Opening','Archive'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 7, borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{preview.files.map((file) => <tr key={file.name}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{file.name}</td><td>{file.kind}</td><td>{file.rows}</td><td>{file.baselineCount}</td><td>{file.archiveCount}</td></tr>)}</tbody></table></div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={commitClioHistoricalMigration} disabled={clioMigrationBusy}>Approve & import staged data</button><button type="button" onClick={downloadClioMigrationExceptions} disabled={!unmatchedBaseline && !unmatchedArchive}>Download unmatched rows</button><button type="button" onClick={() => { setClioMigrationPreview(null); setClioMigrationMessage('Staged import discarded. No data was changed.') }} disabled={clioMigrationBusy}>Discard preview</button></div>
+      </section>}
+    </div>
   }
 
 
@@ -38066,6 +38338,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <button type="button" style={tabButtonStyle('bulk_billing')} onClick={() => setBillingTab('bulk_billing')}>
             Bulk Billing
           </button>
+          <button type="button" style={tabButtonStyle('historical_migration')} onClick={() => setBillingTab('historical_migration')}>
+            Clio Historical Import
+          </button>
         </div>
 
         {billingTab === 'clio_billing' ? (
@@ -38082,6 +38357,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           renderClioClientInvoicingPanel()
         ) : billingTab === 'bulk_billing' ? (
           renderBulkBillingPanel()
+        ) : billingTab === 'historical_migration' ? (
+          renderClioHistoricalMigrationPanel()
         ) : (
           <>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
