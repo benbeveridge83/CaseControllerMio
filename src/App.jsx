@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V198'
+const MIO_APP_VERSION = 'Mio V199'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1960,6 +1960,37 @@ function App() {
     try { return { sender_email: '', ...JSON.parse(localStorage.getItem('caseMioFinanceEmailSettings') || '{}') } }
     catch { return { sender_email: '' } }
   })
+  const defaultBillingEmailTemplates = {
+    initial_trust: {
+      subject: 'Initial trust deposit request - {{matter_name}}',
+      body: 'Please submit the initial trust deposit of {{amount}} using the secure payment link below. Contact our office if you have any questions.'
+    },
+    replenishment: {
+      subject: 'Trust account replenishment request - {{matter_name}}',
+      body: 'Your current trust balance is {{trust_balance}}. Please replenish the trust account by {{amount}} to restore the required retainer amount of {{retainer_target}}.'
+    },
+    service_invoice: {
+      subject: 'Invoice {{invoice_number}} - {{matter_name}}',
+      body: 'Attached below are the details for invoice {{invoice_number}} for legal services totaling {{amount}}. Please remit the outstanding balance by {{due_date}}.'
+    }
+  }
+  const [billingEmailTemplates, setBillingEmailTemplates] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('caseMioBillingEmailTemplates') || '{}')
+      return Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, value]) => [key, { ...value, ...(saved?.[key] || {}) }]))
+    } catch { return defaultBillingEmailTemplates }
+  })
+  const [retainerReplenishmentTargets, setRetainerReplenishmentTargets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioRetainerReplenishmentTargets') || '{}') }
+    catch { return {} }
+  })
+  const [bulkBillingFilters, setBulkBillingFilters] = useState({ case_status: 'all', matter_status: 'all', case_type: 'all', search: '' })
+  const [bulkBillingSort, setBulkBillingSort] = useState({ field: 'matter', direction: 'asc' })
+  const [bulkBillingSelectedIds, setBulkBillingSelectedIds] = useState([])
+  const [bulkBillingBusy, setBulkBillingBusy] = useState(false)
+  const [bulkBillingResult, setBulkBillingResult] = useState('')
+  const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], index: 0, lines: [], invoice: null })
+  const bulkInvoiceSequenceRef = useRef(0)
   const billingEntriesRef = useRef([])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
@@ -2805,6 +2836,8 @@ function App() {
       caseMioInvoices: { setter: setMioInvoices, kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
+      caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
+      caseMioRetainerReplenishmentTargets: { setter: setRetainerReplenishmentTargets, kind: 'object', fallback: {} },
       caseMioBankAccountRoles: { setter: setBankAccountRoles, kind: 'object', fallback: {} },
       caseMioBillingRates: { setter: setBillingRates, kind: 'object', fallback: {} },
       caseMioMatterBillingRates: { setter: setMatterBillingRates, kind: 'object', fallback: {} },
@@ -3392,6 +3425,19 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioFinanceEmailSettings', JSON.stringify(financeEmailSettings || {})) } catch {}
   }, [financeEmailSettings])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioBillingEmailTemplates', JSON.stringify(billingEmailTemplates || defaultBillingEmailTemplates)) } catch {}
+  }, [billingEmailTemplates])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioRetainerReplenishmentTargets', JSON.stringify(retainerReplenishmentTargets || {})) } catch {}
+  }, [retainerReplenishmentTargets])
+
+  useEffect(() => {
+    if (billingTab !== 'bulk_billing' || !matters.length) return
+    setBulkBillingSelectedIds((current) => current.length ? current : matters.map((matter) => String(matter.id)))
+  }, [billingTab, matters])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioBankAccountRoles', JSON.stringify(bankAccountRoles || {})) } catch {}
@@ -15810,9 +15856,12 @@ async function updateTeamCell(memberId, field, value) {
     const newerInvoices = financeInvoicesForMatter(matter).filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot) || invoice.source_snapshot_date === snapshot.snapshot_date)
     const convertedSnapshotWip = newerInvoices.reduce((sum, invoice) => sum + financeNumber(invoice.source_wip_amount), 0)
     const wip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0) + billingTotals(newerUninvoicedEntries).amount
-    const outstanding = Math.max(0, hasSnapshot ? snapshotOutstanding : 0) + newerInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
     const ledgerRows = clientFinanceLedgerRows(matter)
     const currentLedgerRows = hasSnapshot ? ledgerRows.filter((row) => financeRowAfterSnapshot(row, snapshot)) : ledgerRows
+    const snapshotOutstandingPayments = currentLedgerRows
+      .filter((row) => row?.applies_to_snapshot_outstanding)
+      .reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const outstanding = Math.max(0, (hasSnapshot ? snapshotOutstanding : 0) - snapshotOutstandingPayments) + newerInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
     const ledgerDelta = currentLedgerRows.reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
     const minimumBalance = Math.max(0, financeNumber(
       snapshot?.minimum_balance ??
@@ -15833,6 +15882,7 @@ async function updateTeamCell(memberId, field, value) {
       wip: safeWip,
       outstanding: safeOutstanding,
       trustMinusMinimum: trust - minimumBalance,
+      trustMinusMinimumMinusOutstanding: trust - minimumBalance - safeOutstanding,
       trustMinusMinimumMinusWip: trust - minimumBalance - safeWip,
       trustMinusMinimumMinusWipMinusOutstanding: trust - minimumBalance - safeWip - safeOutstanding,
       uninvoicedEntries: newerUninvoicedEntries,
@@ -15842,13 +15892,44 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
+  function matterRetainerTarget(matter) {
+    const override = financeNumber(retainerReplenishmentTargets?.[String(matter?.id || '')], NaN)
+    if (Number.isFinite(override) && override >= 0) return override
+    const priorRequest = financeInvoicesForMatter(matter).filter((invoice) => invoice?.invoice_type === 'trust_request').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
+    if (priorRequest) return Math.max(0, financeNumber(priorRequest.total))
+    const snapshot = latestTrustSnapshotForMatter(matter)
+    const ids = [String(matter?.id || ''), String(snapshot?.clio_matter_id || ''), String(snapshot?.mio_matter_id || '')].filter(Boolean)
+    for (const id of ids) {
+      const value = financeNumber(clioInitialRetainersByMatterId?.[id], NaN)
+      if (Number.isFinite(value) && value >= 0) return value
+    }
+    return 3500
+  }
+
+  function matterReplenishmentAmount(matter) {
+    return Math.max(0, matterRetainerTarget(matter) - clientFinanceNumbers(matter).trust)
+  }
+
+  function setMatterRetainerTarget(matter, rawValue) {
+    const value = financeNumber(String(rawValue || '').replace(/[$,]/g, ''), NaN)
+    if (!Number.isFinite(value) || value < 0) return alert('Enter a valid retainer replenishment target.')
+    setRetainerReplenishmentTargets((current) => ({ ...(current || {}), [String(matter.id)]: Number(value.toFixed(2)) }))
+  }
+
+  function renderBillingTemplate(templateKey, values = {}) {
+    const template = billingEmailTemplates?.[templateKey] || defaultBillingEmailTemplates[templateKey]
+    const fill = (text) => String(text || '').replace(/\{\{([a-z_]+)\}\}/gi, (_match, key) => String(values[key] ?? ''))
+    return { subject: fill(template?.subject), body: fill(template?.body) }
+  }
+
   function nextMioInvoiceNumber() {
     const year = new Date().getFullYear()
     const maxSequence = (mioInvoices || []).reduce((max, invoice) => {
       const match = String(invoice?.invoice_number || '').match(/MIO-\d{4}-(\d+)/i)
       return match ? Math.max(max, Number(match[1]) || 0) : max
     }, 0)
-    return `MIO-${year}-${String(maxSequence + 1).padStart(4, '0')}`
+    bulkInvoiceSequenceRef.current += 1
+    return `MIO-${year}-${String(maxSequence + bulkInvoiceSequenceRef.current).padStart(4, '0')}`
   }
 
   function financeSenderOptions() {
@@ -15865,15 +15946,24 @@ async function updateTeamCell(memberId, field, value) {
 
   function openTrustRequest(matter) {
     const finance = clientFinanceNumbers(matter)
-    const shortage = Math.max(0, finance.minimumBalance + finance.wip + finance.outstanding - finance.trust)
+    const shortage = matterReplenishmentAmount(matter)
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
     const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    const hasPriorTrustRequest = financeInvoicesForMatter(matter).some((invoice) => invoice?.invoice_type === 'trust_request')
+    const templateKey = hasPriorTrustRequest ? 'replenishment' : 'initial_trust'
+    const template = renderBillingTemplate(templateKey, {
+      client_name: matterClientName(matter) || 'Client',
+      matter_name: matter.name || matterClientName(matter) || 'Matter',
+      amount: money(shortage),
+      trust_balance: money(finance.trust),
+      retainer_target: money(matterRetainerTarget(matter))
+    })
     setTrustRequestDraft({
       amount: shortage > 0.005 ? shortage.toFixed(2) : '',
       sender_email: sender,
       recipient_email: recipient,
-      subject: `Trust account replenishment request - ${matter.name || matterClientName(matter) || 'Matter'}`,
-      message: 'Please replenish the trust account using the secure payment link below. Contact our office if you have any questions.',
+      subject: template.subject,
+      message: template.body,
       approved: false
     })
     setShowTrustRequestForm(true)
@@ -16084,6 +16174,233 @@ async function updateTeamCell(memberId, field, value) {
     }, ...(current || [])])
   }
 
+  function wipReviewLinesForMatter(matter) {
+    const finance = clientFinanceNumbers(matter)
+    const itemized = finance.uninvoicedEntries.map((entry) => ({
+      id: String(entry.id),
+      billing_entry_id: entry.id,
+      date: entry.date || '',
+      description: entry.description || entry.matter_step || 'Professional services',
+      hours: financeNumber(entry.billing_time),
+      rate: financeNumber(entry.rate),
+      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
+    }))
+    const itemizedTotal = itemized.reduce((sum, line) => sum + financeNumber(line.amount), 0)
+    const snapshotPortion = Math.max(0, Number((finance.wip - itemizedTotal).toFixed(2)))
+    return snapshotPortion > 0.005
+      ? [{ id: `snapshot:${matter.id}`, billing_entry_id: '', date: finance.snapshot?.snapshot_date || '', description: 'Unbilled work from latest financial snapshot', hours: '', rate: '', amount: snapshotPortion }, ...itemized]
+      : itemized
+  }
+
+  function openBulkWipReview(matterIds) {
+    const ids = (matterIds || []).map(String).filter((id) => matters.some((matter) => String(matter.id) === id && clientFinanceNumbers(matter).wip > 0.005))
+    if (!ids.length) return alert('None of the selected matters has WIP to review.')
+    const first = matters.find((matter) => String(matter.id) === ids[0])
+    setBulkWipReview({ open: true, matter_ids: ids, index: 0, lines: wipReviewLinesForMatter(first), invoice: null })
+  }
+
+  function advanceBulkWipReview() {
+    setBulkWipReview((current) => {
+      const nextIndex = current.index + 1
+      if (nextIndex >= current.matter_ids.length) return { open: false, matter_ids: [], index: 0, lines: [], invoice: null }
+      const matter = matters.find((row) => String(row.id) === String(current.matter_ids[nextIndex]))
+      return { ...current, index: nextIndex, lines: wipReviewLinesForMatter(matter), invoice: null }
+    })
+  }
+
+  function updateBulkWipLine(lineId, patch) {
+    setBulkWipReview((current) => ({ ...current, invoice: null, lines: current.lines.map((line) => {
+      if (String(line.id) !== String(lineId)) return line
+      const next = { ...line, ...patch }
+      if (Object.prototype.hasOwnProperty.call(patch, 'hours') || Object.prototype.hasOwnProperty.call(patch, 'rate')) {
+        next.amount = Number((financeNumber(next.hours) * financeNumber(next.rate)).toFixed(2))
+      }
+      return next
+    }) }))
+  }
+
+  function createReviewedWipInvoice(matter, lines) {
+    const cleanLines = (lines || []).map((line) => ({ ...line, amount: Math.max(0, financeNumber(line.amount)) })).filter((line) => line.amount > 0.005)
+    const amount = Number(cleanLines.reduce((sum, line) => sum + line.amount, 0).toFixed(2))
+    if (amount <= 0) throw new Error('The reviewed WIP has no billable amount.')
+    const now = new Date()
+    const due = new Date(now)
+    due.setDate(due.getDate() + 30)
+    const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const invoice = {
+      id: invoiceId,
+      invoice_number: nextMioInvoiceNumber(),
+      invoice_type: 'services',
+      matter_id: matter.id,
+      client_id: matter.client_id || '',
+      client_name: matterClientName(matter) || matter.matter_client_name || '',
+      issue_date: now.toISOString().slice(0, 10),
+      due_date: due.toISOString().slice(0, 10),
+      status: 'outstanding',
+      subtotal: amount,
+      total: amount,
+      amount_paid: 0,
+      balance: amount,
+      source_snapshot_date: clientFinanceNumbers(matter).snapshot?.snapshot_date || '',
+      source_wip_amount: cleanLines.filter((line) => !line.billing_entry_id).reduce((sum, line) => sum + line.amount, 0),
+      line_items: cleanLines.map(({ id, ...line }) => line),
+      created_at: now.toISOString(),
+      updated_at: now.toISOString()
+    }
+    const entryIds = new Set(cleanLines.map((line) => String(line.billing_entry_id || '')).filter(Boolean))
+    setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) ? { ...entry, invoice_id: invoiceId, invoice_number: invoice.invoice_number, invoiced_at: now.toISOString() } : entry))
+    setMioInvoices((current) => [invoice, ...(current || [])])
+    setBulkWipReview((current) => ({ ...current, invoice }))
+    return invoice
+  }
+
+  function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
+    const trustAvailable = clientFinanceNumbers(matter).trust
+    const amount = Math.min(invoiceBalanceAmount(invoice), trustAvailable)
+    if (amount <= 0.005) throw new Error('No available trust funds can be applied to this invoice.')
+    const now = new Date().toISOString()
+    const paid = financeNumber(invoice.amount_paid) + amount
+    const balance = Math.max(0, financeNumber(invoice.total) - paid)
+    const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
+    setMioInvoices((current) => current.map((row) => String(row.id) === String(invoice.id) ? paidInvoice : row))
+    setMioTrustTransactions((current) => [{
+      id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer',
+      amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number,
+      memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now
+    }, ...(current || [])])
+    return paidInvoice
+  }
+
+  async function emailServiceInvoice(matter, invoice) {
+    const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
+    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    if (!recipient) throw new Error('No client email is saved for this matter.')
+    if (!sender) throw new Error('No billing sender email is configured.')
+    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) throw new Error('Reconnect Microsoft before emailing invoices.')
+    const template = renderBillingTemplate('service_invoice', {
+      client_name: matterClientName(matter) || 'Client', matter_name: matter.name || 'Matter', invoice_number: invoice.invoice_number,
+      amount: money(invoiceBalanceAmount(invoice)), due_date: invoice.due_date || '', trust_balance: money(clientFinanceNumbers(matter).trust)
+    })
+    const detailLines = (invoice.line_items || []).map((line) => `${line.date ? `${line.date} - ` : ''}${line.description}: ${money(line.amount)}`)
+    const body = [`Hello ${matterClientName(matter) || 'Client'},`, '', template.body, '', ...detailLines, '', `Invoice total: ${money(invoice.total)}`, `Outstanding: ${money(invoiceBalanceAmount(invoice))}`, '', lawFirmProfile.firm_name || 'Beveridge Law Firm'].join('\n')
+    await graphFetch(`${graphMailboxBase(sender)}/sendMail`, { method: 'POST', body: JSON.stringify({ message: { subject: template.subject, body: { contentType: 'Text', content: body }, toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }] }, saveToSentItems: true }) })
+    const sentAt = new Date().toISOString()
+    const emailed = { ...invoice, sender_email: sender, recipient_email: recipient, email_subject: template.subject, emailed_at: sentAt, updated_at: sentAt }
+    setMioInvoices((current) => current.map((row) => String(row.id) === String(invoice.id) ? emailed : row))
+    return emailed
+  }
+
+  function payMatterOutstandingFromTrust(matter, { confirm = true } = {}) {
+    const finance = clientFinanceNumbers(matter)
+    const payable = Math.min(finance.trust, finance.outstanding)
+    if (payable <= 0.005) return { paid: 0, message: 'No outstanding balance can be paid from trust.' }
+    if (confirm && !window.confirm(`Apply ${money(payable)} from ${matter.name || 'this matter'} trust funds to its outstanding balance?`)) return { paid: 0, cancelled: true }
+    let remaining = payable
+    const now = new Date().toISOString()
+    const transactions = []
+    const alreadyPaidSnapshot = finance.currentLedgerRows.filter((row) => row?.applies_to_snapshot_outstanding).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const snapshotDue = Math.max(0, finance.snapshotOutstanding - alreadyPaidSnapshot)
+    if (snapshotDue > 0.005 && remaining > 0.005) {
+      const amount = Math.min(snapshotDue, remaining)
+      remaining -= amount
+      transactions.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-snapshot`, matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: 'Snapshot outstanding balance', memo: 'Applied trust funds to outstanding balance from latest financial snapshot', applies_to_snapshot_outstanding: true, source: 'Mio bulk billing', created_at: now })
+    }
+    const invoiceUpdates = new Map()
+    finance.invoices.filter((invoice) => invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005).sort((a, b) => String(a.issue_date || '').localeCompare(String(b.issue_date || ''))).forEach((invoice) => {
+      if (remaining <= 0.005) return
+      const amount = Math.min(invoiceBalanceAmount(invoice), remaining)
+      remaining -= amount
+      const paid = financeNumber(invoice.amount_paid) + amount
+      const balance = Math.max(0, financeNumber(invoice.total) - paid)
+      invoiceUpdates.set(String(invoice.id), { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now })
+      transactions.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${invoice.id}`, matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number, memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now })
+    })
+    if (invoiceUpdates.size) setMioInvoices((current) => current.map((invoice) => invoiceUpdates.get(String(invoice.id)) || invoice))
+    if (transactions.length) setMioTrustTransactions((current) => [...transactions, ...(current || [])])
+    return { paid: Number((payable - remaining).toFixed(2)), message: `${money(payable - remaining)} paid from trust.` }
+  }
+
+  async function completeBulkWipReview(action) {
+    const matterId = bulkWipReview.matter_ids[bulkWipReview.index]
+    const matter = matters.find((row) => String(row.id) === String(matterId))
+    if (!matter) return advanceBulkWipReview()
+    setBulkBillingBusy(true)
+    try {
+      let invoice = bulkWipReview.invoice
+      if (!invoice) invoice = createReviewedWipInvoice(matter, bulkWipReview.lines)
+      if (action === 'pay') invoice = payInvoiceFromTrustWithoutPrompt(matter, invoice)
+      if (action === 'email') invoice = await emailServiceInvoice(matter, invoice)
+      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify([invoice, ...(mioInvoices || []).filter((row) => String(row.id) !== String(invoice.id))]), { throwOnError: true })
+      setBulkBillingResult(`${invoice.invoice_number} ${action === 'pay' ? 'was paid from trust' : action === 'email' ? 'was emailed to the client' : 'was created'}.`)
+      if (action !== 'create') advanceBulkWipReview()
+    } catch (error) {
+      alert(error?.message || String(error))
+    } finally { setBulkBillingBusy(false) }
+  }
+
+  async function createAndEmailReplenishmentRequest(matter) {
+    const amount = matterReplenishmentAmount(matter)
+    if (amount <= 0.005) throw new Error('No replenishment is currently due.')
+    const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
+    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    if (!recipient) throw new Error('No client email is saved.')
+    if (!sender) throw new Error('No billing sender email is configured.')
+    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) throw new Error('Reconnect Microsoft before sending replenishment requests.')
+    const now = new Date()
+    const due = new Date(now)
+    due.setDate(due.getDate() + 10)
+    const invoiceNumber = nextMioInvoiceNumber()
+    const client = lawPayMatterClient(matter)
+    let paymentUrl = ''
+    let paymentRequestId = ''
+    const trustPageUrl = String(lawPaySettings?.trust_page_url || '').trim()
+    if (trustPageUrl) {
+      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'create_link', payment_page_url: trustPageUrl, account_key: 'trust', amount_cents: Math.round(amount * 100), reference: `${matter.name || 'Matter'}${matter.cause_number ? ` - ${matter.cause_number}` : ''}`, invoice_number: invoiceNumber, payer_name: lawPayClientName(client, matter), payer_email: recipient, payer_phone: client?.phone || matter?.client_phone || '', matter_id: matter.id, matter_name: matter.name || '', client_id: client?.id || matter.client_id || null, client_name: lawPayClientName(client, matter), lock_amount: true, lock_reference: true } })
+      if (error) throw error
+      if (!data?.url) throw new Error(data?.error || 'LawPay did not return a trust payment link.')
+      paymentUrl = data.url
+      paymentRequestId = data.request_id || data.id || ''
+    }
+    const finance = clientFinanceNumbers(matter)
+    const template = renderBillingTemplate('replenishment', { client_name: matterClientName(matter) || 'Client', matter_name: matter.name || 'Matter', amount: money(amount), trust_balance: money(finance.trust), retainer_target: money(matterRetainerTarget(matter)), invoice_number: invoiceNumber, due_date: due.toISOString().slice(0, 10), payment_link: paymentUrl })
+    const body = [`Hello ${matterClientName(matter) || 'Client'},`, '', template.body, '', `Invoice: ${invoiceNumber}`, `Amount requested: ${money(amount)}`, `Due: ${due.toLocaleDateString()}`, paymentUrl ? `Secure LawPay link: ${paymentUrl}` : 'Please contact our office to arrange payment.', '', lawFirmProfile.firm_name || 'Beveridge Law Firm'].join('\n')
+    await graphFetch(`${graphMailboxBase(sender)}/sendMail`, { method: 'POST', body: JSON.stringify({ message: { subject: template.subject, body: { contentType: 'Text', content: body }, toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }] }, saveToSentItems: true }) })
+    return { id: crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`, invoice_number: invoiceNumber, invoice_type: 'trust_request', matter_id: matter.id, client_id: matter.client_id || client?.id || '', client_name: matterClientName(matter) || '', issue_date: now.toISOString().slice(0, 10), due_date: due.toISOString().slice(0, 10), status: 'outstanding', subtotal: amount, total: amount, amount_paid: 0, balance: amount, line_items: [{ description: 'Trust / IOLTA retainer replenishment', amount }], recipient_email: recipient, sender_email: sender, email_subject: template.subject, payment_url: paymentUrl, payment_request_id: paymentRequestId, emailed_at: new Date().toISOString(), created_at: now.toISOString(), updated_at: new Date().toISOString() }
+  }
+
+  async function replenishSelectedMatters(matterIds) {
+    const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter(Boolean)
+    const dueRows = rows.filter((matter) => matterReplenishmentAmount(matter) > 0.005)
+    if (!dueRows.length) return alert('None of the selected matters currently needs replenishment.')
+    if (!window.confirm(`Create and email ${dueRows.length} trust replenishment request${dueRows.length === 1 ? '' : 's'}? Each request will use that matter's replenishment amount and client email.`)) return
+    setBulkBillingBusy(true)
+    const created = []
+    const failures = []
+    for (const matter of dueRows) {
+      try { created.push(await createAndEmailReplenishmentRequest(matter)) }
+      catch (error) { failures.push(`${matter.name || matterClientName(matter)}: ${error?.message || error}`) }
+    }
+    if (created.length) {
+      const next = [...created, ...(mioInvoices || [])]
+      setMioInvoices(next)
+      try { await saveMioStateKeyNow('caseMioInvoices', JSON.stringify(next), { throwOnError: true }) }
+      catch (error) { failures.push(`Mio could not finish saving invoice status: ${error?.message || error}`) }
+    }
+    setBulkBillingBusy(false)
+    setBulkBillingResult(`${created.length} replenishment request${created.length === 1 ? '' : 's'} emailed.${failures.length ? ` ${failures.length} failed: ${failures.join(' | ')}` : ''}`)
+  }
+
+  function paySelectedOutstandingFromTrust(matterIds) {
+    const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter(Boolean)
+    const payable = rows.reduce((sum, matter) => { const finance = clientFinanceNumbers(matter); return sum + Math.min(finance.trust, finance.outstanding) }, 0)
+    if (payable <= 0.005) return alert('None of the selected matters has both an outstanding balance and available trust funds.')
+    if (!window.confirm(`Apply up to ${money(payable)} from trust across ${rows.length} selected matter${rows.length === 1 ? '' : 's'}?`)) return
+    let paid = 0
+    rows.forEach((matter) => { paid += payMatterOutstandingFromTrust(matter, { confirm: false }).paid || 0 })
+    setBulkBillingResult(`${money(paid)} was applied from trust to selected outstanding balances.`)
+  }
+
   function openClientFinanceTransaction(matter, direction = 'in') {
     setClientFinanceTransactionDraft({
       matter_id: matter?.id || '',
@@ -16228,8 +16545,10 @@ async function updateTeamCell(memberId, field, value) {
         {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
         {renderClientFinanceSummaryCard({ label: 'Minimum balance', amount: finance.minimumBalance, color: '#0369a1', note: 'Required trust retainer floor', children: <button type="button" onClick={() => updateMatterMinimumBalanceFromFinances(matter)}>Set minimum</button> })}
         {renderClientFinanceSummaryCard({ label: 'Work in progress', amount: finance.wip, color: '#7c3aed', note: 'Work done but not invoiced', children: <button type="button" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Retainer replenishment target', amount: matterRetainerTarget(matter), color: '#0f766e', note: 'Defaults to the first retainer request and may be changed', children: <button type="button" onClick={() => { const entered = window.prompt('Retainer replenishment target:', matterRetainerTarget(matter).toFixed(2)); if (entered !== null) setMatterRetainerTarget(matter, entered) }}>Set target</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Replenishment amount', amount: matterReplenishmentAmount(matter), color: '#c2410c', note: 'Retainer target minus current trust balance', children: <button type="button" onClick={() => openTrustRequest(matter)} disabled={matterReplenishmentAmount(matter) <= 0.005}>Request funds</button> })}
       </div>
-      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − outstanding: <strong>{money(finance.trustMinusMinimumMinusOutstanding)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
       {showTrustRequestForm && renderTrustRequestForm(matter, finance)}
       {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Data sources</h3><div><strong>Baseline:</strong> {finance.snapshot ? `financial snapshot dated ${finance.snapshot.snapshot_date}` : 'no financial snapshot loaded'}</div><div><strong>Trust activity:</strong> LawPay trust payments and Mio ledger entries</div><div><strong>New work:</strong> Mio billing entries not yet assigned to an invoice</div><button type="button" onClick={() => { loadClioFinancialSnapshots({ ignoreDateFilters: true }); loadLawPayWorkspace() }} disabled={clioSnapshotLoading || lawPayBusy} style={{ marginTop: 10 }}>{clioSnapshotLoading || lawPayBusy ? 'Refreshing…' : 'Refresh financial data'}</button></section></div>}
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
@@ -37509,6 +37828,124 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     </div>
   }
 
+  function renderBillingEmailTemplateSettings() {
+    const labels = { initial_trust: 'Initial trust request', replenishment: 'Trust replenishment request', service_invoice: 'Invoice payment request (work performed)' }
+    const placeholders = '{{client_name}}, {{matter_name}}, {{amount}}, {{invoice_number}}, {{due_date}}, {{trust_balance}}, {{retainer_target}}, {{payment_link}}'
+    return <div style={{ border: '1px solid #d8e2ef', borderRadius: 12, padding: 16, background: '#fff' }}>
+      <h2 style={{ marginTop: 0 }}>Billing email templates</h2>
+      <p style={{ color: '#64748b' }}>These templates are used by individual and bulk billing emails. Available placeholders: <code>{placeholders}</code></p>
+      <LabeledField label="Default billing sender"><input type="email" value={financeEmailSettings.sender_email || ''} onChange={(event) => setFinanceEmailSettings((current) => ({ ...current, sender_email: event.target.value }))} placeholder="billing@beveridgelawfirm.com" style={{ maxWidth: 520 }} /></LabeledField>
+      <div style={{ display: 'grid', gap: 14, marginTop: 14 }}>{Object.keys(labels).map((key) => <section key={key} style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
+        <h3 style={{ margin: '0 0 10px' }}>{labels[key]}</h3>
+        <LabeledField label="Subject"><input value={billingEmailTemplates?.[key]?.subject || ''} onChange={(event) => setBillingEmailTemplates((current) => ({ ...current, [key]: { ...(current?.[key] || {}), subject: event.target.value } }))} style={{ width: '100%' }} /></LabeledField>
+        <LabeledField label="Email body"><textarea rows="5" value={billingEmailTemplates?.[key]?.body || ''} onChange={(event) => setBillingEmailTemplates((current) => ({ ...current, [key]: { ...(current?.[key] || {}), body: event.target.value } }))} style={{ width: '100%', boxSizing: 'border-box' }} /></LabeledField>
+        <button type="button" onClick={() => setBillingEmailTemplates((current) => ({ ...current, [key]: { ...defaultBillingEmailTemplates[key] } }))}>Restore default template</button>
+      </section>)}</div>
+    </div>
+  }
+
+  function renderBulkBillingPanel() {
+    const unique = (values) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    const caseStatuses = unique(matters.map((matter) => matter.case_status || matter.status))
+    const matterStatuses = unique(matters.map((matter) => matter.matter_status))
+    const caseTypes = unique(matters.map((matter) => matter.matter_type || matter.case_type))
+    const rows = matters.map((matter) => {
+      const finance = clientFinanceNumbers(matter)
+      return {
+        matter,
+        matterName: matter.name || matter.matter_name || matterClientName(matter) || 'Unnamed matter',
+        trust: finance.trust,
+        outstanding: finance.outstanding,
+        wip: finance.wip,
+        minimum: finance.minimumBalance,
+        trustMinusMinimum: finance.trustMinusMinimum,
+        trustMinusMinimumMinusOutstanding: finance.trustMinusMinimumMinusOutstanding,
+        trustMinusMinimumMinusWip: finance.trustMinusMinimumMinusWip,
+        trustMinusMinimumMinusWipMinusOutstanding: finance.trustMinusMinimumMinusWipMinusOutstanding,
+        retainerTarget: matterRetainerTarget(matter),
+        replenishment: matterReplenishmentAmount(matter)
+      }
+    }).filter((row) => {
+      const matter = row.matter
+      if (bulkBillingFilters.case_status !== 'all' && String(matter.case_status || matter.status || '') !== bulkBillingFilters.case_status) return false
+      if (bulkBillingFilters.matter_status !== 'all' && String(matter.matter_status || '') !== bulkBillingFilters.matter_status) return false
+      if (bulkBillingFilters.case_type !== 'all' && String(matter.matter_type || matter.case_type || '') !== bulkBillingFilters.case_type) return false
+      const search = String(bulkBillingFilters.search || '').toLowerCase().trim()
+      return !search || `${row.matterName} ${matter.cause_number || ''} ${matterClientName(matter) || ''}`.toLowerCase().includes(search)
+    }).sort((a, b) => {
+      const field = bulkBillingSort.field
+      const left = field === 'matter' ? a.matterName.toLowerCase() : financeNumber(a[field])
+      const right = field === 'matter' ? b.matterName.toLowerCase() : financeNumber(b[field])
+      const comparison = typeof left === 'string' ? left.localeCompare(right) : left - right
+      return bulkBillingSort.direction === 'asc' ? comparison : -comparison
+    })
+    const visibleIds = rows.map((row) => String(row.matter.id))
+    const selectedVisibleIds = visibleIds.filter((id) => bulkBillingSelectedIds.includes(id))
+    const toggleSort = (field) => setBulkBillingSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
+    const sortLabel = (field, label) => <button type="button" onClick={() => toggleSort(field)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 800, whiteSpace: 'nowrap' }}>{label}{bulkBillingSort.field === field ? (bulkBillingSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>
+    const moneyCell = (value) => <span style={{ color: value < -0.005 ? '#b91c1c' : value > 0.005 ? '#166534' : '#475569', fontWeight: 700 }}>{money(value)}</span>
+    const currentReviewMatter = bulkWipReview.open ? matters.find((matter) => String(matter.id) === String(bulkWipReview.matter_ids[bulkWipReview.index])) : null
+    const reviewTotal = bulkWipReview.lines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
+
+    return <div style={{ display: 'grid', gap: 14 }}>
+      <section className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}>
+          <div><h2 style={{ margin: 0 }}>Bulk billing</h2><div className="hint">Review WIP, create invoices, apply trust, and send replenishment requests for checked matters.</div></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btnPrimary" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedVisibleIds)}>Pay all OBs with trust</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => replenishSelectedMatters(selectedVisibleIds)}>Replenish all selected</button>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginTop: 14 }}>
+          <LabeledField label="Search"><input value={bulkBillingFilters.search} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, or cause #" /></LabeledField>
+          <LabeledField label="Case status"><select value={bulkBillingFilters.case_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All</option>{caseStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
+          <LabeledField label="Matter status"><select value={bulkBillingFilters.matter_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All</option>{matterStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
+          <LabeledField label="Case type"><select value={bulkBillingFilters.case_type} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_type: event.target.value }))}><option value="all">All</option>{caseTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
+        </div>
+        <div style={{ marginTop: 10, color: '#475569' }}>{selectedVisibleIds.length} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} checked. Bulk actions apply only to these checked rows.</div>
+        {bulkBillingResult && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', padding: 10 }}>{bulkBillingResult}</div>}
+      </section>
+
+      <section className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 1900, borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: '#f8fafc' }}>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1' }}><input type="checkbox" aria-label="Select all filtered matters" checked={!!visibleIds.length && selectedVisibleIds.length === visibleIds.length} onChange={(event) => setBulkBillingSelectedIds((current) => event.target.checked ? Array.from(new Set([...current, ...visibleIds])) : current.filter((id) => !visibleIds.includes(id)))} /></th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'left' }}>{sortLabel('matter', 'Matter')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trust', 'Trust')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('outstanding', 'OB')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('wip', 'WIP')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('minimum', 'Min bal')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimum', 'Trust − min')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusOutstanding', 'Trust − min − OB')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusWip', 'Trust − min − WIP')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusWipMinusOutstanding', 'Trust − min − WIP − OB')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('retainerTarget', 'Retainer target')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('replenishment', 'Replenishment')}</th>
+            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'left' }}>Actions</th>
+          </tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.matter.id} style={{ background: bulkBillingSelectedIds.includes(String(row.matter.id)) ? '#fff' : '#f8fafc', opacity: bulkBillingSelectedIds.includes(String(row.matter.id)) ? 1 : 0.66 }}>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><input type="checkbox" checked={bulkBillingSelectedIds.includes(String(row.matter.id))} onChange={() => setBulkBillingSelectedIds((current) => current.includes(String(row.matter.id)) ? current.filter((id) => id !== String(row.matter.id)) : [...current, String(row.matter.id)])} /></td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', minWidth: 250 }}><strong>{row.matterName}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
+            {[row.trust,row.outstanding,row.wip,row.minimum,row.trustMinusMinimum,row.trustMinusMinimumMinusOutstanding,row.trustMinusMinimumMinusWip,row.trustMinusMinimumMinusWipMinusOutstanding].map((value, index) => <td key={index} style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(value)}</td>)}
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{moneyCell(row.replenishment)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+          </tr>)}{!rows.length && <tr><td colSpan="13" className="empty">No matters match the selected filters.</td></tr>}</tbody>
+        </table></div>
+      </section>
+
+      {bulkWipReview.open && currentReviewMatter && <div style={{ position: 'fixed', inset: 0, zIndex: 12000, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
+        <div style={{ width: 'min(1080px,97vw)', maxHeight: '94vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.35)', padding: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><h2 style={{ margin: 0 }}>WIP review — {currentReviewMatter.name || matterClientName(currentReviewMatter)}</h2><div className="hint">Matter {bulkWipReview.index + 1} of {bulkWipReview.matter_ids.length}. Edit descriptions, time, rates, or amounts before approval.</div></div><button type="button" onClick={() => setBulkWipReview({ open: false, matter_ids: [], index: 0, lines: [], invoice: null })}>Close</button></div>
+          <div style={{ overflowX: 'auto', marginTop: 14 }}><table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse' }}><thead><tr>{['Date','Description','Hours','Rate','Amount',''].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{bulkWipReview.lines.map((line) => <tr key={line.id}><td style={{ padding: 6 }}><input type="date" value={line.date || ''} onChange={(event) => updateBulkWipLine(line.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={line.description || ''} onChange={(event) => updateBulkWipLine(line.id, { description: event.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.hours} onChange={(event) => updateBulkWipLine(line.id, { hours: event.target.value })} style={{ width: 90, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.rate} onChange={(event) => updateBulkWipLine(line.id, { rate: event.target.value })} style={{ width: 100, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.amount} onChange={(event) => updateBulkWipLine(line.id, { amount: event.target.value })} style={{ width: 110, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><button type="button" onClick={() => setBulkWipReview((current) => ({ ...current, invoice: null, lines: current.lines.filter((row) => row.id !== line.id) }))}>Remove</button></td></tr>)}</tbody><tfoot><tr><td colSpan="4" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(reviewTotal)}</td><td /></tr></tfoot></table></div>
+          {bulkWipReview.invoice && <section style={{ border: '2px solid #2563eb', borderRadius: 10, background: '#eff6ff', padding: 12, marginTop: 14 }}><strong>Invoice preview: {bulkWipReview.invoice.invoice_number}</strong><div>Client: {bulkWipReview.invoice.client_name}</div><div>Issued: {bulkWipReview.invoice.issue_date} • Due: {bulkWipReview.invoice.due_date}</div><div style={{ fontSize: 20, marginTop: 5 }}>Total: <strong>{money(bulkWipReview.invoice.total)}</strong></div></section>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 16 }}><button type="button" onClick={advanceBulkWipReview} disabled={bulkBillingBusy}>Skip / next matter</button><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => completeBulkWipReview('create')} disabled={bulkBillingBusy || reviewTotal <= 0.005 || !!bulkWipReview.invoice}>{bulkWipReview.invoice ? 'Invoice created' : 'Approve & create invoice'}</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview('pay')} disabled={bulkBillingBusy || reviewTotal <= 0.005}>Approve & pay from trust</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview('email')} disabled={bulkBillingBusy || reviewTotal <= 0.005}>Approve & email client</button></div></div>
+        </div>
+      </div>}
+    </div>
+  }
+
   function renderBillingPage() {
     const entries = billingEntriesForFilters()
     const tabButtonStyle = (tab) => ({
@@ -37548,6 +37985,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <button type="button" style={tabButtonStyle('client_invoicing')} onClick={() => setBillingTab('client_invoicing')}>
             Client Invoicing
           </button>
+          <button type="button" style={tabButtonStyle('bulk_billing')} onClick={() => setBillingTab('bulk_billing')}>
+            Bulk Billing
+          </button>
         </div>
 
         {billingTab === 'clio_billing' ? (
@@ -37562,6 +38002,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           renderClioClientBarGraphPanel()
         ) : billingTab === 'client_invoicing' ? (
           renderClioClientInvoicingPanel()
+        ) : billingTab === 'bulk_billing' ? (
+          renderBulkBillingPanel()
         ) : (
           <>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
@@ -41414,6 +41856,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <button onClick={() => setSettingsTab('email_signature')} style={{ marginRight: 10, fontWeight: settingsTab === 'email_signature' ? 'bold' : 'normal' }}>
                 Email Signature
               </button>
+              <button onClick={() => setSettingsTab('billing_email_templates')} style={{ marginRight: 10, fontWeight: settingsTab === 'billing_email_templates' ? 'bold' : 'normal' }}>
+                Billing Email Templates
+              </button>
 
 
               <button onClick={() => setSettingsTab('inventory')} style={{ marginRight: 10, fontWeight: settingsTab === 'inventory' ? 'bold' : 'normal', marginRight: 10 }}>
@@ -41466,6 +41911,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {settingsTab === 'clio_mio_rosetta' && renderClioMioRosettaSettings()}
             {settingsTab === 'service_email' && renderServiceEmailSettings()}
             {settingsTab === 'email_signature' && renderEmailSignatureSettings()}
+            {settingsTab === 'billing_email_templates' && renderBillingEmailTemplateSettings()}
             {settingsTab === 'need_to_set_colors' && renderNeedToSetColorSettings()}
             {settingsTab === 'requested_relief' && renderRequestedReliefSettings()}
             {settingsTab === 'inventory' && renderInventorySettings()}
