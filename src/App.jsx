@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V197'
+const MIO_APP_VERSION = 'Mio V198'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1946,6 +1946,20 @@ function App() {
     reference: '',
     memo: ''
   })
+  const [showTrustRequestForm, setShowTrustRequestForm] = useState(false)
+  const [trustRequestBusy, setTrustRequestBusy] = useState(false)
+  const [trustRequestDraft, setTrustRequestDraft] = useState({
+    amount: '',
+    sender_email: '',
+    recipient_email: '',
+    subject: '',
+    message: '',
+    approved: false
+  })
+  const [financeEmailSettings, setFinanceEmailSettings] = useState(() => {
+    try { return { sender_email: '', ...JSON.parse(localStorage.getItem('caseMioFinanceEmailSettings') || '{}') } }
+    catch { return { sender_email: '' } }
+  })
   const billingEntriesRef = useRef([])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
@@ -2790,6 +2804,7 @@ function App() {
       caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioInvoices: { setter: setMioInvoices, kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
+      caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBankAccountRoles: { setter: setBankAccountRoles, kind: 'object', fallback: {} },
       caseMioBillingRates: { setter: setBillingRates, kind: 'object', fallback: {} },
       caseMioMatterBillingRates: { setter: setMatterBillingRates, kind: 'object', fallback: {} },
@@ -2917,13 +2932,13 @@ function App() {
     }
   }
 
-  async function saveMioStateKeyNow(key, value) {
+  async function saveMioStateKeyNow(key, value, options = {}) {
     const rawValue = value === undefined || value === null ? '' : String(value)
     mioCloudStateLastValuesRef.current[key] = rawValue
 
     if (!session?.user?.id || mioCloudStateSkipSaveRef.current) {
       try { window.localStorage.setItem(key, rawValue) } catch {}
-      return
+      return true
     }
 
     let jsonValue = null
@@ -2944,7 +2959,10 @@ function App() {
     if (error) {
       console.warn(`Cloud save failed for ${key}; keeping browser fallback for this session.`, error)
       try { window.localStorage.setItem(key, rawValue) } catch {}
+      if (options.throwOnError) throw error
+      return false
     }
+    return true
   }
 
   function saveMioStateKey(key, value) {
@@ -3370,6 +3388,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
   }, [mioTrustTransactions])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioFinanceEmailSettings', JSON.stringify(financeEmailSettings || {})) } catch {}
+  }, [financeEmailSettings])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioBankAccountRoles', JSON.stringify(bankAccountRoles || {})) } catch {}
@@ -4077,7 +4099,11 @@ function App() {
 
   function stripLargeFileData(value) {
     const stripOne = (row = {}) => {
-      const { file_data, file_url, file, ...rest } = row || {}
+      // Never place document bytes or blob/data URLs inside the generic JSON state
+      // row. Service Inbox PDFs are stored in OneDrive; this record stores metadata.
+      // V197 removed file_data but accidentally retained the duplicate base64 field
+      // file_data_url, growing caseControllerDocuments to several megabytes.
+      const { file_data, file_data_url, file_url, file, blob, content_url, ...rest } = row || {}
       return rest
     }
     // This helper is used for both document arrays and individual document
@@ -15784,18 +15810,31 @@ async function updateTeamCell(memberId, field, value) {
     const newerInvoices = financeInvoicesForMatter(matter).filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot) || invoice.source_snapshot_date === snapshot.snapshot_date)
     const convertedSnapshotWip = newerInvoices.reduce((sum, invoice) => sum + financeNumber(invoice.source_wip_amount), 0)
     const wip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0) + billingTotals(newerUninvoicedEntries).amount
-    const outstanding = Math.max(0, hasSnapshot ? snapshotOutstanding : 0) + newerInvoices.reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
+    const outstanding = Math.max(0, hasSnapshot ? snapshotOutstanding : 0) + newerInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
     const ledgerRows = clientFinanceLedgerRows(matter)
     const currentLedgerRows = hasSnapshot ? ledgerRows.filter((row) => financeRowAfterSnapshot(row, snapshot)) : ledgerRows
     const ledgerDelta = currentLedgerRows.reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
+    const minimumBalance = Math.max(0, financeNumber(
+      snapshot?.minimum_balance ??
+      clioMinimumBalancesByMatterId?.[String(matter?.id || '')] ??
+      matter?.minimum_balance ??
+      matter?.trust_minimum_balance
+    ))
+    const trust = Math.max(0, snapshotTrust + ledgerDelta)
+    const safeWip = Math.max(0, wip)
+    const safeOutstanding = Math.max(0, outstanding)
     return {
       snapshot,
       snapshotTrust,
       snapshotWip,
       snapshotOutstanding,
-      trust: Math.max(0, snapshotTrust + ledgerDelta),
-      wip: Math.max(0, wip),
-      outstanding: Math.max(0, outstanding),
+      trust,
+      minimumBalance,
+      wip: safeWip,
+      outstanding: safeOutstanding,
+      trustMinusMinimum: trust - minimumBalance,
+      trustMinusMinimumMinusWip: trust - minimumBalance - safeWip,
+      trustMinusMinimumMinusWipMinusOutstanding: trust - minimumBalance - safeWip - safeOutstanding,
       uninvoicedEntries: newerUninvoicedEntries,
       invoices: financeInvoicesForMatter(matter),
       ledgerRows,
@@ -15810,6 +15849,158 @@ async function updateTeamCell(memberId, field, value) {
       return match ? Math.max(max, Number(match[1]) || 0) : max
     }, 0)
     return `MIO-${year}-${String(maxSequence + 1).padStart(4, '0')}`
+  }
+
+  function financeSenderOptions() {
+    const values = new Set()
+    const add = (value) => {
+      const email = String(value || '').trim()
+      if (email) values.add(email)
+    }
+    add(financeEmailSettings.sender_email)
+    add(serviceGraphAuth?.account?.username)
+    ;(serviceEmailSources || []).forEach((source) => add(source?.mailbox_email))
+    return [...values]
+  }
+
+  function openTrustRequest(matter) {
+    const finance = clientFinanceNumbers(matter)
+    const shortage = Math.max(0, finance.minimumBalance + finance.wip + finance.outstanding - finance.trust)
+    const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
+    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    setTrustRequestDraft({
+      amount: shortage > 0.005 ? shortage.toFixed(2) : '',
+      sender_email: sender,
+      recipient_email: recipient,
+      subject: `Trust account replenishment request - ${matter.name || matterClientName(matter) || 'Matter'}`,
+      message: 'Please replenish the trust account using the secure payment link below. Contact our office if you have any questions.',
+      approved: false
+    })
+    setShowTrustRequestForm(true)
+  }
+
+  function chooseTrustRequestAmount(value) {
+    const amount = Math.abs(financeNumber(value))
+    setTrustRequestDraft((current) => ({ ...current, amount: amount > 0.005 ? amount.toFixed(2) : '0.00', approved: false }))
+  }
+
+  async function sendApprovedTrustRequest(event, matter) {
+    event.preventDefault()
+    const amount = financeNumber(String(trustRequestDraft.amount || '').replace(/[$,]/g, ''), NaN)
+    const recipient = String(trustRequestDraft.recipient_email || '').trim()
+    const sender = String(trustRequestDraft.sender_email || '').trim()
+    if (!Number.isFinite(amount) || amount <= 0) return alert('Enter a valid trust-request amount.')
+    if (!recipient) return alert('Enter the client email address.')
+    if (!sender) return alert('Select the billing email address Mio should send from.')
+    if (!trustRequestDraft.approved) return alert('Review the invoice and email, then check the approval box before sending.')
+    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) return alert('Reconnect Microsoft before sending the trust request.')
+
+    const client = lawPayMatterClient(matter)
+    const invoiceNumber = nextMioInvoiceNumber()
+    const now = new Date()
+    const due = new Date(now)
+    due.setDate(due.getDate() + 10)
+    const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}`
+    const draftInvoice = {
+      id: invoiceId,
+      invoice_number: invoiceNumber,
+      invoice_type: 'trust_request',
+      matter_id: matter.id,
+      client_id: matter.client_id || client?.id || '',
+      client_name: matterClientName(matter) || matter.matter_client_name || '',
+      issue_date: now.toISOString().slice(0, 10),
+      due_date: due.toISOString().slice(0, 10),
+      status: 'draft',
+      subtotal: amount,
+      total: amount,
+      amount_paid: 0,
+      balance: amount,
+      line_items: [{ description: 'Trust / IOLTA retainer replenishment', amount }],
+      recipient_email: recipient,
+      sender_email: sender,
+      email_subject: trustRequestDraft.subject,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString()
+    }
+    const draftInvoices = [draftInvoice, ...(mioInvoices || [])]
+    setMioInvoices(draftInvoices)
+    setTrustRequestBusy(true)
+    let emailSent = false
+    try {
+      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify(draftInvoices), { throwOnError: true })
+      let paymentUrl = ''
+      let paymentRequestId = ''
+      const trustPageUrl = String(lawPaySettings?.trust_page_url || '').trim()
+      if (trustPageUrl) {
+        const { data, error } = await supabase.functions.invoke('lawpay-gateway', {
+          body: {
+            action: 'create_link',
+            payment_page_url: trustPageUrl,
+            account_key: 'trust',
+            amount_cents: Math.round(amount * 100),
+            reference: `${matter.name || matter.matter_name || 'Matter'}${matter.cause_number ? ` - ${matter.cause_number}` : ''}`,
+            invoice_number: invoiceNumber,
+            payer_name: lawPayClientName(client, matter),
+            payer_email: recipient,
+            payer_phone: client?.phone || matter?.client_phone || '',
+            matter_id: matter.id,
+            matter_name: matter.name || matter.matter_name || '',
+            client_id: client?.id || matter.client_id || null,
+            client_name: lawPayClientName(client, matter),
+            lock_amount: true,
+            lock_reference: true
+          }
+        })
+        if (error) throw error
+        if (!data?.url) throw new Error(data?.error || 'LawPay did not return a trust payment link.')
+        paymentUrl = data.url
+        paymentRequestId = data.request_id || data.id || ''
+      }
+
+      const bodyLines = [
+        `Hello ${matterClientName(matter) || 'Client'},`,
+        '',
+        String(trustRequestDraft.message || '').trim(),
+        '',
+        `Invoice: ${invoiceNumber}`,
+        `Trust replenishment requested: ${money(amount)}`,
+        `Due: ${due.toLocaleDateString()}`,
+        paymentUrl ? `Secure LawPay link: ${paymentUrl}` : 'Please contact our office to arrange payment.',
+        '',
+        lawFirmProfile.firm_name || 'Beveridge Law Firm'
+      ].filter((line, index, list) => line !== '' || (index > 0 && list[index - 1] !== ''))
+      await graphFetch(`${graphMailboxBase(sender)}/sendMail`, {
+        method: 'POST',
+        body: JSON.stringify({
+          message: {
+            subject: trustRequestDraft.subject || `Trust replenishment request - ${invoiceNumber}`,
+            body: { contentType: 'Text', content: bodyLines.join('\n') },
+            toRecipients: [{ emailAddress: { address: recipient, name: matterClientName(matter) || recipient } }]
+          },
+          saveToSentItems: true
+        })
+      })
+      emailSent = true
+
+      const sentAt = new Date().toISOString()
+      const completedInvoice = { ...draftInvoice, status: 'outstanding', payment_url: paymentUrl, payment_request_id: paymentRequestId, emailed_at: sentAt, updated_at: sentAt }
+      const nextInvoices = [completedInvoice, ...(mioInvoices || []).filter((item) => String(item.id) !== String(invoiceId))]
+      setMioInvoices(nextInvoices)
+      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify(nextInvoices), { throwOnError: true })
+      setFinanceEmailSettings({ sender_email: sender })
+      setShowTrustRequestForm(false)
+      setClientFinanceView('invoices')
+      await loadLawPayWorkspace()
+      alert(`${invoiceNumber} was approved and emailed to ${recipient}${paymentUrl ? ' with a secure LawPay trust link' : ''}.`)
+    } catch (error) {
+      const failedAt = new Date().toISOString()
+      setMioInvoices((current) => current.map((invoice) => String(invoice.id) === String(invoiceId) ? { ...invoice, status: emailSent ? 'outstanding' : 'draft', emailed_at: emailSent ? failedAt : '', email_error: error?.message || String(error), updated_at: failedAt } : invoice))
+      alert(emailSent
+        ? `The trust request email was sent, but Mio could not finish saving its sent status. Do not resend it until the invoice record is reconciled. ${error?.message || error}`
+        : `The trust request was not emailed. The invoice remains a draft so it can be reviewed and retried. ${error?.message || error}`)
+    } finally {
+      setTrustRequestBusy(false)
+    }
   }
 
   function createInvoiceFromClientWip(matter) {
@@ -15942,6 +16133,42 @@ async function updateTeamCell(memberId, field, value) {
     </section>
   }
 
+  function updateMatterMinimumBalanceFromFinances(matter) {
+    const finance = clientFinanceNumbers(matter)
+    const entered = window.prompt(`Minimum trust balance for ${matter.name || 'this matter'}:`, finance.minimumBalance.toFixed(2))
+    if (entered === null) return
+    const amount = financeNumber(String(entered).replace(/[$,]/g, ''), NaN)
+    if (!Number.isFinite(amount) || amount < 0) return alert('Enter a valid minimum balance of zero or more.')
+    setClioMinimumBalancesByMatterId((current) => ({ ...(current || {}), [String(matter.id)]: Number(amount.toFixed(2)) }))
+  }
+
+  function renderTrustRequestForm(matter, finance) {
+    const calculations = [
+      { label: 'Amount currently in trust', value: finance.trust },
+      { label: 'Minimum balance', value: finance.minimumBalance },
+      { label: 'Trust − minimum balance', value: finance.trustMinusMinimum },
+      { label: 'Trust − minimum − WIP', value: finance.trustMinusMinimumMinusWip },
+      { label: 'Trust − minimum − WIP − outstanding', value: finance.trustMinusMinimumMinusWipMinusOutstanding }
+    ]
+    const previewAmount = financeNumber(String(trustRequestDraft.amount || '').replace(/[$,]/g, ''))
+    return <form onSubmit={(event) => sendApprovedTrustRequest(event, matter)} style={{ border: '2px solid #2563eb', borderRadius: 12, background: '#eff6ff', padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>New trust request</h3><div className="hint">Choose a calculated amount or enter a custom amount. Mio creates the invoice and sends it only after approval.</div></div><button type="button" onClick={() => setShowTrustRequestForm(false)}>Cancel</button></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(215px,1fr))', gap: 8, marginTop: 12 }}>
+        {calculations.map((item) => <button type="button" key={item.label} onClick={() => chooseTrustRequestAmount(item.value)} style={{ textAlign: 'left', border: '1px solid #bfdbfe', borderRadius: 9, background: '#fff', padding: 10 }}><div style={{ color: '#475569', fontSize: 12 }}>{item.label}</div><strong style={{ color: item.value < 0 ? '#b91c1c' : '#0f172a', fontSize: 18 }}>{money(item.value)}</strong><div style={{ color: '#2563eb', fontSize: 11 }}>Use {money(Math.abs(item.value))}</div></button>)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(235px,1fr))', gap: 10, marginTop: 12 }}>
+        <LabeledField label="Trust request amount"><input type="number" min="0.01" step="0.01" value={trustRequestDraft.amount} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, amount: event.target.value, approved: false }))} /></LabeledField>
+        <LabeledField label="Send from billing email"><><input type="email" list="finance-email-sender-options" value={trustRequestDraft.sender_email} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, sender_email: event.target.value, approved: false }))} placeholder="billing@beveridgelawfirm.com" /><datalist id="finance-email-sender-options">{financeSenderOptions().map((email) => <option key={email} value={email} />)}</datalist></></LabeledField>
+        <LabeledField label="Client email"><input type="email" value={trustRequestDraft.recipient_email} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, recipient_email: event.target.value, approved: false }))} /></LabeledField>
+        <LabeledField label="Email subject"><input value={trustRequestDraft.subject} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, subject: event.target.value, approved: false }))} /></LabeledField>
+      </div>
+      <LabeledField label="Email message"><textarea rows="3" value={trustRequestDraft.message} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, message: event.target.value, approved: false }))} style={{ width: '100%', boxSizing: 'border-box' }} /></LabeledField>
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 9, background: '#fff', padding: 12, marginTop: 10 }}><strong>Invoice/email preview</strong><div style={{ marginTop: 6 }}>Trust / IOLTA retainer replenishment: <strong>{money(previewAmount)}</strong></div><div>To: {trustRequestDraft.recipient_email || 'Client email required'}</div><div>From: {trustRequestDraft.sender_email || 'Billing email required'}</div><div>Payment: {lawPaySettings?.trust_page_url ? 'Secure LawPay trust link will be included' : 'No LawPay trust page is configured; the email will ask the client to contact the office'}</div></section>
+      <label style={{ display: 'flex', alignItems: 'start', gap: 8, marginTop: 12, fontWeight: 700 }}><input type="checkbox" checked={!!trustRequestDraft.approved} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, approved: event.target.checked }))} /> I reviewed and approve this invoice amount, recipient, sender, and email.</label>
+      <button type="submit" className="btnPrimary" disabled={trustRequestBusy || !trustRequestDraft.approved} style={{ marginTop: 12 }}>{trustRequestBusy ? 'Creating and sending…' : 'Approve, create invoice & email client'}</button>
+    </form>
+  }
+
   function renderClientFinanceTrustLedger(matter, finance) {
     let running = finance.snapshot ? finance.snapshotTrust : 0
     const currentIds = new Set(finance.currentLedgerRows.map((row) => String(row.id)))
@@ -15978,7 +16205,7 @@ async function updateTeamCell(memberId, field, value) {
 
   function renderClientFinanceInvoices(matter, finance) {
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Outstanding invoices can be paid from available client trust funds.</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div>
-      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 860, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Issued','Due','Status','Total','Paid from trust / other','Balance','Action'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}>{invoice.invoice_number}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoiceBalanceAmount(invoice) > 0.005 ? <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005}>Pay from trust</button> : 'Paid'}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="8" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
+      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 980, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Action'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}>{invoice.invoice_number}{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.status === 'draft' ? 'Awaiting/requires review' : invoiceBalanceAmount(invoice) > 0.005 ? <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005}>Pay from trust</button> : 'Paid'}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
     </section>
   }
 
@@ -15995,12 +16222,15 @@ async function updateTeamCell(memberId, field, value) {
     const finance = clientFinanceNumbers(matter)
     const tabButton = (value, label) => <button type="button" onClick={() => setClientFinanceView(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '7px 12px', background: clientFinanceView === value ? '#1d4ed8' : '#fff', color: clientFinanceView === value ? '#fff' : '#334155', fontWeight: clientFinanceView === value ? 800 : 600 }}>{label}</button>
     return <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}</div></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}</div></div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12 }}>
-        {renderClientFinanceSummaryCard({ label: 'Work in progress', amount: finance.wip, color: '#7c3aed', note: 'Work done but not invoiced', children: <button type="button" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button> })}
-        {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
         {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Snapshot ${finance.snapshot.snapshot_date} plus newer activity` : 'Recorded deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Minimum balance', amount: finance.minimumBalance, color: '#0369a1', note: 'Required trust retainer floor', children: <button type="button" onClick={() => updateMatterMinimumBalanceFromFinances(matter)}>Set minimum</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Work in progress', amount: finance.wip, color: '#7c3aed', note: 'Work done but not invoiced', children: <button type="button" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button> })}
       </div>
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
+      {showTrustRequestForm && renderTrustRequestForm(matter, finance)}
       {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Data sources</h3><div><strong>Baseline:</strong> {finance.snapshot ? `financial snapshot dated ${finance.snapshot.snapshot_date}` : 'no financial snapshot loaded'}</div><div><strong>Trust activity:</strong> LawPay trust payments and Mio ledger entries</div><div><strong>New work:</strong> Mio billing entries not yet assigned to an invoice</div><button type="button" onClick={() => { loadClioFinancialSnapshots({ ignoreDateFilters: true }); loadLawPayWorkspace() }} disabled={clioSnapshotLoading || lawPayBusy} style={{ marginTop: 10 }}>{clioSnapshotLoading || lawPayBusy ? 'Refreshing…' : 'Refresh financial data'}</button></section></div>}
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
@@ -21538,10 +21768,14 @@ useEffect(() => {
     })
   }
 
-  async function createServiceEmailDocumentRecord(row, fileName, blob) {
+  async function createServiceEmailDocumentRecord(row, fileName, blob, savedInfo = {}) {
     if (!row?.suggested_matter_id || !fileName) return null
-    const alreadyExists = documents.some((doc) => doc.source_service_email_id === row.id && (doc.file_name === fileName || doc.name === fileName.replace(/\.pdf$/i, '')))
-    if (alreadyExists) return null
+    const existingDocument = documents.find((doc) => doc.source_service_email_id === row.id && (doc.file_name === fileName || doc.name === fileName.replace(/\.pdf$/i, ''))) || null
+    if (existingDocument) {
+      const safeExistingDocuments = stripLargeFileData(documents)
+      await saveMioStateKeyNow('caseControllerDocuments', JSON.stringify(safeExistingDocuments), { throwOnError: true })
+      return existingDocument
+    }
     const dataUrl = blob ? await blobToDataUrl(blob) : ''
     const documentRecord = {
       id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -21569,12 +21803,20 @@ useEffect(() => {
       file_size: blob?.size || 0,
       file_data: dataUrl,
       file_data_url: dataUrl,
+      saved_path: savedInfo.savedPath || '',
+      one_drive_path: savedInfo.oneDrivePath || '',
+      one_drive_web_url: savedInfo.webUrl || '',
+      one_drive_item_id: savedInfo.driveItemId || '',
       source_service_email_id: row.id,
       source_outlook_message_id: row.outlook_message_id || '',
       source_mailbox_email: row.mailbox_email || serviceEmailMailboxAddress(row.source_id) || '',
       ...emptyDocumentAiReview
     }
-    setDocuments((current) => [documentRecord, ...current])
+    const nextDocuments = [documentRecord, ...documents]
+    setDocuments(nextDocuments)
+    // Persist the small metadata-only document catalog before billing or moving
+    // the source email. A failed metadata save now stops the workflow visibly.
+    await saveMioStateKeyNow('caseControllerDocuments', JSON.stringify(stripLargeFileData(nextDocuments)), { throwOnError: true })
     return documentRecord
   }
 
@@ -22283,13 +22525,19 @@ useEffect(() => {
       allowInteractive: true,
       headers: { 'Content-Type': blob.type || 'application/pdf' }
     })
+    if (!result?.id) throw new Error('OneDrive did not return a file ID after upload.')
+    const verified = await graphFetch(`/me/drive/items/${encodeURIComponent(result.id)}?$select=id,name,size,webUrl,parentReference`, { allowInteractive: true })
+    if (!verified?.id || String(verified.name || '') !== cleanName || Number(verified.size || 0) < 1) {
+      throw new Error(`OneDrive could not verify ${cleanName} after upload.`)
+    }
     return {
       ok: true,
       fileName: cleanName,
       savedPath: savePath ? `${savePath}\\${cleanName}` : uploadPath,
       oneDrivePath: uploadPath,
-      webUrl: result?.webUrl || '',
-      driveItemId: result?.id || ''
+      webUrl: verified.webUrl || result?.webUrl || '',
+      driveItemId: verified.id,
+      verified: true
     }
   }
 
@@ -22837,8 +23085,14 @@ useEffect(() => {
       try {
         savedInfo = await uploadServicePdfToOneDriveFolder(currentRow, fileName, blob)
       } catch (oneDriveError) {
-        console.warn('OneDrive upload from service email failed, falling back to browser folder handle:', oneDriveError)
-        setServiceEmailScanNote(`OneDrive upload failed for ${fileName}: ${oneDriveError.message || oneDriveError}. Mio will try browser folder access next.`)
+        console.warn('OneDrive upload from service email failed:', oneDriveError)
+        // When Mio is connected live and the Matter Table points into OneDrive,
+        // never silently substitute a remembered browser folder handle. That can
+        // point at an old/wrong folder while the email is still billed and moved.
+        if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected && oneDrivePathFromMatterEfileFolder(serviceEmailSavePath(currentRow))) {
+          throw new Error(`OneDrive did not save and verify ${fileName}: ${oneDriveError.message || oneDriveError}`)
+        }
+        setServiceEmailScanNote(`OneDrive upload was unavailable for ${fileName}. Mio will request direct folder access.`)
       }
 
       if (!savedInfo) {
@@ -22860,7 +23114,7 @@ useEffect(() => {
         suggested_document_name: fileName,
         extracted_pdf_name: bestBaseName,
         document_tag_ids: serviceEmailDocumentTagIds(currentRow)
-      }, fileName, blob)
+      }, fileName, blob, savedInfo)
 
       setServiceEmailRows((rows) => rows.map((item) => item.id === currentRow.id ? {
         ...item,
@@ -22875,7 +23129,7 @@ useEffect(() => {
         attachments: [attachment, ...((item.attachments || []).filter((att) => (att.id || att.name) !== (attachment.id || attachment.name)))]
       } : item))
       setServiceEmailScanNote(`Saved ${fileName} to ${savedInfo?.oneDrivePath ? 'OneDrive' : 'the selected matter efile folder'} and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
-      return { ok: true, fileName, savedPath: savedInfo?.savedPath || '', oneDrivePath: savedInfo?.oneDrivePath || '', webUrl: savedInfo?.webUrl || '' }
+      return { ok: true, verified: savedInfo?.verified !== false, fileName, savedPath: savedInfo?.savedPath || '', oneDrivePath: savedInfo?.oneDrivePath || '', webUrl: savedInfo?.webUrl || '', driveItemId: savedInfo?.driveItemId || '' }
     } catch (error) {
       if (error?.name !== 'AbortError') setServiceEmailScanNote(`Could not save PDF to the selected matter folder: ${error.message || error}`)
       return false
