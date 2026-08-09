@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V202'
+const MIO_APP_VERSION = 'Mio V203'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1925,6 +1925,7 @@ function App() {
   const [teamForm, setTeamForm] = useState(emptyTeamForm)
   const [clientForm, setClientForm] = useState(emptyPersonForm)
   const [matterForm, setMatterForm] = useState(emptyMatterForm)
+  const [matterClioLinkDraft, setMatterClioLinkDraft] = useState({ clio_matter_id: '', clio_display_number: '' })
   const [matterWindowTab, setMatterWindowTab] = useState('matter')
   const [matterExtraInfoById, setMatterExtraInfoById] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseControllerMatterExtraInfo') || '{}') }
@@ -14958,6 +14959,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function openAddMatterWindow() {
     setEditingMatterId(null)
     setMatterForm(emptyMatterForm)
+    setMatterClioLinkDraft({ clio_matter_id: '', clio_display_number: '' })
     setMatterExtraDraft(cloneMatterExtraInfo({ assigned_attorney_id: currentTeamMember?.id || '' }))
     setMatterWindowTab('matter')
     setShowMatterWindow(true)
@@ -14966,6 +14968,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function closeMatterWindow() {
     setEditingMatterId(null)
     setMatterForm(emptyMatterForm)
+    setMatterClioLinkDraft({ clio_matter_id: '', clio_display_number: '' })
     setMatterExtraDraft(cloneMatterExtraInfo())
     setMatterWindowTab('matter')
     setShowMatterWindow(false)
@@ -15173,6 +15176,30 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return
     }
 
+    const requestedClioMatterId = String(matterClioLinkDraft.clio_matter_id || '').trim()
+    const requestedClioDisplayNumber = normalizeClioMatterNumber(matterClioLinkDraft.clio_display_number || '')
+    if (requestedClioMatterId && !/^\d+$/.test(requestedClioMatterId)) {
+      alert('Clio Matter ID must contain only numbers. Use the separate Clio Matter Number field for values such as 00319-hicks dfps.')
+      return
+    }
+    if (editingMatterId && requestedClioMatterId && usedClioMatterIdsInRosetta(editingMatterId).has(requestedClioMatterId)) {
+      alert('That Clio Matter ID is already linked to another Mio matter. Remove the other link before saving this one.')
+      return
+    }
+    const requestedLinkedClioMatter = clioMatters.find((matter) => String(matter.id) === requestedClioMatterId)
+    const requestedResolvedDisplayNumber = normalizeClioMatterNumber(requestedClioDisplayNumber || requestedLinkedClioMatter?.display_number || '')
+    if (requestedClioMatterId && !requestedResolvedDisplayNumber) {
+      alert('Enter the Clio Matter Number too (for example, 00319-hicks dfps). Mio needs the number that appears in the Clio reports when the Clio matter list has not been loaded.')
+      return
+    }
+    const duplicateNumberLink = editingMatterId && requestedResolvedDisplayNumber
+      ? Object.entries(clioMioRosetta || {}).find(([mioMatterId, mapping]) => String(mioMatterId) !== String(editingMatterId) && normalizeClioMatterNumber(mapping?.clio_display_number || mapping?.clio_matter_number || '') === requestedResolvedDisplayNumber)
+      : null
+    if (duplicateNumberLink) {
+      alert('That Clio Matter Number is already linked to another Mio matter. Remove the other link before saving this one.')
+      return
+    }
+
     const existingMatter = editingMatterId ? matters.find((matter) => matter.id === editingMatterId) : null
     const matterStatusChanged = existingMatter && existingMatter.matter_status !== matterForm.matter_status
 
@@ -15193,7 +15220,28 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
     if (error) alert(error.message)
     else {
-      saveMatterExtraForId(editingMatterId || data?.id, matterExtraDraft)
+      const savedMatterId = editingMatterId || data?.id
+      saveMatterExtraForId(savedMatterId, matterExtraDraft)
+      const linkedClioMatter = requestedLinkedClioMatter
+      const resolvedDisplayNumber = requestedResolvedDisplayNumber
+      const previousLink = clioMioRosetta?.[String(savedMatterId)] || {}
+      const nextRosetta = {
+        ...(clioMioRosetta || {}),
+        [String(savedMatterId)]: {
+          ...previousLink,
+          mio_matter_id: String(savedMatterId),
+          clio_matter_id: requestedClioMatterId,
+          clio_display_number: resolvedDisplayNumber,
+          clio_matter_number: resolvedDisplayNumber,
+          clio_matter_label: linkedClioMatter ? clioMatterLabel(linkedClioMatter) : (resolvedDisplayNumber || ''),
+          clio_client_name: linkedClioMatter?.client?.name || previousLink.clio_client_name || '',
+          status: requestedClioMatterId || resolvedDisplayNumber ? 'confirmed' : 'unmapped',
+          updated_at: new Date().toISOString()
+        }
+      }
+      setClioMioRosetta(nextRosetta)
+      const clioLinkSaved = await saveMioStateKeyNow('caseMioClioMioRosetta', JSON.stringify(nextRosetta))
+      if (!clioLinkSaved) alert('The matter was saved, but Mio could only keep the Clio link in this browser. Reconnect to Supabase before using another device.')
       closeMatterWindow()
       fetchMatters()
     }
@@ -15385,6 +15433,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       court_id: matter.court_id || '',
       notes: matter.notes || '',
       is_active: matter.is_active ?? true
+    })
+    const existingClioLink = clioMioRosetta?.[String(matter.id)] || {}
+    setMatterClioLinkDraft({
+      clio_matter_id: String(existingClioLink.clio_matter_id || existingClioLink.clioMatterId || ''),
+      clio_display_number: normalizeClioMatterNumber(existingClioLink.clio_display_number || existingClioLink.clio_matter_number || '')
     })
     setMatterExtraDraft(matterExtraFor(matter.id))
     setMatterWindowTab('matter')
@@ -39386,6 +39439,31 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       <input value={matterForm.cause_number} onChange={(e) => setMatterForm({ ...matterForm, cause_number: e.target.value })} />
                     </LabeledField>
 
+                    <LabeledField label="Clio Matter ID">
+                      <input
+                        inputMode="numeric"
+                        value={matterClioLinkDraft.clio_matter_id}
+                        onChange={(e) => {
+                          const clioMatterId = e.target.value.replace(/\D/g, '')
+                          const linked = clioMatters.find((matter) => String(matter.id) === clioMatterId)
+                          setMatterClioLinkDraft((current) => ({
+                            ...current,
+                            clio_matter_id: clioMatterId,
+                            clio_display_number: linked?.display_number || current.clio_display_number
+                          }))
+                        }}
+                        placeholder="Example: 1916524827"
+                      />
+                    </LabeledField>
+
+                    <LabeledField label="Clio Matter Number">
+                      <input
+                        value={matterClioLinkDraft.clio_display_number}
+                        onChange={(e) => setMatterClioLinkDraft((current) => ({ ...current, clio_display_number: e.target.value }))}
+                        placeholder="Example: 00319-hicks dfps"
+                      />
+                    </LabeledField>
+
                     <LabeledField label="Hire Date">
                       <input type="date" value={matterForm.hire_date} onChange={(e) => setMatterForm({ ...matterForm, hire_date: e.target.value })} />
                     </LabeledField>
@@ -43549,6 +43627,31 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
                     <LabeledField label="Cause Number">
                       <input value={matterForm.cause_number} onChange={(e) => setMatterForm({ ...matterForm, cause_number: e.target.value })} />
+                    </LabeledField>
+
+                    <LabeledField label="Clio Matter ID">
+                      <input
+                        inputMode="numeric"
+                        value={matterClioLinkDraft.clio_matter_id}
+                        onChange={(e) => {
+                          const clioMatterId = e.target.value.replace(/\D/g, '')
+                          const linked = clioMatters.find((matter) => String(matter.id) === clioMatterId)
+                          setMatterClioLinkDraft((current) => ({
+                            ...current,
+                            clio_matter_id: clioMatterId,
+                            clio_display_number: linked?.display_number || current.clio_display_number
+                          }))
+                        }}
+                        placeholder="Example: 1916524827"
+                      />
+                    </LabeledField>
+
+                    <LabeledField label="Clio Matter Number">
+                      <input
+                        value={matterClioLinkDraft.clio_display_number}
+                        onChange={(e) => setMatterClioLinkDraft((current) => ({ ...current, clio_display_number: e.target.value }))}
+                        placeholder="Example: 00319-hicks dfps"
+                      />
                     </LabeledField>
 
                     <LabeledField label="Hire Date">
