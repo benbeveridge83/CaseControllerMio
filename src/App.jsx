@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V203'
+const MIO_APP_VERSION = 'Mio V204'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -15233,7 +15233,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           clio_matter_id: requestedClioMatterId,
           clio_display_number: resolvedDisplayNumber,
           clio_matter_number: resolvedDisplayNumber,
-          clio_matter_label: linkedClioMatter ? clioMatterLabel(linkedClioMatter) : (resolvedDisplayNumber || ''),
+          clio_matter_label: linkedClioMatter ? clioMatterDisplay(linkedClioMatter) : (resolvedDisplayNumber || ''),
           clio_client_name: linkedClioMatter?.client?.name || previousLink.clio_client_name || '',
           status: requestedClioMatterId || resolvedDisplayNumber ? 'confirmed' : 'unmapped',
           updated_at: new Date().toISOString()
@@ -35731,7 +35731,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     const clioMatter = clioMatters.find((matter) => String(matter.id) === String(clioMatterId))
     updateClioMioRosettaRow(mioMatterId, {
       clio_matter_id: clioMatter ? String(clioMatter.id) : '',
-      clio_matter_label: clioMatter ? clioMatterLabel(clioMatter) : '',
+      clio_matter_label: clioMatter ? clioMatterDisplay(clioMatter) : '',
       clio_client_name: clioMatter?.client?.name || '',
       clio_display_number: clioMatter?.display_number || '',
       status: clioMatter ? 'confirmed' : 'unmapped'
@@ -35748,7 +35748,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       if (current?.clio_matter_id) return
       const guess = clioMatters.find((clioMatter) => {
         if (used.has(String(clioMatter.id))) return false
-        const clioText = normalizeClioMioName(clioMatterLabel(clioMatter))
+        const clioText = normalizeClioMioName(clioMatterDisplay(clioMatter))
         const clioLast = normalizeClioMioName(clioMatterLastName(clioMatter))
         return clioText && (mioText.includes(clioLast) || clioText.split(' ').some((part) => part.length > 3 && mioText.includes(part)))
       })
@@ -35757,7 +35757,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
         updates[String(mioMatter.id)] = {
           mio_matter_id: String(mioMatter.id),
           clio_matter_id: String(guess.id),
-          clio_matter_label: clioMatterLabel(guess),
+          clio_matter_label: clioMatterDisplay(guess),
           clio_client_name: guess?.client?.name || '',
           clio_display_number: guess?.display_number || '',
           status: 'needs_review',
@@ -35801,7 +35801,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
                         <option value="">-- Not mapped --</option>
                         {clioMatters.map((clioMatter) => {
                           const disabled = used.has(String(clioMatter.id))
-                          return <option key={clioMatter.id} value={clioMatter.id} disabled={disabled}>{clioMatterLabel(clioMatter)}{disabled ? ' (already used)' : ''}</option>
+                          return <option key={clioMatter.id} value={clioMatter.id} disabled={disabled}>{clioMatterDisplay(clioMatter)}{disabled ? ' (already used)' : ''}</option>
                         })}
                       </select>
                     )}
