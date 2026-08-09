@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V201'
+const MIO_APP_VERSION = 'Mio V202'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -36764,14 +36764,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function currentSnapshotMergeKey(snapshot) {
     const prefix = clioMatterNumberPrefix(snapshot?.clio_matter_number)
-    return [
-      snapshot?.user_id || '',
-      snapshot?.snapshot_date || '',
-      snapshot?.clio_matter_id ? `clio:${snapshot.clio_matter_id}` : '',
-      snapshot?.mio_matter_id ? `mio:${snapshot.mio_matter_id}` : '',
-      prefix ? `prefix:${prefix}` : '',
-      snapshot?.clio_matter_number || ''
-    ].filter(Boolean).join('|')
+    const identity = prefix
+      ? `prefix:${prefix}`
+      : (snapshot?.clio_matter_id ? `clio:${snapshot.clio_matter_id}` : (snapshot?.mio_matter_id ? `mio:${snapshot.mio_matter_id}` : `number:${normalizeClioMatterNumber(snapshot?.clio_matter_number)}`))
+    return [snapshot?.user_id || '', snapshot?.snapshot_date || '', identity].join('|')
   }
 
   async function importCurrentClioFinancialValuesFromReports() {
@@ -36920,10 +36916,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (/trust[ _-]*management/.test(name)) return 'trust_management'
     if (/matter[ _-]*balance[ _-]*summary/.test(name)) return 'matter_balance_summary'
     if (/accounts?[ _-]*receivable|\ba[ _/-]*r\b/.test(name)) return 'accounts_receivable'
+    if (/^matter\s+report|matter[ _-]*report/.test(name) || /matter number.*matter description.*status.*accounts receivable/.test(headers)) return 'matter_catalog'
+    if (/billing[ _-]*history/.test(name) || /invoice number.*credit notes.*balance owing/.test(headers)) return 'invoices'
+    if (/invoice[ _-]*payments?/.test(name) || /transaction.*invoice.*debit.*credit/.test(headers)) return 'payments'
     if (/trust.*(ledger|transaction|activity)|client.*trust.*ledger/.test(haystack)) return 'trust_transactions'
-    if (/payment|allocation|receipt/.test(name)) return 'payments'
-    if (/invoice|\bbill(s|ing)?\b/.test(name)) return 'invoices'
-    if (/activit|time entr|expense entr|productivity/.test(name)) return 'activities'
+    if (/work[ _-]*in[ _-]*progress/.test(name)) return 'wip_detail'
+    if (/client[ _-]*activity/.test(name) || /activit|time entr|expense entr|productivity/.test(name)) return 'activities'
     return 'financial_archive'
   }
 
@@ -36937,16 +36935,60 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return parseClioCsv(await file.text())
   }
 
+  function canonicalClioMigrationSourceName(fileName) {
+    return String(fileName || '')
+      .replace(/\s*\(\d+\)(?=\.[^.]+$)/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  function isStrictClioReportDate(value) {
+    return /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(String(value || '').trim()) || /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim())
+  }
+
+  function isStrictClioMatterNumber(value) {
+    return /^\d{5}(?:\s*[-–—]\s*.+)?$/i.test(String(value || '').trim())
+  }
+
   function archiveRowFromClioReport(row, fileName, reportKind, rowIndex) {
     const matterText = valueFromReportRow(row, ['Matter', 'Matter Number', 'Matter No.', 'Matter Number/Name', 'Matter Name', 'Client Matter', 'display_number'])
     const clientName = valueFromReportRow(row, ['Client', 'Client Name', 'Contact', 'Payer'])
     const clioMatterNumber = normalizeClioMatterNumber(matterText)
+    if (!clioMatterNumber || !isStrictClioMatterNumber(clioMatterNumber)) return null
+    if (reportKind === 'payments') {
+      const paymentDate = valueFromReportRow(row, ['Date', 'Payment Date'])
+      const invoice = valueFromReportRow(row, ['Invoice', 'Invoice Number', 'Invoice #'])
+      if (!isStrictClioReportDate(paymentDate) || !clientName || !String(invoice || '').trim()) return null
+    }
     const matchedMatter = bestMioMatterForFinancialIdentity({ clio_matter_number: clioMatterNumber, matter: matterText, client_name: clientName, raw_report_row: row })
-    const date = financeDateOnly(valueFromReportRow(row, ['Date', 'Transaction Date', 'Issue Date', 'Invoice Date', 'Payment Date', 'Activity Date', 'Created At', 'Created']))
-    const invoiceNumber = valueFromReportRow(row, ['Invoice Number', 'Bill Number', 'Invoice #', 'Bill #', 'Number'])
-    const amount = moneyFromReportRow(row, ['Amount', 'Total', 'Invoice Total', 'Payment Amount', 'Credit', 'Deposit', 'Funds In', 'Debit', 'Withdrawal', 'Funds Out'])
-    const balance = moneyFromReportRow(row, ['Balance', 'Outstanding Balance', 'Invoice Balance', 'Remaining Balance', 'A/R'])
-    const sourceKey = [fileName, rowIndex, clioMatterNumber, invoiceNumber, date, amount, balance].join('|')
+    const date = financeDateOnly(valueFromReportRow(row, ['Date', 'Transaction Date', 'Issue Date', 'Invoice Date', 'Payment Date', 'Activity Date', 'Created At', 'Created', 'Due Date']))
+    const invoiceNumber = valueFromReportRow(row, ['Invoice Number', 'Invoice', 'Bill Number', 'Invoice #', 'Bill #', 'Number'])
+    let amount = moneyFromReportRow(row, ['Amount', 'Total', 'Invoice Total', 'Payment Amount', 'Deposit', 'Funds In', 'Debit', 'Credit', 'Withdrawal', 'Funds Out'])
+    let balance = moneyFromReportRow(row, ['Balance', 'Balance Owing', 'Outstanding Balance', 'Invoice Balance', 'Remaining Balance', 'A/R'])
+    let description = valueFromReportRow(row, ['Description', 'Memo', 'Details', 'Activity Description', 'Line Item'])
+    if (reportKind === 'payments') {
+      const transaction = String(valueFromReportRow(row, ['Transaction']) || '').trim()
+      const debit = moneyFromReportRow(row, ['Debit'])
+      const credit = moneyFromReportRow(row, ['Credit'])
+      amount = /refund/i.test(transaction) ? -Math.abs(credit || debit) : Math.abs(debit || credit)
+      balance = 0
+      description = transaction || 'Invoice payment'
+    } else if (reportKind === 'trust_transactions') {
+      const fundsIn = moneyFromReportRow(row, ['Funds In'])
+      const fundsOut = moneyFromReportRow(row, ['Funds Out'])
+      amount = fundsIn - fundsOut
+      balance = moneyFromReportRow(row, ['Balance'])
+      description = [valueFromReportRow(row, ['Source/Destination']), valueFromReportRow(row, ['Description'])].filter(Boolean).join(' — ')
+    } else if (reportKind === 'invoices') {
+      amount = moneyFromReportRow(row, ['Amount', 'Invoice Total'])
+      balance = moneyFromReportRow(row, ['Balance Owing', 'Invoice Balance', 'Remaining Balance'])
+      description = [valueFromReportRow(row, ['Status']), valueFromReportRow(row, ['Matter Description'])].filter(Boolean).join(' — ')
+    } else if (reportKind === 'activities' || reportKind === 'wip_detail') {
+      amount = moneyFromReportRow(row, ['Total', 'Amount'])
+      description = [valueFromReportRow(row, ['Status']), valueFromReportRow(row, ['Type']), valueFromReportRow(row, ['Description']), valueFromReportRow(row, ['Note'])].filter(Boolean).join(' — ')
+    }
+    const canonicalSource = canonicalClioMigrationSourceName(fileName)
+    const sourceKey = [canonicalSource, reportKind, rowIndex, clioMatterNumber, invoiceNumber, date, amount, balance].join('|')
     return {
       id: `clio-history:${session?.user?.id || 'unknown'}:${financialIdentityText(sourceKey).replace(/\s+/g, '-').slice(0, 180)}`,
       user_id: session?.user?.id,
@@ -36962,7 +37004,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       invoice_number: invoiceNumber,
       amount,
       balance,
-      description: valueFromReportRow(row, ['Description', 'Memo', 'Details', 'Activity Description', 'Line Item']),
+      description,
       raw_report_row: row,
       imported_at: new Date().toISOString()
     }
@@ -36993,11 +37035,20 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const baselineMap = new Map()
       const archiveRows = []
       const fileSummaries = []
+      const parsedFiles = []
       for (const file of files) {
         const rows = await rowsFromClioMigrationFile(file)
         const reportKind = clioMigrationReportKind(file.name, rows)
+        parsedFiles.push({ file, rows, reportKind })
+      }
+      const hasClientActivity = parsedFiles.some((entry) => entry.reportKind === 'activities')
+      const seenArchiveIds = new Set()
+      for (const { file, rows, reportKind } of parsedFiles) {
         let baselineCount = 0
         let archiveCount = 0
+        let skippedCount = 0
+        let referenceCount = 0
+        let note = ''
         if (['trust_management', 'matter_balance_summary', 'accounts_receivable'].includes(reportKind)) {
           const report = { id: `manual:${file.name}:${file.lastModified || Date.now()}`, name: file.name, kind: reportKind, updated_at: new Date(file.lastModified || Date.now()).toISOString() }
           rows.map((row) => reportRowToSnapshot(row, report, { snapshotDate: today })).filter(Boolean).forEach((snapshot) => {
@@ -37005,17 +37056,49 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             baselineMap.set(key, mergeSnapshotRow(baselineMap.get(key), { ...snapshot, source_method: 'manual_clio_cutover_import', acquisition_status: 'staged_cutover' }))
             baselineCount += 1
           })
+          skippedCount = rows.length - baselineCount
+          if (reportKind === 'trust_management' && skippedCount) note = 'Excluded client-level trust rows not linked to a matter.'
+        } else if (reportKind === 'matter_catalog') {
+          referenceCount = rows.filter((row) => isStrictClioMatterNumber(valueFromReportRow(row, ['Matter Number', 'Matter']))).length
+          skippedCount = rows.length
+          note = 'Used only to verify the active-matter catalog; it is not financial history.'
+        } else if (reportKind === 'wip_detail' && hasClientActivity) {
+          skippedCount = rows.length
+          note = 'Excluded because Client Activity already contains the same unbilled entries.'
         } else {
-          rows.forEach((row, index) => archiveRows.push(archiveRowFromClioReport(row, file.name, reportKind, index)))
-          archiveCount = rows.length
+          rows.forEach((row, index) => {
+            const archiveRow = archiveRowFromClioReport(row, file.name, reportKind, index)
+            if (!archiveRow) {
+              skippedCount += 1
+              return
+            }
+            if (seenArchiveIds.has(archiveRow.id)) {
+              skippedCount += 1
+              return
+            }
+            seenArchiveIds.add(archiveRow.id)
+            archiveRows.push(archiveRow)
+            archiveCount += 1
+          })
+          if (reportKind === 'payments' && skippedCount) note = 'Kept only matter-level payment/refund rows; excluded allocations, subtotals, and the summary table.'
         }
-        fileSummaries.push({ name: file.name, kind: reportKind, rows: rows.length, baselineCount, archiveCount })
+        fileSummaries.push({ name: file.name, kind: reportKind, rows: rows.length, baselineCount, archiveCount, skippedCount, referenceCount, note })
       }
       const baselineRows = Array.from(baselineMap.values()).map((row) => ({ ...row, snapshot_date: today, source_method: 'manual_clio_cutover_import', acquisition_status: 'ready_to_import', updated_at: new Date().toISOString() }))
       const matchedBaseline = baselineRows.filter((row) => row.mio_matter_id).length
       const matchedArchive = archiveRows.filter((row) => row.matter_id).length
-      setClioMigrationPreview({ cutoverDate: today, files: fileSummaries, baselineRows, archiveRows, matchedBaseline, matchedArchive })
-      setClioMigrationMessage(`Staged ${baselineRows.length} opening snapshot row(s) and ${archiveRows.length} historical archive row(s). Review matching before importing.`)
+      const historicalOnlyArchive = archiveRows.filter((row) => !row.matter_id && row.clio_matter_number).length
+      const invalidArchive = archiveRows.filter((row) => !row.matter_id && !row.clio_matter_number).length
+      const detectedKinds = new Set(fileSummaries.map((file) => file.kind))
+      const requiredKinds = ['trust_management', 'matter_balance_summary', 'trust_transactions', 'invoices', 'payments', 'activities']
+      const missingRequiredKinds = requiredKinds.filter((kind) => !detectedKinds.has(kind))
+      const openingTotals = baselineRows.reduce((totals, row) => ({
+        trust: totals.trust + Number(row.matter_trust_funds || 0),
+        wip: totals.wip + Number(row.work_in_progress || 0),
+        outstanding: totals.outstanding + Number(row.outstanding_balance || 0)
+      }), { trust: 0, wip: 0, outstanding: 0 })
+      setClioMigrationPreview({ cutoverDate: today, files: fileSummaries, baselineRows, archiveRows, matchedBaseline, matchedArchive, historicalOnlyArchive, invalidArchive, openingTotals, missingRequiredKinds })
+      setClioMigrationMessage(`Safely staged ${baselineRows.length} opening snapshot row(s) and ${archiveRows.length} cleaned historical row(s). Nothing has been imported yet.`)
     } catch (error) {
       setClioMigrationMessage(`Could not read the selected reports: ${error.message || error}`)
       setClioMigrationPreview(null)
@@ -37028,10 +37111,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   async function commitClioHistoricalMigration() {
     const preview = clioMigrationPreview
     if (!preview) return
+    if (preview.missingRequiredKinds?.length) return alert(`The staged migration is missing required report type(s): ${preview.missingRequiredKinds.join(', ')}. Add those reports and stage the full set again.`)
     const unmatchedBaseline = preview.baselineRows.filter((row) => !row.mio_matter_id).length
-    const unmatchedArchive = preview.archiveRows.filter((row) => !row.matter_id).length
-    if ((unmatchedBaseline || unmatchedArchive) && !window.confirm(`${unmatchedBaseline} opening row(s) and ${unmatchedArchive} history row(s) are not matched to a Mio matter. Import the matched data and retain the unmatched rows for later correction?`)) return
-    if (!window.confirm(`Import the staged Clio financial migration dated ${preview.cutoverDate}? Existing rows with the same identifiers will be updated, not duplicated.`)) return
+    const invalidArchive = Number(preview.invalidArchive || 0)
+    if ((unmatchedBaseline || invalidArchive) && !window.confirm(`${unmatchedBaseline} opening row(s) are not matched to an active Mio matter and ${invalidArchive} history row(s) lack a valid Clio matter number. Continue only if you reviewed these exceptions?`)) return
+    if (!window.confirm(`Import the staged Clio migration dated ${preview.cutoverDate}?\n\nOpening balances: Trust ${money(preview.openingTotals?.trust)}, WIP ${money(preview.openingTotals?.wip)}, OB ${money(preview.openingTotals?.outstanding)}\nHistorical rows: ${preview.archiveRows.length}\n\nExisting rows with the same identifiers will be updated, not duplicated.`)) return
     setClioMigrationBusy(true)
     try {
       if (preview.baselineRows.length) {
@@ -37061,7 +37145,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (!preview) return
     const rows = [
       ...preview.baselineRows.filter((row) => !row.mio_matter_id).map((row) => ({ type: 'Opening snapshot', source_file: row.source_report_name, source_row: '', clio_matter: row.clio_matter_number, client: row.clio_client_name, amount: row.matter_trust_funds, reason: 'No Mio matter match' })),
-      ...preview.archiveRows.filter((row) => !row.matter_id).map((row) => ({ type: row.report_kind, source_file: row.source_file, source_row: row.source_row_number, clio_matter: row.clio_matter_number, client: row.client_name, amount: row.amount, reason: 'No Mio matter match' }))
+      ...preview.archiveRows.filter((row) => !row.clio_matter_number).map((row) => ({ type: row.report_kind, source_file: row.source_file, source_row: row.source_row_number, clio_matter: row.clio_matter_number, client: row.client_name, amount: row.amount, reason: 'No valid Clio matter number' }))
     ]
     const sheet = XLSX.utils.json_to_sheet(rows)
     const workbook = XLSX.utils.book_new()
@@ -37072,7 +37156,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   function renderClioHistoricalMigrationPanel() {
     const preview = clioMigrationPreview
     const unmatchedBaseline = preview ? preview.baselineRows.length - preview.matchedBaseline : 0
-    const unmatchedArchive = preview ? preview.archiveRows.length - preview.matchedArchive : 0
+    const invalidArchive = preview ? Number(preview.invalidArchive || 0) : 0
     const archiveMatched = (clioHistoricalFinancialArchive || []).filter((row) => row.matter_id).length
     return <div style={{ display: 'grid', gap: 14 }}>
       <section className="card">
@@ -37081,7 +37165,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <ol style={{ lineHeight: 1.7 }}>
           <li>Export a current <strong>Trust Management</strong> report and a current <strong>Matter Balance Summary (all dates)</strong>.</li>
           <li>Export all-date <strong>trust ledger/transactions</strong>, <strong>bills or invoices</strong>, <strong>payments</strong>, and <strong>activities/time entries</strong>.</li>
-          <li>Select all CSV/XLSX files below. Mio stages and matches them before anything is committed.</li>
+          <li>Select all CSV/XLSX files below. Mio stages, cleans, de-duplicates, and reconciles them before anything is committed.</li>
         </ol>
         <input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple onChange={stageClioHistoricalMigration} disabled={clioMigrationBusy} />
         {clioMigrationMessage && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e3a8a', borderRadius: 8, padding: 10 }}>{clioMigrationMessage}</div>}
@@ -37094,9 +37178,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       </section>
       {preview && <section className="card">
         <h3 style={{ marginTop: 0 }}>Staged import review</h3>
-        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}><span><strong>Opening:</strong> {preview.baselineRows.length} ({preview.matchedBaseline} matched, {unmatchedBaseline} unmatched)</span><span><strong>History:</strong> {preview.archiveRows.length} ({preview.matchedArchive} matched, {unmatchedArchive} unmatched)</span><span><strong>Cutover:</strong> {preview.cutoverDate}</span></div>
-        <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr>{['File','Detected type','Rows','Opening','Archive'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 7, borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{preview.files.map((file) => <tr key={file.name}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{file.name}</td><td>{file.kind}</td><td>{file.rows}</td><td>{file.baselineCount}</td><td>{file.archiveCount}</td></tr>)}</tbody></table></div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={commitClioHistoricalMigration} disabled={clioMigrationBusy}>Approve & import staged data</button><button type="button" onClick={downloadClioMigrationExceptions} disabled={!unmatchedBaseline && !unmatchedArchive}>Download unmatched rows</button><button type="button" onClick={() => { setClioMigrationPreview(null); setClioMigrationMessage('Staged import discarded. No data was changed.') }} disabled={clioMigrationBusy}>Discard preview</button></div>
+        <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}><span><strong>Opening:</strong> {preview.baselineRows.length} ({preview.matchedBaseline} matched, {unmatchedBaseline} unmatched)</span><span><strong>Clean history:</strong> {preview.archiveRows.length}</span><span><strong>Historical-only matters:</strong> {preview.historicalOnlyArchive || 0} rows retained as archive</span><span><strong>Cutover:</strong> {preview.cutoverDate}</span></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(150px, 1fr))', gap: 10, marginTop: 12 }}>
+          <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 8, padding: 10 }}><div className="hint">Opening trust</div><strong>{money(preview.openingTotals?.trust)}</strong></div>
+          <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 8, padding: 10 }}><div className="hint">Opening WIP</div><strong>{money(preview.openingTotals?.wip)}</strong></div>
+          <div style={{ border: '1px solid #fed7aa', background: '#fff7ed', borderRadius: 8, padding: 10 }}><div className="hint">Opening outstanding</div><strong>{money(preview.openingTotals?.outstanding)}</strong></div>
+        </div>
+        <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr>{['File','Detected type','Source rows','Opening','Archive','Excluded','Treatment'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 7, borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{preview.files.map((file) => <tr key={file.name}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{file.name}</td><td>{file.kind}</td><td>{file.rows}</td><td>{file.baselineCount}</td><td>{file.archiveCount}</td><td>{file.skippedCount}</td><td style={{ maxWidth: 360 }}>{file.note || (file.referenceCount ? `${file.referenceCount} active matter references verified.` : 'Included as shown.')}</td></tr>)}</tbody></table></div>
+        <div style={{ marginTop: 10, color: invalidArchive || unmatchedBaseline || preview.missingRequiredKinds?.length ? '#991b1b' : '#166534' }}>{preview.missingRequiredKinds?.length ? `Import blocked: add ${preview.missingRequiredKinds.join(', ')} and stage the complete set again.` : (invalidArchive || unmatchedBaseline ? `${unmatchedBaseline} opening exception(s) and ${invalidArchive} invalid history row(s) need review.` : 'Reconciliation passed: every opening row matched an active Mio matter and every historical row has a valid Clio matter number.')}</div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={commitClioHistoricalMigration} disabled={clioMigrationBusy || !!preview.missingRequiredKinds?.length}>Approve & import staged data</button><button type="button" onClick={downloadClioMigrationExceptions} disabled={!unmatchedBaseline && !invalidArchive}>Download exceptions</button><button type="button" onClick={() => { setClioMigrationPreview(null); setClioMigrationMessage('Staged import discarded. No data was changed.') }} disabled={clioMigrationBusy}>Discard preview</button></div>
       </section>}
     </div>
   }
