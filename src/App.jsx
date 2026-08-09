@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V194'
+const MIO_APP_VERSION = 'Mio V195'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -1434,6 +1434,7 @@ function App() {
   }
   const previousPageRef = useRef(page)
   const mattersClioRefreshRef = useRef(null)
+  const serviceInboxAutoScanRef = useRef(false)
 
   const [billingTab, setBillingTab] = useState('firm_billing')
   const [bankAccounts, setBankAccounts] = useState([])
@@ -3655,6 +3656,37 @@ function App() {
   useEffect(() => {
     applyServiceInboxHashFilters()
   }, [page, serviceEmailSources.length])
+
+  useEffect(() => {
+    if (page !== 'service_inbox') {
+      serviceInboxAutoScanRef.current = false
+      return
+    }
+    if (serviceInboxAutoScanRef.current || !(serviceGraphConfig.clientId || '').trim()) return
+    serviceInboxAutoScanRef.current = true
+    let cancelled = false
+    ;(async () => {
+      try {
+        const app = await getServiceMsalApp()
+        const account = app.getActiveAccount() || app.getAllAccounts()[0]
+        if (cancelled) return
+        if (!account) {
+          setServiceEmailScanNote('Connecting to Microsoft automatically before scanning Service Inbox...')
+          await connectMicrosoftGraph()
+          return
+        }
+        app.setActiveAccount(account)
+        setServiceGraphAuth({ connected: true, account: { username: account.username || '', name: account.name || '' }, connected_at: new Date().toISOString() })
+        setServiceGraphConfig((config) => ({ ...config, mode: 'live' }))
+        setServiceEmailScanNote('Microsoft connected. Scanning Outlook folders automatically...')
+        await scanServiceEmailLive({ forceLive: true })
+      } catch (error) {
+        console.error('Automatic Service Inbox connection/scan failed:', error)
+        setServiceEmailScanNote(`Automatic Outlook connection/scan failed: ${error.message || error}`)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [page, serviceGraphConfig.clientId])
 
 
   useEffect(() => {
@@ -20746,6 +20778,7 @@ useEffect(() => {
 
   function extractAcceptedPdfNameFromEmailHtml(html = '') {
     const raw = String(html || '')
+    const plain = htmlToPlainText(raw).replace(/\u00a0/g, ' ')
     const clean = (value) => decodeServiceHtmlEntity(String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
       .replace(/[\\/:*?"<>|]/g, ' ')
       .replace(/\s+/g, ' ')
@@ -20753,8 +20786,8 @@ useEffect(() => {
 
     const leadDocumentMatch = raw.match(/Lead\s+Document[\s\S]{0,800}?<t[dh][^>]*>([^<]*?\.pdf)\s*<\/t[dh]>/i)
       || raw.match(/Document\s+Details[\s\S]{0,1200}?([A-Z0-9][^<>\r\n]{2,180}\.pdf)/i)
-      || htmlToPlainText(raw).match(/Lead\s+Document\s+([^\r\n]{2,180}\.pdf)/i)
-      || htmlToPlainText(raw).match(/Document\s+Details[\s\S]{0,600}?([^\r\n]{2,180}\.pdf)/i)
+      || plain.match(/Lead\s+Document\s*:?[\s\r\n]*([\s\S]{2,220}?\.pdf)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|$))/i)
+      || plain.match(/Document\s+Details[\s\S]{0,600}?([A-Z0-9][\s\S]{2,180}?\.pdf)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|$))/i)
     return leadDocumentMatch ? clean(leadDocumentMatch[1]) : ''
   }
 
@@ -20812,19 +20845,24 @@ useEffect(() => {
 
   function extractEfileEmailMetadata(html = '', fallbackReceivedAt = '') {
     const plain = htmlToPlainText(String(html || '')).replace(/ /g, ' ')
-    const readField = (label, nextLabel) => {
+    const knownLabels = ['Court', 'Case Number', 'Case Style', 'Date/Time Submitted', 'Date/Time Accepted', 'Accepted Comments', 'Filing Type', 'Filing Description', 'Activity Requested', 'Filed By', 'Filing Attorney', 'Service Contacts', 'Document Details', 'Lead Document', 'Lead Document Page Count', 'File Stamped Copy']
+    const readField = (label) => {
       const start = plain.toLowerCase().indexOf(label.toLowerCase())
       if (start < 0) return ''
       const valueStart = start + label.length
       const tail = plain.slice(valueStart).replace(/^\s*:?\s*/, '')
-      const next = nextLabel ? tail.toLowerCase().indexOf(nextLabel.toLowerCase()) : -1
+      const next = knownLabels
+        .filter((candidate) => candidate.toLowerCase() !== label.toLowerCase())
+        .map((candidate) => tail.toLowerCase().indexOf(candidate.toLowerCase()))
+        .filter((index) => index >= 0)
+        .sort((a, b) => a - b)[0] ?? -1
       return (next >= 0 ? tail.slice(0, next) : tail).replace(/\s+/g, ' ').trim()
     }
-    const filingDescription = readField('Filing Description', 'Filed By') || readField('Filing Description', 'Service Contacts') || readField('Filing Description', 'Document Details')
-    const submittedText = readField('Date/Time Submitted', 'Filing Type') || readField('Date/Time Submitted', 'Filing Description')
+    const filingDescription = readField('Filing Description')
+    const submittedText = readField('Date/Time Submitted')
     let submittedAt = ''
     let filingDate = ''
-    const normalizedSubmitted = submittedText.replace(/CST/i, 'GMT-0600').replace(/CDT/i, 'GMT-0500')
+    const normalizedSubmitted = submittedText.replace(/\bCST\b/i, 'GMT-0600').replace(/\bCDT\b/i, 'GMT-0500')
     const submittedDate = normalizedSubmitted ? new Date(normalizedSubmitted) : null
     if (submittedDate && !Number.isNaN(submittedDate.getTime())) {
       submittedAt = submittedDate.toISOString()
@@ -21130,12 +21168,12 @@ useEffect(() => {
       id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       matter_id: row.suggested_matter_id,
       name: fileName.replace(/\.pdf$/i, ''),
-      date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
+      date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
       description: `Saved from Service Inbox: ${row.subject || ''}`,
       status: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
       tag_ids: Array.isArray(row.document_tag_ids) && row.document_tag_ids.length ? tagAndParentIds(row.document_tag_ids) : serviceEmailDocumentTagIds(row),
       document_field_values: {
-        filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
+        filing_date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
         notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
         notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
         source_email_subject: row.subject || '',
@@ -21143,7 +21181,7 @@ useEffect(() => {
         filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || ''
       },
       filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || '',
-      filing_date: row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()),
+      filing_date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
       notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
       notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
       upload_date: dateToInputValue(new Date()),
@@ -21225,8 +21263,9 @@ useEffect(() => {
     const categoryLabel = serviceEmailPhaseLabel(actionGroup)
     const efileMetadata = extractEfileEmailMetadata(bodyContent || bodyPreview || '', message.receivedDateTime || '')
     const filingDescriptionName = efileMetadata.filingDescription ? ensurePdfExtension(efileMetadata.filingDescription) : ''
+    const leadDocumentName = extractAcceptedPdfNameFromEmailHtml(bodyContent || bodyPreview || '')
     const docName = ['accepted', 'notification_service'].includes(actionGroup)
-      ? makeServicePdfDocumentName(message, filingDescriptionName || extractAcceptedPdfNameFromEmailHtml(bodyContent || bodyPreview || '') || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || 'efile-document.pdf').slice(0, 190)
+      ? makeServicePdfDocumentName({ ...message, receivedDateTime: efileMetadata.submittedAt || message.receivedDateTime }, filingDescriptionName || leadDocumentName || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || 'efile-document.pdf').slice(0, 190)
       : ''
     const summary = actionGroup === 'no_response'
       ? 'Predicted no response needed. Review the guess, then mark/move to Read.'
@@ -21272,7 +21311,7 @@ useEffect(() => {
       filing_date: efileMetadata.filingDate || '',
       document_field_values: efileMetadata.filingDate ? { filing_date: efileMetadata.filingDate } : {},
       suggested_save_path: suggestedMatterId && matterEfileFolders[suggestedMatterId] ? matterEfileFolders[suggestedMatterId] : '',
-      extracted_pdf_name: filingDescriptionName || extractAcceptedPdfNameFromEmailHtml(bodyContent || bodyPreview || '') || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || '',
+      extracted_pdf_name: leadDocumentName || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || filingDescriptionName || '',
       document_tag_ids: actionGroup === 'notification_service' ? noticeServiceTagIdsForRow({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : [],
       notice_service_source: actionGroup === 'notification_service' ? noticeServiceDocumentSource({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
       notice_service_type: actionGroup === 'notification_service' ? noticeServiceDocumentType({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
@@ -21291,8 +21330,8 @@ useEffect(() => {
     }
   }
 
-  async function scanServiceEmailLive() {
-    if (serviceGraphConfig.mode !== 'live') {
+  async function scanServiceEmailLive(options = {}) {
+    if (serviceGraphConfig.mode !== 'live' && !options.forceLive) {
       scanServiceEmailMock()
       return
     }
@@ -23662,6 +23701,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   function guessServiceReviewFiler(row = {}) {
     const options = serviceReviewFilerOptions(row)
     if (!options.length) return ''
+    if (serviceEmailRowCategory(row) === 'accepted') return options.find((item) => item.source === 'client')?.id || options[0]?.id || ''
     const text = serviceReviewText(row).toLowerCase()
     const direct = options.find((item) => text.includes(item.name.toLowerCase()))
     if (direct) return direct.id
@@ -23736,8 +23776,8 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
                   <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} />{!showSavedFilingReviewRows && !saveFolder && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>Open folder</button>}</div></LabeledField>
-                  <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} readOnly /></LabeledField>
-                  <LabeledField label="Document name (Filing Description)"><input value={active.suggested_document_name || active.saved_file_name || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { suggested_document_name: e.target.value })} /></LabeledField>
+                  <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { extracted_pdf_name: e.target.value })} /></LabeledField>
+                  <LabeledField label="Document name (Filing Description)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
                   <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds }) ? tagFullName(serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })) : 'Choose tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New tag</button></div></LabeledField>
@@ -23754,7 +23794,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
           </div>
           <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', maxHeight: '82vh', overflow: 'auto', position: 'sticky', top: 0 }}>
             <h3 style={{ marginTop: 0 }}>TOC</h3>
-            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.received_at ? new Date(row.received_at).toLocaleDateString() : ''}</div><div style={{ fontWeight: 700, marginBottom: 4 }}>{row.suggested_document_name || row.efile_filing_description || row.subject || 'Email'}</div><div style={{ fontSize: 11, color: '#64748b', marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || row.subject || ''}</div>{!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy} style={{ width: '100%' }}>Move to Read only</button></div>}</div>)}
+            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.filing_date ? new Date(`${row.filing_date}T12:00:00`).toLocaleDateString() : (row.received_at ? new Date(row.received_at).toLocaleDateString() : '')}</div><div style={{ fontWeight: 700, marginBottom: 4 }}>{row.efile_filing_description || row.suggested_document_name || row.subject || 'Email'}</div><div style={{ fontSize: 11, color: '#64748b', marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || row.subject || ''}</div>{!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy} style={{ width: '100%' }}>Move to Read only</button></div>}</div>)}
             {!rows.length && <div style={{ color: '#64748b', padding: 12, textAlign: 'center' }}>No emails to show.</div>}
           </aside>
         </div>
