@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V206'
+const MIO_APP_VERSION = 'Mio V207'
+const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
@@ -1983,8 +1984,8 @@ function App() {
     approved: false
   })
   const [financeEmailSettings, setFinanceEmailSettings] = useState(() => {
-    try { return { sender_email: '', ...JSON.parse(localStorage.getItem('caseMioFinanceEmailSettings') || '{}') } }
-    catch { return { sender_email: '' } }
+    try { return { ...JSON.parse(localStorage.getItem('caseMioFinanceEmailSettings') || '{}'), sender_email: DEFAULT_BILLING_SENDER_EMAIL } }
+    catch { return { sender_email: DEFAULT_BILLING_SENDER_EMAIL } }
   })
   const defaultBillingEmailTemplates = {
     initial_trust: {
@@ -16189,7 +16190,18 @@ async function updateTeamCell(memberId, field, value) {
       return `${month}/${day}/${year}`
     }
     const wrap = (text, font, size, width) => {
-      const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+      const rawWords = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+      const words = []
+      rawWords.forEach((rawWord) => {
+        let word = rawWord
+        while (word && font.widthOfTextAtSize(word, size) > width) {
+          let splitAt = Math.max(1, Math.floor(word.length * width / font.widthOfTextAtSize(word, size)))
+          while (splitAt > 1 && font.widthOfTextAtSize(word.slice(0, splitAt), size) > width) splitAt -= 1
+          words.push(word.slice(0, splitAt))
+          word = word.slice(splitAt)
+        }
+        if (word) words.push(word)
+      })
       if (!words.length) return ['']
       const lines = []
       let line = ''
@@ -16311,9 +16323,27 @@ async function updateTeamCell(memberId, field, value) {
     finally { setInvoiceDocumentBusy(false) }
   }
 
+  function normalizeLawPayHostedUrl(url, amountDollars, lockAmount = true) {
+    const raw = String(url || '').trim()
+    if (!raw) return raw
+    try {
+      const parsed = new URL(raw)
+      parsed.searchParams.set('amount', financeNumber(amountDollars).toFixed(2))
+      parsed.searchParams.set('lockAmount', lockAmount ? 'true' : 'false')
+      parsed.searchParams.set('lock_amount', lockAmount ? 'true' : 'false')
+      return parsed.toString()
+    } catch {
+      return raw
+    }
+  }
+
   async function ensureInvoiceLawPayLink(matter, invoice) {
-    if (invoice.payment_url) return invoice
     const isTrust = invoice.invoice_type === 'trust_request'
+    if (invoice.payment_url) {
+      const correctedUrl = normalizeLawPayHostedUrl(invoice.payment_url, invoiceBalanceAmount(invoice), !isTrust)
+      if (correctedUrl === invoice.payment_url) return invoice
+      return await persistMioInvoiceRecord({ ...invoice, payment_url: correctedUrl, updated_at: new Date().toISOString() }, 'lawpay_link_corrected', { corrected_amount_units: true, lock_amount: !isTrust })
+    }
     const accountKey = isTrust ? 'trust' : 'operating'
     const paymentPageUrl = String(isTrust ? lawPaySettings?.trust_page_url : lawPaySettings?.operating_page_url || '').trim()
     if (!paymentPageUrl) throw new Error(`Configure and save the LawPay ${isTrust ? 'Trust/IOLTA' : 'Operating'} hosted payment-page URL before sending this document.`)
@@ -16327,27 +16357,26 @@ async function updateTeamCell(memberId, field, value) {
         invoice_number: invoice.invoice_number, payer_name: lawPayClientName(client, matter), payer_email: recipient,
         payer_phone: client?.phone || matter?.client_phone || '', matter_id: invoice.matter_id,
         matter_name: matter?.name || invoice.matter_name || '', client_id: client?.id || invoice.client_id || null,
-        client_name: lawPayClientName(client, matter) || invoice.client_name || '', lock_amount: true, lock_reference: true
+        client_name: lawPayClientName(client, matter) || invoice.client_name || '', lock_amount: !isTrust, lock_reference: true
       }
     })
     if (error) throw error
     if (!data?.url) throw new Error(data?.error || 'LawPay did not return a payment link.')
-    const linked = { ...invoice, payment_url: data.url, payment_request_id: String(data.request_id || data.id || ''), updated_at: new Date().toISOString() }
+    const linked = { ...invoice, payment_url: normalizeLawPayHostedUrl(data.url, invoiceBalanceAmount(invoice), !isTrust), payment_request_id: String(data.request_id || data.id || ''), updated_at: new Date().toISOString() }
     return await persistMioInvoiceRecord(linked, 'lawpay_link_created', { account_key: accountKey, payment_request_id: linked.payment_request_id })
   }
 
   async function sendInvoiceDocumentEmail(matter, invoice, options = {}) {
     if (!matter) throw new Error('The invoice matter could not be found.')
     const recipient = String(options.recipient_email || invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '').trim()
-    let sender = String(options.sender_email || invoice.sender_email || financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || '').trim()
+    let sender = DEFAULT_BILLING_SENDER_EMAIL
     if (!recipient) throw new Error('Enter a recipient email address.')
-    if (!sender && serviceGraphAuth?.account?.username) sender = serviceGraphAuth.account.username
     if (!serviceGraphAuth?.connected || serviceGraphConfig.mode !== 'live') {
       localStorage.setItem('caseMioPendingInvoiceRecipient', recipient)
       await getMicrosoftGraphToken({ allowInteractive: true })
-      sender = sender || serviceGraphAuth?.account?.username || ''
+      sender = DEFAULT_BILLING_SENDER_EMAIL
     }
-    if (!sender) throw new Error('Select the Microsoft billing mailbox after connecting Microsoft.')
+    if (!sender) throw new Error('The billing mailbox is not configured.')
     let linkedInvoice = { ...invoice, recipient_email: recipient, sender_email: sender }
     linkedInvoice = await ensureInvoiceLawPayLink(matter, linkedInvoice)
     const templateKey = linkedInvoice.invoice_type === 'trust_request' ? (financeInvoicesForMatter(matter).some((row) => row.invoice_type === 'trust_request' && String(row.id) !== String(linkedInvoice.id)) ? 'replenishment' : 'initial_trust') : 'service_invoice'
@@ -16378,7 +16407,7 @@ async function updateTeamCell(memberId, field, value) {
     setSelectedFinanceInvoice(invoice)
     setInvoiceSendDraft({
       recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || localStorage.getItem('caseMioPendingInvoiceRecipient') || '',
-      sender_email: invoice.sender_email || financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || '',
+      sender_email: DEFAULT_BILLING_SENDER_EMAIL,
       subject: invoice.email_subject || renderBillingTemplate(invoice.invoice_type === 'trust_request' ? 'replenishment' : 'service_invoice', { invoice_number: invoice.invoice_number, matter_name: matter?.name || invoice.matter_name || '' }).subject
     })
   }
@@ -16420,6 +16449,7 @@ async function updateTeamCell(memberId, field, value) {
       const email = String(value || '').trim()
       if (email) values.add(email)
     }
+    add(DEFAULT_BILLING_SENDER_EMAIL)
     add(financeEmailSettings.sender_email)
     add(serviceGraphAuth?.account?.username)
     ;(serviceEmailSources || []).forEach((source) => add(source?.mailbox_email))
@@ -16430,7 +16460,7 @@ async function updateTeamCell(memberId, field, value) {
     const finance = clientFinanceNumbers(matter)
     const shortage = matterReplenishmentAmount(matter)
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
-    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    const sender = DEFAULT_BILLING_SENDER_EMAIL
     const hasPriorTrustRequest = financeInvoicesForMatter(matter).some((invoice) => invoice?.invoice_type === 'trust_request')
     const templateKey = hasPriorTrustRequest ? 'replenishment' : 'initial_trust'
     const template = renderBillingTemplate(templateKey, {
@@ -16720,7 +16750,7 @@ async function updateTeamCell(memberId, field, value) {
 
   async function emailServiceInvoice(matter, invoice) {
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
-    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    const sender = DEFAULT_BILLING_SENDER_EMAIL
     if (!recipient) throw new Error('No client email is saved for this matter.')
     return await sendInvoiceDocumentEmail(matter, invoice, { recipient_email: recipient, sender_email: sender })
   }
@@ -16777,7 +16807,7 @@ async function updateTeamCell(memberId, field, value) {
     const amount = matterReplenishmentAmount(matter)
     if (amount <= 0.005) throw new Error('No replenishment is currently due.')
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
-    const sender = financeEmailSettings.sender_email || serviceGraphAuth?.account?.username || financeSenderOptions()[0] || ''
+    const sender = DEFAULT_BILLING_SENDER_EMAIL
     if (!recipient) throw new Error('No client email is saved.')
     const now = new Date()
     const due = new Date(now)
@@ -16902,7 +16932,7 @@ async function updateTeamCell(memberId, field, value) {
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(235px,1fr))', gap: 10, marginTop: 12 }}>
         <LabeledField label="Trust request amount"><input type="number" min="0.01" step="0.01" value={trustRequestDraft.amount} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, amount: event.target.value, approved: false }))} /></LabeledField>
-        <LabeledField label="Send from billing email"><><input type="email" list="finance-email-sender-options" value={trustRequestDraft.sender_email} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, sender_email: event.target.value, approved: false }))} placeholder="billing@beveridgelawfirm.com" /><datalist id="finance-email-sender-options">{financeSenderOptions().map((email) => <option key={email} value={email} />)}</datalist></></LabeledField>
+        <LabeledField label="Send from billing email"><input type="email" value={DEFAULT_BILLING_SENDER_EMAIL} readOnly title="Billing documents are always sent through the firm billing mailbox." /></LabeledField>
         <LabeledField label="Client email"><input type="email" value={trustRequestDraft.recipient_email} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, recipient_email: event.target.value, approved: false }))} /></LabeledField>
         <LabeledField label="Email subject"><input value={trustRequestDraft.subject} onChange={(event) => setTrustRequestDraft((current) => ({ ...current, subject: event.target.value, approved: false }))} /></LabeledField>
       </div>
@@ -16968,7 +16998,7 @@ async function updateTeamCell(memberId, field, value) {
         {invoice.payment_url && <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: '#eff6ff', border: '1px solid #93c5fd' }}><strong>LawPay payment link</strong><div style={{ overflowWrap: 'anywhere', marginTop: 5 }}><a href={invoice.payment_url} target="_blank" rel="noreferrer">{invoice.payment_url}</a></div></div>}
         <section style={{ marginTop: 16, border: '1px solid #cbd5e1', borderRadius: 10, padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Email or test-send</h3><div className="hint">The email includes the PDF attachment and a visible LawPay payment button.</div></div><div style={{ color: serviceGraphAuth?.connected ? '#166534' : '#b45309', fontWeight: 700 }}>{serviceGraphAuth?.connected ? `Microsoft connected: ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || ''}` : 'Microsoft not connected'}</div></div>
           {!serviceGraphAuth?.connected && <button type="button" onClick={connectMicrosoftGraph} style={{ marginTop: 10 }}>Connect Microsoft</button>}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 10, marginTop: 12 }}><label>Send to<input type="email" value={invoiceSendDraft.recipient_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, recipient_email: event.target.value }))} placeholder="Your email for a test" /></label><label>Send from<select value={invoiceSendDraft.sender_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, sender_email: event.target.value }))}><option value="">Select Microsoft mailbox…</option>{financeSenderOptions().map((email) => <option key={email} value={email}>{email}</option>)}</select></label></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 10, marginTop: 12 }}><label>Send to<input type="email" value={invoiceSendDraft.recipient_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, recipient_email: event.target.value }))} placeholder="Your email for a test" /></label><label>Send from<input type="email" value={DEFAULT_BILLING_SENDER_EMAIL} readOnly title="Billing documents are always sent through the firm billing mailbox." /></label></div>
           <label style={{ display: 'grid', gap: 4, marginTop: 10 }}>Subject<input value={invoiceSendDraft.subject} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, subject: event.target.value }))} /></label>
           <button type="button" className="btnPrimary" onClick={sendSelectedInvoiceEmail} disabled={invoiceDocumentBusy || !invoiceSendDraft.recipient_email} style={{ marginTop: 12 }}>{invoiceDocumentBusy ? 'Generating and sending…' : 'Send PDF + LawPay link'}</button>
         </section>
@@ -38801,7 +38831,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
     const renderBulkBillingCell = (row, column) => {
       const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
-      if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ fontWeight: 800 }}>{row.matterName}</a><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
+      if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
       if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}<div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div></td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
       if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
@@ -38809,6 +38839,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
     const currentReviewMatter = bulkWipReview.open ? matters.find((matter) => String(matter.id) === String(bulkWipReview.matter_ids[bulkWipReview.index])) : null
     const reviewTotal = bulkWipReview.lines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
+    const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
 
     return <div style={{ display: 'grid', gap: 14 }}>
       <section className="card">
@@ -38850,7 +38881,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <div ref={bulkBillingTableScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('table')} style={{ overflowX: 'auto' }}><table style={{ width: bulkBillingTableWidth, minWidth: bulkBillingTableWidth, borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: '#f8fafc' }}>
             <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1' }}><input type="checkbox" aria-label="Select all filtered matters" checked={!!visibleIds.length && selectedVisibleIds.length === visibleIds.length} onChange={(event) => setBulkBillingSelectedIds((current) => event.target.checked ? Array.from(new Set([...current, ...visibleIds])) : current.filter((id) => !visibleIds.includes(id)))} /></th>
-            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}</th>)}
+            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}{bulkColumnTotal(column) !== null && <div style={{ marginTop: 4, fontSize: 12, color: '#0f172a', fontWeight: 900 }}>{money(bulkColumnTotal(column))}</div>}</th>)}
           </tr></thead>
           <tbody>{rows.map((row) => <tr key={row.matter.id} style={{ background: bulkBillingSelectedIds.includes(String(row.matter.id)) ? '#fff' : '#f8fafc', opacity: bulkBillingSelectedIds.includes(String(row.matter.id)) ? 1 : 0.66 }}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><input type="checkbox" checked={bulkBillingSelectedIds.includes(String(row.matter.id))} onChange={() => setBulkBillingSelectedIds((current) => current.includes(String(row.matter.id)) ? current.filter((id) => id !== String(row.matter.id)) : [...current, String(row.matter.id)])} /></td>
