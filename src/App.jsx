@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V196'
+const MIO_APP_VERSION = 'Mio V197'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -36826,10 +36826,20 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         token: linkToken,
         onSuccess: async (publicToken, metadata) => {
           try {
+            const selectedAccounts = Array.isArray(metadata?.accounts) ? metadata.accounts : []
+            const selectedSummary = selectedAccounts.length
+              ? selectedAccounts.map((account) => `${account.name || account.official_name || 'Account'} ••••${account.mask || ''}`).join('\n')
+              : 'No account details were returned by Plaid.'
+            const approved = window.confirm(`Mio will connect only these selected accounts:\n\n${selectedSummary}\n\nContinue? Select Cancel if this list includes a personal account.`)
+            if (!approved) {
+              setBankError('Connection canceled before Mio saved any accounts. Reconnect and uncheck every personal account on Plaid’s “Your accounts” screen.')
+              setBankConnecting(false)
+              return
+            }
             await invokePlaidBankAction('exchange_public_token', {
               public_token: publicToken,
               institution: metadata?.institution || null,
-              accounts: metadata?.accounts || []
+              accounts: selectedAccounts
             })
             await loadBankingData({ sync: true })
           } catch (error) {
@@ -36864,6 +36874,53 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } finally {
       setBankLoading(false)
     }
+  }
+
+  async function renameBankAccount(account) {
+    const currentName = account?.display_name || account?.name || account?.official_name || ''
+    const nextName = window.prompt('Name this account in Mio (for example, Operating Account or IOLTA Trust):', currentName)
+    if (nextName === null) return
+    const cleanName = String(nextName).trim()
+    if (!cleanName) {
+      setBankError('Enter an account name before saving.')
+      return
+    }
+    setBankLoading(true)
+    setBankError('')
+    try {
+      await invokePlaidBankAction('rename_account', { account_id: account.id, display_name: cleanName })
+      await loadBankingData()
+    } catch (error) {
+      setBankError(error?.message || 'Could not rename the account.')
+    } finally {
+      setBankLoading(false)
+    }
+  }
+
+  async function removeBankAccount(account) {
+    const accountLabel = `${account?.display_name || account?.name || account?.official_name || 'Account'} ••••${account?.mask || ''}`
+    const confirmed = window.confirm(`Remove ${accountLabel} and its imported transactions from Mio?\n\nThis does not close or change the bank account.`)
+    if (!confirmed) return
+    setBankLoading(true)
+    setBankError('')
+    try {
+      await invokePlaidBankAction('remove_account', { account_id: account.id })
+      setBankAccountRoles((current) => {
+        const next = { ...(current || {}) }
+        delete next[String(account.id)]
+        return next
+      })
+      if (String(bankAccountFilter) === String(account.id)) setBankAccountFilter('all')
+      await loadBankingData()
+    } catch (error) {
+      setBankError(error?.message || 'Could not remove the account from Mio.')
+    } finally {
+      setBankLoading(false)
+    }
+  }
+
+  function bankAccountDisplayName(account) {
+    return account?.display_name || account?.name || account?.official_name || 'Account'
   }
 
   function bankMoney(value, isoCurrencyCode = 'USD') {
@@ -36925,25 +36982,27 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {bankError && <div style={{ margin: '12px 0', padding: 12, border: '1px solid #fecaca', borderRadius: 10, background: '#fef2f2', color: '#991b1b', whiteSpace: 'pre-wrap' }}>{bankError}</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 12, margin: '14px 0' }}>
-          <div className="card" style={{ borderTop: '5px solid #15803d' }}><div className="hint">Trust / IOLTA account</div><div style={{ fontSize: 28, fontWeight: 800 }}>{trustAccount ? bankMoney(trustAccount.current_balance, trustAccount.iso_currency_code) : 'Not assigned'}</div><div className="hint">{trustAccount ? `${trustAccount.name || 'Account'} ••••${trustAccount.mask || ''}` : 'Assign a connected account below'}</div></div>
-          <div className="card" style={{ borderTop: '5px solid #1d4ed8' }}><div className="hint">Operating account</div><div style={{ fontSize: 28, fontWeight: 800 }}>{operatingAccount ? bankMoney(operatingAccount.current_balance, operatingAccount.iso_currency_code) : 'Not assigned'}</div><div className="hint">{operatingAccount ? `${operatingAccount.name || 'Account'} ••••${operatingAccount.mask || ''}` : 'Assign a connected account below'}</div></div>
+          <div className="card" style={{ borderTop: '5px solid #15803d' }}><div className="hint">Trust / IOLTA account</div><div style={{ fontSize: 28, fontWeight: 800 }}>{trustAccount ? bankMoney(trustAccount.current_balance, trustAccount.iso_currency_code) : 'Not assigned'}</div><div className="hint">{trustAccount ? `${bankAccountDisplayName(trustAccount)} ••••${trustAccount.mask || ''}` : 'Assign a connected account below'}</div></div>
+          <div className="card" style={{ borderTop: '5px solid #1d4ed8' }}><div className="hint">Operating account</div><div style={{ fontSize: 28, fontWeight: 800 }}>{operatingAccount ? bankMoney(operatingAccount.current_balance, operatingAccount.iso_currency_code) : 'Not assigned'}</div><div className="hint">{operatingAccount ? `${bankAccountDisplayName(operatingAccount)} ••••${operatingAccount.mask || ''}` : 'Assign a connected account below'}</div></div>
           <div className="card"><div className="hint">Other cash accounts</div><div style={{ fontSize: 28, fontWeight: 800 }}>{bankMoney(otherCurrent)}</div><div className="hint">Connected accounts not assigned as trust or operating</div></div>
           <div className="card"><div className="hint">Last synced</div><div style={{ fontSize: 16, fontWeight: 800, marginTop: 6 }}>{bankLastSyncedAt ? new Date(bankLastSyncedAt).toLocaleString() : 'Not synced'}</div></div>
         </div>
 
         <section className="card" style={{ marginBottom: 14 }}>
           <h2 style={{ marginTop: 0 }}>Connected accounts</h2>
+          <div style={{ margin: '0 0 12px', padding: 10, borderRadius: 9, background: '#eff6ff', color: '#1e3a8a', fontSize: 13 }}><strong>Connecting another bank?</strong> Plaid may check every account by default. On its <strong>Your accounts</strong> screen, uncheck personal accounts before Continue. Mio will show a final selected-account list before saving.</div>
           {!bankAccounts.length ? <div className="empty">No bank accounts connected yet. Click <strong>Connect bank</strong> to open Plaid.</div> : (
             <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr>{['Institution','Account','Mio role','Bank type','Current','Available','Status'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 9, borderBottom: '1px solid #e2e8f0' }}>{label}</th>)}</tr></thead>
+              <thead><tr>{['Institution','Account name','Mio role','Bank type','Current','Available','Status','Actions'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 9, borderBottom: '1px solid #e2e8f0' }}>{label}</th>)}</tr></thead>
               <tbody>{bankAccounts.map((account) => <tr key={account.id}>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.institution_name || 'Bank'}</td>
-                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><strong>{account.name || account.official_name || 'Account'}</strong><div className="hint">•••• {account.mask || '—'}</div></td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><strong>{bankAccountDisplayName(account)}</strong>{account.display_name && account.display_name !== account.name ? <div className="hint">Bank name: {account.name || account.official_name || 'Account'}</div> : null}<div className="hint">•••• {account.mask || '—'}</div></td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><select value={bankAccountRoles?.[String(account.id)] || ''} onChange={(event) => assignBankAccountRole(account.id, event.target.value)}><option value="">Unassigned</option><option value="trust">Trust / IOLTA</option><option value="operating">Operating</option><option value="other">Other firm account</option></select></td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.subtype || account.type || '—'}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 700 }}>{bankMoney(account.current_balance, account.iso_currency_code)}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{bankMoney(account.available_balance, account.iso_currency_code)}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account.connection_status === 'error' ? 'Needs attention' : 'Connected'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => renameBankAccount(account)} disabled={bankLoading}>Rename</button> <button type="button" className="btnDanger" onClick={() => removeBankAccount(account)} disabled={bankLoading}>Remove</button></td>
               </tr>)}</tbody>
             </table></div>
           )}
@@ -36954,7 +37013,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'end', flexWrap: 'wrap' }}>
             <div><h2 style={{ margin: 0 }}>Transactions</h2><div className="hint">{filteredTransactions.length} shown</div></div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
-              <label className="hint">Account<select value={bankAccountFilter} onChange={(e) => setBankAccountFilter(e.target.value)}><option value="all">All accounts</option>{bankAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} ••••{account.mask || ''}</option>)}</select></label>
+              <label className="hint">Account<select value={bankAccountFilter} onChange={(e) => setBankAccountFilter(e.target.value)}><option value="all">All accounts</option>{bankAccounts.map((account) => <option key={account.id} value={account.id}>{bankAccountDisplayName(account)} ••••{account.mask || ''}</option>)}</select></label>
               <label className="hint">From<input type="date" value={bankDateFrom} onChange={(e) => setBankDateFrom(e.target.value)} /></label>
               <label className="hint">To<input type="date" value={bankDateTo} onChange={(e) => setBankDateTo(e.target.value)} /></label>
               <label className="hint">Search<input value={bankSearch} onChange={(e) => setBankSearch(e.target.value)} placeholder="Merchant or category" /></label>
@@ -36969,7 +37028,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{transaction.authorized_date || transaction.date || '—'}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{transaction.pending ? <span style={{ background: '#fef3c7', borderRadius: 999, padding: '3px 8px', fontSize: 12 }}>Pending</span> : 'Posted'}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><strong>{transaction.merchant_name || transaction.name || 'Transaction'}</strong>{transaction.merchant_name && transaction.name && transaction.merchant_name !== transaction.name ? <div className="hint">{transaction.name}</div> : null}</td>
-                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account ? `${account.name} ••••${account.mask || ''}` : '—'}</td>
+                <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{account ? `${bankAccountDisplayName(account)} ••••${account.mask || ''}` : '—'}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{transaction.category_primary || transaction.category_detailed || 'Uncategorized'}</td>
                 <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800, color: Number(transaction.amount) < 0 ? '#15803d' : '#0f172a' }}>{bankMoney(transaction.amount, transaction.iso_currency_code)}</td>
               </tr>
