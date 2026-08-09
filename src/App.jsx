@@ -3,10 +3,27 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V199'
+const MIO_APP_VERSION = 'Mio V200'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
+
+const BULK_BILLING_COLUMNS = [
+  { key: 'matter', label: 'Matter', width: 300 },
+  { key: 'trust', label: 'Trust', width: 105 },
+  { key: 'outstanding', label: 'OB', width: 90 },
+  { key: 'wip', label: 'WIP', width: 90 },
+  { key: 'minimum', label: 'Min bal', width: 105 },
+  { key: 'trustMinusMinimum', label: 'Trust − min', width: 135 },
+  { key: 'trustMinusMinimumMinusOutstanding', label: 'Trust − min − OB', width: 165 },
+  { key: 'trustMinusMinimumMinusWip', label: 'Trust − min − WIP', width: 170 },
+  { key: 'trustMinusMinimumMinusWipMinusOutstanding', label: 'Trust − min − WIP − OB', width: 205 },
+  { key: 'retainerTarget', label: 'Retainer target', width: 145 },
+  { key: 'replenishment', label: 'Replenishment', width: 140 },
+  { key: 'actions', label: 'Actions', width: 260 }
+]
+
+const DEFAULT_BULK_BILLING_VISIBLE_COLUMNS = Object.fromEntries(BULK_BILLING_COLUMNS.map((column) => [column.key, true]))
 
 const DISCOVERY_RFP_RESPONSE_OPTIONS = [
   'No items have been identified - after a diligent search - that are responsive to the request.',
@@ -879,7 +896,7 @@ const settingCategories = [
   { value: 'matter_status', label: 'Matter Status' },
   { value: 'case_status', label: 'Case Status' },
   { value: 'client_status', label: 'Client Status' },
-  { value: 'matter_type', label: 'Matter Type' },
+  { value: 'matter_type', label: 'Case Type' },
   { value: 'matter_subtype', label: 'Matter Subtype' },
   { value: 'team_position', label: 'Team Positions (include Clients)' },
   { value: 'matter_status_step', label: 'Matter Status Steps' },
@@ -1984,12 +2001,28 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioRetainerReplenishmentTargets') || '{}') }
     catch { return {} }
   })
-  const [bulkBillingFilters, setBulkBillingFilters] = useState({ case_status: 'all', matter_status: 'all', case_type: 'all', search: '' })
+  const [bulkBillingFilters, setBulkBillingFilters] = useState({ case_status: 'all', matter_status: 'all', search: '' })
   const [bulkBillingSort, setBulkBillingSort] = useState({ field: 'matter', direction: 'asc' })
   const [bulkBillingSelectedIds, setBulkBillingSelectedIds] = useState([])
+  const [bulkBillingSelectedCaseTypes, setBulkBillingSelectedCaseTypes] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('caseMioBulkBillingSelectedCaseTypes') || '["__all__"]')
+      return Array.isArray(saved) ? saved : ['__all__']
+    } catch { return ['__all__'] }
+  })
+  const [bulkBillingVisibleColumns, setBulkBillingVisibleColumns] = useState(() => {
+    try {
+      return { ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS, ...JSON.parse(localStorage.getItem('caseMioBulkBillingVisibleColumns') || '{}') }
+    } catch { return { ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS } }
+  })
+  const [bulkBillingColumnMenuOpen, setBulkBillingColumnMenuOpen] = useState(false)
+  const [bulkBillingCaseTypeMenuOpen, setBulkBillingCaseTypeMenuOpen] = useState(false)
   const [bulkBillingBusy, setBulkBillingBusy] = useState(false)
   const [bulkBillingResult, setBulkBillingResult] = useState('')
   const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], index: 0, lines: [], invoice: null })
+  const bulkBillingTableScrollRef = useRef(null)
+  const bulkBillingFloatingScrollRef = useRef(null)
+  const bulkBillingScrollSyncRef = useRef(false)
   const bulkInvoiceSequenceRef = useRef(0)
   const billingEntriesRef = useRef([])
   const [billingRates, setBillingRates] = useState(() => {
@@ -2838,6 +2871,8 @@ function App() {
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
       caseMioRetainerReplenishmentTargets: { setter: setRetainerReplenishmentTargets, kind: 'object', fallback: {} },
+      caseMioBulkBillingSelectedCaseTypes: { setter: (value) => setBulkBillingSelectedCaseTypes(Array.isArray(value) ? value : ['__all__']), kind: 'array', fallback: ['__all__'] },
+      caseMioBulkBillingVisibleColumns: { setter: (value) => setBulkBillingVisibleColumns({ ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_BULK_BILLING_VISIBLE_COLUMNS },
       caseMioBankAccountRoles: { setter: setBankAccountRoles, kind: 'object', fallback: {} },
       caseMioBillingRates: { setter: setBillingRates, kind: 'object', fallback: {} },
       caseMioMatterBillingRates: { setter: setMatterBillingRates, kind: 'object', fallback: {} },
@@ -3433,6 +3468,14 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioRetainerReplenishmentTargets', JSON.stringify(retainerReplenishmentTargets || {})) } catch {}
   }, [retainerReplenishmentTargets])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioBulkBillingSelectedCaseTypes', JSON.stringify(bulkBillingSelectedCaseTypes || [])) } catch {}
+  }, [bulkBillingSelectedCaseTypes])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioBulkBillingVisibleColumns', JSON.stringify(bulkBillingVisibleColumns || DEFAULT_BULK_BILLING_VISIBLE_COLUMNS)) } catch {}
+  }, [bulkBillingVisibleColumns])
 
   useEffect(() => {
     if (billingTab !== 'bulk_billing' || !matters.length) return
@@ -37844,11 +37887,25 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     </div>
   }
 
+  function syncBulkBillingHorizontalScroll(source) {
+    if (bulkBillingScrollSyncRef.current) return
+    const sourceNode = source === 'floating' ? bulkBillingFloatingScrollRef.current : bulkBillingTableScrollRef.current
+    const targetNode = source === 'floating' ? bulkBillingTableScrollRef.current : bulkBillingFloatingScrollRef.current
+    if (!sourceNode || !targetNode) return
+    bulkBillingScrollSyncRef.current = true
+    targetNode.scrollLeft = sourceNode.scrollLeft
+    window.requestAnimationFrame(() => { bulkBillingScrollSyncRef.current = false })
+  }
+
   function renderBulkBillingPanel() {
     const unique = (values) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
     const caseStatuses = unique(matters.map((matter) => matter.case_status || matter.status))
     const matterStatuses = unique(matters.map((matter) => matter.matter_status))
-    const caseTypes = unique(matters.map((matter) => matter.matter_type || matter.case_type))
+    // Settings > Dropdown Options > Case Type is the authoritative filter list.
+    // Raw matter values are intentionally not used here because legacy spelling variants
+    // (for example Dfps and DFPS) otherwise become separate filter choices.
+    const caseTypes = options('matter_type').map((option) => String(option.name || '').trim()).filter(Boolean)
+    const allCaseTypesSelected = bulkBillingSelectedCaseTypes.includes('__all__')
     const rows = matters.map((matter) => {
       const finance = clientFinanceNumbers(matter)
       return {
@@ -37869,7 +37926,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const matter = row.matter
       if (bulkBillingFilters.case_status !== 'all' && String(matter.case_status || matter.status || '') !== bulkBillingFilters.case_status) return false
       if (bulkBillingFilters.matter_status !== 'all' && String(matter.matter_status || '') !== bulkBillingFilters.matter_status) return false
-      if (bulkBillingFilters.case_type !== 'all' && String(matter.matter_type || matter.case_type || '') !== bulkBillingFilters.case_type) return false
+      if (!allCaseTypesSelected) {
+        if (!bulkBillingSelectedCaseTypes.length) return false
+        if (!bulkBillingSelectedCaseTypes.includes(String(matter.matter_type || matter.case_type || '').trim())) return false
+      }
       const search = String(bulkBillingFilters.search || '').toLowerCase().trim()
       return !search || `${row.matterName} ${matter.cause_number || ''} ${matterClientName(matter) || ''}`.toLowerCase().includes(search)
     }).sort((a, b) => {
@@ -37884,6 +37944,22 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const toggleSort = (field) => setBulkBillingSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
     const sortLabel = (field, label) => <button type="button" onClick={() => toggleSort(field)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 800, whiteSpace: 'nowrap' }}>{label}{bulkBillingSort.field === field ? (bulkBillingSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>
     const moneyCell = (value) => <span style={{ color: value < -0.005 ? '#b91c1c' : value > 0.005 ? '#166534' : '#475569', fontWeight: 700 }}>{money(value)}</span>
+    const visibleColumns = BULK_BILLING_COLUMNS.filter((column) => bulkBillingVisibleColumns[column.key] !== false)
+    const bulkBillingTableWidth = Math.max(420, 54 + visibleColumns.reduce((sum, column) => sum + column.width, 0))
+    const caseTypeSelectionLabel = allCaseTypesSelected ? 'All' : bulkBillingSelectedCaseTypes.length ? `${bulkBillingSelectedCaseTypes.length} selected` : 'None'
+    const toggleBulkBillingCaseType = (caseType) => {
+      setBulkBillingSelectedCaseTypes((current) => {
+        const selected = current.includes('__all__') ? caseTypes.filter((value) => value !== caseType) : current.includes(caseType) ? current.filter((value) => value !== caseType) : [...current, caseType]
+        return selected.length === caseTypes.length && caseTypes.length ? ['__all__'] : selected
+      })
+    }
+    const renderBulkBillingCell = (row, column) => {
+      const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
+      if (column.key === 'matter') return <td key={column.key} style={baseStyle}><strong>{row.matterName}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
+      if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
+      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+      return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
+    }
     const currentReviewMatter = bulkWipReview.open ? matters.find((matter) => String(matter.id) === String(bulkWipReview.matter_ids[bulkWipReview.index])) : null
     const reviewTotal = bulkWipReview.lines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
 
@@ -37897,43 +37973,45 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => replenishSelectedMatters(selectedVisibleIds)}>Replenish all selected</button>
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginTop: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginTop: 14, alignItems: 'end' }}>
           <LabeledField label="Search"><input value={bulkBillingFilters.search} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, or cause #" /></LabeledField>
           <LabeledField label="Case status"><select value={bulkBillingFilters.case_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All</option>{caseStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
           <LabeledField label="Matter status"><select value={bulkBillingFilters.matter_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All</option>{matterStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
-          <LabeledField label="Case type"><select value={bulkBillingFilters.case_type} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_type: event.target.value }))}><option value="all">All</option>{caseTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
+          <div style={{ position: 'relative', minWidth: 210 }}>
+            <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 4 }}>Case type</div>
+            <button type="button" onClick={() => setBulkBillingCaseTypeMenuOpen((open) => !open)} style={{ width: '100%', textAlign: 'left', minHeight: 30 }}>Case type: {caseTypeSelectionLabel} ▾</button>
+            {bulkBillingCaseTypeMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 80, width: 300, maxHeight: 360, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkBillingSelectedCaseTypes(['__all__'])}>All</button><button type="button" onClick={() => setBulkBillingSelectedCaseTypes([])}>None</button><button type="button" onClick={() => setBulkBillingCaseTypeMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>
+              {caseTypes.map((caseType) => <label key={caseType} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={allCaseTypesSelected || bulkBillingSelectedCaseTypes.includes(caseType)} onChange={() => toggleBulkBillingCaseType(caseType)} /> {caseType}</label>)}
+              {!caseTypes.length && <div style={{ color: '#92400e', fontSize: 12 }}>No Case Type options are configured. Add them in Settings → Dropdown Options → Case Type.</div>}
+            </div>}
+          </div>
+          <div style={{ position: 'relative', minWidth: 170 }}>
+            <button type="button" onClick={() => setBulkBillingColumnMenuOpen((open) => !open)} style={{ width: '100%', minHeight: 30 }}>Columns ({visibleColumns.length}/{BULK_BILLING_COLUMNS.length}) ▾</button>
+            {bulkBillingColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 80, width: 285, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkBillingVisibleColumns({ ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkBillingVisibleColumns(Object.fromEntries(BULK_BILLING_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkBillingColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>
+              {BULK_BILLING_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkBillingVisibleColumns[column.key] !== false} onChange={() => setBulkBillingVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}
+            </div>}
+          </div>
         </div>
         <div style={{ marginTop: 10, color: '#475569' }}>{selectedVisibleIds.length} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} checked. Bulk actions apply only to these checked rows.</div>
         {bulkBillingResult && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', padding: 10 }}>{bulkBillingResult}</div>}
       </section>
 
       <section className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 1900, borderCollapse: 'collapse' }}>
+        <div ref={bulkBillingTableScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('table')} style={{ overflowX: 'auto' }}><table style={{ width: bulkBillingTableWidth, minWidth: bulkBillingTableWidth, borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: '#f8fafc' }}>
             <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1' }}><input type="checkbox" aria-label="Select all filtered matters" checked={!!visibleIds.length && selectedVisibleIds.length === visibleIds.length} onChange={(event) => setBulkBillingSelectedIds((current) => event.target.checked ? Array.from(new Set([...current, ...visibleIds])) : current.filter((id) => !visibleIds.includes(id)))} /></th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'left' }}>{sortLabel('matter', 'Matter')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trust', 'Trust')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('outstanding', 'OB')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('wip', 'WIP')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('minimum', 'Min bal')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimum', 'Trust − min')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusOutstanding', 'Trust − min − OB')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusWip', 'Trust − min − WIP')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('trustMinusMinimumMinusWipMinusOutstanding', 'Trust − min − WIP − OB')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('retainerTarget', 'Retainer target')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'right' }}>{sortLabel('replenishment', 'Replenishment')}</th>
-            <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: 'left' }}>Actions</th>
+            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}</th>)}
           </tr></thead>
           <tbody>{rows.map((row) => <tr key={row.matter.id} style={{ background: bulkBillingSelectedIds.includes(String(row.matter.id)) ? '#fff' : '#f8fafc', opacity: bulkBillingSelectedIds.includes(String(row.matter.id)) ? 1 : 0.66 }}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><input type="checkbox" checked={bulkBillingSelectedIds.includes(String(row.matter.id))} onChange={() => setBulkBillingSelectedIds((current) => current.includes(String(row.matter.id)) ? current.filter((id) => id !== String(row.matter.id)) : [...current, String(row.matter.id)])} /></td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', minWidth: 250 }}><strong>{row.matterName}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{matterClientName(row.matter)}{row.matter.cause_number ? ` • ${row.matter.cause_number}` : ''}</div></td>
-            {[row.trust,row.outstanding,row.wip,row.minimum,row.trustMinusMinimum,row.trustMinusMinimumMinusOutstanding,row.trustMinusMinimumMinusWip,row.trustMinusMinimumMinusWipMinusOutstanding].map((value, index) => <td key={index} style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(value)}</td>)}
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{moneyCell(row.replenishment)}</td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
-          </tr>)}{!rows.length && <tr><td colSpan="13" className="empty">No matters match the selected filters.</td></tr>}</tbody>
+            {visibleColumns.map((column) => renderBulkBillingCell(row, column))}
+          </tr>)}{!rows.length && <tr><td colSpan={1 + visibleColumns.length} className="empty">No matters match the selected filters.</td></tr>}</tbody>
         </table></div>
       </section>
+
+      <div ref={bulkBillingFloatingScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('floating')} aria-label="Floating bulk billing horizontal scroll" style={{ position: 'fixed', left: 210, right: 18, bottom: 58, zIndex: 1100, height: 20, overflowX: 'auto', overflowY: 'hidden', background: '#f8fafc', border: '1px solid #94a3b8', borderRadius: 7, boxShadow: '0 4px 14px rgba(15,23,42,.2)' }}><div style={{ width: bulkBillingTableWidth, height: 1 }} /></div>
 
       {bulkWipReview.open && currentReviewMatter && <div style={{ position: 'fixed', inset: 0, zIndex: 12000, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
         <div style={{ width: 'min(1080px,97vw)', maxHeight: '94vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.35)', padding: 18 }}>
@@ -41953,7 +42031,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 <h2>Dropdown Options</h2>
                 <p>
                   Add the dropdown options used on the Matters page. Drag rows up or down to set the order they appear in dropdowns.
-                  Matter Status order here also controls the gray status row order on the Matters page.
+                  Matter Status order here also controls the gray status row order on the Matters page. Case Type options here also control the Bulk Billing Case Type checklist.
                 </p>
 
                 <div style={{ marginBottom: 20 }}>
@@ -41980,7 +42058,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                     {settingForm.category === 'matter_subtype' && (
                       <select value={settingForm.parent_name} onChange={(e) => setSettingForm({ ...settingForm, parent_name: e.target.value })}>
-                        <option value="">Select parent matter type *</option>
+                        <option value="">Select parent case type *</option>
                         {options('matter_type').map((matterType) => (
                           <option key={matterType.id} value={matterType.name}>{matterType.name}</option>
                         ))}
