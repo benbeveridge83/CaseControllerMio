@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V210'
+const MIO_APP_VERSION = 'Mio V211'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -241,6 +241,8 @@ const ORDER_TYPES = [
 const ORDER_TRANSACTION_TYPES = [
   { value: 'drafting_started', label: 'I am drafting', short: 'Drafting', icon: '✎', color: '#2563eb', background: '#dbeafe', holder: 'me', lane: 'journey' },
   { value: 'waiting_on_oc', label: 'Waiting on opposing counsel to draft', short: 'Waiting on OC', icon: '⌛', color: '#b91c1c', background: '#fee2e2', holder: 'oc', lane: 'journey' },
+  { value: 'rendered', label: 'Order was rendered', short: 'Rendered', icon: '⚑', color: '#7c3aed', background: '#ede9fe', holder: null, lane: 'journey' },
+  { value: 'drafting_language_uploaded', label: 'Drafting language uploaded', short: 'Language uploaded', icon: '📎', color: '#1d4ed8', background: '#dbeafe', holder: 'me', lane: 'journey' },
   { value: 'assigned_paralegal', label: 'Assigned drafting task to paralegal', short: 'Tasked paralegal', icon: '☷', color: '#1d4ed8', background: '#eff6ff', holder: 'me', lane: 'journey' },
   { value: 'received_first_draft', label: 'Received first draft from paralegal', short: 'First draft received', icon: '▤', color: '#1d4ed8', background: '#dbeafe', holder: 'me', lane: 'journey' },
   { value: 'reviewed_draft', label: 'Reviewed or revised draft', short: 'Reviewed draft', icon: '✓', color: '#1d4ed8', background: '#eff6ff', holder: 'me', lane: 'journey' },
@@ -258,6 +260,15 @@ const ORDER_TRANSACTION_TYPES = [
   { value: 'judge_signed', label: 'Judge signed the order', short: 'Judge signed', icon: '⚖', color: '#854d0e', background: '#fef3c7', holder: 'me', lane: 'judge' },
   { value: 'sent_signed_to_client', label: 'Sent signed order to client', short: 'Signed order to client', icon: '✉', color: '#0f766e', background: '#ccfbf1', holder: 'client', lane: 'journey' },
   { value: 'other', label: 'Other order activity', short: 'Other', icon: '●', color: '#475569', background: '#f1f5f9', holder: null, lane: 'journey' }
+]
+
+const ORDER_RENDITION_TYPES = [
+  { value: '', label: 'Select rendition type...' },
+  { value: 'oral', label: 'Oral rendition in court' },
+  { value: 'written', label: 'Written rendition' },
+  { value: 'mediated_settlement', label: 'Mediated settlement agreement' },
+  { value: 'rule_11', label: 'Rule 11 agreement' },
+  { value: 'other', label: 'Other rendition' }
 ]
 
 const appPages = [
@@ -3685,6 +3696,7 @@ function App() {
           drafter: 'me',
           finalization_type: 'Finalized matter',
           finalization_date: finalizationDate,
+          rendition_type: '',
           transactions: [{ id: `order-start-${matter.id}`, type: 'drafting_started', date: finalizationDate, note: 'Automatically added when matter status became Finalized Need Order.', created_at: matter.matter_status_changed_at || new Date().toISOString() }],
           completed: false,
           completed_at: '',
@@ -30935,6 +30947,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       drafter: 'me',
       finalization_type: event.event_category || event.title || 'Calendar event',
       finalization_date: finalizationDate,
+      rendition_type: '',
       transactions: [{ id: `order-start-calendar-event-${event.id}`, type: 'drafting_started', date: finalizationDate, note: `Automatically added on the final day of ${event.title || event.event_category || 'the calendar event'}.`, created_at: createdAt }],
       completed: false,
       completed_at: '',
@@ -31010,6 +31023,70 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function patchOrderRow(rowId, patch) {
     setOrderRows((current) => current.map((row) => String(row.id) === String(rowId) ? { ...row, ...patch, updated_at: new Date().toISOString() } : row))
+  }
+
+  function orderRenditionTransaction(row = {}) {
+    return [...(Array.isArray(row.transactions) ? row.transactions : [])].reverse().find((transaction) => transaction.type === 'rendered') || null
+  }
+
+  function orderRenditionTypeLabel(value = '') {
+    return ORDER_RENDITION_TYPES.find((item) => item.value === value)?.label || ''
+  }
+
+  function orderDraftingLanguageDocument(row = {}) {
+    return documents.find((document) => String(document.id) === String(row.drafting_language_document_id || '')) || null
+  }
+
+  async function uploadOrderDraftingLanguage(row, file) {
+    if (!row?.id || !row?.matter_id || !file) return
+    const docId = `order-language-${row.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const [temporaryFilePayload, storedFilePayload] = await Promise.all([
+      readFileAsDataUrl(file),
+      uploadMioDocumentFile(file, docId, row.matter_id)
+    ])
+    const uploadedAt = new Date().toISOString()
+    const uploadedDate = uploadedAt.slice(0, 10)
+    const document = {
+      id: docId,
+      matter_id: row.matter_id,
+      name: file.name || 'Drafting language',
+      date: uploadedDate,
+      description: `Drafting language uploaded for ${row.title || orderTypeLabel(row.order_type)}.`,
+      status: 'Draft',
+      tag_ids: [],
+      document_field_values: { order_id: row.id, document_role: 'drafting_language' },
+      upload_date: uploadedDate,
+      ...emptyDocumentAiReview,
+      ...temporaryFilePayload,
+      ...storedFilePayload
+    }
+    const transaction = {
+      id: crypto?.randomUUID ? crypto.randomUUID() : `order-language-transaction-${Date.now()}`,
+      type: 'drafting_language_uploaded',
+      date: uploadedDate,
+      note: file.name || 'Drafting language uploaded',
+      created_at: uploadedAt
+    }
+    setDocuments((current) => [...current, document])
+    setOrderRows((current) => current.map((item) => String(item.id) === String(row.id) ? {
+      ...item,
+      drafting_language_document_id: docId,
+      drafting_language_file_name: file.name || 'Drafting language',
+      drafting_language_uploaded_at: uploadedAt,
+      transactions: [...(item.transactions || []), transaction],
+      updated_at: uploadedAt
+    } : item))
+  }
+
+  async function toggleOrderCompleted(row) {
+    if (row.completed) {
+      patchOrderRow(row.id, { completed: false, completed_at: '' })
+      return
+    }
+    patchOrderRow(row.id, { completed: true, completed_at: new Date().toISOString() })
+    if (window.confirm('This order is complete. Change the matter status to "Order, need to close"?')) {
+      await updateMatterCell(row.matter_id, 'matter_status', 'Order, need to close')
+    }
   }
 
   function changeOrderDrafter(row, drafter) {
@@ -31109,6 +31186,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       drafter: orderForm.drafter || 'me',
       finalization_type: orderForm.finalization_type || '',
       finalization_date: orderForm.finalization_date || '',
+      rendition_type: '',
       transactions: [{ id: `order-start-${id}`, type: startType, date: orderForm.finalization_date || new Date().toISOString().slice(0, 10), note: orderForm.drafter === 'oc' ? 'Waiting for opposing counsel to prepare the first draft.' : 'Our firm is responsible for the first draft.', created_at: new Date().toISOString() }],
       completed: false,
       completed_at: '',
@@ -31124,10 +31202,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function renderOrderProcessIcon(row, transaction, index) {
     const definition = orderTransactionDefinition(transaction.type)
+    const isJudgeSignature = transaction.type === 'judge_signed'
     return (
       <Fragment key={transaction.id || `${row.id}-${index}`}>
         {index > 0 && <span style={{ color: '#94a3b8', fontWeight: 900, padding: '0 2px' }}>→</span>}
-        <button type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label}${transaction.date ? ` — ${transaction.date}` : ''}${transaction.note ? ` — ${transaction.note}` : ''}`} style={{ width: 58, minWidth: 58, minHeight: 62, padding: '5px 3px', border: `1px solid ${definition.color}`, borderRadius: 9, background: definition.background, color: definition.color, display: 'grid', placeItems: 'center', alignContent: 'center', gap: 2, boxShadow: '0 1px 2px rgba(15,23,42,.08)' }}>
+        <button type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label}${transaction.date ? ` — ${transaction.date}` : ''}${transaction.note ? ` — ${transaction.note}` : ''}`} style={{ width: isJudgeSignature ? 64 : 58, minWidth: isJudgeSignature ? 64 : 58, minHeight: isJudgeSignature ? 64 : 62, padding: '5px 3px', border: isJudgeSignature ? '3px double #a16207' : `1px solid ${definition.color}`, borderRadius: isJudgeSignature ? '50%' : 9, background: definition.background, color: definition.color, display: 'grid', placeItems: 'center', alignContent: 'center', gap: 2, boxShadow: '0 1px 2px rgba(15,23,42,.08)' }}>
           <span style={{ fontSize: 22, lineHeight: 1 }}>{definition.icon}</span>
           <span style={{ fontSize: 8, lineHeight: 1.05, fontWeight: 900 }}>{definition.short}</span>
           <span style={{ fontSize: 8, color: '#475569' }}>{transaction.date ? new Date(`${transaction.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : 'No date'}</span>
@@ -31188,16 +31267,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         </section>
 
         <div style={{ overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff' }}>
-          <table style={{ width: '100%', minWidth: 1500, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-            <colgroup><col style={{ width: 250 }} /><col style={{ width: 170 }} /><col style={{ width: 590 }} /><col style={{ width: 210 }} /><col style={{ width: 145 }} /><col style={{ width: 135 }} /><col style={{ width: 100 }} /></colgroup>
-            <thead style={{ background: '#0f172a', color: '#fff' }}><tr><th style={{ padding: 9, textAlign: 'left' }}>Matter / Order</th><th style={{ padding: 9, textAlign: 'left' }}>Finalization</th><th style={{ padding: 9, textAlign: 'left' }}>Order transactions — chronological</th><th style={{ padding: 9, textAlign: 'left' }}>Court / Judge</th><th style={{ padding: 9 }}>Current holder</th><th style={{ padding: 9 }}>Billing</th><th style={{ padding: 9 }}>Status</th></tr></thead>
+          <table style={{ width: '100%', minWidth: 1450, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <colgroup><col style={{ width: 250 }} /><col style={{ width: 220 }} /><col style={{ width: 660 }} /><col style={{ width: 145 }} /><col style={{ width: 135 }} /><col style={{ width: 100 }} /></colgroup>
+            <thead style={{ background: '#0f172a', color: '#fff' }}><tr><th style={{ padding: 9, textAlign: 'left' }}>Matter / Order</th><th style={{ padding: 9, textAlign: 'left' }}>Finalization / Rendition</th><th style={{ padding: 9, textAlign: 'left' }}>All order activities — chronological</th><th style={{ padding: 9 }}>Current holder</th><th style={{ padding: 9 }}>Billing</th><th style={{ padding: 9 }}>Status</th></tr></thead>
             <tbody>
               {visibleRows.map((row) => {
                 const matter = orderMatter(row)
                 const transactions = Array.isArray(row.transactions) ? row.transactions : []
-                const journey = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'journey')
-                const court = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'court')
-                const judge = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'judge')
+                const chronologicalTransactions = [...transactions].sort((a, b) => String(a.date || '9999-12-31').localeCompare(String(b.date || '9999-12-31')) || String(a.created_at || '').localeCompare(String(b.created_at || '')))
+                const rendition = orderRenditionTransaction(row)
+                const renditionType = orderRenditionTypeLabel(row.rendition_type)
+                const draftingLanguageDocument = orderDraftingLanguageDocument(row)
+                const draftingLanguageUploaded = Boolean(row.drafting_language_document_id || row.drafting_language_uploaded_at)
                 const holder = orderCurrentHolder(row)
                 const holderStyle = orderHolderStyle(holder)
                 const billing = orderBillingEntries(row)
@@ -31209,25 +31290,26 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 return <Fragment key={row.id}>
                   <tr style={{ borderTop: '1px solid #e2e8f0', opacity: row.completed ? .68 : 1, borderLeft: `7px solid ${drafterColor}` }}>
                     <td style={{ padding: 9, verticalAlign: 'top', background: drafterBackground }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 950 }}>{expanded ? '▾' : '▸'} {matter?.name || 'Matter not found'}</button><div style={{ fontSize: 13, color: '#0f172a', marginTop: 4 }}><strong style={{ fontWeight: 950 }}>{matterClientName(matter) || ''}</strong>{matter?.cause_number ? <span style={{ color: '#475569', fontSize: 12, fontWeight: 500 }}> • {matter.cause_number}</span> : null}</div><div style={{ marginTop: 7, fontWeight: 900 }}>{row.title || orderTypeLabel(row.order_type)}</div><span style={{ display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900, color: drafterColor, background: row.drafter === 'oc' ? '#fee2e2' : '#dbeafe' }}>{row.drafter === 'oc' ? 'OC DRAFTING' : 'MY FIRM DRAFTING'}</span>{row.auto_created && <div style={{ fontSize: 9, color: '#64748b', marginTop: 4 }}>{row.auto_source === 'calendar_event' ? 'Auto-added from calendar event' : 'Auto-added from matter status'}</div>}{!expanded && renderCollapsedOrderMatterLinks(matter)}</td>
-                    <td style={{ padding: 9, verticalAlign: 'top' }}><strong>{row.finalization_type || 'Finalization'}</strong><div style={{ marginTop: 5 }}>{row.finalization_date ? new Date(`${row.finalization_date}T12:00:00`).toLocaleDateString() : 'Date needed'}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>{orderTypeLabel(row.order_type)}</div></td>
-                    <td style={{ padding: 8, verticalAlign: 'middle', background: drafterBackground }}><div style={{ display: 'flex', alignItems: 'center', gap: 3, overflowX: 'auto', paddingBottom: 3 }}>{journey.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{!journey.length && <span style={{ color: '#64748b' }}>No handoffs recorded.</span>}</div></td>
-                    <td style={{ padding: 8, verticalAlign: 'middle', background: '#fafafa' }}><div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>{court.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{judge.map((transaction) => { const definition = orderTransactionDefinition(transaction.type); return <button key={transaction.id} type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label} — ${transaction.date || 'No date'}`} style={{ width: 64, height: 64, borderRadius: '50%', border: '3px double #a16207', background: '#fef3c7', color: '#854d0e', fontWeight: 950, display: 'grid', placeItems: 'center', alignContent: 'center' }}><span style={{ fontSize: 25 }}>{definition.icon}</span><span style={{ fontSize: 8 }}>{transaction.date ? new Date(`${transaction.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : 'SIGNED'}</span></button>})}{!court.length && !judge.length && <span style={{ color: '#64748b', fontSize: 12 }}>Not submitted</span>}</div></td>
+                    <td style={{ padding: 9, verticalAlign: 'top' }}><strong>{row.finalization_type || 'Finalization'}</strong><div style={{ marginTop: 5 }}>{row.finalization_date ? new Date(`${row.finalization_date}T12:00:00`).toLocaleDateString() : 'Date needed'}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>{orderTypeLabel(row.order_type)}</div><div style={{ marginTop: 7, borderRadius: 7, padding: '5px 7px', background: rendition ? '#ede9fe' : '#fff7ed', color: rendition ? '#6d28d9' : '#9a3412', fontSize: 11, fontWeight: 900 }}>{rendition ? `⚑ Rendered on ${rendition.date ? new Date(`${rendition.date}T12:00:00`).toLocaleDateString() : 'date needed'}` : '⌛ Needs rendition'}</div><div style={{ fontSize: 10, color: renditionType ? '#475569' : '#b45309', marginTop: 3 }}>{renditionType || 'Rendition type needed'}</div>{row.drafter === 'me' && <div style={{ marginTop: 6, borderRadius: 7, padding: '5px 7px', background: draftingLanguageUploaded ? '#dcfce7' : '#eff6ff', color: draftingLanguageUploaded ? '#166534' : '#1d4ed8', fontSize: 11, fontWeight: 900 }}>{draftingLanguageUploaded ? `📎 Drafting language uploaded${row.drafting_language_file_name ? `: ${row.drafting_language_file_name}` : ''}` : '📝 Need drafting language'}</div>}</td>
+                    <td style={{ padding: 8, verticalAlign: 'middle', background: drafterBackground }}><div style={{ display: 'flex', alignItems: 'center', gap: 3, overflowX: 'auto', paddingBottom: 3 }}>{chronologicalTransactions.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{!chronologicalTransactions.length && <span style={{ color: '#64748b' }}>No activities recorded.</span>}</div></td>
                     <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><span style={{ display: 'inline-block', border: `1px solid ${holderStyle.border}`, background: holderStyle.background, color: holderStyle.color, borderRadius: 999, padding: '6px 9px', fontSize: 11, fontWeight: 950 }}>{orderHolderLabel(holder)}</span></td>
                     <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} title="Open billing history" style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 7, fontWeight: 900 }}>◷ {billing.reduce((sum, entry) => sum + Number(entry.billing_time || 0), 0).toFixed(1)} h</button>{unread > 0 && <div style={{ color: '#b91c1c', fontWeight: 900, fontSize: 10, marginTop: 5 }}>✉ {unread} new</div>}</td>
-                    <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => patchOrderRow(row.id, row.completed ? { completed: false, completed_at: '' } : { completed: true, completed_at: new Date().toISOString() })} style={{ border: `1px solid ${row.completed ? '#94a3b8' : '#86efac'}`, borderRadius: 7, background: row.completed ? '#f8fafc' : '#dcfce7', color: row.completed ? '#475569' : '#166534', padding: 7, fontWeight: 900 }}>{row.completed ? 'Recall' : 'Complete'}</button></td>
+                    <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => toggleOrderCompleted(row)} style={{ border: `1px solid ${row.completed ? '#94a3b8' : '#86efac'}`, borderRadius: 7, background: row.completed ? '#f8fafc' : '#dcfce7', color: row.completed ? '#475569' : '#166534', padding: 7, fontWeight: 900 }}>{row.completed ? 'Recall' : 'Complete'}</button></td>
                   </tr>
-                  {expanded && <tr style={{ borderLeft: `7px solid ${drafterColor}` }}><td colSpan="7" style={{ padding: 0, background: '#f8fafc' }}><div style={{ padding: 14, borderTop: '3px solid #cbd5e1' }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(150px, 1fr))', gap: 9, marginBottom: 12 }}>
+                  {expanded && <tr style={{ borderLeft: `7px solid ${drafterColor}` }}><td colSpan="6" style={{ padding: 0, background: '#f8fafc' }}><div style={{ padding: 14, borderTop: '3px solid #cbd5e1' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 9, marginBottom: 12 }}>
                       <LabeledField label="Order title"><input value={row.title || ''} onChange={(event) => patchOrderRow(row.id, { title: event.target.value })} /></LabeledField>
                       <LabeledField label="Document type"><select value={row.order_type || 'other'} onChange={(event) => patchOrderRow(row.id, { order_type: event.target.value })}>{ORDER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
                       <LabeledField label="Drafter"><select value={row.drafter || 'me'} onChange={(event) => changeOrderDrafter(row, event.target.value)}><option value="me">Me / My Firm</option><option value="oc">Opposing Counsel</option></select></LabeledField>
                       <LabeledField label="Finalization event"><input value={row.finalization_type || ''} onChange={(event) => patchOrderRow(row.id, { finalization_type: event.target.value })} placeholder="Trial, hearing, mediation, MSA..." /></LabeledField>
                       <LabeledField label="Finalization date"><input type="date" value={row.finalization_date || ''} onChange={(event) => { patchOrderRow(row.id, { finalization_date: event.target.value }); if ((row.transactions || [])[0]) patchOrderTransaction(row.id, row.transactions[0].id, { date: event.target.value }) }} /></LabeledField>
+                      <LabeledField label="Rendition type"><select value={row.rendition_type || ''} onChange={(event) => patchOrderRow(row.id, { rendition_type: event.target.value })}>{ORDER_RENDITION_TYPES.map((item) => <option key={item.value || 'none'} value={item.value}>{item.label}</option>)}</select></LabeledField>
+                      {row.drafter === 'me' && <LabeledField label="Drafting language"><div style={{ display: 'grid', gap: 5 }}><label style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: '1px solid #93c5fd', borderRadius: 6, background: '#eff6ff', color: '#1d4ed8', padding: 7, fontWeight: 850, cursor: 'pointer' }}>{draftingLanguageUploaded ? '📎 Replace drafting language' : '📝 Upload drafting language'}<input type="file" accept=".doc,.docx,.pdf,.rtf,.txt" style={{ display: 'none' }} onChange={(event) => { uploadOrderDraftingLanguage(row, event.target.files?.[0] || null); event.target.value = '' }} /></label>{draftingLanguageUploaded && <small style={{ color: '#166534', fontWeight: 800 }}>{row.drafting_language_file_name || 'Drafting language uploaded'}</small>}{draftingLanguageDocument && <div style={{ display: 'flex', gap: 5 }}><button type="button" onClick={() => viewDocument(draftingLanguageDocument)}>View</button><button type="button" onClick={() => downloadDocument(draftingLanguageDocument)}>Download</button></div>}</div></LabeledField>}
                       <LabeledField label="Current holder"><div style={{ ...holderStyle, border: `1px solid ${holderStyle.border}`, borderRadius: 7, padding: 7, fontWeight: 900 }}>{orderHolderLabel(holder)}</div></LabeledField>
                     </div>
 
                     <section style={{ border: '2px solid #cbd5e1', borderRadius: 10, background: '#fff', padding: 11, marginBottom: 12 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Order transactions</h3><small style={{ color: '#64748b' }}>Add each handoff in the order it occurred. The row above preserves that same linear history.</small></div><div style={{ display: 'flex', gap: 7 }}><select value={orderActionDrafts[row.id] || ''} onChange={(event) => setOrderActionDrafts((current) => ({ ...current, [row.id]: event.target.value }))}><option value="">Choose activity...</option>{ORDER_TRANSACTION_TYPES.filter((item) => !['drafting_started', 'waiting_on_oc'].includes(item.value)).map((item) => <option key={item.value} value={item.value}>{item.icon} {item.label}</option>)}</select><button type="button" onClick={() => addOrderTransaction(row, orderActionDrafts[row.id])} disabled={!orderActionDrafts[row.id]}>Add today</button></div></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Order transactions</h3><small style={{ color: '#64748b' }}>Add each activity in the order it occurred. Court and judge events stay in this same chronological history.</small></div><div style={{ display: 'flex', gap: 7 }}><select value={orderActionDrafts[row.id] || ''} onChange={(event) => setOrderActionDrafts((current) => ({ ...current, [row.id]: event.target.value }))}><option value="">Choose activity...</option>{ORDER_TRANSACTION_TYPES.filter((item) => !['drafting_started', 'waiting_on_oc', 'drafting_language_uploaded'].includes(item.value)).map((item) => <option key={item.value} value={item.value}>{item.icon} {item.label}</option>)}</select><button type="button" onClick={() => addOrderTransaction(row, orderActionDrafts[row.id])} disabled={!orderActionDrafts[row.id]}>Add today</button></div></div>
                       <div style={{ overflowX: 'auto', marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr style={{ background: '#f1f5f9' }}><th style={{ padding: 6 }}>#</th><th style={{ padding: 6, textAlign: 'left' }}>Icon / activity</th><th style={{ padding: 6, textAlign: 'left' }}>Date</th><th style={{ padding: 6, textAlign: 'left' }}>Notes</th><th style={{ padding: 6 }}>Holder after</th><th style={{ padding: 6 }}>Billing</th><th style={{ padding: 6 }}></th></tr></thead><tbody>{transactions.map((transaction, index) => { const definition = orderTransactionDefinition(transaction.type); return <tr key={transaction.id} style={{ borderTop: '1px solid #e2e8f0' }}><td style={{ padding: 6, textAlign: 'center' }}>{index + 1}</td><td style={{ padding: 6 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: definition.color, fontWeight: 900 }}><span style={{ width: 30, height: 30, display: 'grid', placeItems: 'center', borderRadius: 7, background: definition.background, border: `1px solid ${definition.color}` }}>{definition.icon}</span>{definition.label}</span></td><td style={{ padding: 6 }}><input type="date" value={transaction.date || ''} onChange={(event) => patchOrderTransaction(row.id, transaction.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={transaction.note || ''} onChange={(event) => patchOrderTransaction(row.id, transaction.id, { note: event.target.value })} placeholder="Optional detail" style={{ width: '100%' }} /></td><td style={{ padding: 6, textAlign: 'center' }}>{definition.holder ? orderHolderLabel(definition.holder) : 'No transfer'}</td><td style={{ padding: 6, textAlign: 'center' }}><button type="button" onClick={() => openOrderBilling(row, definition.value)} title={`Add time: ${definition.label}`}>◷ Add time</button></td><td style={{ padding: 6, textAlign: 'center' }}>{index > 0 && <button type="button" onClick={() => removeOrderTransaction(row.id, transaction.id)} style={{ color: '#b91c1c' }}>×</button>}</td></tr>})}</tbody></table></div>
                     </section>
 
@@ -31243,7 +31325,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                   </div></td></tr>}
                 </Fragment>
               })}
-              {!visibleRows.length && <tr><td colSpan="7" style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>{orderFilters.completed === 'completed' ? 'No completed orders match these filters.' : 'No open orders match these filters. Matters with status “Finalized – Need Order” are added automatically.'}</td></tr>}
+              {!visibleRows.length && <tr><td colSpan="6" style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>{orderFilters.completed === 'completed' ? 'No completed orders match these filters.' : 'No open orders match these filters. Matters with status “Finalized – Need Order” are added automatically.'}</td></tr>}
             </tbody>
           </table>
         </div>
