@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V207'
+const MIO_APP_VERSION = 'Mio V208'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
@@ -1515,6 +1515,7 @@ function App() {
   const [clioSnapshotLoading, setClioSnapshotLoading] = useState(false)
   const [clioSnapshotError, setClioSnapshotError] = useState('')
   const [clioSnapshotLastImport, setClioSnapshotLastImport] = useState(null)
+  const [clioSnapshotLoadAttempted, setClioSnapshotLoadAttempted] = useState(false)
   const [snapshotGraphMetric, setSnapshotGraphMetric] = useState('matter_trust_funds')
   const [snapshotGraphShowInvoices, setSnapshotGraphShowInvoices] = useState(false)
   const [snapshotGraphSelectedMatterNumbers, setSnapshotGraphSelectedMatterNumbers] = useState([])
@@ -3509,6 +3510,14 @@ function App() {
     if (billingTab !== 'bulk_billing' || !matters.length) return
     setBulkBillingSelectedIds((current) => current.length ? current : matters.map((matter) => String(matter.id)))
   }, [billingTab, matters])
+
+  useEffect(() => {
+    if (page !== 'billing' || billingTab !== 'bulk_billing' || !session?.user?.id) return
+    // Bulk Billing depends on the durable Clio opening-balance rows. V207 loaded
+    // Clio matter names here but left the snapshot array empty until another page
+    // happened to request it, which made every snapshot-backed amount look like $0.
+    loadClioFinancialSnapshots({ ignoreDateFilters: true })
+  }, [page, billingTab, session?.user?.id])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioBankAccountRoles', JSON.stringify(bankAccountRoles || {})) } catch {}
@@ -16015,7 +16024,8 @@ async function updateTeamCell(memberId, field, value) {
       uninvoicedEntries: newerUninvoicedEntries,
       invoices: financeInvoicesForMatter(matter),
       ledgerRows,
-      currentLedgerRows
+      currentLedgerRows,
+      financialSnapshotResolved: hasSnapshot
     }
   }
 
@@ -16804,6 +16814,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function createAndEmailReplenishmentRequest(matter) {
+    if (!latestTrustSnapshotForMatter(matter)) throw new Error('This matter has no matched Clio financial snapshot. Refresh or link its snapshot before creating a bulk replenishment request.')
     const amount = matterReplenishmentAmount(matter)
     if (amount <= 0.005) throw new Error('No replenishment is currently due.')
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
@@ -16828,7 +16839,7 @@ async function updateTeamCell(memberId, field, value) {
 
   async function replenishSelectedMatters(matterIds) {
     const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter(Boolean)
-    const dueRows = rows.filter((matter) => matterReplenishmentAmount(matter) > 0.005)
+    const dueRows = rows.filter((matter) => latestTrustSnapshotForMatter(matter) && matterReplenishmentAmount(matter) > 0.005)
     if (!dueRows.length) return alert('None of the selected matters currently needs replenishment.')
     if (!window.confirm(`Create and email ${dueRows.length} trust replenishment request${dueRows.length === 1 ? '' : 's'}? Each request will use that matter's replenishment amount and client email.`)) return
     setBulkBillingBusy(true)
@@ -16849,7 +16860,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function paySelectedOutstandingFromTrust(matterIds) {
-    const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter(Boolean)
+    const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter((matter) => matter && latestTrustSnapshotForMatter(matter))
     const payable = rows.reduce((sum, matter) => { const finance = clientFinanceNumbers(matter); return sum + Math.min(finance.trust, finance.outstanding) }, 0)
     if (payable <= 0.005) return alert('None of the selected matters has both an outstanding balance and available trust funds.')
     if (!window.confirm(`Apply up to ${money(payable)} from trust across ${rows.length} selected matter${rows.length === 1 ? '' : 's'}?`)) return
@@ -37352,6 +37363,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   async function loadClioFinancialSnapshots({ ignoreDateFilters = false } = {}) {
     if (!session?.user?.id) return
+    setClioSnapshotLoadAttempted(false)
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
@@ -37369,6 +37381,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } catch (error) {
       setClioSnapshotError(error.message || String(error))
     } finally {
+      setClioSnapshotLoadAttempted(true)
       setClioSnapshotLoading(false)
     }
   }
@@ -38795,7 +38808,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         trustMinusMinimumMinusWip: finance.trustMinusMinimumMinusWip,
         trustMinusMinimumMinusWipMinusOutstanding: finance.trustMinusMinimumMinusWipMinusOutstanding,
         retainerTarget: matterRetainerTarget(matter),
-        replenishment: matterReplenishmentAmount(matter),
+        replenishment: finance.financialSnapshotResolved ? matterReplenishmentAmount(matter) : null,
         finance
       }
     }).filter((row) => {
@@ -38817,9 +38830,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     })
     const visibleIds = rows.map((row) => String(row.matter.id))
     const selectedVisibleIds = visibleIds.filter((id) => bulkBillingSelectedIds.includes(id))
+    const selectedSnapshotIds = rows.filter((row) => row.finance.financialSnapshotResolved && selectedVisibleIds.includes(String(row.matter.id))).map((row) => String(row.matter.id))
     const toggleSort = (field) => setBulkBillingSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
     const sortLabel = (field, label) => <button type="button" onClick={() => toggleSort(field)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 800, whiteSpace: 'nowrap' }}>{label}{bulkBillingSort.field === field ? (bulkBillingSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>
-    const moneyCell = (value) => <span style={{ color: value < -0.005 ? '#b91c1c' : value > 0.005 ? '#166534' : '#475569', fontWeight: 700 }}>{money(value)}</span>
+    const moneyCell = (value, { zeroAsDash = true } = {}) => {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return <span title="No matched financial snapshot" style={{ color: '#94a3b8', fontWeight: 700 }}>—</span>
+      if (zeroAsDash && Math.abs(Number(value)) <= 0.005) return <span style={{ color: '#94a3b8', fontWeight: 600 }}>—</span>
+      return <span style={{ color: value < -0.005 ? '#b91c1c' : value > 0.005 ? '#166534' : '#475569', fontWeight: 700 }}>{money(value)}</span>
+    }
     const visibleColumns = BULK_BILLING_COLUMNS.filter((column) => bulkBillingVisibleColumns[column.key] !== false)
     const bulkBillingTableWidth = Math.max(420, 54 + visibleColumns.reduce((sum, column) => sum + column.width, 0))
     const caseTypeSelectionLabel = allCaseTypesSelected ? 'All' : bulkBillingSelectedCaseTypes.length ? `${bulkBillingSelectedCaseTypes.length} selected` : 'None'
@@ -38831,24 +38849,33 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
     const renderBulkBillingCell = (row, column) => {
       const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
+      const snapshotDependent = ['trust','outstanding','trustMinusMinimum','trustMinusMinimumMinusOutstanding','trustMinusMinimumMinusWip','trustMinusMinimumMinusWipMinusOutstanding','replenishment'].includes(column.key)
       if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
-      if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}<div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div></td>
+      if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
-      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={clioSnapshotLoading || !!clioSnapshotError || row.wip <= 0.005}>Review WIP</button> <button type="button" title={row.finance.financialSnapshotResolved ? '' : 'Blocked until this matter has a matched Clio financial snapshot'} onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={clioSnapshotLoading || !!clioSnapshotError || !row.finance.financialSnapshotResolved || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+      if (snapshotDependent && !row.finance.financialSnapshotResolved) return <td key={column.key} title="No matched Clio financial snapshot" style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(null)}</td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
     }
     const currentReviewMatter = bulkWipReview.open ? matters.find((matter) => String(matter.id) === String(bulkWipReview.matter_ids[bulkWipReview.index])) : null
     const reviewTotal = bulkWipReview.lines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
-    const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
+    const snapshotDependentColumnKeys = new Set(['trust','outstanding','trustMinusMinimum','trustMinusMinimumMinusOutstanding','trustMinusMinimumMinusWip','trustMinusMinimumMinusWipMinusOutstanding','replenishment'])
+    const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.filter((row) => !snapshotDependentColumnKeys.has(column.key) || row.finance.financialSnapshotResolved).reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
+    const resolvedSnapshotCount = rows.filter((row) => row.finance.financialSnapshotResolved).length
+    const unresolvedSnapshotCount = rows.length - resolvedSnapshotCount
+    const loadedSnapshotBalanceTotal = (clioSnapshotRows || []).reduce((sum, snapshot) => sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)), 0)
+    const resolvedSnapshotBalanceTotal = matters.reduce((sum, matter) => { const snapshot = latestTrustSnapshotForMatter(matter); return snapshot ? sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)) : sum }, 0)
+    const snapshotMatchFailure = clioSnapshotLoadAttempted && !clioSnapshotLoading && loadedSnapshotBalanceTotal > 0.005 && resolvedSnapshotBalanceTotal <= 0.005
+    const snapshotDataUnavailable = !clioSnapshotLoadAttempted || clioSnapshotLoading || !!clioSnapshotError || snapshotMatchFailure || !clioSnapshotRows.length
 
     return <div style={{ display: 'grid', gap: 14 }}>
       <section className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}>
           <div><h2 style={{ margin: 0 }}>Bulk billing</h2><div className="hint">Review WIP, create invoices, apply trust, and send replenishment requests for checked matters.</div></div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="btnPrimary" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
-            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedVisibleIds)}>Pay all OBs with trust</button>
-            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => replenishSelectedMatters(selectedVisibleIds)}>Replenish all selected</button>
+            <button type="button" className="btnPrimary" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
+            <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all OBs with trust</button>
+            <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => replenishSelectedMatters(selectedSnapshotIds)}>Replenish all selected</button>
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginTop: 14, alignItems: 'end' }}>
@@ -38874,6 +38901,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         </div>
         <div style={{ marginTop: 10, color: '#475569' }}>{selectedVisibleIds.length} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} checked. Bulk actions apply only to these checked rows.</div>
+        {clioSnapshotLoading && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e40af', padding: 10, fontWeight: 700 }}>Loading saved Clio financial snapshots… Snapshot-dependent actions are temporarily disabled.</div>}
+        {!clioSnapshotLoading && clioSnapshotError && <div style={{ marginTop: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 10, fontWeight: 700 }}>Financial snapshots could not be loaded: {clioSnapshotError}. Trust, outstanding-balance, and replenishment actions are disabled.</div>}
+        {snapshotMatchFailure && <div style={{ marginTop: 10, border: '2px solid #dc2626', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 10, fontWeight: 800 }}>Mio loaded {clioSnapshotRows.length} saved snapshot rows containing balances, but none matched a Mio matter. Do not use bulk trust actions. Review the Clio matter links or refresh financial data.</div>}
+        {!clioSnapshotLoading && !clioSnapshotError && clioSnapshotLoadAttempted && !clioSnapshotRows.length && <div style={{ marginTop: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e', padding: 10, fontWeight: 700 }}>No saved Clio financial snapshots were returned. Snapshot-backed amounts are shown as — and bulk trust actions are disabled.</div>}
+        {!snapshotMatchFailure && !clioSnapshotLoading && clioSnapshotRows.length > 0 && <div style={{ marginTop: 10, border: `1px solid ${unresolvedSnapshotCount ? '#f59e0b' : '#86efac'}`, borderRadius: 8, background: unresolvedSnapshotCount ? '#fffbeb' : '#f0fdf4', color: unresolvedSnapshotCount ? '#92400e' : '#166534', padding: 10 }}><strong>{clioSnapshotRows.length} saved snapshot row{clioSnapshotRows.length === 1 ? '' : 's'} loaded.</strong> {resolvedSnapshotCount} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} matched.{unresolvedSnapshotCount ? ` ${unresolvedSnapshotCount} unmatched matter${unresolvedSnapshotCount === 1 ? '' : 's'} show — for snapshot-backed values and are excluded from bulk trust actions.` : ''}</div>}
         {bulkBillingResult && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', padding: 10 }}>{bulkBillingResult}</div>}
       </section>
 
@@ -38881,7 +38913,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <div ref={bulkBillingTableScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('table')} style={{ overflowX: 'auto' }}><table style={{ width: bulkBillingTableWidth, minWidth: bulkBillingTableWidth, borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: '#f8fafc' }}>
             <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1' }}><input type="checkbox" aria-label="Select all filtered matters" checked={!!visibleIds.length && selectedVisibleIds.length === visibleIds.length} onChange={(event) => setBulkBillingSelectedIds((current) => event.target.checked ? Array.from(new Set([...current, ...visibleIds])) : current.filter((id) => !visibleIds.includes(id)))} /></th>
-            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}{bulkColumnTotal(column) !== null && <div style={{ marginTop: 4, fontSize: 12, color: '#0f172a', fontWeight: 900 }}>{money(bulkColumnTotal(column))}</div>}</th>)}
+            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}{bulkColumnTotal(column) !== null && <div style={{ marginTop: 4, fontSize: 12, color: '#0f172a', fontWeight: 900 }}>{snapshotDataUnavailable && snapshotDependentColumnKeys.has(column.key) ? '—' : money(bulkColumnTotal(column))}</div>}</th>)}
           </tr></thead>
           <tbody>{rows.map((row) => <tr key={row.matter.id} style={{ background: bulkBillingSelectedIds.includes(String(row.matter.id)) ? '#fff' : '#f8fafc', opacity: bulkBillingSelectedIds.includes(String(row.matter.id)) ? 1 : 0.66 }}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><input type="checkbox" checked={bulkBillingSelectedIds.includes(String(row.matter.id))} onChange={() => setBulkBillingSelectedIds((current) => current.includes(String(row.matter.id)) ? current.filter((id) => id !== String(row.matter.id)) : [...current, String(row.matter.id)])} /></td>
