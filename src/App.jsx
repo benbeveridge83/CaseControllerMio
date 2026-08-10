@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V208'
+const MIO_APP_VERSION = 'Mio V209'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
@@ -228,6 +228,37 @@ const DEFAULT_EVENT_CHECKLIST_TEMPLATES = {
 
 const ENFORCEMENT_PREDICATE_TYPES = [{"id":"absence-of-entry-in-record","label":"ABSENCE OF ENTRY IN RECORD","page":1},{"id":"absence-of-public-record-or-entry","label":"ABSENCE OF PUBLIC RECORD OR ENTRY","page":3},{"id":"acceptance-or-rejection-of-an-offer","label":"ACCEPTANCE OR REJECTION OF AN OFFER","page":5},{"id":"accounting-records","label":"ACCOUNTING RECORDS","page":7},{"id":"acknowledged-documents","label":"ACKNOWLEDGED DOCUMENTS","page":11},{"id":"admission-statement-by-agent-or-employee","label":"ADMISSION/STATEMENT BY AGENT OR EMPLOYEE","page":12},{"id":"admission-statement-of-party-opponent","label":"ADMISSION/STATEMENT OF PARTY OPPONENT","page":13},{"id":"affidavit","label":"AFFIDAVIT","page":15},{"id":"age-of-a-document","label":"AGE OF A DOCUMENT","page":17},{"id":"airplane-records","label":"AIRPLANE RECORDS","page":20},{"id":"alcohol-and-drug-test-kits","label":"ALCOHOL AND DRUG TEST KITS","page":23},{"id":"alcohol-and-drug-treatment-records","label":"ALCOHOL AND DRUG TREATMENT RECORDS","page":24},{"id":"anatomic-charts","label":"ANATOMIC CHARTS","page":26},{"id":"ancient-documents","label":"ANCIENT DOCUMENTS","page":27},{"id":"animation","label":"ANIMATION","page":29},{"id":"appearance","label":"APPEARANCE","page":30},{"id":"appellate-attorney-s-fees","label":"APPELLATE ATTORNEY’S FEES","page":34},{"id":"arrest-records","label":"ARREST RECORDS","page":36},{"id":"article-or-object","label":"ARTICLE OR OBJECT","page":37},{"id":"artist-s-sketch","label":"ARTIST’S SKETCH","page":38},{"id":"asset-search-reports","label":"ASSET SEARCH REPORTS","page":39},{"id":"assumed-name-record","label":"ASSUMED NAME RECORD","page":40},{"id":"attorneys-fees","label":"ATTORNEYS’ FEES","page":42},{"id":"audio-recordings","label":"AUDIO RECORDINGS","page":45},{"id":"audit","label":"AUDIT","page":49},{"id":"automobile-modules","label":"AUTOMOBILE MODULES","page":51},{"id":"automobile-record","label":"AUTOMOBILE RECORD","page":54},{"id":"ballistics","label":"BALLISTICS","page":55},{"id":"bank-record","label":"BANK RECORD","page":57},{"id":"bankruptcy-record","label":"BANKRUPTCY RECORD","page":59},{"id":"baptismal-certificate","label":"BAPTISMAL CERTIFICATE","page":60},{"id":"best-evidence","label":"BEST EVIDENCE","page":63},{"id":"bills-and-invoice","label":"BILLS AND INVOICE","page":68},{"id":"birth-certification","label":"BIRTH CERTIFICATION","page":70},{"id":"black-board","label":"BLACK BOARD","page":71},{"id":"blood-sample","label":"BLOOD SAMPLE","page":72},{"id":"boat-record","label":"BOAT RECORD","page":74},{"id":"body-language-nod-of-head-or-shrug-of-shoulders","label":"BODY LANGUAGE (NOD OF HEAD OR SHRUG OF SHOULDERS)","page":75},{"id":"business-phone-call","label":"BUSINESS PHONE CALL","page":76},{"id":"business-record","label":"BUSINESS RECORD","page":77},{"id":"caller-id-records","label":"CALLER ID RECORDS","page":84},{"id":"certified-copy","label":"CERTIFIED COPY","page":87},{"id":"charge-account-record","label":"CHARGE ACCOUNT RECORD","page":89},{"id":"chart","label":"CHART","page":90},{"id":"chat-applications","label":"CHAT APPLICATIONS","page":91},{"id":"chat-room-communications","label":"CHAT ROOM COMMUNICATIONS","page":97},{"id":"check","label":"CHECK","page":102},{"id":"child-custody-evaluation","label":"CHILD CUSTODY EVALUATION","page":103},{"id":"child-support-record","label":"CHILD SUPPORT RECORD","page":105},{"id":"computer-generated-record","label":"COMPUTER GENERATED RECORD","page":107},{"id":"commercial-paper","label":"COMMERCIAL PAPER","page":109},{"id":"computer-printout","label":"COMPUTER PRINTOUT","page":110},{"id":"computerized-summary","label":"COMPUTERIZED SUMMARY","page":112},{"id":"contents-of-computer-hard-drive","label":"CONTENTS OF COMPUTER HARD DRIVE","page":115},{"id":"contract-with-third-party","label":"CONTRACT WITH THIRD PARTY","page":118},{"id":"court-ordered-report","label":"COURT ORDERED REPORT","page":120},{"id":"credit-report","label":"CREDIT REPORT","page":122},{"id":"creditor-record","label":"CREDITOR RECORD","page":123},{"id":"criminal-records","label":"CRIMINAL RECORDS","page":124},{"id":"data-compilation","label":"DATA COMPILATION","page":126},{"id":"data-stored-electronically","label":"DATA STORED ELECTRONICALLY","page":128},{"id":"dating-applications","label":"DATING APPLICATIONS","page":130},{"id":"death-certificate","label":"DEATH CERTIFICATE","page":134},{"id":"deed","label":"DEED","page":135},{"id":"demonstrative-aid","label":"DEMONSTRATIVE AID","page":138},{"id":"demonstrative-evidence","label":"DEMONSTRATIVE EVIDENCE","page":139},{"id":"department-store-bill","label":"DEPARTMENT STORE BILL","page":141},{"id":"deposition-excerpts","label":"DEPOSITION EXCERPTS","page":142},{"id":"deposition-testimony","label":"DEPOSITION TESTIMONY","page":145},{"id":"diagram","label":"DIAGRAM","page":149},{"id":"distinctive-characteristic","label":"DISTINCTIVE CHARACTERISTIC","page":151},{"id":"dna-sample","label":"DNA SAMPLE","page":152},{"id":"documentary-evidence","label":"DOCUMENTARY EVIDENCE","page":154},{"id":"domestic-public-documents-not-under-seal","label":"DOMESTIC PUBLIC DOCUMENTS NOT UNDER SEAL","page":155},{"id":"domestic-public-documents-under-seal","label":"DOMESTIC PUBLIC DOCUMENTS UNDER SEAL","page":157},{"id":"doorbell-recording","label":"DOORBELL RECORDING","page":158},{"id":"dfps-record","label":"DFPS RECORD","page":159},{"id":"drawings-by-witness","label":"DRAWINGS BY WITNESS","page":161},{"id":"driver-record","label":"DRIVER RECORD","page":163},{"id":"dying-declaration","label":"DYING DECLARATION","page":165},{"id":"ebay-postings-for-property-value","label":"EBAY POSTINGS FOR PROPERTY VALUE","page":167},{"id":"e-mail","label":"E-MAIL","page":175},{"id":"emoji-emoticon","label":"EMOJI/EMOTICON","page":182},{"id":"employment-contract","label":"EMPLOYMENT CONTRACT","page":186},{"id":"employment-record","label":"EMPLOYMENT RECORD","page":187},{"id":"excited-utterance","label":"EXCITED UTTERANCE","page":188},{"id":"exhibition-of-person","label":"EXHIBITION OF PERSON","page":190},{"id":"existing-condition-mental-emotional-or-physical","label":"EXISTING CONDITION (MENTAL, EMOTIONAL OR PHYSICAL)","page":191},{"id":"expert-opinion","label":"EXPERT OPINION","page":193},{"id":"expert-testimony","label":"EXPERT TESTIMONY","page":194},{"id":"facebook","label":"FACEBOOK","page":195},{"id":"family-record","label":"FAMILY RECORD","page":213},{"id":"financial-information-statement","label":"FINANCIAL INFORMATION STATEMENT","page":215},{"id":"fingerprints","label":"FINGERPRINTS","page":217},{"id":"foreign-decrees","label":"FOREIGN DECREES","page":218},{"id":"geolocation","label":"GEOLOCATION","page":224},{"id":"gif","label":"GIF","page":227},{"id":"goodwill-of-a-professional-business","label":"GOODWILL OF A PROFESSIONAL BUSINESS","page":230},{"id":"government-records","label":"GOVERNMENT RECORDS","page":232},{"id":"hair-sample","label":"HAIR SAMPLE","page":234},{"id":"handwriting-comparison","label":"HANDWRITING COMPARISON","page":236},{"id":"handwriting-identification","label":"HANDWRITING IDENTIFICATION","page":238},{"id":"hospital-record","label":"HOSPITAL RECORD","page":242},{"id":"identification-of-common-physical-item","label":"IDENTIFICATION OF COMMON PHYSICAL ITEM","page":245},{"id":"identification-of-unique-physical-item","label":"IDENTIFICATION OF UNIQUE PHYSICAL ITEM","page":246},{"id":"income-tax-record","label":"INCOME TAX RECORD","page":250},{"id":"instant-messages","label":"INSTANT MESSAGES","page":254},{"id":"insurance-policies","label":"INSURANCE POLICIES","page":256},{"id":"insurance-record","label":"INSURANCE RECORD","page":260},{"id":"inventory","label":"INVENTORY","page":264},{"id":"judgment","label":"JUDGMENT","page":266},{"id":"judicial-admission","label":"JUDICIAL ADMISSION","page":268},{"id":"judicial-notice","label":"JUDICIAL NOTICE","page":271},{"id":"law-of-a-foreign-country","label":"LAW OF A FOREIGN COUNTRY","page":274},{"id":"letters-from-educators","label":"LETTERS FROM EDUCATORS","page":282},{"id":"letters-from-mental-health-professional","label":"LETTERS FROM MENTAL HEALTH PROFESSIONAL","page":286},{"id":"libel","label":"LIBEL","page":292},{"id":"map","label":"MAP","page":294},{"id":"marital-agreement","label":"MARITAL AGREEMENT","page":295},{"id":"market-report","label":"MARKET REPORT","page":296},{"id":"marriage-license","label":"MARRIAGE LICENSE","page":298},{"id":"mediation-agreement","label":"MEDIATION AGREEMENT","page":299},{"id":"medical-bill","label":"MEDICAL BILL","page":300},{"id":"medical-diagnosis","label":"MEDICAL DIAGNOSIS","page":304},{"id":"medical-record","label":"MEDICAL RECORD","page":306},{"id":"medical-treatment","label":"MEDICAL TREATMENT","page":308},{"id":"meme","label":"MEME","page":310},{"id":"mortality-table","label":"MORTALITY TABLE","page":314},{"id":"motion-picture","label":"MOTION PICTURE","page":316},{"id":"newspaper-and-periodical","label":"NEWSPAPER AND PERIODICAL","page":318},{"id":"non-expert-opinion","label":"NON-EXPERT OPINION","page":319},{"id":"non-testimonial-statement-hearsay","label":"NON-TESTIMONIAL STATEMENT (HEARSAY)","page":320},{"id":"offer-of-settlement-or-compromise","label":"OFFER OF SETTLEMENT OR COMPROMISE","page":321},{"id":"official-publication","label":"OFFICIAL PUBLICATION","page":322},{"id":"on-star-toll-tag-records","label":"ON STAR/TOLL TAG RECORDS","page":323},{"id":"operative-fact","label":"OPERATIVE FACT","page":326},{"id":"optional-completeness","label":"OPTIONAL COMPLETENESS","page":327},{"id":"oral-contract","label":"ORAL CONTRACT","page":328},{"id":"other-states-law","label":"OTHER STATES LAW","page":329},{"id":"out-of-court-experiment","label":"OUT OF COURT EXPERIMENT","page":331},{"id":"overhead-depiction","label":"OVERHEAD DEPICTION","page":334},{"id":"owner-s-opinion-of-value","label":"OWNER’S OPINION OF VALUE","page":335},{"id":"partnership-records","label":"PARTNERSHIP RECORDS","page":336},{"id":"party-s-implied-admission","label":"PARTY’S IMPLIED ADMISSION","page":340},{"id":"past-recollection-recorded","label":"PAST RECOLLECTION RECORDED","page":342},{"id":"paternity","label":"PATERNITY","page":347},{"id":"paycheck-stubs","label":"PAYCHECK STUBS","page":350},{"id":"payroll-record","label":"PAYROLL RECORD","page":354},{"id":"personal-knowledge","label":"PERSONAL KNOWLEDGE","page":358},{"id":"phone-locator-and-location-records","label":"PHONE LOCATOR AND LOCATION RECORDS","page":359},{"id":"photograph","label":"PHOTOGRAPH","page":362},{"id":"physician-patient-privilege","label":"PHYSICIAN-PATIENT PRIVILEGE","page":363},{"id":"police-reports","label":"POLICE REPORTS","page":367},{"id":"prenuptial-agreement","label":"PRENUPTIAL AGREEMENT","page":368},{"id":"present-sense-impression","label":"PRESENT SENSE IMPRESSION","page":369},{"id":"prior-conviction","label":"PRIOR CONVICTION","page":372},{"id":"prior-inconsistent-statement","label":"PRIOR INCONSISTENT STATEMENT","page":377},{"id":"prior-testimony-of-a-party","label":"PRIOR TESTIMONY OF A PARTY","page":379},{"id":"probate-record","label":"PROBATE RECORD","page":380},{"id":"promissory-note","label":"PROMISSORY NOTE","page":382},{"id":"property-tax-record","label":"PROPERTY TAX RECORD","page":384},{"id":"public-record","label":"PUBLIC RECORD","page":386},{"id":"public-report","label":"PUBLIC REPORT","page":391},{"id":"publication","label":"PUBLICATION","page":394},{"id":"real-estate-record","label":"REAL ESTATE RECORD","page":395},{"id":"reconstruction-of-event","label":"RECONSTRUCTION OF EVENT","page":397},{"id":"record-of-services-rendered","label":"RECORD OF SERVICES RENDERED","page":398},{"id":"recorded-recollection","label":"RECORDED RECOLLECTION","page":403},{"id":"regularly-maintained-record","label":"REGULARLY MAINTAINED RECORD","page":406},{"id":"religious-belief","label":"RELIGIOUS BELIEF","page":407},{"id":"religious-record","label":"RELIGIOUS RECORD","page":408},{"id":"reputation-as-to-character","label":"REPUTATION AS TO CHARACTER","page":410},{"id":"reputation-concerning-personal-or-family-history","label":"REPUTATION CONCERNING PERSONAL OR FAMILY HISTORY","page":412},{"id":"reputation-for-truthfulness","label":"REPUTATION FOR TRUTHFULNESS","page":414},{"id":"rule-11-agreement","label":"RULE 11 AGREEMENT","page":415},{"id":"school-record","label":"SCHOOL RECORD","page":416},{"id":"scientific-evidence","label":"SCIENTIFIC EVIDENCE","page":420},{"id":"self-authentication-no-extrinsic-evidence-required","label":"SELF-AUTHENTICATION (NO EXTRINSIC EVIDENCE REQUIRED)","page":422},{"id":"shoe-print","label":"SHOE PRINT","page":428},{"id":"signed-document","label":"SIGNED DOCUMENT","page":429},{"id":"silent-witness","label":"SILENT WITNESS","page":431},{"id":"slander","label":"SLANDER","page":433},{"id":"social-media-page-printout","label":"SOCIAL MEDIA PAGE PRINTOUT","page":434},{"id":"specific-instances-of-conduct-exception","label":"SPECIFIC INSTANCES OF CONDUCT - EXCEPTION","page":437},{"id":"specific-instances-of-conduct-generally","label":"SPECIFIC INSTANCES OF CONDUCT - GENERALLY","page":440},{"id":"state-of-mind","label":"STATE OF MIND","page":442},{"id":"statement-by-a-dead-person","label":"STATEMENT BY A DEAD PERSON","page":443},{"id":"statement-for-purpose-of-medical-diagnosis-or-treatment","label":"STATEMENT FOR PURPOSE OF MEDICAL DIAGNOSIS OR TREATMENT","page":445},{"id":"statement-from-public-official","label":"STATEMENT FROM PUBLIC OFFICIAL","page":448},{"id":"statement-of-personal-or-family-history","label":"STATEMENT OF PERSONAL OR FAMILY HISTORY","page":449},{"id":"stipulation","label":"STIPULATION","page":452},{"id":"stocks-and-bond-records","label":"STOCKS AND BOND RECORDS","page":454},{"id":"store-rewards-card-records","label":"STORE REWARDS CARD RECORDS","page":456},{"id":"summary","label":"SUMMARY","page":458},{"id":"summary-of-testimony","label":"SUMMARY OF TESTIMONY","page":460},{"id":"tax-record","label":"TAX RECORD","page":462},{"id":"telephone-call-log","label":"TELEPHONE CALL LOG","page":465},{"id":"telephone-conversation-speaker-s-voice-not-recognized","label":"TELEPHONE CONVERSATION (SPEAKER’S VOICE NOT RECOGNIZED)","page":466},{"id":"telephone-conversation-speaker-s-voice-recognized","label":"TELEPHONE CONVERSATION (SPEAKER’S VOICE RECOGNIZED)","page":468},{"id":"testimony-by-custodian-of-record","label":"TESTIMONY BY CUSTODIAN OF RECORD","page":469},{"id":"texas-department-of-family-and-protective-services-record","label":"TEXAS DEPARTMENT OF FAMILY AND PROTECTIVE SERVICES RECORD","page":471},{"id":"text-messages","label":"TEXT MESSAGES","page":475},{"id":"thermogram","label":"THERMOGRAM","page":483},{"id":"to-prove-character-for-truthfulness","label":"TO PROVE CHARACTER FOR TRUTHFULNESS","page":484},{"id":"to-prove-character-reputation-for-untruthfulness","label":"TO PROVE CHARACTER/REPUTATION FOR UNTRUTHFULNESS","page":485},{"id":"toll-tag-records","label":"TOLL TAG RECORDS","page":486},{"id":"trade-inscription","label":"TRADE INSCRIPTION","page":489},{"id":"trust-record","label":"TRUST RECORD","page":490},{"id":"typewriting","label":"TYPEWRITING","page":493},{"id":"unnatural-silence","label":"UNNATURAL SILENCE","page":494},{"id":"use-of-undisclosed-witness","label":"USE OF UNDISCLOSED WITNESS","page":496},{"id":"utility-bills","label":"UTILITY BILLS","page":499},{"id":"video-recordings","label":"VIDEO RECORDINGS","page":502},{"id":"vital-statistics-record","label":"VITAL STATISTICS RECORD","page":505},{"id":"voice-identification","label":"VOICE IDENTIFICATION","page":507},{"id":"voice-print-sound-spectrograms","label":"VOICE PRINT (SOUND SPECTROGRAMS)","page":508},{"id":"weather-reports","label":"WEATHER REPORTS","page":510},{"id":"websites","label":"WEBSITES","page":512},{"id":"will","label":"WILL","page":517},{"id":"writing-in-reply-letter","label":"WRITING IN REPLY LETTER","page":529},{"id":"writing-observed-by-witness","label":"WRITING OBSERVED BY WITNESS","page":530},{"id":"writing-of-adverse-party","label":"WRITING OF ADVERSE PARTY","page":531},{"id":"writing-of-expert","label":"WRITING OF EXPERT","page":533},{"id":"written-admission-from-a-party","label":"WRITTEN ADMISSION FROM A PARTY","page":535},{"id":"x-ray","label":"X-RAY","page":537}]
 
+const ORDER_TYPES = [
+  { value: 'final_order', label: 'Final Order' },
+  { value: 'temporary_order', label: 'Temporary Order' },
+  { value: 'temporary_hearing_order', label: 'Temporary Hearing Order' },
+  { value: 'rule_11', label: 'Rule 11 Agreement' },
+  { value: 'agreed_order', label: 'Agreed Order' },
+  { value: 'other', label: 'Other' }
+]
+
+const ORDER_TRANSACTION_TYPES = [
+  { value: 'drafting_started', label: 'I am drafting', short: 'Drafting', icon: '✎', color: '#2563eb', background: '#dbeafe', holder: 'me', lane: 'journey' },
+  { value: 'waiting_on_oc', label: 'Waiting on opposing counsel to draft', short: 'Waiting on OC', icon: '⌛', color: '#b91c1c', background: '#fee2e2', holder: 'oc', lane: 'journey' },
+  { value: 'assigned_paralegal', label: 'Assigned drafting task to paralegal', short: 'Tasked paralegal', icon: '☷', color: '#1d4ed8', background: '#eff6ff', holder: 'me', lane: 'journey' },
+  { value: 'received_first_draft', label: 'Received first draft from paralegal', short: 'First draft received', icon: '▤', color: '#1d4ed8', background: '#dbeafe', holder: 'me', lane: 'journey' },
+  { value: 'reviewed_draft', label: 'Reviewed or revised draft', short: 'Reviewed draft', icon: '✓', color: '#1d4ed8', background: '#eff6ff', holder: 'me', lane: 'journey' },
+  { value: 'sent_to_client', label: 'Sent order to client', short: 'Sent to client', icon: '➜', color: '#0f766e', background: '#ccfbf1', holder: 'client', lane: 'journey' },
+  { value: 'received_from_client', label: 'Received order from client', short: 'Received from client', icon: '⇠', color: '#0f766e', background: '#ccfbf1', holder: 'me', lane: 'journey' },
+  { value: 'client_approved', label: 'Client approved order', short: 'Client approved', icon: '★', color: '#0f766e', background: '#ccfbf1', holder: 'me', lane: 'journey' },
+  { value: 'sent_to_oc', label: 'Sent order to opposing counsel', short: 'Sent to OC', icon: '➜', color: '#b91c1c', background: '#fee2e2', holder: 'oc', lane: 'journey' },
+  { value: 'received_from_oc', label: 'Received order from opposing counsel', short: 'Received from OC', icon: '⇠', color: '#b91c1c', background: '#fee2e2', holder: 'me', lane: 'journey' },
+  { value: 'sent_to_me', label: 'Opposing counsel sent order to me', short: 'Sent to me', icon: '⇠', color: '#2563eb', background: '#dbeafe', holder: 'me', lane: 'journey' },
+  { value: 'me_signed', label: 'I signed the order', short: 'I signed', icon: '✍', color: '#1d4ed8', background: '#dbeafe', holder: null, lane: 'journey' },
+  { value: 'oc_signed', label: 'Opposing counsel signed the order', short: 'OC signed', icon: '✍', color: '#b91c1c', background: '#fee2e2', holder: null, lane: 'journey' },
+  { value: 'submitted_to_court_me', label: 'I submitted proposed order to court', short: 'Mine to court', icon: '📜', color: '#1d4ed8', background: '#dbeafe', holder: 'court', lane: 'court' },
+  { value: 'submitted_to_court_oc', label: 'Opposing counsel submitted proposed order to court', short: 'OC to court', icon: '📜', color: '#b91c1c', background: '#fee2e2', holder: 'court', lane: 'court' },
+  { value: 'court_returned', label: 'Court returned order for revision', short: 'Court returned', icon: '↩', color: '#7c3aed', background: '#ede9fe', holder: 'me', lane: 'journey' },
+  { value: 'judge_signed', label: 'Judge signed the order', short: 'Judge signed', icon: '⚖', color: '#854d0e', background: '#fef3c7', holder: 'me', lane: 'judge' },
+  { value: 'sent_signed_to_client', label: 'Sent signed order to client', short: 'Signed order to client', icon: '✉', color: '#0f766e', background: '#ccfbf1', holder: 'client', lane: 'journey' },
+  { value: 'other', label: 'Other order activity', short: 'Other', icon: '●', color: '#475569', background: '#f1f5f9', holder: null, lane: 'journey' }
+]
+
 const appPages = [
   { value: 'team', label: 'Team' },
   { value: 'clients', label: 'Clients' },
@@ -246,6 +277,7 @@ const appPages = [
   { value: 'calendar', label: 'Calendar' },
   { value: 'checklist', label: 'Checklist' },
   { value: 'need_to_set', label: 'Need to Set' },
+  { value: 'orders', label: 'Orders' },
   { value: 'setting_center', label: 'Setting Center' },
   { value: 'discovery', label: 'Discovery' },
   { value: 'documents', label: 'Documents' },
@@ -297,6 +329,7 @@ const screenSaverBasePages = [
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
   { value: 'checklist', label: 'Checklist', page: 'checklist' },
   { value: 'need_to_set', label: 'Need to Set', page: 'need_to_set' },
+  { value: 'orders', label: 'Orders', page: 'orders' },
   { value: 'setting_center', label: 'Setting Center', page: 'setting_center' },
   { value: 'discovery_their_requests', label: "Discovery - Their Requests", page: 'discovery', discoverySide: 'their' },
   { value: 'discovery_our_requests', label: 'Discovery - Our Requests', page: 'discovery', discoverySide: 'ours' },
@@ -2163,6 +2196,13 @@ function App() {
   const [needToSetTocDock, setNeedToSetTocDock] = useState(() => localStorage.getItem('caseMioNeedToSetTocDock') || 'left')
   const [needToSetCompanions, setNeedToSetCompanions] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetCompanions') || '{}') } catch { return {} } })
   const [needToSetStepData, setNeedToSetStepData] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepData') || '{}') } catch { return {} } })
+  const [orderRows, setOrderRows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderRows') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
+  const [orderExpandedIds, setOrderExpandedIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderExpandedIds') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
+  const [orderFilters, setOrderFilters] = useState(() => { try { return { type: 'all', holder: 'all', search: '', completed: 'open', ...(JSON.parse(localStorage.getItem('caseMioOrderFilters') || '{}') || {}) } } catch { return { type: 'all', holder: 'all', search: '', completed: 'open' } } })
+  const [showOrderForm, setShowOrderForm] = useState(false)
+  const [orderForm, setOrderForm] = useState({ matter_id: '', title: '', order_type: 'temporary_order', drafter: 'me', finalization_type: 'Hearing', finalization_date: '' })
+  const [orderActionDrafts, setOrderActionDrafts] = useState({})
+  const ordersAutoEmailRefreshRef = useRef(false)
   const [peopleImportRows, setPeopleImportRows] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioPeopleImportRows') || '[]') } catch { return [] } })
   const [peopleTemplateOptions, setPeopleTemplateOptions] = useState(() => {
     const defaults = { client: true, opposingParty: true, opposingCounsel: true, presidingCoordinator: true, associateCoordinator: true, presidingReporter: true, associateReporter: true, mediator: true, otherCourtPeople: true, thirdParties: true }
@@ -2907,6 +2947,9 @@ function App() {
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
       caseMioNeedToSetStepBillingNotes: { setter: setNeedToSetStepBillingNotes, kind: 'object', fallback: {} },
+      caseMioOrderRows: { setter: (value) => setOrderRows((current) => mergeMioArraysById(Array.isArray(value) ? value : [], current)), kind: 'array', fallback: [] },
+      caseMioOrderExpandedIds: { setter: setOrderExpandedIds, kind: 'array', fallback: [] },
+      caseMioOrderFilters: { setter: (value) => setOrderFilters({ type: 'all', holder: 'all', search: '', completed: 'open', ...(value || {}) }), kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
@@ -3613,6 +3656,50 @@ function App() {
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetTocDock', needToSetTocDock || 'left') } catch {} }, [needToSetTocDock])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetCompanions', JSON.stringify(needToSetCompanions || {})) } catch {} }, [needToSetCompanions])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetStepData', JSON.stringify(needToSetStepData || {})) } catch {} }, [needToSetStepData])
+  useEffect(() => { try { saveMioStateKey('caseMioOrderRows', JSON.stringify(orderRows || [])) } catch {} }, [orderRows])
+  useEffect(() => { try { saveMioStateKey('caseMioOrderExpandedIds', JSON.stringify(orderExpandedIds || [])) } catch {} }, [orderExpandedIds])
+  useEffect(() => { try { saveMioStateKey('caseMioOrderFilters', JSON.stringify(orderFilters || {})) } catch {} }, [orderFilters])
+
+  useEffect(() => {
+    if (!Array.isArray(matters) || !matters.length) return
+    const eligible = matters.filter((matter) => String(matter?.matter_status || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ') === 'finalized need order')
+    if (!eligible.length) return
+    setOrderRows((current) => {
+      const existingIds = new Set((current || []).map((row) => String(row.id || '')))
+      const additions = eligible.filter((matter) => !existingIds.has(`final-order-${matter.id}`)).map((matter) => {
+        const finalizationDate = String(matter.finalization_date || matter.trial_date || matter.hearing_date || matter.mediation_date || matter.matter_status_changed_at || '').slice(0, 10)
+        return {
+          id: `final-order-${matter.id}`,
+          matter_id: matter.id,
+          title: 'Final Order',
+          order_type: 'final_order',
+          drafter: 'me',
+          finalization_type: 'Finalized matter',
+          finalization_date: finalizationDate,
+          transactions: [{ id: `order-start-${matter.id}`, type: 'drafting_started', date: finalizationDate, note: 'Automatically added when matter status became Finalized Need Order.', created_at: matter.matter_status_changed_at || new Date().toISOString() }],
+          completed: false,
+          completed_at: '',
+          auto_created: true,
+          created_at: matter.matter_status_changed_at || new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      })
+      return additions.length ? [...current, ...additions] : current
+    })
+  }, [matters])
+
+  useEffect(() => {
+    if (page !== 'orders') {
+      ordersAutoEmailRefreshRef.current = false
+      return
+    }
+    if (!serviceGraphAuth?.connected || ordersAutoEmailRefreshRef.current || !orderRows.length) return
+    ordersAutoEmailRefreshRef.current = true
+    const timer = window.setTimeout(() => {
+      orderRows.filter((row) => !row.completed).forEach((row) => refreshWorkspaceOutlookThreads(orderWorkspaceContext(row)))
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [page, serviceGraphAuth?.connected, session?.user?.id, orderRows.length])
   useEffect(() => { try { localStorage.setItem('caseMioEventAssignmentDefaults', JSON.stringify(eventAssignmentDefaults || {})) } catch {} }, [eventAssignmentDefaults])
   useEffect(() => { try { localStorage.setItem('caseMioPeopleImportRows', JSON.stringify(peopleImportRows || [])) } catch {} }, [peopleImportRows])
   useEffect(() => { try { localStorage.setItem('caseMioPeopleTemplateOptions', JSON.stringify(peopleTemplateOptions || {})) } catch {} }, [peopleTemplateOptions])
@@ -30774,6 +30861,297 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
+  function orderTransactionDefinition(type = 'other') {
+    return ORDER_TRANSACTION_TYPES.find((item) => item.value === type) || ORDER_TRANSACTION_TYPES[ORDER_TRANSACTION_TYPES.length - 1]
+  }
+
+  function orderTypeLabel(type = '') {
+    return ORDER_TYPES.find((item) => item.value === type)?.label || type || 'Order'
+  }
+
+  function orderMatter(row = {}) {
+    return matters.find((matter) => String(matter.id) === String(row.matter_id)) || null
+  }
+
+  function orderWorkspaceContext(row = {}) {
+    const matter = orderMatter(row)
+    return {
+      type: 'order',
+      matter,
+      matterId: matter?.id || row.matter_id || '',
+      eventId: row.id,
+      sourceId: row.id,
+      settingType: orderTypeLabel(row.order_type),
+      stepName: row.title || orderTypeLabel(row.order_type),
+      title: row.title || orderTypeLabel(row.order_type),
+      billingStepName: `Orders - ${row.id}`,
+      courtName: matter?.courts?.court_name || '',
+      courtEmail: matter?.courts?.court_coordinator_email || ''
+    }
+  }
+
+  function orderCurrentHolder(row = {}) {
+    const transactions = Array.isArray(row.transactions) ? row.transactions : []
+    for (let index = transactions.length - 1; index >= 0; index -= 1) {
+      const holder = orderTransactionDefinition(transactions[index].type).holder
+      if (holder) return holder
+    }
+    return row.drafter === 'oc' ? 'oc' : 'me'
+  }
+
+  function orderHolderLabel(holder = '') {
+    return ({ me: 'Me / My Firm', client: 'Client', oc: 'Opposing Counsel', court: 'Court' })[holder] || 'Not set'
+  }
+
+  function orderHolderStyle(holder = '') {
+    return ({
+      me: { color: '#1d4ed8', background: '#dbeafe', border: '#93c5fd' },
+      client: { color: '#0f766e', background: '#ccfbf1', border: '#5eead4' },
+      oc: { color: '#b91c1c', background: '#fee2e2', border: '#fca5a5' },
+      court: { color: '#6d28d9', background: '#ede9fe', border: '#c4b5fd' }
+    })[holder] || { color: '#475569', background: '#f1f5f9', border: '#cbd5e1' }
+  }
+
+  function patchOrderRow(rowId, patch) {
+    setOrderRows((current) => current.map((row) => String(row.id) === String(rowId) ? { ...row, ...patch, updated_at: new Date().toISOString() } : row))
+  }
+
+  function changeOrderDrafter(row, drafter) {
+    const transactions = Array.isArray(row.transactions) ? [...row.transactions] : []
+    const firstType = drafter === 'oc' ? 'waiting_on_oc' : 'drafting_started'
+    const first = {
+      ...(transactions[0] || {}),
+      id: transactions[0]?.id || `order-start-${row.id}-${Date.now()}`,
+      type: firstType,
+      date: row.finalization_date || transactions[0]?.date || new Date().toISOString().slice(0, 10),
+      note: drafter === 'oc' ? 'Waiting for opposing counsel to prepare the first draft.' : 'Our firm is responsible for the first draft.',
+      created_at: transactions[0]?.created_at || new Date().toISOString()
+    }
+    patchOrderRow(row.id, { drafter, transactions: transactions.length ? [first, ...transactions.slice(1)] : [first] })
+  }
+
+  function patchOrderTransaction(rowId, transactionId, patch) {
+    setOrderRows((current) => current.map((row) => String(row.id) === String(rowId) ? {
+      ...row,
+      transactions: (row.transactions || []).map((transaction) => String(transaction.id) === String(transactionId) ? { ...transaction, ...patch } : transaction),
+      updated_at: new Date().toISOString()
+    } : row))
+  }
+
+  function addOrderTransaction(row, type, options = {}) {
+    if (!type) return
+    const definition = orderTransactionDefinition(type)
+    const transaction = {
+      id: crypto?.randomUUID ? crypto.randomUUID() : `order-transaction-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type,
+      date: options.date || new Date().toISOString().slice(0, 10),
+      note: options.note || '',
+      created_at: new Date().toISOString()
+    }
+    setOrderRows((current) => current.map((item) => String(item.id) === String(row.id) ? { ...item, transactions: [...(item.transactions || []), transaction], updated_at: new Date().toISOString() } : item))
+    setOrderActionDrafts((current) => ({ ...current, [row.id]: '' }))
+    if (options.openBilling) openOrderBilling(row, definition.value)
+  }
+
+  function removeOrderTransaction(rowId, transactionId) {
+    if (!window.confirm('Remove this order transaction?')) return
+    setOrderRows((current) => current.map((row) => String(row.id) === String(rowId) ? { ...row, transactions: (row.transactions || []).filter((transaction) => String(transaction.id) !== String(transactionId)), updated_at: new Date().toISOString() } : row))
+  }
+
+  function toggleOrderExpanded(rowId) {
+    setOrderExpandedIds((current) => current.includes(rowId) ? current.filter((id) => id !== rowId) : [...current, rowId])
+  }
+
+  function orderBillingMarker(row, type) {
+    return `Orders - ${row.id}: ${type}`
+  }
+
+  function orderBillingEntries(row = {}) {
+    const prefix = `Orders - ${row.id}:`
+    return sortedBillingEntries(billingEntries.filter((entry) => String(entry.matter_id) === String(row.matter_id) && String(entry.matter_step || '').startsWith(prefix)))
+  }
+
+  function orderDefinitionForBillingEntry(row, entry = {}) {
+    const prefix = `Orders - ${row.id}:`
+    const type = String(entry.matter_step || '').startsWith(prefix) ? String(entry.matter_step || '').slice(prefix.length).trim() : 'other'
+    return orderTransactionDefinition(type)
+  }
+
+  function openOrderBilling(row, type = 'other') {
+    const definition = orderTransactionDefinition(type)
+    const matter = orderMatter(row)
+    openBillingWindow({
+      matter_id: row.matter_id || '',
+      matter_status: matter?.matter_status || '',
+      matter_step: orderBillingMarker(row, definition.value),
+      description: definition.label
+    })
+  }
+
+  function addOrderEmail(row, role = 'client', mode = 'attach') {
+    const context = orderWorkspaceContext(row)
+    const recipient = needToSetRecipientOption(context, role)
+    const stepContext = { ...context, stepId: `order-email-${role}`, stepName: role === 'client' ? 'Client email' : 'Opposing counsel email', settingType: orderTypeLabel(row.order_type) }
+    const email = createWorkspaceEmailRecord(context, stepContext, role, recipient)
+    window.setTimeout(() => patchWorkspaceEmail(context, email.id, {
+      compose_mode: mode === 'attach' ? 'attach' : 'new',
+      send_collapsed: mode === 'attach',
+      status_note: mode === 'attach' ? `Ready to find and attach the ${recipient.label} Outlook conversation.` : `Ready to send a new ${recipient.label} email from Mio.`
+    }), 0)
+  }
+
+  function saveNewOrder(event) {
+    event.preventDefault()
+    if (!orderForm.matter_id) return alert('Select a matter for this order or Rule 11.')
+    const id = crypto?.randomUUID ? crypto.randomUUID() : `order-${Date.now()}`
+    const startType = orderForm.drafter === 'oc' ? 'waiting_on_oc' : 'drafting_started'
+    const row = {
+      id,
+      matter_id: orderForm.matter_id,
+      title: String(orderForm.title || '').trim() || orderTypeLabel(orderForm.order_type),
+      order_type: orderForm.order_type || 'other',
+      drafter: orderForm.drafter || 'me',
+      finalization_type: orderForm.finalization_type || '',
+      finalization_date: orderForm.finalization_date || '',
+      transactions: [{ id: `order-start-${id}`, type: startType, date: orderForm.finalization_date || new Date().toISOString().slice(0, 10), note: orderForm.drafter === 'oc' ? 'Waiting for opposing counsel to prepare the first draft.' : 'Our firm is responsible for the first draft.', created_at: new Date().toISOString() }],
+      completed: false,
+      completed_at: '',
+      auto_created: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }
+    setOrderRows((current) => [...current, row])
+    setOrderExpandedIds((current) => [...current, id])
+    setOrderForm({ matter_id: '', title: '', order_type: 'temporary_order', drafter: 'me', finalization_type: 'Hearing', finalization_date: '' })
+    setShowOrderForm(false)
+  }
+
+  function renderOrderProcessIcon(row, transaction, index) {
+    const definition = orderTransactionDefinition(transaction.type)
+    return (
+      <Fragment key={transaction.id || `${row.id}-${index}`}>
+        {index > 0 && <span style={{ color: '#94a3b8', fontWeight: 900, padding: '0 2px' }}>→</span>}
+        <button type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label}${transaction.date ? ` — ${transaction.date}` : ''}${transaction.note ? ` — ${transaction.note}` : ''}`} style={{ width: 58, minWidth: 58, minHeight: 62, padding: '5px 3px', border: `1px solid ${definition.color}`, borderRadius: 9, background: definition.background, color: definition.color, display: 'grid', placeItems: 'center', alignContent: 'center', gap: 2, boxShadow: '0 1px 2px rgba(15,23,42,.08)' }}>
+          <span style={{ fontSize: 22, lineHeight: 1 }}>{definition.icon}</span>
+          <span style={{ fontSize: 8, lineHeight: 1.05, fontWeight: 900 }}>{definition.short}</span>
+          <span style={{ fontSize: 8, color: '#475569' }}>{transaction.date ? new Date(`${transaction.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : 'No date'}</span>
+        </button>
+      </Fragment>
+    )
+  }
+
+  function renderOrdersPage() {
+    const typeOptions = Array.from(new Set([...ORDER_TYPES.map((item) => item.value), ...orderRows.map((row) => row.order_type).filter(Boolean)]))
+    const visibleRows = orderRows
+      .filter((row) => orderFilters.completed === 'all' || (orderFilters.completed === 'completed' ? row.completed : !row.completed))
+      .filter((row) => orderFilters.type === 'all' || row.order_type === orderFilters.type)
+      .filter((row) => orderFilters.holder === 'all' || orderCurrentHolder(row) === orderFilters.holder)
+      .filter((row) => {
+        const matter = orderMatter(row)
+        const search = String(orderFilters.search || '').trim().toLowerCase()
+        return !search || `${row.title || ''} ${orderTypeLabel(row.order_type)} ${matter?.name || ''} ${matter?.cause_number || ''} ${matterClientName(matter) || ''}`.toLowerCase().includes(search)
+      })
+      .sort((a, b) => String(a.finalization_date || '9999-12-31').localeCompare(String(b.finalization_date || '9999-12-31')) || String(a.created_at || '').localeCompare(String(b.created_at || '')))
+    const openRows = orderRows.filter((row) => !row.completed)
+    const holderCounts = ['me', 'client', 'oc', 'court'].reduce((out, holder) => ({ ...out, [holder]: openRows.filter((row) => orderCurrentHolder(row) === holder).length }), {})
+    return (
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap' }}>
+          <div><h1 style={{ marginBottom: 4 }}>Orders</h1><p style={{ marginTop: 0, color: '#64748b' }}>Track final orders, temporary orders, and Rule 11 agreements from the first drafting assignment through the judge's signature and delivery to the client.</p></div>
+          <button type="button" onClick={() => setShowOrderForm((value) => !value)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 7, padding: '10px 14px', fontWeight: 900 }}>+ Add Order / Rule 11</button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(130px, 1fr))', gap: 9, margin: '12px 0' }}>
+          {[['Open items', openRows.length, '#0f172a', '#f8fafc'], ['With me', holderCounts.me, '#1d4ed8', '#eff6ff'], ['With client', holderCounts.client, '#0f766e', '#f0fdfa'], ['With OC', holderCounts.oc, '#b91c1c', '#fff1f2'], ['With court', holderCounts.court, '#6d28d9', '#f5f3ff']].map(([label, value, color, background]) => <div key={label} style={{ border: `1px solid ${color}33`, borderRadius: 9, padding: 10, background }}><div style={{ fontSize: 11, color, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 24, color, fontWeight: 950 }}>{value}</div></div>)}
+        </div>
+
+        {showOrderForm && <form onSubmit={saveNewOrder} style={{ border: '2px solid #93c5fd', borderRadius: 10, padding: 12, background: '#eff6ff', marginBottom: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Add an order or Rule 11</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+            <LabeledField label="Matter *"><SmartMatterSelect activeOnly value={orderForm.matter_id} onChange={(value) => setOrderForm((current) => ({ ...current, matter_id: value }))} placeholder="Select matter" /></LabeledField>
+            <LabeledField label="Title"><input value={orderForm.title} onChange={(event) => setOrderForm((current) => ({ ...current, title: event.target.value }))} placeholder="Example: Temporary Orders" /></LabeledField>
+            <LabeledField label="Type"><select value={orderForm.order_type} onChange={(event) => setOrderForm((current) => ({ ...current, order_type: event.target.value }))}>{ORDER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+            <LabeledField label="Who is drafting?"><select value={orderForm.drafter} onChange={(event) => setOrderForm((current) => ({ ...current, drafter: event.target.value }))}><option value="me">Me / My Firm</option><option value="oc">Opposing Counsel</option></select></LabeledField>
+            <LabeledField label="Finalization event"><input value={orderForm.finalization_type} onChange={(event) => setOrderForm((current) => ({ ...current, finalization_type: event.target.value }))} placeholder="Trial, mediation, hearing, MSA..." /></LabeledField>
+            <LabeledField label="Finalization date"><input type="date" value={orderForm.finalization_date} onChange={(event) => setOrderForm((current) => ({ ...current, finalization_date: event.target.value }))} /></LabeledField>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}><button type="submit">Save order</button><button type="button" onClick={() => setShowOrderForm(false)}>Cancel</button></div>
+        </form>}
+
+        <section style={{ border: '1px solid #cbd5e1', borderRadius: 9, padding: 10, background: '#f8fafc', marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.5fr) repeat(3, minmax(150px, .7fr))', gap: 9 }}>
+            <LabeledField label="Search"><input value={orderFilters.search || ''} onChange={(event) => setOrderFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, cause #, order..." /></LabeledField>
+            <LabeledField label="Document type"><select value={orderFilters.type || 'all'} onChange={(event) => setOrderFilters((current) => ({ ...current, type: event.target.value }))}><option value="all">All types</option>{typeOptions.map((value) => <option key={value} value={value}>{orderTypeLabel(value)}</option>)}</select></LabeledField>
+            <LabeledField label="Current holder"><select value={orderFilters.holder || 'all'} onChange={(event) => setOrderFilters((current) => ({ ...current, holder: event.target.value }))}><option value="all">Everyone</option><option value="me">Me / My Firm</option><option value="client">Client</option><option value="oc">Opposing Counsel</option><option value="court">Court</option></select></LabeledField>
+            <LabeledField label="Completion"><select value={orderFilters.completed || 'open'} onChange={(event) => setOrderFilters((current) => ({ ...current, completed: event.target.value }))}><option value="open">Open only</option><option value="completed">Completed only</option><option value="all">Open + completed</option></select></LabeledField>
+          </div>
+        </section>
+
+        <div style={{ overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff' }}>
+          <table style={{ width: '100%', minWidth: 1500, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <colgroup><col style={{ width: 250 }} /><col style={{ width: 170 }} /><col style={{ width: 590 }} /><col style={{ width: 210 }} /><col style={{ width: 145 }} /><col style={{ width: 135 }} /><col style={{ width: 100 }} /></colgroup>
+            <thead style={{ background: '#0f172a', color: '#fff' }}><tr><th style={{ padding: 9, textAlign: 'left' }}>Matter / Order</th><th style={{ padding: 9, textAlign: 'left' }}>Finalization</th><th style={{ padding: 9, textAlign: 'left' }}>Order transactions — chronological</th><th style={{ padding: 9, textAlign: 'left' }}>Court / Judge</th><th style={{ padding: 9 }}>Current holder</th><th style={{ padding: 9 }}>Billing</th><th style={{ padding: 9 }}>Status</th></tr></thead>
+            <tbody>
+              {visibleRows.map((row) => {
+                const matter = orderMatter(row)
+                const transactions = Array.isArray(row.transactions) ? row.transactions : []
+                const journey = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'journey')
+                const court = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'court')
+                const judge = transactions.filter((transaction) => orderTransactionDefinition(transaction.type).lane === 'judge')
+                const holder = orderCurrentHolder(row)
+                const holderStyle = orderHolderStyle(holder)
+                const billing = orderBillingEntries(row)
+                const workspace = normalizeWorkspace(orderWorkspaceContext(row))
+                const unread = (workspace.emails || []).filter((email) => email.new_email_notice || workspaceEmailHasUnreadActivity(email)).length
+                const expanded = orderExpandedIds.includes(row.id)
+                const drafterColor = row.drafter === 'oc' ? '#dc2626' : '#2563eb'
+                const drafterBackground = row.drafter === 'oc' ? '#fff5f5' : '#f5f9ff'
+                return <Fragment key={row.id}>
+                  <tr style={{ borderTop: '1px solid #e2e8f0', opacity: row.completed ? .68 : 1, borderLeft: `7px solid ${drafterColor}` }}>
+                    <td style={{ padding: 9, verticalAlign: 'top', background: drafterBackground }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 950 }}>{expanded ? '▾' : '▸'} {matter?.name || 'Matter not found'}</button><div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>{matterClientName(matter) || ''}{matter?.cause_number ? ` • ${matter.cause_number}` : ''}</div><div style={{ marginTop: 7, fontWeight: 900 }}>{row.title || orderTypeLabel(row.order_type)}</div><span style={{ display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900, color: drafterColor, background: row.drafter === 'oc' ? '#fee2e2' : '#dbeafe' }}>{row.drafter === 'oc' ? 'OC DRAFTING' : 'MY FIRM DRAFTING'}</span>{row.auto_created && <div style={{ fontSize: 9, color: '#64748b', marginTop: 4 }}>Auto-added from matter status</div>}</td>
+                    <td style={{ padding: 9, verticalAlign: 'top' }}><strong>{row.finalization_type || 'Finalization'}</strong><div style={{ marginTop: 5 }}>{row.finalization_date ? new Date(`${row.finalization_date}T12:00:00`).toLocaleDateString() : 'Date needed'}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>{orderTypeLabel(row.order_type)}</div></td>
+                    <td style={{ padding: 8, verticalAlign: 'middle', background: drafterBackground }}><div style={{ display: 'flex', alignItems: 'center', gap: 3, overflowX: 'auto', paddingBottom: 3 }}>{journey.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{!journey.length && <span style={{ color: '#64748b' }}>No handoffs recorded.</span>}</div></td>
+                    <td style={{ padding: 8, verticalAlign: 'middle', background: '#fafafa' }}><div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>{court.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{judge.map((transaction) => { const definition = orderTransactionDefinition(transaction.type); return <button key={transaction.id} type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label} — ${transaction.date || 'No date'}`} style={{ width: 64, height: 64, borderRadius: '50%', border: '3px double #a16207', background: '#fef3c7', color: '#854d0e', fontWeight: 950, display: 'grid', placeItems: 'center', alignContent: 'center' }}><span style={{ fontSize: 25 }}>{definition.icon}</span><span style={{ fontSize: 8 }}>{transaction.date ? new Date(`${transaction.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : 'SIGNED'}</span></button>})}{!court.length && !judge.length && <span style={{ color: '#64748b', fontSize: 12 }}>Not submitted</span>}</div></td>
+                    <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><span style={{ display: 'inline-block', border: `1px solid ${holderStyle.border}`, background: holderStyle.background, color: holderStyle.color, borderRadius: 999, padding: '6px 9px', fontSize: 11, fontWeight: 950 }}>{orderHolderLabel(holder)}</span></td>
+                    <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} title="Open billing history" style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 7, fontWeight: 900 }}>◷ {billing.reduce((sum, entry) => sum + Number(entry.billing_time || 0), 0).toFixed(1)} h</button>{unread > 0 && <div style={{ color: '#b91c1c', fontWeight: 900, fontSize: 10, marginTop: 5 }}>✉ {unread} new</div>}</td>
+                    <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => patchOrderRow(row.id, row.completed ? { completed: false, completed_at: '' } : { completed: true, completed_at: new Date().toISOString() })} style={{ border: `1px solid ${row.completed ? '#94a3b8' : '#86efac'}`, borderRadius: 7, background: row.completed ? '#f8fafc' : '#dcfce7', color: row.completed ? '#475569' : '#166534', padding: 7, fontWeight: 900 }}>{row.completed ? 'Recall' : 'Complete'}</button></td>
+                  </tr>
+                  {expanded && <tr style={{ borderLeft: `7px solid ${drafterColor}` }}><td colSpan="7" style={{ padding: 0, background: '#f8fafc' }}><div style={{ padding: 14, borderTop: '3px solid #cbd5e1' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(150px, 1fr))', gap: 9, marginBottom: 12 }}>
+                      <LabeledField label="Order title"><input value={row.title || ''} onChange={(event) => patchOrderRow(row.id, { title: event.target.value })} /></LabeledField>
+                      <LabeledField label="Document type"><select value={row.order_type || 'other'} onChange={(event) => patchOrderRow(row.id, { order_type: event.target.value })}>{ORDER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+                      <LabeledField label="Drafter"><select value={row.drafter || 'me'} onChange={(event) => changeOrderDrafter(row, event.target.value)}><option value="me">Me / My Firm</option><option value="oc">Opposing Counsel</option></select></LabeledField>
+                      <LabeledField label="Finalization event"><input value={row.finalization_type || ''} onChange={(event) => patchOrderRow(row.id, { finalization_type: event.target.value })} placeholder="Trial, hearing, mediation, MSA..." /></LabeledField>
+                      <LabeledField label="Finalization date"><input type="date" value={row.finalization_date || ''} onChange={(event) => { patchOrderRow(row.id, { finalization_date: event.target.value }); if ((row.transactions || [])[0]) patchOrderTransaction(row.id, row.transactions[0].id, { date: event.target.value }) }} /></LabeledField>
+                      <LabeledField label="Current holder"><div style={{ ...holderStyle, border: `1px solid ${holderStyle.border}`, borderRadius: 7, padding: 7, fontWeight: 900 }}>{orderHolderLabel(holder)}</div></LabeledField>
+                    </div>
+
+                    <section style={{ border: '2px solid #cbd5e1', borderRadius: 10, background: '#fff', padding: 11, marginBottom: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Order transactions</h3><small style={{ color: '#64748b' }}>Add each handoff in the order it occurred. The row above preserves that same linear history.</small></div><div style={{ display: 'flex', gap: 7 }}><select value={orderActionDrafts[row.id] || ''} onChange={(event) => setOrderActionDrafts((current) => ({ ...current, [row.id]: event.target.value }))}><option value="">Choose activity...</option>{ORDER_TRANSACTION_TYPES.filter((item) => !['drafting_started', 'waiting_on_oc'].includes(item.value)).map((item) => <option key={item.value} value={item.value}>{item.icon} {item.label}</option>)}</select><button type="button" onClick={() => addOrderTransaction(row, orderActionDrafts[row.id])} disabled={!orderActionDrafts[row.id]}>Add today</button></div></div>
+                      <div style={{ overflowX: 'auto', marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr style={{ background: '#f1f5f9' }}><th style={{ padding: 6 }}>#</th><th style={{ padding: 6, textAlign: 'left' }}>Icon / activity</th><th style={{ padding: 6, textAlign: 'left' }}>Date</th><th style={{ padding: 6, textAlign: 'left' }}>Notes</th><th style={{ padding: 6 }}>Holder after</th><th style={{ padding: 6 }}>Billing</th><th style={{ padding: 6 }}></th></tr></thead><tbody>{transactions.map((transaction, index) => { const definition = orderTransactionDefinition(transaction.type); return <tr key={transaction.id} style={{ borderTop: '1px solid #e2e8f0' }}><td style={{ padding: 6, textAlign: 'center' }}>{index + 1}</td><td style={{ padding: 6 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: definition.color, fontWeight: 900 }}><span style={{ width: 30, height: 30, display: 'grid', placeItems: 'center', borderRadius: 7, background: definition.background, border: `1px solid ${definition.color}` }}>{definition.icon}</span>{definition.label}</span></td><td style={{ padding: 6 }}><input type="date" value={transaction.date || ''} onChange={(event) => patchOrderTransaction(row.id, transaction.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={transaction.note || ''} onChange={(event) => patchOrderTransaction(row.id, transaction.id, { note: event.target.value })} placeholder="Optional detail" style={{ width: '100%' }} /></td><td style={{ padding: 6, textAlign: 'center' }}>{definition.holder ? orderHolderLabel(definition.holder) : 'No transfer'}</td><td style={{ padding: 6, textAlign: 'center' }}><button type="button" onClick={() => openOrderBilling(row, definition.value)} title={`Add time: ${definition.label}`}>◷ Add time</button></td><td style={{ padding: 6, textAlign: 'center' }}>{index > 0 && <button type="button" onClick={() => removeOrderTransaction(row.id, transaction.id)} style={{ color: '#b91c1c' }}>×</button>}</td></tr>})}</tbody></table></div>
+                    </section>
+
+                    <section style={{ border: '2px solid #93c5fd', borderRadius: 10, background: '#eff6ff', padding: 11, marginBottom: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Attached emails</h3><small style={{ color: '#475569' }}>Attach or send the client and opposing-counsel conversations just like Need to Set.</small></div><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => addOrderEmail(row, 'client', 'attach')}>✉＋ Attach client email</button><button type="button" onClick={() => addOrderEmail(row, 'client', 'new')}>✉➤ New client email</button><button type="button" onClick={() => addOrderEmail(row, 'opposing_counsel', 'attach')}>✉＋ Attach OC email</button><button type="button" onClick={() => addOrderEmail(row, 'opposing_counsel', 'new')}>✉➤ New OC email</button><button type="button" onClick={() => refreshWorkspaceOutlookThreads(orderWorkspaceContext(row))}>↻ Refresh threads</button></div></div>
+                      <div style={{ marginTop: 10 }}>{(workspace.emails || []).map((email, index) => renderWorkspaceEmailCard(orderWorkspaceContext(row), email, index))}{!(workspace.emails || []).length && <div style={{ color: '#64748b', padding: 8 }}>No email conversations are attached to this order yet.</div>}</div>
+                    </section>
+
+                    <section style={{ border: '2px solid #86efac', borderRadius: 10, background: '#f0fdf4', padding: 11 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 8, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Billing history for this order</h3><small style={{ color: '#475569' }}>Each entry keeps the icon for the order activity it records.</small></div><div style={{ display: 'flex', gap: 6 }}><select value={orderActionDrafts[`billing-${row.id}`] || 'other'} onChange={(event) => setOrderActionDrafts((current) => ({ ...current, [`billing-${row.id}`]: event.target.value }))}>{ORDER_TRANSACTION_TYPES.map((item) => <option key={item.value} value={item.value}>{item.icon} {item.label}</option>)}</select><button type="button" onClick={() => openOrderBilling(row, orderActionDrafts[`billing-${row.id}`] || 'other')}>◷ Add time</button></div></div>
+                      <div style={{ overflowX: 'auto', marginTop: 9 }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={{ padding: 6, textAlign: 'left' }}>Activity</th><th style={{ padding: 6, textAlign: 'left' }}>Date</th><th style={{ padding: 6, textAlign: 'left' }}>Description</th><th style={{ padding: 6, textAlign: 'right' }}>Time</th><th style={{ padding: 6, textAlign: 'right' }}>Amount</th></tr></thead><tbody>{billing.map((entry) => { const definition = orderDefinitionForBillingEntry(row, entry); return <tr key={entry.id} style={{ borderTop: '1px solid #bbf7d0' }}><td style={{ padding: 6 }}><span style={{ color: definition.color, fontWeight: 900 }}>{definition.icon} {definition.short}</span></td><td style={{ padding: 6 }}>{entry.date || ''}</td><td style={{ padding: 6 }}>{entry.description || definition.label}</td><td style={{ padding: 6, textAlign: 'right' }}>{Number(entry.billing_time || 0).toFixed(2)}</td><td style={{ padding: 6, textAlign: 'right' }}>${Number(entry.amount || 0).toFixed(2)}</td></tr>})}{!billing.length && <tr><td colSpan="5" style={{ padding: 9, color: '#64748b' }}>No time has been recorded for this order yet. Use Add time beside any transaction.</td></tr>}</tbody></table></div>
+                    </section>
+                  </div></td></tr>}
+                </Fragment>
+              })}
+              {!visibleRows.length && <tr><td colSpan="7" style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>{orderFilters.completed === 'completed' ? 'No completed orders match these filters.' : 'No open orders match these filters. Matters with status “Finalized – Need Order” are added automatically.'}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+
   function renderDailyBillingModal() {
     if (!showDailyBillingWindow) return null
     const entries = billingEntriesForDate(dailyBillingDate)
@@ -39297,6 +39675,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </a>
         )}
 
+        {canOpenPage('orders') && (
+          <a href="#orders" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('orders') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'orders' ? 900 : undefined, color: page === 'orders' ? '#1d4ed8' : undefined }}>
+            Orders
+          </a>
+        )}
+
         {canOpenPage('setting_center') && (
           <a href="#setting_center" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('setting_center') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'setting_center' ? 900 : undefined, color: page === 'setting_center' ? '#1d4ed8' : undefined }}>
             Setting Center
@@ -41484,6 +41868,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {renderNeedToSetCardDashboard()}
           </>
         )}
+
+        {page === 'orders' && canOpenPage('orders') && renderOrdersPage()}
 
         {page === 'setting_center' && canOpenPage('setting_center') && renderSettingCenter()}
 
