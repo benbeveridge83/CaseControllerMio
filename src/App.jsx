@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V209'
+const MIO_APP_VERSION = 'Mio V210'
+const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
@@ -2199,6 +2200,7 @@ function App() {
   const [orderRows, setOrderRows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderRows') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
   const [orderExpandedIds, setOrderExpandedIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderExpandedIds') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
   const [orderFilters, setOrderFilters] = useState(() => { try { return { type: 'all', holder: 'all', search: '', completed: 'open', ...(JSON.parse(localStorage.getItem('caseMioOrderFilters') || '{}') || {}) } } catch { return { type: 'all', holder: 'all', search: '', completed: 'open' } } })
+  const [orderAutomationToday, setOrderAutomationToday] = useState(() => dateToInputValue(new Date()))
   const [showOrderForm, setShowOrderForm] = useState(false)
   const [orderForm, setOrderForm] = useState({ matter_id: '', title: '', order_type: 'temporary_order', drafter: 'me', finalization_type: 'Hearing', finalization_date: '' })
   const [orderActionDrafts, setOrderActionDrafts] = useState({})
@@ -3661,6 +3663,13 @@ function App() {
   useEffect(() => { try { saveMioStateKey('caseMioOrderFilters', JSON.stringify(orderFilters || {})) } catch {} }, [orderFilters])
 
   useEffect(() => {
+    const updateToday = () => setOrderAutomationToday(dateToInputValue(new Date()))
+    updateToday()
+    const timer = window.setInterval(updateToday, 60 * 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
     if (!Array.isArray(matters) || !matters.length) return
     const eligible = matters.filter((matter) => String(matter?.matter_status || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ') === 'finalized need order')
     if (!eligible.length) return
@@ -3687,6 +3696,27 @@ function App() {
       return additions.length ? [...current, ...additions] : current
     })
   }, [matters])
+
+  useEffect(() => {
+    if (!Array.isArray(events) || !events.length || !Array.isArray(settings) || !settings.length) return
+    const qualifyingEvents = events.filter((event) => {
+      const finalizationDate = calendarEventOrderFinalizationDate(event)
+      return event?.id
+        && event?.matter_id
+        && calendarEventCreatesOrder(event)
+        && finalizationDate
+        && finalizationDate >= ORDER_EVENT_AUTOMATION_START_DATE
+        && finalizationDate <= orderAutomationToday
+    })
+    if (!qualifyingEvents.length) return
+    setOrderRows((current) => {
+      const existingIds = new Set((current || []).map((row) => String(row.id || '')))
+      const additions = qualifyingEvents
+        .filter((event) => !existingIds.has(`calendar-event-order-${event.id}`))
+        .map((event) => buildOrderRowFromCalendarEvent(event))
+      return additions.length ? [...current, ...additions] : current
+    })
+  }, [events, settings, orderAutomationToday])
 
   useEffect(() => {
     if (page !== 'orders') {
@@ -15413,7 +15443,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       category: settingForm.category,
       name: settingForm.name.trim(),
       parent_name: settingForm.category === 'matter_subtype' || settingForm.category === 'event_subcategory' || settingForm.category === 'task_subcategory' || settingForm.category === 'matter_status_step' || settingForm.category === 'checklist_setting_step' ? settingForm.parent_name : null,
-      default_pages: settingForm.category === 'task_subcategory' ? currentSettingTaskMeta() : settingForm.category === 'matter_status_step' ? { client_status: settingForm.default_pages?.client_status || '' } : settingForm.category === 'checklist_setting_step' ? { ...(settingForm.default_pages || {}), purpose: settingForm.default_pages?.purpose || '', email_roles: Array.isArray(settingForm.default_pages?.email_roles) ? settingForm.default_pages.email_roles : [] } : null,
+      default_pages: settingForm.category === 'task_subcategory' ? currentSettingTaskMeta() : settingForm.category === 'matter_status_step' ? { client_status: settingForm.default_pages?.client_status || '' } : settingForm.category === 'checklist_setting_step' ? { ...(settingForm.default_pages || {}), purpose: settingForm.default_pages?.purpose || '', email_roles: Array.isArray(settingForm.default_pages?.email_roles) ? settingForm.default_pages.email_roles : [] } : settingForm.category === 'event_category' ? { ...(!Array.isArray(settingForm.default_pages) && settingForm.default_pages ? settingForm.default_pages : {}), orders_page: Boolean(settingForm.default_pages?.orders_page) } : null,
       color: settingForm.category === 'event_category' || settingForm.category === 'event_subcategory' || settingForm.category === 'matter_status' || settingForm.category === 'matter_status' ? settingForm.color : null,
       sort_order: nextSortOrder,
       is_active: settingForm.is_active
@@ -15566,7 +15596,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       category: option.category || settingsFilter,
       name: option.name || '',
       parent_name: option.parent_name || '',
-      default_pages: option.category === 'task_subcategory' ? taskTemplateMeta(option) : option.category === 'matter_status_step' ? { client_status: option.default_pages?.client_status || '' } : (Array.isArray(option.default_pages) ? option.default_pages : []),
+      default_pages: option.category === 'task_subcategory' ? taskTemplateMeta(option) : option.category === 'matter_status_step' ? { client_status: option.default_pages?.client_status || '' } : option.category === 'event_category' ? { ...(!Array.isArray(option.default_pages) && option.default_pages ? option.default_pages : {}), orders_page: typeof option.default_pages?.orders_page === 'boolean' ? option.default_pages.orders_page : defaultOrderEventCategorySelection(option.name) } : (Array.isArray(option.default_pages) ? option.default_pages : []),
       color: option.color || '#3174ad',
       is_active: option.is_active ?? true
     })
@@ -30861,6 +30891,72 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
+  function defaultOrderEventCategorySelection(categoryName = '') {
+    return /(trial|hearing|mediat)/i.test(String(categoryName || ''))
+  }
+
+  function eventCategoryOrderSetting(categoryName = '') {
+    return settings.find((option) => option.category === 'event_category' && String(option.name || '').trim().toLowerCase() === String(categoryName || '').trim().toLowerCase()) || null
+  }
+
+  function calendarEventCreatesOrder(event = {}) {
+    const categoryName = event.event_category || ''
+    const option = eventCategoryOrderSetting(categoryName)
+    if (typeof option?.default_pages?.orders_page === 'boolean') return option.default_pages.orders_page
+    return defaultOrderEventCategorySelection(categoryName)
+  }
+
+  function calendarEventOrderFinalizationDate(event = {}) {
+    const startDate = isUndatedEventDate(event.start_date) ? '' : String(event.start_date || '').slice(0, 10)
+    const endDate = isUndatedEventDate(event.end_date) ? '' : String(event.end_date || '').slice(0, 10)
+    if (endDate && (!startDate || endDate >= startDate)) return endDate
+    return startDate
+  }
+
+  function calendarEventOrderDetails(event = {}) {
+    const categoryName = String(event.event_category || event.title || 'Calendar event').trim()
+    if (/trial/i.test(categoryName)) return { order_type: 'final_order', title: 'Final Trial Order' }
+    if (/hearing/i.test(categoryName)) return { order_type: 'temporary_order', title: 'Temporary Orders' }
+    if (/mediat/i.test(categoryName)) return { order_type: 'final_order', title: 'Final Order' }
+    return { order_type: 'other', title: `${categoryName} Order / Rule 11` }
+  }
+
+  function buildOrderRowFromCalendarEvent(event = {}) {
+    const finalizationDate = calendarEventOrderFinalizationDate(event)
+    const details = calendarEventOrderDetails(event)
+    const createdAt = new Date().toISOString()
+    return {
+      id: `calendar-event-order-${event.id}`,
+      matter_id: event.matter_id,
+      source_event_id: event.id,
+      source_event_title: event.title || '',
+      title: details.title,
+      order_type: details.order_type,
+      drafter: 'me',
+      finalization_type: event.event_category || event.title || 'Calendar event',
+      finalization_date: finalizationDate,
+      transactions: [{ id: `order-start-calendar-event-${event.id}`, type: 'drafting_started', date: finalizationDate, note: `Automatically added on the final day of ${event.title || event.event_category || 'the calendar event'}.`, created_at: createdAt }],
+      completed: false,
+      completed_at: '',
+      auto_created: true,
+      auto_source: 'calendar_event',
+      created_at: createdAt,
+      updated_at: createdAt
+    }
+  }
+
+  function renderCollapsedOrderMatterLinks(matter) {
+    const shortLabels = { court_docket: 'Court docket', efile: 'eFile', court_website: 'Court website' }
+    return (
+      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 7 }}>
+        {matterLinkOptions(matter).map((option) => {
+          const available = Boolean(String(option.url || '').trim())
+          return <button key={option.key} type="button" disabled={!available} onClick={() => openMatterExternalLink(option.url)} title={available ? option.url : `${shortLabels[option.key] || option.label} link is not saved`} style={{ border: '1px solid #bfdbfe', borderRadius: 999, background: available ? '#eff6ff' : '#f8fafc', color: available ? '#1d4ed8' : '#94a3b8', padding: '3px 7px', fontSize: 10, fontWeight: 850, cursor: available ? 'pointer' : 'not-allowed' }}>↗ {shortLabels[option.key] || option.label}</button>
+        })}
+      </div>
+    )
+  }
+
   function orderTransactionDefinition(type = 'other') {
     return ORDER_TRANSACTION_TYPES.find((item) => item.value === type) || ORDER_TRANSACTION_TYPES[ORDER_TRANSACTION_TYPES.length - 1]
   }
@@ -31054,11 +31150,15 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       .sort((a, b) => String(a.finalization_date || '9999-12-31').localeCompare(String(b.finalization_date || '9999-12-31')) || String(a.created_at || '').localeCompare(String(b.created_at || '')))
     const openRows = orderRows.filter((row) => !row.completed)
     const holderCounts = ['me', 'client', 'oc', 'court'].reduce((out, holder) => ({ ...out, [holder]: openRows.filter((row) => orderCurrentHolder(row) === holder).length }), {})
+    const allVisibleRowsExpanded = visibleRows.length > 0 && visibleRows.every((row) => orderExpandedIds.includes(row.id))
     return (
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap' }}>
           <div><h1 style={{ marginBottom: 4 }}>Orders</h1><p style={{ marginTop: 0, color: '#64748b' }}>Track final orders, temporary orders, and Rule 11 agreements from the first drafting assignment through the judge's signature and delivery to the client.</p></div>
-          <button type="button" onClick={() => setShowOrderForm((value) => !value)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 7, padding: '10px 14px', fontWeight: 900 }}>+ Add Order / Rule 11</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button type="button" onClick={() => setOrderExpandedIds(allVisibleRowsExpanded ? [] : visibleRows.map((row) => row.id))} disabled={!visibleRows.length} style={{ border: '1px solid #94a3b8', borderRadius: 7, background: '#fff', color: '#0f172a', padding: '10px 14px', fontWeight: 900 }}>{allVisibleRowsExpanded ? '▴ Collapse all rows' : '▾ Expand all rows'}</button>
+            <button type="button" onClick={() => setShowOrderForm((value) => !value)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 7, padding: '10px 14px', fontWeight: 900 }}>+ Add Order / Rule 11</button>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(130px, 1fr))', gap: 9, margin: '12px 0' }}>
@@ -31108,7 +31208,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 const drafterBackground = row.drafter === 'oc' ? '#fff5f5' : '#f5f9ff'
                 return <Fragment key={row.id}>
                   <tr style={{ borderTop: '1px solid #e2e8f0', opacity: row.completed ? .68 : 1, borderLeft: `7px solid ${drafterColor}` }}>
-                    <td style={{ padding: 9, verticalAlign: 'top', background: drafterBackground }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 950 }}>{expanded ? '▾' : '▸'} {matter?.name || 'Matter not found'}</button><div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>{matterClientName(matter) || ''}{matter?.cause_number ? ` • ${matter.cause_number}` : ''}</div><div style={{ marginTop: 7, fontWeight: 900 }}>{row.title || orderTypeLabel(row.order_type)}</div><span style={{ display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900, color: drafterColor, background: row.drafter === 'oc' ? '#fee2e2' : '#dbeafe' }}>{row.drafter === 'oc' ? 'OC DRAFTING' : 'MY FIRM DRAFTING'}</span>{row.auto_created && <div style={{ fontSize: 9, color: '#64748b', marginTop: 4 }}>Auto-added from matter status</div>}</td>
+                    <td style={{ padding: 9, verticalAlign: 'top', background: drafterBackground }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 950 }}>{expanded ? '▾' : '▸'} {matter?.name || 'Matter not found'}</button><div style={{ fontSize: 13, color: '#0f172a', marginTop: 4 }}><strong style={{ fontWeight: 950 }}>{matterClientName(matter) || ''}</strong>{matter?.cause_number ? <span style={{ color: '#475569', fontSize: 12, fontWeight: 500 }}> • {matter.cause_number}</span> : null}</div><div style={{ marginTop: 7, fontWeight: 900 }}>{row.title || orderTypeLabel(row.order_type)}</div><span style={{ display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900, color: drafterColor, background: row.drafter === 'oc' ? '#fee2e2' : '#dbeafe' }}>{row.drafter === 'oc' ? 'OC DRAFTING' : 'MY FIRM DRAFTING'}</span>{row.auto_created && <div style={{ fontSize: 9, color: '#64748b', marginTop: 4 }}>{row.auto_source === 'calendar_event' ? 'Auto-added from calendar event' : 'Auto-added from matter status'}</div>}{!expanded && renderCollapsedOrderMatterLinks(matter)}</td>
                     <td style={{ padding: 9, verticalAlign: 'top' }}><strong>{row.finalization_type || 'Finalization'}</strong><div style={{ marginTop: 5 }}>{row.finalization_date ? new Date(`${row.finalization_date}T12:00:00`).toLocaleDateString() : 'Date needed'}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>{orderTypeLabel(row.order_type)}</div></td>
                     <td style={{ padding: 8, verticalAlign: 'middle', background: drafterBackground }}><div style={{ display: 'flex', alignItems: 'center', gap: 3, overflowX: 'auto', paddingBottom: 3 }}>{journey.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{!journey.length && <span style={{ color: '#64748b' }}>No handoffs recorded.</span>}</div></td>
                     <td style={{ padding: 8, verticalAlign: 'middle', background: '#fafafa' }}><div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>{court.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{judge.map((transaction) => { const definition = orderTransactionDefinition(transaction.type); return <button key={transaction.id} type="button" onClick={() => toggleOrderExpanded(row.id)} title={`${definition.label} — ${transaction.date || 'No date'}`} style={{ width: 64, height: 64, borderRadius: '50%', border: '3px double #a16207', background: '#fef3c7', color: '#854d0e', fontWeight: 950, display: 'grid', placeItems: 'center', alignContent: 'center' }}><span style={{ fontSize: 25 }}>{definition.icon}</span><span style={{ fontSize: 8 }}>{transaction.date ? new Date(`${transaction.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : 'SIGNED'}</span></button>})}{!court.length && !judge.length && <span style={{ color: '#64748b', fontSize: 12 }}>Not submitted</span>}</div></td>
@@ -43450,6 +43550,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       </label>
                     )}
 
+                    {settingForm.category === 'event_category' && (
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 9px', border: '1px solid #cbd5e1', borderRadius: 6, background: settingForm.default_pages?.orders_page ? '#eff6ff' : '#fff' }}>
+                        <input type="checkbox" checked={Boolean(settingForm.default_pages?.orders_page)} onChange={(e) => setSettingForm({ ...settingForm, default_pages: { ...(!Array.isArray(settingForm.default_pages) && settingForm.default_pages ? settingForm.default_pages : {}), orders_page: e.target.checked } })} />
+                        Add to Orders page when event occurs
+                      </label>
+                    )}
+
                     <input
                       placeholder={settingForm.category === 'checklist_setting_step' ? 'Step name *' : settingForm.category === 'matter_subtype' || settingForm.category === 'event_subcategory' || settingForm.category === 'task_subcategory' || settingForm.category === 'matter_status_step' ? 'Suboption name *' : 'Option name *'}
                       value={settingForm.name}
@@ -43529,6 +43636,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       <th>Parent</th>
                       <th>Option Name</th>
                       <th>Color</th>
+                      <th>Orders Page</th>
                       <th>Status</th>
                       <th>Action</th>
                     </tr>
@@ -43565,6 +43673,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             }} />
                           )}
                         </td>
+                        <td>{option.category === 'event_category' ? (typeof option.default_pages?.orders_page === 'boolean' ? option.default_pages.orders_page : defaultOrderEventCategorySelection(option.name)) ? 'Yes' : 'No' : '—'}</td>
                         <td>{option.is_active ? 'Active' : 'Inactive'}</td>
                         <td>
                           <button onClick={() => editSettingOption(option)}>Edit</button>
