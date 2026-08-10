@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V211'
+const MIO_APP_VERSION = 'Mio V212'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -1614,6 +1614,7 @@ function App() {
   const [lawPayTransactions, setLawPayTransactions] = useState([])
   const [lawPayBusy, setLawPayBusy] = useState(false)
   const [lawPayMessage, setLawPayMessage] = useState('')
+  const lawPayRefreshInFlightRef = useRef(null)
   const [lawPayForm, setLawPayForm] = useState({
     matter_id: '',
     account_key: 'operating',
@@ -2713,7 +2714,7 @@ function App() {
   useEffect(() => {
     if (clientDashboardTab !== 'finances' || !session?.user?.id) return
     loadClioFinancialSnapshots({ ignoreDateFilters: true })
-    loadLawPayWorkspace()
+    refreshLawPayFinancialData({ silent: true }).catch(() => {})
   }, [clientDashboardTab, selectedTemplateMatterId, session?.user?.id])
   const [matterFilingsTab, setMatterFilingsTab] = useState('trial')
   const [matterFilingImportRows, setMatterFilingImportRows] = useState([])
@@ -3118,7 +3119,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (page === 'lawpay' && canOpenPage('lawpay')) loadLawPayWorkspace()
+    if (page === 'lawpay' && canOpenPage('lawpay')) refreshLawPayFinancialData({ silent: true }).catch(() => {})
   }, [page])
 
   useEffect(() => { saveMioStateKey('caseMioCalendarCaseStatusFilter', JSON.stringify(calendarCaseStatusFilter)) }, [calendarCaseStatusFilter])
@@ -16041,8 +16042,8 @@ async function updateTeamCell(memberId, field, value) {
 
   function lawPayRequestForTransaction(transaction) {
     return (lawPayPaymentRequests || []).find((request) => {
-      if (transaction?.payment_request_id && String(request.id) === String(transaction.payment_request_id)) return true
-      if (transaction?.request_id && String(request.id) === String(transaction.request_id)) return true
+      const linkedRequestId = transaction?.payment_request_id || transaction?.request_id || transaction?.raw?.mio_payment_request_id || transaction?.raw?.payment_request_id || ''
+      if (linkedRequestId && String(request.id) === String(linkedRequestId)) return true
       const gatewayId = transaction?.gateway_transaction_id || transaction?.transaction_id || ''
       return !!gatewayId && [request.gateway_transaction_id, request.transaction_id].filter(Boolean).some((value) => String(value) === String(gatewayId))
     }) || null
@@ -16501,7 +16502,7 @@ async function updateTeamCell(memberId, field, value) {
     })
     if (error) throw error
     if (!data?.url) throw new Error(data?.error || 'LawPay did not return a payment link.')
-    const linked = { ...invoice, payment_url: normalizeLawPayHostedUrl(data.url, invoiceBalanceAmount(invoice), !isTrust), payment_request_id: String(data.request_id || data.id || ''), updated_at: new Date().toISOString() }
+    const linked = { ...invoice, payment_url: normalizeLawPayHostedUrl(data.url, invoiceBalanceAmount(invoice), !isTrust), payment_request_id: String(data.request_id || data.id || data.request?.id || ''), updated_at: new Date().toISOString() }
     return await persistMioInvoiceRecord(linked, 'lawpay_link_created', { account_key: accountKey, payment_request_id: linked.payment_request_id })
   }
 
@@ -16568,16 +16569,18 @@ async function updateTeamCell(memberId, field, value) {
     if (!selectedFinanceInvoice?.id) return
     setInvoiceDocumentBusy(true)
     try {
-      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
-      if (error) throw error
-      if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
-      await loadLawPayWorkspace()
+      await refreshLawPayFinancialData({ silent: true })
       const { data: refreshed, error: refreshError } = await supabase.from('mio_invoices').select('*').eq('id', selectedFinanceInvoice.id).single()
       if (refreshError) throw refreshError
       const next = invoiceFromDatabaseRow(refreshed)
       setSelectedFinanceInvoice(next)
       setMioInvoices((current) => (current || []).map((invoice) => String(invoice.id) === String(next.id) ? next : invoice))
-      alert(invoiceBalanceAmount(next) <= 0.005 ? 'Payment confirmed. The invoice and matter ledger are now updated.' : `No completed payment is recorded yet. Current balance: ${money(invoiceBalanceAmount(next))}.`)
+      const paid = financeNumber(next.amount_paid)
+      alert(invoiceBalanceAmount(next) <= 0.005
+        ? `Payment confirmed. ${money(paid)} has been received and the invoice is paid in full.`
+        : paid > 0.005
+          ? `Partial payment confirmed. ${money(paid)} has been received; ${money(invoiceBalanceAmount(next))} remains.`
+          : `No completed payment is recorded yet. Current balance: ${money(invoiceBalanceAmount(next))}.`)
     } catch (error) { alert(`Mio could not refresh the LawPay payment status. ${error?.message || error}`) }
     finally { setInvoiceDocumentBusy(false) }
   }
@@ -17128,7 +17131,7 @@ async function updateTeamCell(memberId, field, value) {
           <button type="button" className="btnPrimary" onClick={() => openInvoicePdf(invoice, 'open')} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Generating…' : 'Open / Print PDF'}</button>
           <button type="button" onClick={() => openInvoicePdf(invoice, 'download')} disabled={invoiceDocumentBusy}>Download PDF</button>
           {invoice.payment_url && <button type="button" onClick={() => window.open(invoice.payment_url, '_blank', 'noopener,noreferrer')}>Open LawPay test link</button>}
-          {invoice.payment_request_id && <button type="button" onClick={refreshSelectedInvoicePayment} disabled={invoiceDocumentBusy}>Sync / verify payment</button>}
+          {(invoice.payment_url || invoice.payment_request_id) && <button type="button" onClick={refreshSelectedInvoicePayment} disabled={invoiceDocumentBusy}>Sync / verify payment</button>}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10, padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10 }}>
           <div><strong>Issued</strong><br/>{invoice.issue_date}</div><div><strong>Due</strong><br/>{invoice.due_date || 'Upon receipt'}</div><div><strong>Status</strong><br/>{invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(invoice.total)}</div><div><strong>Paid</strong><br/>{money(invoice.amount_paid)}</div><div><strong>Balance</strong><br/>{money(invoiceBalanceAmount(invoice))}</div>
@@ -17148,7 +17151,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function renderClientFinanceInvoices(matter, finance) {
-    return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Click an invoice number to view its line items, open/print/download the PDF, test-send it, or open its LawPay link.</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div>
+    return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">LawPay payments refresh automatically when this page opens. Click an invoice number for its PDF, email, link, and payment details.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
       <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)}>Open</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
       {renderInvoiceDocumentModal()}
     </section>
@@ -17188,7 +17191,7 @@ async function updateTeamCell(memberId, field, value) {
       </div>
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − outstanding: <strong>{money(finance.trustMinusMinimumMinusOutstanding)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
       {showTrustRequestForm && renderTrustRequestForm(matter, finance)}
-      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Data sources</h3><div><strong>Baseline:</strong> {finance.snapshot ? `financial snapshot dated ${finance.snapshot.snapshot_date}` : 'no financial snapshot loaded'}</div><div><strong>Trust activity:</strong> LawPay trust payments and Mio ledger entries</div><div><strong>New work:</strong> Mio billing entries not yet assigned to an invoice</div><button type="button" onClick={() => { loadClioFinancialSnapshots({ ignoreDateFilters: true }); loadLawPayWorkspace() }} disabled={clioSnapshotLoading || lawPayBusy} style={{ marginTop: 10 }}>{clioSnapshotLoading || lawPayBusy ? 'Refreshing…' : 'Refresh financial data'}</button></section></div>}
+      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Data sources</h3><div><strong>Baseline:</strong> {finance.snapshot ? `financial snapshot dated ${finance.snapshot.snapshot_date}` : 'no financial snapshot loaded'}</div><div><strong>Trust activity:</strong> LawPay trust payments and Mio ledger entries</div><div><strong>New work:</strong> Mio billing entries not yet assigned to an invoice</div><button type="button" onClick={() => { loadClioFinancialSnapshots({ ignoreDateFilters: true }); refreshLawPayFinancialData({ silent: false }).catch(() => {}) }} disabled={clioSnapshotLoading || lawPayBusy} style={{ marginTop: 10 }}>{clioSnapshotLoading || lawPayBusy ? 'Refreshing…' : 'Refresh financial data'}</button></section></div>}
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
       {clientFinanceView === 'wip' && renderClientFinanceWip(matter, finance)}
@@ -39087,21 +39090,25 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const request = requests.find((row) => (invoice.payment_request_id && String(row.id) === String(invoice.payment_request_id)) || (row.invoice_number && String(row.invoice_number) === String(invoice.invoice_number)))
       if (!request) continue
       const matchedTransactions = transactions.filter((transaction) => {
+        const linkedRequestId = transaction?.payment_request_id || transaction?.request_id || transaction?.raw?.mio_payment_request_id || transaction?.raw?.payment_request_id || ''
+        if (linkedRequestId && String(linkedRequestId) === String(request.id)) return true
         if (request.gateway_transaction_id && String(transaction.gateway_transaction_id) === String(request.gateway_transaction_id)) return true
-        const reference = `${transaction.reference || ''} ${transaction.raw?.invoice_number || ''}`.toLowerCase()
+        const reference = `${transaction.reference || ''} ${transaction.raw?.invoice_number || ''} ${transaction.raw?.mio_invoice_number || ''}`.toLowerCase()
         return !!invoice.invoice_number && reference.includes(String(invoice.invoice_number).toLowerCase())
       })
       const successful = matchedTransactions.filter((transaction) => /success|succeed|complete|completed|paid|settled|captured/.test(String(transaction.status || '').toLowerCase()))
       const requestPaid = /paid|complete|completed|succeeded|settled/.test(String(request.status || '').toLowerCase()) || !!request.paid_at
-      if (!successful.length && !requestPaid) continue
+      const recordedRequestAmount = financeNumber(request?.raw?.received_amount_cents) / 100
+      if (!successful.length && !(requestPaid && recordedRequestAmount > 0)) continue
       const transactionPaid = successful.reduce((sum, transaction) => {
         const type = String(transaction.transaction_type || '').toLowerCase()
         const amount = Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount))
-        return sum + (/refund|chargeback|reversal/.test(type) ? -amount : amount)
+        const refunded = Math.abs(financeNumber(transaction.amount_refunded_cents) / 100)
+        return sum + (/refund|chargeback|reversal/.test(type) ? -amount : Math.max(0, amount - refunded))
       }, 0)
-      const paidAmount = Math.max(0, transactionPaid || (requestPaid ? financeNumber(request.amount_cents) / 100 : 0))
+      const paidAmount = Math.max(0, transactionPaid || recordedRequestAmount)
       if (paidAmount <= financeNumber(invoice.amount_paid) + 0.005) continue
-      const amountPaid = Math.min(financeNumber(invoice.total), paidAmount)
+      const amountPaid = Math.min(financeNumber(invoice.total), Math.max(financeNumber(invoice.amount_paid), paidAmount))
       const balance = Math.max(0, financeNumber(invoice.total) - amountPaid)
       const updated = { ...invoice, amount_paid: Number(amountPaid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: new Date().toISOString() }
       const { data: saved, error: saveError } = await supabase.from('mio_invoices').update(invoiceDatabasePayload(updated)).eq('id', invoice.id).select('*').single()
@@ -39140,6 +39147,36 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } catch (error) {
       console.error('Load LawPay workspace failed:', error)
     }
+  }
+
+  async function refreshLawPayFinancialData(options = {}) {
+    if (!session?.user?.id) return null
+    if (lawPayRefreshInFlightRef.current) return lawPayRefreshInFlightRef.current
+    const silent = !!options.silent
+    const refreshPromise = (async () => {
+      if (!silent) {
+        setLawPayBusy(true)
+        setLawPayMessage('Checking LawPay for completed and partial payments...')
+      }
+      try {
+        const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
+        if (error) throw error
+        if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
+        await loadLawPayWorkspace()
+        await loadMioInvoicesFromDatabase()
+        if (!silent) setLawPayMessage(`LawPay is current. Checked ${data.processed || 0} gateway event(s).`)
+        return data
+      } catch (error) {
+        if (!silent) setLawPayMessage(`Could not refresh LawPay payments: ${error?.message || error}`)
+        else console.warn('Automatic LawPay payment refresh failed:', error)
+        throw error
+      } finally {
+        if (!silent) setLawPayBusy(false)
+        lawPayRefreshInFlightRef.current = null
+      }
+    })()
+    lawPayRefreshInFlightRef.current = refreshPromise
+    return refreshPromise
   }
 
   async function testLawPayConnection() {
@@ -39236,19 +39273,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function syncLawPayTransactions() {
-    setLawPayBusy(true)
-    setLawPayMessage('Syncing LawPay gateway events...')
-    try {
-      const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
-      if (error) throw error
-      if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
-      setLawPayMessage(`Synced ${data.processed || 0} LawPay event(s).`)
-      await loadLawPayWorkspace()
-    } catch (error) {
-      setLawPayMessage(`Could not sync LawPay transactions: ${error?.message || error}`)
-    } finally {
-      setLawPayBusy(false)
-    }
+    try { await refreshLawPayFinancialData({ silent: false }) }
+    catch {}
   }
 
   function copyLawPayLink(url) {
