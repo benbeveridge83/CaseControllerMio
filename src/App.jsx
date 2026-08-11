@@ -1,9 +1,9 @@
-import React, { Fragment, useEffect, useRef, useState } from 'react'
+import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V216'
+const MIO_APP_VERSION = 'Mio V217'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -34,11 +34,13 @@ const BULK_INVOICE_COLUMNS = [
   { key: 'type', label: 'Type', width: 125 },
   { key: 'status', label: 'Status', width: 115 },
   { key: 'total', label: 'Total', width: 105 },
+  { key: 'paidAmount', label: 'Amount paid', width: 120 },
   { key: 'balance', label: 'Balance', width: 105 },
   { key: 'created', label: 'Date created', width: 135 },
   { key: 'sent', label: 'Date sent to client', width: 155 },
-  { key: 'trustPaid', label: 'Date paid from trust', width: 160 },
-  { key: 'clientPaid', label: 'Date paid by client', width: 160 },
+  { key: 'lastPayment', label: 'Latest payment date', width: 160 },
+  { key: 'trustPaid', label: 'Trust payment(s)', width: 170 },
+  { key: 'clientPaid', label: 'Client payment(s)', width: 170 },
   { key: 'actions', label: 'Actions', width: 105 }
 ]
 
@@ -2105,7 +2107,8 @@ function App() {
   const [bulkBillingCaseTypeMenuOpen, setBulkBillingCaseTypeMenuOpen] = useState(false)
   const [bulkBillingBusy, setBulkBillingBusy] = useState(false)
   const [bulkBillingResult, setBulkBillingResult] = useState('')
-  const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], index: 0, lines: [], drafts: {}, approved_ids: [], invoice: null })
+  const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], drafts: {}, approved_ids: [], invoice_by_matter: {} })
+  const [bulkWipProgress, setBulkWipProgress] = useState('')
   const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)
   const [bulkInvoiceFilters, setBulkInvoiceFilters] = useState(() => {
     try { return { ...DEFAULT_BULK_INVOICE_FILTERS, ...(JSON.parse(localStorage.getItem('caseMioBulkInvoiceFilters') || '{}') || {}) } }
@@ -2126,6 +2129,23 @@ function App() {
   const bulkBillingScrollSyncRef = useRef(false)
   const bulkInvoiceSequenceRef = useRef(0)
   const billingEntriesRef = useRef([])
+  const latestFinancialSnapshotByMatterId = useMemo(() => {
+    const result = new Map()
+    for (const matter of matters || []) {
+      let latest = null
+      for (const row of clioSnapshotRows || []) {
+        if (!financialSnapshotMatchesMatter(row, matter)) continue
+        if (!latest || new Date(row.snapshot_date || 0) > new Date(latest.snapshot_date || 0)) latest = row
+      }
+      result.set(String(matter.id), latest)
+    }
+    return result
+  }, [clioSnapshotRows, matters, clioMioRosetta])
+  const bulkFinanceByMatterId = useMemo(() => {
+    const result = new Map()
+    for (const matter of matters || []) result.set(String(matter.id), clientFinanceNumbers(matter))
+    return result
+  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, mioBillingCutoverDate, clioMinimumBalancesByMatterId])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
     catch { return {} }
@@ -3453,6 +3473,7 @@ function App() {
   useEffect(() => {
     let mounted = true
     let authTimeout = null
+    let authEventTimer = null
     const AUTH_BOOT_TIMEOUT_MS = 8000
 
     const finishAuthCheck = (nextSession = null) => {
@@ -3464,8 +3485,14 @@ function App() {
 
     const recoverStoredSession = async () => {
       try {
+        const lookupKey = '__caseMioSupabaseSessionLookupV217'
+        if (!window[lookupKey]) {
+          window[lookupKey] = supabase.auth.getSession().finally(() => {
+            window.setTimeout(() => { window[lookupKey] = null }, 0)
+          })
+        }
         const result = await Promise.race([
-          supabase.auth.getSession(),
+          window[lookupKey],
           new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase session lookup timed out.')), AUTH_BOOT_TIMEOUT_MS))
         ])
         finishAuthCheck(result?.data?.session || null)
@@ -3483,14 +3510,20 @@ function App() {
     recoverStoredSession()
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (!mounted) return
-      if (nextSession) explicitSignOutRef.current = false
-      finishAuthCheck(nextSession || null)
+      // Supabase Auth holds its session lock while this callback runs. Defer
+      // React state changes so effects that query Supabase cannot inherit that lock.
+      clearTimeout(authEventTimer)
+      authEventTimer = window.setTimeout(() => {
+        if (!mounted) return
+        if (nextSession) explicitSignOutRef.current = false
+        finishAuthCheck(nextSession || null)
+      }, 0)
     })
 
     return () => {
       mounted = false
       clearTimeout(authTimeout)
+      clearTimeout(authEventTimer)
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
@@ -16084,6 +16117,8 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function latestTrustSnapshotForMatter(matter = {}) {
+    const matterId = String(matter?.id || '')
+    if (matterId && latestFinancialSnapshotByMatterId.has(matterId)) return latestFinancialSnapshotByMatterId.get(matterId) || null
     const candidates = (clioSnapshotRows || []).filter((row) => financialSnapshotMatchesMatter(row, matter))
     return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
   }
@@ -16265,12 +16300,12 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
-  function matterRetainerTarget(matter) {
+  function matterRetainerTarget(matter, preparedFinance = null) {
     const override = financeNumber(retainerReplenishmentTargets?.[String(matter?.id || '')], NaN)
     if (Number.isFinite(override) && override >= 0) return override
-    const priorRequest = financeInvoicesForMatter(matter).filter((invoice) => invoice?.invoice_type === 'trust_request').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
+    const priorRequest = (preparedFinance?.invoices || financeInvoicesForMatter(matter)).filter((invoice) => invoice?.invoice_type === 'trust_request').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
     if (priorRequest) return Math.max(0, financeNumber(priorRequest.total))
-    const snapshot = latestTrustSnapshotForMatter(matter)
+    const snapshot = preparedFinance?.snapshot || latestTrustSnapshotForMatter(matter)
     const ids = [String(matter?.id || ''), String(snapshot?.clio_matter_id || ''), String(snapshot?.mio_matter_id || '')].filter(Boolean)
     for (const id of ids) {
       const value = financeNumber(clioInitialRetainersByMatterId?.[id], NaN)
@@ -16279,8 +16314,9 @@ async function updateTeamCell(memberId, field, value) {
     return 3500
   }
 
-  function matterReplenishmentAmount(matter) {
-    return Math.max(0, matterRetainerTarget(matter) - clientFinanceNumbers(matter).trust)
+  function matterReplenishmentAmount(matter, preparedFinance = null) {
+    const finance = preparedFinance || clientFinanceNumbers(matter)
+    return Math.max(0, matterRetainerTarget(matter, finance) - finance.trust)
   }
 
   function setMatterRetainerTarget(matter, rawValue) {
@@ -17110,8 +17146,8 @@ async function updateTeamCell(memberId, field, value) {
     catch (error) { alert(`The trust ledger was updated locally, but the invoice database record could not be saved. ${error?.message || error}`) }
   }
 
-  function wipReviewLinesForMatter(matter) {
-    const finance = clientFinanceNumbers(matter)
+  function wipReviewLinesForMatter(matter, preparedFinance = null) {
+    const finance = preparedFinance || bulkFinanceByMatterId.get(String(matter?.id || '')) || clientFinanceNumbers(matter)
     const itemized = finance.uninvoicedEntries.map((entry) => ({
       id: String(entry.id),
       billing_entry_id: entry.id,
@@ -17130,60 +17166,45 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function openBulkWipReview(matterIds) {
-    const ids = (matterIds || []).map(String).filter((id) => matters.some((matter) => String(matter.id) === id && clientFinanceNumbers(matter).wip > 0.005))
+    const ids = (matterIds || []).map(String).filter((id) => matters.some((matter) => String(matter.id) === id && (bulkFinanceByMatterId.get(id) || clientFinanceNumbers(matter)).wip > 0.005))
     if (!ids.length) return alert('None of the selected matters has WIP to review.')
     const drafts = Object.fromEntries(ids.map((id) => {
       const matter = matters.find((row) => String(row.id) === id)
-      return [id, wipReviewLinesForMatter(matter)]
+      return [id, wipReviewLinesForMatter(matter, bulkFinanceByMatterId.get(id))]
     }))
-    setBulkWipReview({ open: true, matter_ids: ids, index: 0, lines: drafts[ids[0]] || [], drafts, approved_ids: [], invoice: null })
+    setBulkWipProgress('')
+    setBulkWipReview({ open: true, matter_ids: ids, drafts, approved_ids: [], invoice_by_matter: {} })
   }
 
-  function moveBulkWipReview(offset) {
+  function closeBulkWipReview() {
+    setBulkWipReview({ open: false, matter_ids: [], drafts: {}, approved_ids: [], invoice_by_matter: {} })
+    setBulkWipProgress('')
+  }
+
+  function updateBulkWipLine(matterId, lineId, patch) {
     setBulkWipReview((current) => {
-      const currentMatterId = String(current.matter_ids[current.index] || '')
-      const drafts = { ...(current.drafts || {}), [currentMatterId]: current.lines }
-      const nextIndex = current.index + offset
-      if (nextIndex >= current.matter_ids.length) return { open: false, matter_ids: [], index: 0, lines: [], drafts: {}, approved_ids: [], invoice: null }
-      if (nextIndex < 0) return { ...current, drafts }
-      const matter = matters.find((row) => String(row.id) === String(current.matter_ids[nextIndex]))
-      const nextMatterId = String(current.matter_ids[nextIndex] || '')
-      return { ...current, drafts, index: nextIndex, lines: drafts[nextMatterId] || wipReviewLinesForMatter(matter), invoice: null }
-    })
-  }
-
-  function advanceBulkWipReview() {
-    moveBulkWipReview(1)
-  }
-
-  function previousBulkWipReview() {
-    moveBulkWipReview(-1)
-  }
-
-  function updateBulkWipLine(lineId, patch) {
-    setBulkWipReview((current) => {
-      const matterId = String(current.matter_ids[current.index] || '')
-      const lines = current.lines.map((line) => {
-      if (String(line.id) !== String(lineId)) return line
-      const next = { ...line, ...patch }
-      if (Object.prototype.hasOwnProperty.call(patch, 'hours') || Object.prototype.hasOwnProperty.call(patch, 'rate')) {
-        next.amount = Number((financeNumber(next.hours) * financeNumber(next.rate)).toFixed(2))
-      }
-      return next
+      const id = String(matterId || '')
+      const lines = (current.drafts?.[id] || []).map((line) => {
+        if (String(line.id) !== String(lineId)) return line
+        const next = { ...line, ...patch }
+        if (Object.prototype.hasOwnProperty.call(patch, 'hours') || Object.prototype.hasOwnProperty.call(patch, 'rate')) {
+          next.amount = Number((financeNumber(next.hours) * financeNumber(next.rate)).toFixed(2))
+        }
+        return next
       })
-      return { ...current, invoice: null, lines, drafts: { ...(current.drafts || {}), [matterId]: lines } }
+      return { ...current, drafts: { ...(current.drafts || {}), [id]: lines } }
     })
   }
 
-  function removeBulkWipLine(lineId) {
+  function removeBulkWipLine(matterId, lineId) {
     setBulkWipReview((current) => {
-      const matterId = String(current.matter_ids[current.index] || '')
-      const lines = current.lines.filter((row) => String(row.id) !== String(lineId))
-      return { ...current, invoice: null, lines, drafts: { ...(current.drafts || {}), [matterId]: lines } }
+      const id = String(matterId || '')
+      const lines = (current.drafts?.[id] || []).filter((row) => String(row.id) !== String(lineId))
+      return { ...current, drafts: { ...(current.drafts || {}), [id]: lines } }
     })
   }
 
-  async function createReviewedWipInvoice(matter, lines, { trackReview = true } = {}) {
+  function buildReviewedWipInvoice(matter, lines, invoiceNumber) {
     const cleanLines = (lines || []).map((line) => ({ ...line, amount: Math.max(0, financeNumber(line.amount)) })).filter((line) => line.amount > 0.005)
     const amount = Number(cleanLines.reduce((sum, line) => sum + line.amount, 0).toFixed(2))
     if (amount <= 0) throw new Error('The reviewed WIP has no billable amount.')
@@ -17193,7 +17214,7 @@ async function updateTeamCell(memberId, field, value) {
     const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const invoice = {
       id: invoiceId,
-      invoice_number: await reserveMioInvoiceNumber(),
+      invoice_number: invoiceNumber,
       invoice_type: 'services',
       matter_id: matter.id,
       client_id: matter.client_id || '',
@@ -17208,17 +17229,93 @@ async function updateTeamCell(memberId, field, value) {
       total: amount,
       amount_paid: 0,
       balance: amount,
-      source_snapshot_date: clientFinanceNumbers(matter).snapshot?.snapshot_date || '',
+      source_snapshot_date: (bulkFinanceByMatterId.get(String(matter.id)) || clientFinanceNumbers(matter)).snapshot?.snapshot_date || '',
       source_wip_amount: cleanLines.filter((line) => !line.billing_entry_id).reduce((sum, line) => sum + line.amount, 0),
       line_items: cleanLines.map(({ id, ...line }) => line),
       created_at: now.toISOString(),
       updated_at: now.toISOString()
     }
-    const entryIds = new Set(cleanLines.map((line) => String(line.billing_entry_id || '')).filter(Boolean))
-    const saved = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'bulk_wip_review', line_item_count: cleanLines.length })
-    if (entryIds.size) await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, [])
-    if (trackReview) setBulkWipReview((current) => ({ ...current, invoice: saved, approved_ids: Array.from(new Set([...(current.approved_ids || []), String(matter.id)])) }))
+    return invoice
+  }
+
+  async function createReviewedWipInvoice(matter, lines, { trackReview = true, linkEntries = true } = {}) {
+    const invoice = buildReviewedWipInvoice(matter, lines, await reserveMioInvoiceNumber())
+    const entryIds = new Set((invoice.line_items || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
+    const saved = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'bulk_wip_review', line_item_count: invoice.line_items.length })
+    if (linkEntries && entryIds.size) await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, [])
+    if (trackReview) setBulkWipReview((current) => ({ ...current, invoice_by_matter: { ...(current.invoice_by_matter || {}), [String(matter.id)]: saved }, approved_ids: Array.from(new Set([...(current.approved_ids || []), String(matter.id)])) }))
     return saved
+  }
+
+  async function syncBulkBillingEntryInvoiceLinks(invoices = []) {
+    const assignments = new Map()
+    for (const invoice of invoices) {
+      for (const line of invoice.line_items || []) {
+        const entryId = String(line.billing_entry_id || '')
+        if (!entryId) continue
+        const prior = assignments.get(entryId)
+        if (prior && String(prior.invoice_id) !== String(invoice.id)) throw new Error(`Billing entry ${entryId} was included in more than one invoice.`)
+        assignments.set(entryId, { invoice_id: invoice.id, invoice_number: invoice.invoice_number })
+      }
+    }
+    if (!assignments.size) return []
+    const changedAt = new Date().toISOString()
+    const originals = (billingEntries || []).filter((entry) => assignments.has(String(entry.id)))
+    if (originals.length !== assignments.size) throw new Error('One or more reviewed billing entries could not be found. Refresh Bulk Billing and review again.')
+    for (const entry of originals) {
+      const assignment = assignments.get(String(entry.id))
+      if (entry.invoice_id && String(entry.invoice_id) !== String(assignment.invoice_id)) throw new Error(`${entry.description || 'A billing entry'} was invoiced in another window. Refresh before continuing.`)
+    }
+    const nextEntries = (billingEntries || []).map((entry) => {
+      const assignment = assignments.get(String(entry.id))
+      if (!assignment) return entry
+      return { ...entry, ...assignment, invoiced_at: entry.invoiced_at || changedAt, invoice_link_updated_at: changedAt, updated_at: changedAt }
+    })
+    const changedEntries = nextEntries.filter((entry) => assignments.has(String(entry.id)))
+    const rows = changedEntries.map((entry) => billingEntryToRelationalRow(entry, billingPrivateNotes?.[entry.id] || '')).filter(Boolean)
+    const restoreRows = originals.map((entry) => billingEntryToRelationalRow(entry, billingPrivateNotes?.[entry.id] || '')).filter(Boolean)
+    for (let index = 0; index < rows.length; index += 250) {
+      const { error } = await supabase.from('mio_billing_entries').upsert(rows.slice(index, index + 250), { onConflict: 'user_id,id' })
+      if (error) throw new Error(`Mio could not link the reviewed billing entries. ${error.message || error}`)
+    }
+    try {
+      const verified = []
+      const ids = Array.from(assignments.keys())
+      for (let index = 0; index < ids.length; index += 200) {
+        const { data, error } = await supabase.from('mio_billing_entries').select('id,payload').eq('user_id', session.user.id).in('id', ids.slice(index, index + 200))
+        if (error) throw error
+        verified.push(...(data || []))
+      }
+      const verifiedById = new Map(verified.map((row) => [String(row.id), row]))
+      const mismatch = ids.find((id) => {
+        const expected = assignments.get(id)
+        const actual = verifiedById.get(id)
+        return !actual || String(actual.payload?.invoice_id || '') !== String(expected.invoice_id) || String(actual.payload?.invoice_number || '') !== String(expected.invoice_number)
+      })
+      if (mismatch) throw new Error(`Billing entry ${mismatch} did not retain its invoice link.`)
+    } catch (error) {
+      for (let index = 0; index < restoreRows.length; index += 250) await supabase.from('mio_billing_entries').upsert(restoreRows.slice(index, index + 250), { onConflict: 'user_id,id' })
+      throw new Error(`Mio could not verify every WIP link and restored the original entries. ${error?.message || error}`)
+    }
+    setBillingEntries(nextEntries)
+    try { await saveMioStateKeyNow('caseMioBillingEntries', JSON.stringify(nextEntries), { throwOnError: true }) }
+    catch (error) { console.warn('Relational WIP links were verified, but the legacy cloud-state copy could not be refreshed.', error) }
+    return changedEntries
+  }
+
+  async function voidBulkInvoicesAfterFailure(invoices = [], reason = '') {
+    if (!invoices.length) return
+    const now = new Date().toISOString()
+    const voided = invoices.map((invoice) => ({ ...invoice, status: 'void', balance: 0, voided_at: now, void_reason: reason, updated_at: now }))
+    const { data, error } = await supabase.from('mio_invoices').upsert(voided.map(invoiceDatabasePayload), { onConflict: 'id' }).select('*')
+    if (error) console.error('Bulk invoice rollback failed:', error)
+    const rows = (data || voided).map(invoiceFromDatabaseRow)
+    setMioInvoices((current) => {
+      const rowIds = new Set(rows.map((invoice) => String(invoice.id)))
+      return [...rows, ...(current || []).filter((invoice) => !rowIds.has(String(invoice.id)))]
+    })
+    const events = rows.map((invoice) => ({ invoice_id: invoice.id, user_id: session.user.id, event_type: 'bulk_invoice_creation_rolled_back', details: { reason }, occurred_at: now }))
+    if (events.length) await supabase.from('mio_invoice_events').insert(events)
   }
 
   async function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
@@ -17276,49 +17373,92 @@ async function updateTeamCell(memberId, field, value) {
     return { paid: Number((payable - remaining).toFixed(2)), message: `${money(payable - remaining)} paid from trust.` }
   }
 
-  async function completeBulkWipReview(action) {
-    const matterId = bulkWipReview.matter_ids[bulkWipReview.index]
+  async function completeBulkWipReview(matterId, action) {
     const matter = matters.find((row) => String(row.id) === String(matterId))
-    if (!matter) return advanceBulkWipReview()
+    if (!matter) return alert('This matter is no longer available. Close and reopen the WIP review.')
     setBulkBillingBusy(true)
     try {
-      let invoice = bulkWipReview.invoice
-      if (!invoice) invoice = await createReviewedWipInvoice(matter, bulkWipReview.lines)
+      const id = String(matterId)
+      let invoice = bulkWipReview.invoice_by_matter?.[id]
+      if (!invoice) invoice = await createReviewedWipInvoice(matter, bulkWipReview.drafts?.[id] || [])
       if (action === 'pay') invoice = await payInvoiceFromTrustWithoutPrompt(matter, invoice)
       if (action === 'email') invoice = await emailServiceInvoice(matter, invoice)
-      await saveMioStateKeyNow('caseMioInvoices', JSON.stringify([invoice, ...(mioInvoices || []).filter((row) => String(row.id) !== String(invoice.id))]), { throwOnError: true })
+      setBulkWipReview((current) => ({ ...current, invoice_by_matter: { ...(current.invoice_by_matter || {}), [id]: invoice }, approved_ids: Array.from(new Set([...(current.approved_ids || []), id])) }))
+      saveMioStateKeyNow('caseMioInvoices', JSON.stringify([invoice, ...(mioInvoices || []).filter((row) => String(row.id) !== String(invoice.id))])).catch(() => {})
       setBulkBillingResult(`${invoice.invoice_number} ${action === 'pay' ? 'was paid from trust' : action === 'email' ? 'was emailed to the client' : 'was created'}.`)
-      if (action !== 'create') advanceBulkWipReview()
     } catch (error) {
       alert(error?.message || String(error))
     } finally { setBulkBillingBusy(false) }
   }
 
   async function approveAllBulkWip() {
-    if (!window.confirm('Are you sure you want to bulk approve all without reviewing each?')) return
+    if (!window.confirm('Are you sure you want to approve all and generate all invoices without reviewing each item again?')) return
     const review = bulkWipReview
-    const approvedIds = new Set((review.approved_ids || []).map(String))
-    const currentMatterId = String(review.matter_ids[review.index] || '')
-    const drafts = { ...(review.drafts || {}), [currentMatterId]: review.lines }
-    const remainingIds = review.matter_ids.map(String).filter((id) => !approvedIds.has(id))
-    if (!remainingIds.length) return alert('Every matter in this review has already been approved.')
+    const remainingIds = review.matter_ids.map(String).filter((id) => !review.invoice_by_matter?.[id])
+    if (!remainingIds.length) return alert('Every matter in this review already has an invoice.')
     setBulkBillingBusy(true)
-    const created = []
     const failures = []
-    for (const matterId of remainingIds) {
-      const matter = matters.find((row) => String(row.id) === matterId)
-      if (!matter) { failures.push(`Matter ${matterId}: matter record not found`); continue }
-      try {
-        created.push(await createReviewedWipInvoice(matter, drafts[matterId] || wipReviewLinesForMatter(matter), { trackReview: false }))
-      } catch (error) {
-        failures.push(`${matterClientName(matter) || matter.name || matterId}: ${error?.message || error}`)
+    const prepared = []
+    let saved = []
+    try {
+      const candidates = remainingIds.map((matterId, order) => {
+        const matter = matters.find((row) => String(row.id) === matterId)
+        if (!matter) { failures.push(`Matter ${matterId}: matter record not found`); return null }
+        const lines = review.drafts?.[matterId] || []
+        const total = lines.reduce((sum, line) => sum + Math.max(0, financeNumber(line.amount)), 0)
+        if (total <= 0.005) { failures.push(`${matterClientName(matter) || matter.name || matterId}: no billable amount remains`); return null }
+        return { matterId, matter, lines, order }
+      }).filter(Boolean)
+      let cursor = 0
+      let reserved = 0
+      setBulkWipProgress(`Reserving invoice numbers for ${candidates.length} matter${candidates.length === 1 ? '' : 's'}…`)
+      const workers = Array.from({ length: Math.min(3, candidates.length) }, () => (async () => {
+        while (cursor < candidates.length) {
+          const candidate = candidates[cursor++]
+          try {
+            const invoiceNumber = await reserveMioInvoiceNumber()
+            prepared.push({ ...candidate, invoice: buildReviewedWipInvoice(candidate.matter, candidate.lines, invoiceNumber) })
+            reserved += 1
+            setBulkWipProgress(`Prepared ${reserved} of ${candidates.length} invoices…`)
+          } catch (error) {
+            failures.push(`${matterClientName(candidate.matter) || candidate.matter.name || candidate.matterId}: ${error?.message || error}`)
+          }
+        }
+      })())
+      await Promise.all(workers)
+      prepared.sort((left, right) => left.order - right.order)
+      if (!prepared.length) throw new Error(failures.join(' | ') || 'No invoices could be prepared.')
+      setBulkWipProgress(`Saving ${prepared.length} invoices together…`)
+      const { data, error } = await supabase.from('mio_invoices').upsert(prepared.map((item) => invoiceDatabasePayload(item.invoice)), { onConflict: 'id' }).select('*')
+      if (error) throw new Error(`Mio could not save the invoice batch. ${error.message || error}`)
+      saved = (data || []).map(invoiceFromDatabaseRow)
+      if (saved.length !== prepared.length) throw new Error(`Mio saved ${saved.length} of ${prepared.length} invoice records, so the batch was stopped for safety.`)
+      const occurredAt = new Date().toISOString()
+      const eventRows = saved.map((invoice) => ({ invoice_id: invoice.id, user_id: session.user.id, event_type: 'invoice_created', details: { source: 'bulk_wip_review', line_item_count: (invoice.line_items || []).length, bulk_approved: true }, occurred_at: occurredAt }))
+      const { data: savedEvents, error: eventError } = await supabase.from('mio_invoice_events').insert(eventRows).select('*')
+      if (eventError) throw new Error(`The invoices were saved, but their audit records were not. ${eventError.message || eventError}`)
+      setBulkWipProgress(`Linking billing entries and verifying that WIP clears…`)
+      await syncBulkBillingEntryInvoiceLinks(saved)
+      setMioInvoices((current) => [...saved, ...(current || []).filter((invoice) => !saved.some((created) => String(created.id) === String(invoice.id)))])
+      setMioInvoiceEvents((current) => [...(savedEvents || []), ...(current || [])])
+      const savedByMatter = Object.fromEntries(saved.map((invoice) => [String(invoice.matter_id), invoice]))
+      setBulkWipReview((current) => ({ ...current, approved_ids: Array.from(new Set([...(current.approved_ids || []), ...Object.keys(savedByMatter)])), invoice_by_matter: { ...(current.invoice_by_matter || {}), ...savedByMatter } }))
+      const result = `${saved.length} invoice${saved.length === 1 ? '' : 's'} approved and generated. Their included billing entries are now invoiced and the corresponding Mio WIP is cleared.${failures.length ? ` ${failures.length} matter${failures.length === 1 ? '' : 's'} still need attention: ${failures.join(' | ')}` : ''}`
+      setBulkBillingResult(result)
+      setBulkWipProgress(result)
+      if (!failures.length) window.setTimeout(closeBulkWipReview, 600)
+    } catch (error) {
+      if (saved.length) {
+        try { await voidBulkInvoicesAfterFailure(saved, error?.message || String(error)) }
+        catch (rollbackError) { console.error('Bulk invoice rollback could not be completed:', rollbackError) }
       }
+      const message = `No WIP was cleared because the invoice batch did not finish safely. ${error?.message || error}`
+      setBulkBillingResult(message)
+      setBulkWipProgress(message)
+      alert(message)
+    } finally {
+      setBulkBillingBusy(false)
     }
-    await loadMioInvoicesFromDatabase()
-    await loadMioInvoiceEventsFromDatabase()
-    setBulkWipReview({ open: false, matter_ids: [], index: 0, lines: [], drafts: {}, approved_ids: [], invoice: null })
-    setBulkBillingResult(`${created.length} invoice${created.length === 1 ? '' : 's'} approved and created.${failures.length ? ` ${failures.length} failed: ${failures.join(' | ')}` : ''}`)
-    setBulkBillingBusy(false)
   }
 
   async function createAndEmailReplenishmentRequest(matter) {
@@ -40005,8 +40145,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const trustPayments = activeTrustPaymentsForInvoice(invoice)
     const trustPaidAmount = trustPayments.reduce((sum, transaction) => sum + financeNumber(transaction.amount), 0)
     const trustPaidAt = trustPayments.map((transaction) => transaction.created_at || transaction.date || '').sort((a, b) => String(b).localeCompare(String(a)))[0] || ''
-    const clientPaidAmount = Math.max(0, financeNumber(invoice.amount_paid) - trustPaidAmount)
+    const paidAmount = Math.max(0, financeNumber(invoice.amount_paid))
+    const clientPaidAmount = Math.max(0, paidAmount - trustPaidAmount)
     const clientPaidAt = clientPaidAmount > 0.005 ? latestInvoiceEventDate(invoice, ['lawpay_payment_recorded', 'outside_payment_recorded', 'client_payment_recorded']) : ''
+    const lastPaymentAt = [trustPaidAt, clientPaidAt, latestInvoiceEventDate(invoice, ['trust_applied', 'lawpay_payment_recorded', 'outside_payment_recorded', 'client_payment_recorded'])].filter(Boolean).sort((a, b) => String(b).localeCompare(String(a)))[0] || ''
     const sentAt = invoice.emailed_at || latestInvoiceEventDate(invoice, ['email_sent'])
     return {
       invoice,
@@ -40016,11 +40158,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       typeLabel: invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services',
       statusLabel: invoiceStatusLabel(invoice),
       total: financeNumber(invoice.total),
+      paidAmount,
       balance: invoiceBalanceAmount(invoice),
       createdAt: invoice.created_at || invoice.issue_date || '',
       sentAt,
       trustPaidAt,
       clientPaidAt,
+      lastPaymentAt,
       trustPaidAmount,
       clientPaidAmount
     }
@@ -40035,16 +40179,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   function renderBulkInvoiceLedger() {
     if (!bulkInvoiceLedgerOpen) return null
     const columns = BULK_INVOICE_COLUMNS.filter((column) => bulkInvoiceVisibleColumns[column.key] !== false)
-    const dateFields = new Set(['created', 'sent', 'trustPaid', 'clientPaid'])
+    const dateFields = new Set(['created', 'sent', 'lastPayment', 'trustPaid', 'clientPaid'])
     const valueFor = (row, key) => {
       if (key === 'matter') return row.matterLabel
       if (key === 'invoice') return row.invoiceLabel
       if (key === 'type') return row.typeLabel
       if (key === 'status') return row.statusLabel
       if (key === 'total') return row.total
+      if (key === 'paidAmount') return row.paidAmount
       if (key === 'balance') return row.balance
       if (key === 'created') return row.createdAt
       if (key === 'sent') return row.sentAt
+      if (key === 'lastPayment') return row.lastPaymentAt
       if (key === 'trustPaid') return row.trustPaidAt
       if (key === 'clientPaid') return row.clientPaidAt
       return ''
@@ -40054,13 +40200,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!filter) return true
       const value = valueFor(row, key)
       if (dateFields.has(key)) return financeDateOnly(value) === filter
-      if (key === 'total' || key === 'balance') return money(value).toLowerCase().includes(filter) || String(value).includes(filter)
+      if (key === 'total' || key === 'paidAmount' || key === 'balance') return money(value).toLowerCase().includes(filter) || String(value).includes(filter)
       return String(value || '').toLowerCase().includes(filter)
     })).sort((left, right) => {
       const field = bulkInvoiceSort.field
       const a = valueFor(left, field)
       const b = valueFor(right, field)
-      const comparison = ['total','balance'].includes(field) ? financeNumber(a) - financeNumber(b) : String(a || '').localeCompare(String(b || ''))
+      const comparison = ['total','paidAmount','balance'].includes(field) ? financeNumber(a) - financeNumber(b) : String(a || '').localeCompare(String(b || ''))
       return bulkInvoiceSort.direction === 'asc' ? comparison : -comparison
     })
     const toggleSort = (field) => setBulkInvoiceSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
@@ -40076,13 +40222,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (column.key === 'matter') return <td key={column.key} style={style}><strong>{row.invoice.client_name || matterClientName(row.matter) || 'Client'}</strong><div>{row.invoice.matter_name || row.matter?.name || 'Matter'}</div>{(row.invoice.matter_number || row.matter?.cause_number) && <small style={{ color: '#64748b' }}>{row.invoice.matter_number || row.matter?.cause_number}</small>}</td>
       if (column.key === 'invoice') return <td key={column.key} style={style}><button type="button" onClick={() => openFinanceInvoice(row.invoice, row.matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 800, cursor: 'pointer' }}>{row.invoiceLabel}</button></td>
       if (column.key === 'type') return <td key={column.key} style={style}>{row.typeLabel}</td>
-      if (column.key === 'status') return <td key={column.key} style={{ ...style, fontWeight: 800 }}>{row.statusLabel}</td>
+      if (column.key === 'status') return <td key={column.key} style={{ ...style, fontWeight: 800 }}>{row.statusLabel}{row.paidAmount > 0.005 && row.balance > 0.005 && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>{money(row.paidAmount)} paid<br/>{money(row.balance)} remaining</div>}</td>
       if (column.key === 'total') return <td key={column.key} style={{ ...style, textAlign: 'right' }}>{money(row.total)}</td>
+      if (column.key === 'paidAmount') return <td key={column.key} style={{ ...style, textAlign: 'right', fontWeight: row.paidAmount > 0.005 ? 800 : 500 }}>{money(row.paidAmount)}{row.paidAmount > 0.005 && row.balance > 0.005 && <div style={{ color: '#92400e', fontSize: 11 }}>Partial payment</div>}</td>
       if (column.key === 'balance') return <td key={column.key} style={{ ...style, textAlign: 'right' }}>{money(row.balance)}</td>
       if (column.key === 'created') return <td key={column.key} style={style}>{invoiceLedgerDate(row.createdAt) || <span title="The invoice record has no creation date">—</span>}</td>
       if (column.key === 'sent') return <td key={column.key} style={style}>{row.sentAt ? invoiceLedgerDate(row.sentAt) : 'Not sent'}</td>
-      if (column.key === 'trustPaid') return <td key={column.key} style={style}>{row.trustPaidAmount > 0.005 ? (invoiceLedgerDate(row.trustPaidAt) || <span title="A trust payment exists but its date is unavailable">—</span>) : 'Not paid from trust'}</td>
-      if (column.key === 'clientPaid') return <td key={column.key} style={style}>{row.clientPaidAmount > 0.005 ? (invoiceLedgerDate(row.clientPaidAt) || <span title="A client payment exists but its date is unavailable">—</span>) : 'Not paid by client'}</td>
+      if (column.key === 'lastPayment') return <td key={column.key} style={style}>{row.paidAmount > 0.005 ? (invoiceLedgerDate(row.lastPaymentAt) || <span title="A payment exists but its date is unavailable">—</span>) : 'No payment'}</td>
+      if (column.key === 'trustPaid') return <td key={column.key} style={style}>{row.trustPaidAmount > 0.005 ? <><strong>{money(row.trustPaidAmount)}</strong><div>{invoiceLedgerDate(row.trustPaidAt) || <span title="A trust payment exists but its date is unavailable">—</span>}</div></> : 'Not paid from trust'}</td>
+      if (column.key === 'clientPaid') return <td key={column.key} style={style}>{row.clientPaidAmount > 0.005 ? <><strong>{money(row.clientPaidAmount)}</strong><div>{invoiceLedgerDate(row.clientPaidAt) || <span title="A client payment exists but its date is unavailable">—</span>}</div></> : 'Not paid by client'}</td>
       return <td key={column.key} style={style}><button type="button" onClick={() => openFinanceInvoice(row.invoice, row.matter)}>Open</button></td>
     }
     const tableWidth = Math.max(700, columns.reduce((sum, column) => sum + column.width, 0))
@@ -40090,7 +40238,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       <section style={{ width: 'min(1780px,98vw)', minHeight: 400, maxHeight: '95vh', overflow: 'auto', margin: '0 auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.38)', padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>All invoices</h2><div className="hint">One row per invoice. Filter under any column heading or choose which columns are visible.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase()])}>Refresh</button><button type="button" onClick={() => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS })}>Clear filters</button><div style={{ position: 'relative' }}><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen((open) => !open)}>Columns ({columns.length}/{BULK_INVOICE_COLUMNS.length}) ▾</button>{bulkInvoiceColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 2, width: 250, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkInvoiceVisibleColumns(Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>{BULK_INVOICE_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkInvoiceVisibleColumns[column.key] !== false} onChange={() => setBulkInvoiceVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}</div>}</div><button type="button" onClick={() => setBulkInvoiceLedgerOpen(false)}>Close</button></div></div>
         <div style={{ margin: '12px 0', color: '#475569' }}>{rows.length} of {(mioInvoices || []).length} invoice{(mioInvoices || []).length === 1 ? '' : 's'} shown.</div>
-        <div style={{ overflowX: 'auto' }}><table style={{ width: tableWidth, minWidth: tableWidth, borderCollapse: 'collapse' }}><thead><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ width: column.width, minWidth: column.width, padding: 8, textAlign: ['total','balance'].includes(column.key) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{column.key === 'actions' ? column.label : <button type="button" onClick={() => toggleSort(column.key)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 900 }}>{column.label}{bulkInvoiceSort.field === column.key ? (bulkInvoiceSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>}</th>)}</tr><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ padding: '0 6px 8px', borderBottom: '1px solid #cbd5e1' }}>{renderFilter(column)}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.invoice.id}>{columns.map((column) => renderCell(row, column))}</tr>)}{!rows.length && <tr><td colSpan={Math.max(1, columns.length)} className="empty">No invoices match the selected filters.</td></tr>}</tbody></table></div>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: tableWidth, minWidth: tableWidth, borderCollapse: 'collapse' }}><thead><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ width: column.width, minWidth: column.width, padding: 8, textAlign: ['total','paidAmount','balance'].includes(column.key) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{column.key === 'actions' ? column.label : <button type="button" onClick={() => toggleSort(column.key)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 900 }}>{column.label}{bulkInvoiceSort.field === column.key ? (bulkInvoiceSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>}</th>)}</tr><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ padding: '0 6px 8px', borderBottom: '1px solid #cbd5e1' }}>{renderFilter(column)}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.invoice.id}>{columns.map((column) => renderCell(row, column))}</tr>)}{!rows.length && <tr><td colSpan={Math.max(1, columns.length)} className="empty">No invoices match the selected filters.</td></tr>}</tbody></table></div>
       </section>
       {renderInvoiceDocumentModal()}
     </div>
@@ -40116,7 +40264,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const caseTypes = options('matter_type').map((option) => String(option.name || '').trim()).filter(Boolean)
     const allCaseTypesSelected = bulkBillingSelectedCaseTypes.includes('__all__')
     const rows = matters.map((matter) => {
-      const finance = clientFinanceNumbers(matter)
+      const finance = bulkFinanceByMatterId.get(String(matter.id)) || clientFinanceNumbers(matter)
       return {
         matter,
         matterName: matter.name || matter.matter_name || matterClientName(matter) || 'Unnamed matter',
@@ -40128,8 +40276,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         trustMinusMinimumMinusOutstanding: finance.trustMinusMinimumMinusOutstanding,
         trustMinusMinimumMinusWip: finance.trustMinusMinimumMinusWip,
         trustMinusMinimumMinusWipMinusOutstanding: finance.trustMinusMinimumMinusWipMinusOutstanding,
-        retainerTarget: matterRetainerTarget(matter),
-        replenishment: finance.financialSnapshotResolved ? matterReplenishmentAmount(matter) : null,
+        retainerTarget: matterRetainerTarget(matter, finance),
+        replenishment: finance.financialSnapshotResolved ? matterReplenishmentAmount(matter, finance) : null,
         finance
       }
     }).filter((row) => {
@@ -40177,14 +40325,20 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (snapshotDependent && !row.finance.financialSnapshotResolved) return <td key={column.key} title="No matched Clio financial snapshot" style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(null)}</td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
     }
-    const currentReviewMatter = bulkWipReview.open ? matters.find((matter) => String(matter.id) === String(bulkWipReview.matter_ids[bulkWipReview.index])) : null
-    const reviewTotal = bulkWipReview.lines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
+    const reviewRows = bulkWipReview.open ? (bulkWipReview.matter_ids || []).map((matterId) => {
+      const id = String(matterId)
+      const matter = matters.find((row) => String(row.id) === id)
+      const lines = bulkWipReview.drafts?.[id] || []
+      return { id, matter, lines, total: lines.reduce((sum, line) => sum + financeNumber(line.amount), 0), invoice: bulkWipReview.invoice_by_matter?.[id] || null }
+    }).filter((row) => row.matter) : []
+    const reviewGrandTotal = reviewRows.reduce((sum, row) => sum + row.total, 0)
+    const reviewCreatedCount = reviewRows.filter((row) => row.invoice).length
     const snapshotDependentColumnKeys = new Set(['trust','outstanding','trustMinusMinimum','trustMinusMinimumMinusOutstanding','trustMinusMinimumMinusWip','trustMinusMinimumMinusWipMinusOutstanding','replenishment'])
     const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.filter((row) => !snapshotDependentColumnKeys.has(column.key) || row.finance.financialSnapshotResolved).reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
     const resolvedSnapshotCount = rows.filter((row) => row.finance.financialSnapshotResolved).length
     const unresolvedSnapshotCount = rows.length - resolvedSnapshotCount
     const loadedSnapshotBalanceTotal = (clioSnapshotRows || []).reduce((sum, snapshot) => sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)), 0)
-    const resolvedSnapshotBalanceTotal = matters.reduce((sum, matter) => { const snapshot = latestTrustSnapshotForMatter(matter); return snapshot ? sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)) : sum }, 0)
+    const resolvedSnapshotBalanceTotal = matters.reduce((sum, matter) => { const snapshot = latestFinancialSnapshotByMatterId.get(String(matter.id)); return snapshot ? sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)) : sum }, 0)
     const snapshotMatchFailure = clioSnapshotLoadAttempted && !clioSnapshotLoading && loadedSnapshotBalanceTotal > 0.005 && resolvedSnapshotBalanceTotal <= 0.005
     const snapshotDataUnavailable = !clioSnapshotLoadAttempted || clioSnapshotLoading || !!clioSnapshotError || snapshotMatchFailure || !clioSnapshotRows.length
 
@@ -40245,13 +40399,25 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
       <div ref={bulkBillingFloatingScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('floating')} aria-label="Floating bulk billing horizontal scroll" style={{ position: 'fixed', left: 210, right: 18, bottom: 58, zIndex: 1100, height: 20, overflowX: 'auto', overflowY: 'hidden', background: '#f8fafc', border: '1px solid #94a3b8', borderRadius: 7, boxShadow: '0 4px 14px rgba(15,23,42,.2)' }}><div style={{ width: bulkBillingTableWidth, height: 1 }} /></div>
 
-      {bulkWipReview.open && currentReviewMatter && <div style={{ position: 'fixed', inset: 0, zIndex: 12000, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
-        <div style={{ width: 'min(1080px,97vw)', maxHeight: '94vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.35)', padding: 18 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><h2 style={{ margin: 0 }}>WIP review — {matterClientName(currentReviewMatter) || 'Client'}</h2><div style={{ fontSize: 17, fontWeight: 850, color: '#1e293b', marginTop: 4 }}>Matter: {currentReviewMatter.name || currentReviewMatter.matter_name || 'Unnamed matter'}</div>{currentReviewMatter.cause_number && <div style={{ color: '#64748b', marginTop: 2 }}>Cause / matter number: {currentReviewMatter.cause_number}</div>}<div className="hint">Matter {bulkWipReview.index + 1} of {bulkWipReview.matter_ids.length}. Edit descriptions, time, rates, or amounts before approval.</div></div><button type="button" onClick={() => setBulkWipReview({ open: false, matter_ids: [], index: 0, lines: [], drafts: {}, approved_ids: [], invoice: null })}>Close</button></div>
-          {bulkWipReview.lines.some((line) => line.source_kind === 'snapshot_wip') && <div style={{ marginTop: 12, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}><strong>Prior Clio WIP is not itemized.</strong> The financial snapshot supplies only a total, not the descriptions entered in Clio. Review and replace that line's description before approval if needed.</div>}
-          <div style={{ overflowX: 'auto', marginTop: 14 }}><table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse' }}><thead><tr>{['Date','Description','Hours','Rate','Amount',''].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{bulkWipReview.lines.map((line) => <tr key={line.id} style={{ background: line.source_kind === 'snapshot_wip' ? '#fffbeb' : '#fff' }}><td style={{ padding: 6 }}><input type="date" value={line.date || ''} onChange={(event) => updateBulkWipLine(line.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={line.description || ''} title={line.source_kind === 'snapshot_wip' ? 'This is an aggregate Clio WIP balance. Its source snapshot did not contain individual descriptions.' : ''} onChange={(event) => updateBulkWipLine(line.id, { description: event.target.value })} style={{ width: '100%' }} />{line.source_kind === 'snapshot_wip' && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>Aggregate snapshot balance — description must be reviewed</div>}</td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.hours} onChange={(event) => updateBulkWipLine(line.id, { hours: event.target.value })} style={{ width: 90, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.rate} onChange={(event) => updateBulkWipLine(line.id, { rate: event.target.value })} style={{ width: 100, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.amount} onChange={(event) => updateBulkWipLine(line.id, { amount: event.target.value })} style={{ width: 110, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><button type="button" onClick={() => removeBulkWipLine(line.id)}>Remove</button></td></tr>)}</tbody><tfoot><tr><td colSpan="4" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(reviewTotal)}</td><td /></tr></tfoot></table></div>
-          {bulkWipReview.invoice && <section style={{ border: '2px solid #2563eb', borderRadius: 10, background: '#eff6ff', padding: 12, marginTop: 14 }}><strong>Invoice preview: {bulkWipReview.invoice.invoice_number}</strong><div>Client: {bulkWipReview.invoice.client_name}</div><div>Issued: {bulkWipReview.invoice.issue_date} • Due: {bulkWipReview.invoice.due_date}</div><div style={{ fontSize: 20, marginTop: 5 }}>Total: <strong>{money(bulkWipReview.invoice.total)}</strong></div></section>}
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 16 }}><div style={{ display: 'flex', gap: 8 }}><button type="button" onClick={previousBulkWipReview} disabled={bulkBillingBusy || bulkWipReview.index <= 0}>← Previous matter</button><button type="button" onClick={advanceBulkWipReview} disabled={bulkBillingBusy}>Next matter →</button></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={approveAllBulkWip} disabled={bulkBillingBusy}>Approve all</button><button type="button" onClick={() => completeBulkWipReview('create')} disabled={bulkBillingBusy || reviewTotal <= 0.005 || !!bulkWipReview.invoice}>{bulkWipReview.invoice ? 'Invoice created' : 'Approve & create invoice'}</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview('pay')} disabled={bulkBillingBusy || reviewTotal <= 0.005}>Approve & pay from trust</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview('email')} disabled={bulkBillingBusy || reviewTotal <= 0.005}>Approve & email client</button></div></div>
+      {bulkWipReview.open && reviewRows.length > 0 && <div style={{ position: 'fixed', inset: 0, zIndex: 12000, background: 'rgba(15,23,42,.5)', padding: 18 }}>
+        <div style={{ width: 'min(1240px,98vw)', height: '94vh', overflow: 'auto', margin: '0 auto', background: '#f8fafc', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.35)' }}>
+          <div style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'center', flexWrap: 'wrap', padding: 16, background: '#fff', borderBottom: '1px solid #cbd5e1' }}>
+            <div><h2 style={{ margin: 0 }}>Bulk WIP review — all matters</h2><div className="hint">Every selected matter and billing item is on this page. Scroll down to review and edit without loading another screen.</div><div style={{ marginTop: 5, fontWeight: 800 }}>{reviewRows.length} matters • {reviewRows.reduce((sum, row) => sum + row.lines.length, 0)} billing items • {money(reviewGrandTotal)} total • {reviewCreatedCount} invoices generated</div></div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={approveAllBulkWip} disabled={bulkBillingBusy || reviewCreatedCount === reviewRows.length}>{bulkBillingBusy ? 'Generating and verifying invoices…' : 'Approve all and generate all invoices'}</button><button type="button" onClick={closeBulkWipReview} disabled={bulkBillingBusy}>Close</button></div>
+            {bulkWipProgress && <div style={{ flexBasis: '100%', border: `1px solid ${/no wip was cleared/i.test(bulkWipProgress) ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, padding: 9, color: /no wip was cleared/i.test(bulkWipProgress) ? '#991b1b' : '#1e3a8a', background: /no wip was cleared/i.test(bulkWipProgress) ? '#fff1f2' : '#eff6ff', fontWeight: 700 }}>{bulkWipProgress}</div>}
+          </div>
+          <div style={{ display: 'grid', gap: 16, padding: 16 }}>
+            {reviewRows.map(({ id, matter, lines, total, invoice }, matterIndex) => <section key={id} style={{ border: `2px solid ${invoice ? '#86efac' : '#cbd5e1'}`, borderRadius: 12, background: '#fff', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap', padding: 14, background: invoice ? '#f0fdf4' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>MATTER {matterIndex + 1} OF {reviewRows.length}</div><h3 style={{ margin: '3px 0 0' }}>{matterClientName(matter) || 'Client'}</h3><div style={{ fontSize: 16, fontWeight: 800 }}>{matter.name || matter.matter_name || 'Unnamed matter'}</div>{matter.cause_number && <div style={{ color: '#64748b' }}>Cause / matter number: {matter.cause_number}</div>}</div><div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 700 }}>INVOICE TOTAL</div><div style={{ fontSize: 24, fontWeight: 900 }}>{money(total)}</div>{invoice && <div style={{ color: '#166534', fontWeight: 900 }}>{invoice.invoice_number} generated</div>}</div></div>
+              <div style={{ padding: 14 }}>
+                {lines.some((line) => line.source_kind === 'snapshot_wip') && <div style={{ marginBottom: 12, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}><strong>Prior Clio WIP is not itemized.</strong> The financial snapshot supplies only a total, not the descriptions entered in Clio. Review and replace that line's description before approval if needed.</div>}
+                <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}><thead><tr>{['Date','Description','Hours','Rate','Amount',''].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lines.map((line) => <tr key={line.id} style={{ background: line.source_kind === 'snapshot_wip' ? '#fffbeb' : '#fff' }}><td style={{ padding: 6 }}><input type="date" value={line.date || ''} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={line.description || ''} disabled={!!invoice || bulkBillingBusy} title={line.source_kind === 'snapshot_wip' ? 'This is an aggregate Clio WIP balance. Its source snapshot did not contain individual descriptions.' : ''} onChange={(event) => updateBulkWipLine(id, line.id, { description: event.target.value })} style={{ width: '100%' }} />{line.source_kind === 'snapshot_wip' && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>Aggregate snapshot balance — description must be reviewed</div>}</td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.hours} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { hours: event.target.value })} style={{ width: 90, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.rate} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { rate: event.target.value })} style={{ width: 100, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.amount} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { amount: event.target.value })} style={{ width: 110, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><button type="button" onClick={() => removeBulkWipLine(id, line.id)} disabled={!!invoice || bulkBillingBusy}>Remove</button></td></tr>)}</tbody><tfoot><tr><td colSpan="4" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(total)}</td><td /></tr></tfoot></table></div>
+                {!lines.length && <div className="empty">No billable items remain for this matter.</div>}
+                {invoice && <div style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 10, marginTop: 12 }}><strong>{invoice.invoice_number} was created for {money(invoice.total)}.</strong> Its billing items are locked because they have been invoiced.</div>}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginTop: 12 }}><button type="button" onClick={() => completeBulkWipReview(id, 'create')} disabled={bulkBillingBusy || total <= 0.005 || !!invoice}>{invoice ? 'Invoice generated' : 'Approve & create invoice'}</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview(id, 'pay')} disabled={bulkBillingBusy || total <= 0.005}>Approve & pay from trust</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview(id, 'email')} disabled={bulkBillingBusy || total <= 0.005}>Approve & email client</button></div>
+              </div>
+            </section>)}
+          </div>
         </div>
       </div>}
       {renderBulkInvoiceLedger()}
