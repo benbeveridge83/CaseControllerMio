@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V212'
+const MIO_APP_VERSION = 'Mio V213'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -2815,6 +2815,30 @@ function App() {
     return out
   }
 
+  function mergeMioInvoiceState(...invoiceGroups) {
+    const byId = new Map()
+    const order = []
+    invoiceGroups.forEach((group) => {
+      ;(Array.isArray(group) ? group : []).forEach((rawInvoice, index) => {
+        if (!rawInvoice || typeof rawInvoice !== 'object') return
+        const key = String(rawInvoice.id || rawInvoice.invoice_number || `invoice-${index}`)
+        if (!key) return
+        if (!byId.has(key)) {
+          order.push(key)
+          byId.set(key, rawInvoice)
+          return
+        }
+        const existing = byId.get(key)
+        const existingUpdated = Date.parse(existing?.updated_at || existing?.created_at || '') || 0
+        const incomingUpdated = Date.parse(rawInvoice?.updated_at || rawInvoice?.created_at || '') || 0
+        byId.set(key, incomingUpdated >= existingUpdated
+          ? { ...existing, ...rawInvoice }
+          : { ...rawInvoice, ...existing })
+      })
+    })
+    return order.map((key) => byId.get(key)).filter(Boolean)
+  }
+
   function browserJsonArray(key) {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(key) || '[]')
@@ -2935,7 +2959,7 @@ function App() {
       caseMioRespondingDiscoverySets: { setter: setRespondingDiscoverySets, kind: 'array', fallback: [] },
       caseControllerMatterExtraInfo: { setter: setMatterExtraInfoById, kind: 'object', fallback: {} },
       caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
-      caseMioInvoices: { setter: setMioInvoices, kind: 'array', fallback: [] },
+      caseMioInvoices: { setter: (value) => setMioInvoices((current) => mergeMioInvoiceState(Array.isArray(value) ? value : [], current)), kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
@@ -16031,7 +16055,8 @@ async function updateTeamCell(memberId, field, value) {
 
   function invoiceStatusLabel(invoice) {
     if (invoiceBalanceAmount(invoice) <= 0.005) return 'Paid'
-    return invoice?.status === 'draft' ? 'Draft' : 'Outstanding'
+    if (invoice?.status === 'draft') return 'Draft'
+    return financeNumber(invoice?.amount_paid) > 0.005 ? 'Partial' : 'Outstanding'
   }
 
   function financeInvoicesForMatter(matter) {
@@ -16269,12 +16294,10 @@ async function updateTeamCell(memberId, field, value) {
     if (!session?.user?.id) return
     const { data, error } = await supabase.from('mio_invoices').select('*').order('issue_date', { ascending: false }).order('created_at', { ascending: false })
     if (error) { console.warn('Could not load database invoice records:', error); return }
-    if (!Array.isArray(data) || !data.length) return
+    if (!Array.isArray(data) || !data.length) return []
     const databaseRows = data.map(invoiceFromDatabaseRow)
-    setMioInvoices((current) => {
-      const dbIds = new Set(databaseRows.map((row) => String(row.id)))
-      return [...databaseRows, ...(current || []).filter((row) => !dbIds.has(String(row.id)))]
-    })
+    setMioInvoices((current) => mergeMioInvoiceState(databaseRows, current))
+    return databaseRows
   }
 
   function billingInvoiceMatter(invoice) {
@@ -17162,6 +17185,47 @@ async function updateTeamCell(memberId, field, value) {
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Work in progress</h3><div className="hint">Billable work completed but not yet placed on an invoice</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button></div>
       {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Clio baseline WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.clioBaselineWip)}</strong>. Mio adds <strong>{money(finance.mioPostCutoverWip)}</strong> from still-uninvoiced billing entries dated after {finance.billingCutoverDate}. Entries on or before that cutover are excluded because they were transferred to Clio.</div>}
       <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the saved Clio snapshot.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Clio baseline WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
+    </section>
+  }
+
+  function invoiceForBillingActivity(entry = {}) {
+    const directId = String(entry.invoice_id || '')
+    const directNumber = String(entry.invoice_number || '')
+    return (mioInvoices || []).find((invoice) => directId && String(invoice.id) === directId) ||
+      (mioInvoices || []).find((invoice) => directNumber && String(invoice.invoice_number) === directNumber) ||
+      (mioInvoices || []).find((invoice) => (invoice.line_items || []).some((line) => String(line.billing_entry_id || '') === String(entry.id || ''))) || null
+  }
+
+  function renderClientBillingActivities(matter) {
+    if (!matter) return null
+    const rows = sortedBillingEntries((billingEntries || []).filter((entry) => String(entry.matter_id || '') === String(matter.id || '')))
+    const totals = billingTotals(rows)
+    return <section className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}>
+        <div><h2 style={{ margin: 0 }}>Billing Activities</h2><div className="hint">All time and billing activity for {matterClientName(matter) || matter.name}, including whether each entry has been invoiced.</div></div>
+        <button type="button" onClick={() => openBillingWindow({ matter_id: matter.id, matter_status: matter.matter_status || '' })}>+ Add Billing Time</button>
+      </div>
+      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}>
+        <thead><tr>{['Date','Professional','Step','Description','Hours','Rate','Amount','Invoice status'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', minWidth: label === 'Description' ? 360 : undefined, padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
+        <tbody>{rows.map((entry) => {
+          const invoice = invoiceForBillingActivity(entry)
+          const invoiceNumber = entry.invoice_number || invoice?.invoice_number || ''
+          const invoiced = Boolean(entry.invoice_id || invoiceNumber || invoice)
+          return <tr key={entry.id}>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{entry.date || '—'}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.matter_step || '—'}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', minWidth: 360, whiteSpace: 'normal' }}>{entry.description || '—'}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{entry.non_billable || entry.do_not_bill ? '$0.00' : money(entry.amount)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoiced
+              ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#dcfce7', color: '#166534', fontWeight: 800 }}>Invoiced</span>{invoice ? <button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ display: 'block', border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', padding: '4px 0 0', cursor: 'pointer', fontWeight: 700 }}>{invoiceNumber || 'Open invoice'} · {invoiceStatusLabel(invoice)}</button> : <div style={{ marginTop: 4, color: '#475569', fontSize: 11 }}>{invoiceNumber || 'Invoice linked'}</div>}</div>
+              : <span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fef3c7', color: '#92400e', fontWeight: 800 }}>Not invoiced</span>}</td>
+          </tr>
+        })}{!rows.length && <tr><td colSpan="8" className="empty">No billing activities have been recorded for this matter.</td></tr>}</tbody>
+        {!!rows.length && <tfoot><tr style={{ background: '#f8fafc', fontWeight: 900 }}><td colSpan="4" style={{ padding: 9, textAlign: 'right' }}>Total</td><td style={{ padding: 9, textAlign: 'right' }}>{totals.hours.toFixed(2)}</td><td></td><td style={{ padding: 9, textAlign: 'right' }}>{money(totals.amount)}</td><td></td></tr></tfoot>}
+      </table></div>
     </section>
   }
 
@@ -27348,10 +27412,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
     return (
       <div style={{ overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 6 }}>
-        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 1440, width: '100%' }}>
+        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 1780, width: '100%' }}>
           <thead>
             <tr>
-              {header('Date', 'date')}{header('Matter', 'matter')}<th>Client</th><th>Cause #</th>{header('User', 'user')}{header('Matter Status', 'matter_status')}{header('Step', 'matter_step')}<th>Description</th>{header('Hours', 'hours')}{header('Rate', 'rate')}<th>Do not bill</th>{header('Amount', 'amount')}<th>Private notes</th>{allowDelete && <th>Action</th>}
+              {header('Date', 'date')}{header('Matter', 'matter')}<th>Client</th><th>Cause #</th>{header('User', 'user')}{header('Matter Status', 'matter_status')}{header('Step', 'matter_step')}<th style={{ minWidth: 380, width: '32%' }}>Description</th>{header('Hours', 'hours')}{header('Rate', 'rate')}<th>Do not bill</th>{header('Amount', 'amount')}<th>Private notes</th>{allowDelete && <th>Action</th>}
             </tr>
           </thead>
           <tbody>
@@ -27364,7 +27428,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <td>{billingUserName(entry.user_id)}</td>
                 <td>{billingMatterStatus(entry) || '—'}</td>
                 <td>{entry.matter_step || '—'}</td>
-                <td>{editable ? <textarea value={entry.description || ''} onChange={(e) => updateBillingEntryInline(entry.id, { description: e.target.value })} style={{ width: '100%', minHeight: 44 }} /> : entry.description}</td>
+                <td style={{ minWidth: 380, width: '32%' }}>{editable ? <textarea value={entry.description || ''} onChange={(e) => updateBillingEntryInline(entry.id, { description: e.target.value })} style={{ width: '100%', minHeight: 52, resize: 'vertical' }} /> : entry.description}</td>
                 <td>{editable ? <input type="text" value={entry.billing_time || ''} onChange={(e) => updateBillingEntryInline(entry.id, { billing_time: e.target.value })} placeholder=".1, 6m, 1h 6m" style={{ width: 90 }} /> : Number(entry.billing_time || 0).toFixed(2)}</td>
                 <td>{editable ? <input type="number" step="0.01" value={entry.rate || ''} onChange={(e) => updateBillingEntryInline(entry.id, { rate: e.target.value })} style={{ width: 90 }} /> : `$${Number(entry.rate || 0).toFixed(2)}`}</td>
                 <td style={{ textAlign: 'center' }}>{editable ? <input type="checkbox" checked={Boolean(entry.non_billable || entry.do_not_bill)} onChange={(e) => updateBillingEntryInline(entry.id, { non_billable: e.target.checked, do_not_bill: e.target.checked })} /> : (entry.non_billable || entry.do_not_bill ? 'Yes' : '')}</td>
@@ -31291,7 +31355,14 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 const drafterColor = row.drafter === 'oc' ? '#dc2626' : '#2563eb'
                 const drafterBackground = row.drafter === 'oc' ? '#fff5f5' : '#f5f9ff'
                 return <Fragment key={row.id}>
-                  <tr style={{ borderTop: '1px solid #e2e8f0', opacity: row.completed ? .68 : 1, borderLeft: `7px solid ${drafterColor}` }}>
+                  <tr
+                    onClick={(event) => {
+                      if (event.target.closest('button, a, input, select, textarea, label')) return
+                      toggleOrderExpanded(row.id)
+                    }}
+                    title={expanded ? 'Click the row to collapse it' : 'Click the row to expand it'}
+                    style={{ borderTop: '1px solid #e2e8f0', opacity: row.completed ? .68 : 1, borderLeft: `7px solid ${drafterColor}`, cursor: 'pointer' }}
+                  >
                     <td style={{ padding: 9, verticalAlign: 'top', background: drafterBackground }}><button type="button" onClick={() => toggleOrderExpanded(row.id)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', fontWeight: 950 }}>{expanded ? '▾' : '▸'} {matter?.name || 'Matter not found'}</button><div style={{ fontSize: 13, color: '#0f172a', marginTop: 4 }}><strong style={{ fontWeight: 950 }}>{matterClientName(matter) || ''}</strong>{matter?.cause_number ? <span style={{ color: '#475569', fontSize: 12, fontWeight: 500 }}> • {matter.cause_number}</span> : null}</div><div style={{ marginTop: 7, fontWeight: 900 }}>{row.title || orderTypeLabel(row.order_type)}</div><span style={{ display: 'inline-block', marginTop: 4, borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900, color: drafterColor, background: row.drafter === 'oc' ? '#fee2e2' : '#dbeafe' }}>{row.drafter === 'oc' ? 'OC DRAFTING' : 'MY FIRM DRAFTING'}</span>{row.auto_created && <div style={{ fontSize: 9, color: '#64748b', marginTop: 4 }}>{row.auto_source === 'calendar_event' ? 'Auto-added from calendar event' : 'Auto-added from matter status'}</div>}{!expanded && renderCollapsedOrderMatterLinks(matter)}</td>
                     <td style={{ padding: 9, verticalAlign: 'top' }}><strong>{row.finalization_type || 'Finalization'}</strong><div style={{ marginTop: 5 }}>{row.finalization_date ? new Date(`${row.finalization_date}T12:00:00`).toLocaleDateString() : 'Date needed'}</div><div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>{orderTypeLabel(row.order_type)}</div><div style={{ marginTop: 7, borderRadius: 7, padding: '5px 7px', background: rendition ? '#ede9fe' : '#fff7ed', color: rendition ? '#6d28d9' : '#9a3412', fontSize: 11, fontWeight: 900 }}>{rendition ? `⚑ Rendered on ${rendition.date ? new Date(`${rendition.date}T12:00:00`).toLocaleDateString() : 'date needed'}` : '⌛ Needs rendition'}</div><div style={{ fontSize: 10, color: renditionType ? '#475569' : '#b45309', marginTop: 3 }}>{renditionType || 'Rendition type needed'}</div>{row.drafter === 'me' && <div style={{ marginTop: 6, borderRadius: 7, padding: '5px 7px', background: draftingLanguageUploaded ? '#dcfce7' : '#eff6ff', color: draftingLanguageUploaded ? '#166534' : '#1d4ed8', fontSize: 11, fontWeight: 900 }}>{draftingLanguageUploaded ? `📎 Drafting language uploaded${row.drafting_language_file_name ? `: ${row.drafting_language_file_name}` : ''}` : '📝 Need drafting language'}</div>}</td>
                     <td style={{ padding: 8, verticalAlign: 'middle', background: drafterBackground }}><div style={{ display: 'flex', alignItems: 'center', gap: 3, overflowX: 'auto', paddingBottom: 3 }}>{chronologicalTransactions.map((transaction, index) => renderOrderProcessIcon(row, transaction, index))}{!chronologicalTransactions.length && <span style={{ color: '#64748b' }}>No activities recorded.</span>}</div></td>
@@ -39156,24 +39227,36 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const refreshPromise = (async () => {
       if (!silent) {
         setLawPayBusy(true)
-        setLawPayMessage('Checking LawPay for completed and partial payments...')
+        setLawPayMessage('Loading recorded payments, then checking LawPay for new activity...')
       }
+      let syncData = null
+      let syncWarning = ''
       try {
+        // Show payments Mio has already recorded immediately. A slow or unavailable
+        // gateway check must never prevent the database invoice/transaction data from loading.
+        await loadMioInvoicesFromDatabase()
+        await loadLawPayWorkspace()
         const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
         if (error) throw error
         if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
+        syncData = data
         await loadLawPayWorkspace()
         await loadMioInvoicesFromDatabase()
-        if (!silent) setLawPayMessage(`LawPay is current. Checked ${data.processed || 0} gateway event(s).`)
-        return data
       } catch (error) {
-        if (!silent) setLawPayMessage(`Could not refresh LawPay payments: ${error?.message || error}`)
-        else console.warn('Automatic LawPay payment refresh failed:', error)
-        throw error
+        syncWarning = error?.message || String(error)
+        // Re-read Mio's authoritative tables even when the live gateway call fails.
+        // This keeps webhook-recorded payments visible in Finances.
+        await loadLawPayWorkspace()
+        await loadMioInvoicesFromDatabase()
+        if (silent) console.warn('Live LawPay check failed; recorded Mio payments were still loaded:', error)
       } finally {
+        if (!silent) setLawPayMessage(syncWarning
+          ? `Recorded payments are loaded. The live LawPay check could not finish: ${syncWarning}`
+          : `LawPay is current. Checked ${syncData?.processed || 0} gateway event(s).`)
         if (!silent) setLawPayBusy(false)
         lawPayRefreshInFlightRef.current = null
       }
+      return syncData || { ok: true, recorded_data_loaded: true, warning: syncWarning }
     })()
     lawPayRefreshInFlightRef.current = refreshPromise
     return refreshPromise
@@ -40831,6 +40914,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('billing_activities')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'billing_activities' ? '#2f6584' : 'white', color: clientDashboardTab === 'billing_activities' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'billing_activities' ? 'bold' : 'normal' }}
+                  >
+                    Billing Activities
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('task_templates')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'task_templates' ? '#2f6584' : 'white', color: clientDashboardTab === 'task_templates' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'task_templates' ? 'bold' : 'normal' }}
                   >
@@ -40906,6 +40996,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'matter_information' && renderClientDashboardMatterInformation(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'finances' && renderClientDashboardFinances(selectedTemplateMatter())}
+
+                {clientDashboardTab === 'billing_activities' && renderClientBillingActivities(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'task_templates' && taskTemplatesByCategory().map(({ category, templates }) => (
                   <div key={category.id} style={{ marginBottom: 16 }}>
