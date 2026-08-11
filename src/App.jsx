@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V214'
+const MIO_APP_VERSION = 'Mio V215'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -2961,7 +2961,11 @@ function App() {
       caseMioRespondingDiscoverySets: { setter: setRespondingDiscoverySets, kind: 'array', fallback: [] },
       caseControllerMatterExtraInfo: { setter: setMatterExtraInfoById, kind: 'object', fallback: {} },
       caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
-      caseMioInvoices: { setter: (value) => setMioInvoices((current) => mergeMioInvoiceState(Array.isArray(value) ? value : [], current)), kind: 'array', fallback: [] },
+      caseMioInvoices: { setter: (value) => setMioInvoices((current) => {
+        const currentIds = new Set((current || []).map((invoice) => String(invoice?.id || '')).filter(Boolean))
+        const cloudOnlyRows = (Array.isArray(value) ? value : []).filter((invoice) => !currentIds.has(String(invoice?.id || '')))
+        return mergeMioInvoiceState(current, cloudOnlyRows)
+      }), kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
@@ -16313,7 +16317,13 @@ async function updateTeamCell(memberId, field, value) {
     if (error) { console.warn('Could not load database invoice records:', error); return }
     if (!Array.isArray(data) || !data.length) return []
     const databaseRows = data.map(invoiceFromDatabaseRow)
-    setMioInvoices((current) => mergeMioInvoiceState(databaseRows, current))
+    // Supabase is authoritative for every persisted invoice ID. A browser cache
+    // must never resurrect a database-voided invoice as Draft or Outstanding.
+    setMioInvoices((current) => {
+      const databaseIds = new Set(databaseRows.map((invoice) => String(invoice.id || '')).filter(Boolean))
+      const localOnlyRows = (current || []).filter((invoice) => !databaseIds.has(String(invoice?.id || '')))
+      return mergeMioInvoiceState(databaseRows, localOnlyRows)
+    })
     return databaseRows
   }
 
@@ -17387,8 +17397,34 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function renderClientFinanceInvoices(matter, finance) {
-    return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">LawPay payments refresh automatically when this page opens. Click an invoice number for its PDF, email, link, and payment details.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
-      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)}>Open</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
+    const draftInvoices = (finance.invoices || []).filter((invoice) => invoice.status === 'draft')
+    const otherInvoices = (finance.invoices || []).filter((invoice) => invoice.status !== 'draft')
+    const brokenGroups = brokenBillingEntryGroupsForMatter(matter)
+    const brokenRows = brokenGroups.flatMap((group) => group.entries)
+    const brokenTotals = billingTotals(brokenRows)
+    const renderInvoiceTable = (invoices, emptyText) => <div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}>
+      <thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
+      <tbody>{invoices.map((invoice) => <tr key={invoice.id}>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date || '—'}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date || 'Upon receipt'}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{invoiceStatusLabel(invoice)}</span></td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
+      </tr>)}{!invoices.length && <tr><td colSpan="9" className="empty">{emptyText}</td></tr>}</tbody>
+    </table></div>
+    return <section className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Drafts are listed first for review, editing, approval, or deletion. LawPay payments refresh automatically when this page opens.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
+      {!!brokenRows.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}>
+        <strong>{brokenRows.length} billing {brokenRows.length === 1 ? 'activity has' : 'activities have'} an invalid invoice link ({money(brokenTotals.amount)})</strong>
+        <div style={{ marginTop: 5 }}>The referenced invoice is missing, belongs to another matter, is a trust request, or does not contain these activities. It is not treated as a valid services invoice.</div>
+        <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{brokenGroups.map((group) => <div key={group.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff' }}><div><strong>{group.reference}</strong> — {group.entries.length} {group.entries.length === 1 ? 'activity' : 'activities'}, {money(group.totals.amount)}<div style={{ fontSize: 11, marginTop: 3 }}>{group.problem?.label || 'Invalid invoice link'}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => reviewBrokenBillingActivities(matter, group.entries)} disabled={invoiceDocumentBusy}>Review as new invoice</button><button type="button" onClick={() => releaseBrokenBillingActivitiesToWip(matter, group.entries)} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Repairing…' : 'Release to WIP'}</button></div></div>)}</div>
+      </section>}
+      <section style={{ marginTop: 16, border: '2px solid #2563eb', borderRadius: 10, padding: 12, background: '#eff6ff' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><div><h4 style={{ margin: 0 }}>Draft invoices requiring review</h4><div className="hint">Open any draft to edit, approve, or delete it.</div></div><strong>{draftInvoices.length}</strong></div>{renderInvoiceTable(draftInvoices, 'No saved draft invoices exist for this matter.')}</section>
+      <section style={{ marginTop: 16 }}><h4 style={{ margin: 0 }}>Outstanding, paid, and other invoices</h4>{renderInvoiceTable(otherInvoices, 'No approved or paid invoices exist for this matter.')}</section>
     </section>
   }
 
@@ -17400,30 +17436,163 @@ async function updateTeamCell(memberId, field, value) {
     </section>
   }
 
+  function invoiceContainsBillingActivity(invoice = {}, entry = {}) {
+    const entryId = String(entry?.id || '')
+    return !!entryId && (invoice?.line_items || []).some((line) => String(line?.billing_entry_id || '') === entryId)
+  }
+
   function invoiceForBillingActivity(entry = {}) {
-    const directId = String(entry.invoice_id || '')
-    const directNumber = String(entry.invoice_number || '')
-    const activeInvoices = (mioInvoices || []).filter((invoice) => invoice?.status !== 'void')
-    return activeInvoices.find((invoice) => directId && String(invoice.id) === directId) ||
-      activeInvoices.find((invoice) => directNumber && String(invoice.invoice_number) === directNumber) ||
-      activeInvoices.find((invoice) => (invoice.line_items || []).some((line) => String(line.billing_entry_id || '') === String(entry.id || ''))) || null
+    const entryMatterId = String(entry?.matter_id || '')
+    const entryId = String(entry?.id || '')
+    if (!entryMatterId || !entryId) return null
+    const serviceInvoicesForMatter = (mioInvoices || []).filter((invoice) =>
+      invoice?.status !== 'void' &&
+      invoice?.invoice_type !== 'trust_request' &&
+      String(invoice?.matter_id || '') === entryMatterId
+    )
+    // A billing activity is invoiced only when the services invoice for this same
+    // matter actually contains the activity. Invoice numbers alone are not safe:
+    // older Mio data can contain a trust request and a services reference with the
+    // same number.
+    return serviceInvoicesForMatter.find((invoice) => invoiceContainsBillingActivity(invoice, entry)) || null
+  }
+
+  function invoiceLinkProblemForBillingActivity(entry = {}) {
+    const directId = String(entry?.invoice_id || '')
+    const directNumber = String(entry?.invoice_number || '')
+    if (!directId && !directNumber) return null
+    if (invoiceForBillingActivity(entry)) return null
+    const allInvoices = mioInvoices || []
+    const linkedById = allInvoices.find((invoice) => directId && String(invoice?.id || '') === directId)
+    const linkedByNumber = allInvoices.find((invoice) => directNumber && String(invoice?.invoice_number || '') === directNumber)
+    const linked = linkedById || linkedByNumber || null
+    if (!linked) return { code: 'missing_invoice', label: 'The linked invoice record is missing', linked: null }
+    if (linked?.invoice_type === 'trust_request') return { code: 'trust_request_collision', label: 'This number belongs to a trust request, not a services invoice', linked }
+    if (String(linked?.matter_id || '') !== String(entry?.matter_id || '')) return { code: 'different_matter', label: 'This number belongs to a different matter', linked }
+    if (linked?.status === 'void') return { code: 'void_invoice', label: 'The linked invoice was deleted or voided', linked }
+    return { code: 'missing_line_item', label: 'The activity is not included in the linked invoice line items', linked }
+  }
+
+  function brokenBillingEntriesForMatter(matter = {}) {
+    return sortedBillingEntries((billingEntries || []).filter((entry) =>
+      String(entry?.matter_id || '') === String(matter?.id || '') &&
+      !!invoiceLinkProblemForBillingActivity(entry)
+    ))
+  }
+
+  function brokenBillingEntryGroupsForMatter(matter = {}) {
+    const groups = new Map()
+    brokenBillingEntriesForMatter(matter).forEach((entry) => {
+      const reference = String(entry.invoice_number || entry.invoice_id || 'Unknown invoice')
+      const key = entry.invoice_number ? `number:${String(entry.invoice_number)}` : `id:${String(entry.invoice_id || 'unknown')}`
+      if (!groups.has(key)) groups.set(key, { key, reference, entries: [], problem: invoiceLinkProblemForBillingActivity(entry) })
+      groups.get(key).entries.push(entry)
+    })
+    return [...groups.values()].map((group) => ({ ...group, totals: billingTotals(group.entries) }))
+  }
+
+  function reviewBrokenBillingActivities(matter, entries = brokenBillingEntriesForMatter(matter)) {
+    const recoverableEntries = (entries || []).filter((entry) => invoiceLinkProblemForBillingActivity(entry))
+    if (!recoverableEntries.length) return alert('There are no broken invoice links to recover for this matter.')
+    const lineItems = recoverableEntries.map((entry) => ({
+      billing_entry_id: entry.id,
+      date: entry.date || '',
+      description: entry.description || entry.matter_step || 'Professional services',
+      professional: billingUserName(entry.user_id),
+      hours: financeNumber(entry.billing_time),
+      rate: financeNumber(entry.rate),
+      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
+    }))
+    const amount = Number(lineItems.reduce((sum, line) => sum + financeNumber(line.amount), 0).toFixed(2))
+    if (amount <= 0.005) return alert('The linked activities do not contain a billable amount.')
+    const now = new Date()
+    const due = new Date(now)
+    due.setDate(due.getDate() + 30)
+    const preview = {
+      id: crypto?.randomUUID ? crypto.randomUUID() : `invoice-recovery-${Date.now()}`,
+      invoice_number: 'Not assigned yet',
+      invoice_type: 'services',
+      matter_id: matter.id,
+      client_id: matter.client_id || '',
+      client_name: matterClientName(matter) || matter.matter_client_name || '',
+      matter_name: matter.name || matter.matter_name || '',
+      matter_number: billingMatterNumber(matter),
+      matter_description: matter.matter_subtype || matter.matter_type || '',
+      issue_date: now.toISOString().slice(0, 10),
+      due_date: due.toISOString().slice(0, 10),
+      status: 'draft',
+      subtotal: amount,
+      total: amount,
+      amount_paid: 0,
+      balance: amount,
+      source_snapshot_date: '',
+      source_wip_amount: 0,
+      line_items: lineItems,
+      recovery_source: 'broken_invoice_links',
+      created_at: now.toISOString(),
+      updated_at: now.toISOString()
+    }
+    setSelectedFinanceInvoice(preview)
+    setInvoiceEditDraft({ ...preview, line_items: lineItems.map(invoiceEditLine) })
+    setInvoiceEditorMode('new')
+    setInvoiceSendDraft({
+      recipient_email: matterClientEmail(matter) || clientEmailForMatter(matter) || '',
+      sender_email: DEFAULT_BILLING_SENDER_EMAIL,
+      subject: ''
+    })
+  }
+
+  async function releaseBrokenBillingActivitiesToWip(matter, entries = brokenBillingEntriesForMatter(matter)) {
+    const recoverableIds = new Set((entries || []).filter((entry) => invoiceLinkProblemForBillingActivity(entry)).map((entry) => String(entry.id)))
+    if (!recoverableIds.size) return alert('There are no broken invoice links to release for this matter.')
+    if (!window.confirm(`Release ${recoverableIds.size} billing ${recoverableIds.size === 1 ? 'activity' : 'activities'} to WIP? This removes only the invalid invoice links; it does not delete any valid invoice.`)) return
+    if (!session?.user?.id) return alert('Sign in before repairing billing activities.')
+    const changedAt = new Date().toISOString()
+    const currentEntries = billingEntries || []
+    const nextEntries = currentEntries.map((entry) => recoverableIds.has(String(entry.id))
+      ? { ...entry, invoice_id: '', invoice_number: '', invoiced_at: '', invoice_link_updated_at: changedAt, updated_at: changedAt }
+      : entry)
+    const changedEntries = nextEntries.filter((entry) => recoverableIds.has(String(entry.id)))
+    const relationalRows = changedEntries.map((entry) => billingEntryToRelationalRow(entry, billingPrivateNotes?.[entry.id] || '')).filter(Boolean)
+    setInvoiceDocumentBusy(true)
+    try {
+      if (relationalRows.length) {
+        const { error } = await supabase.from('mio_billing_entries').upsert(relationalRows, { onConflict: 'user_id,id' })
+        if (error) throw new Error(`Mio could not release the billing activities in the billing table. ${error.message || error}`)
+      }
+      await saveMioStateKeyNow('caseMioBillingEntries', JSON.stringify(nextEntries), { throwOnError: true })
+      setBillingEntries(nextEntries)
+      alert(`${recoverableIds.size} billing ${recoverableIds.size === 1 ? 'activity is' : 'activities are'} now available as WIP.`)
+    } catch (error) {
+      alert(`The invoice links were not released. ${error?.message || error}`)
+    } finally {
+      setInvoiceDocumentBusy(false)
+    }
   }
 
   function renderClientBillingActivities(matter) {
     if (!matter) return null
     const rows = sortedBillingEntries((billingEntries || []).filter((entry) => String(entry.matter_id || '') === String(matter.id || '')))
     const totals = billingTotals(rows)
+    const brokenGroups = brokenBillingEntryGroupsForMatter(matter)
+    const brokenRows = brokenGroups.flatMap((group) => group.entries)
+    const brokenTotal = billingTotals(brokenRows)
     return <section className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}>
         <div><h2 style={{ margin: 0 }}>Billing Activities</h2><div className="hint">All time and billing activity for {matterClientName(matter) || matter.name}, including whether each entry has been invoiced.</div></div>
         <button type="button" onClick={() => openBillingWindow({ matter_id: matter.id, matter_status: matter.matter_status || '' })}>+ Add Billing Time</button>
       </div>
+      {!!brokenRows.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}>
+        <strong>Invoice-link problem: {brokenRows.length} {brokenRows.length === 1 ? 'activity is' : 'activities are'} tied to an invoice that does not contain them</strong>
+        <div style={{ marginTop: 5 }}>These activities total <strong>{money(brokenTotal.amount)}</strong>. Mio will not open an invoice from another matter or a trust request. Review or release each invoice-reference group separately below.</div>
+        <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{brokenGroups.map((group) => <div key={group.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff' }}><div><strong>{group.reference}</strong> — {group.entries.length} {group.entries.length === 1 ? 'activity' : 'activities'}, {money(group.totals.amount)}<div style={{ fontSize: 11, marginTop: 3 }}>{group.problem?.label || 'Invalid invoice link'}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => reviewBrokenBillingActivities(matter, group.entries)} disabled={invoiceDocumentBusy}>Review as new invoice</button><button type="button" onClick={() => releaseBrokenBillingActivitiesToWip(matter, group.entries)} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Repairing…' : 'Release to WIP'}</button></div></div>)}</div>
+      </section>}
       <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}>
         <thead><tr>{['Date','Professional','Step','Description','Hours','Rate','Amount','Invoice status'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', minWidth: label === 'Description' ? 360 : undefined, padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
         <tbody>{rows.map((entry) => {
           const invoice = invoiceForBillingActivity(entry)
-          const invoiceNumber = entry.invoice_number || invoice?.invoice_number || ''
-          const invoiced = Boolean(entry.invoice_id || invoiceNumber || invoice)
+          const invoiceNumber = invoice?.invoice_number || entry.invoice_number || ''
+          const linkProblem = invoiceLinkProblemForBillingActivity(entry)
           return <tr key={entry.id}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{entry.date || '—'}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td>
@@ -17432,9 +17601,11 @@ async function updateTeamCell(memberId, field, value) {
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{entry.non_billable || entry.do_not_bill ? '$0.00' : money(entry.amount)}</td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoiced
-              ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#dcfce7', color: '#166534', fontWeight: 800 }}>Invoiced</span>{invoice ? <button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ display: 'block', border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', padding: '4px 0 0', cursor: 'pointer', fontWeight: 700 }}>{invoiceNumber || 'Open invoice'} · {invoiceStatusLabel(invoice)}</button> : <div style={{ marginTop: 4, color: '#475569', fontSize: 11 }}>{invoiceNumber || 'Invoice linked'}</div>}</div>
-              : <span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fef3c7', color: '#92400e', fontWeight: 800 }}>Not invoiced</span>}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice
+              ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#dcfce7', color: '#166534', fontWeight: 800 }}>Invoiced</span><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ display: 'block', border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', padding: '4px 0 0', cursor: 'pointer', fontWeight: 700 }}>{invoiceNumber || 'Open invoice'} · {invoiceStatusLabel(invoice)}</button></div>
+              : linkProblem
+                ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fee2e2', color: '#991b1b', fontWeight: 800 }}>Invoice link problem</span><div style={{ marginTop: 4, color: '#991b1b', fontSize: 11 }}>{invoiceNumber || 'Unknown invoice'}: {linkProblem.label}</div></div>
+                : <span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fef3c7', color: '#92400e', fontWeight: 800 }}>Not invoiced</span>}</td>
           </tr>
         })}{!rows.length && <tr><td colSpan="8" className="empty">No billing activities have been recorded for this matter.</td></tr>}</tbody>
         {!!rows.length && <tfoot><tr style={{ background: '#f8fafc', fontWeight: 900 }}><td colSpan="4" style={{ padding: 9, textAlign: 'right' }}>Total</td><td style={{ padding: 9, textAlign: 'right' }}>{totals.hours.toFixed(2)}</td><td></td><td style={{ padding: 9, textAlign: 'right' }}>{money(totals.amount)}</td><td></td></tr></tfoot>}
@@ -39379,7 +39550,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const newTrustRows = []
     for (const rawInvoice of databaseInvoices) {
       const invoice = invoiceFromDatabaseRow(rawInvoice)
-      const request = requests.find((row) => (invoice.payment_request_id && String(row.id) === String(invoice.payment_request_id)) || (row.invoice_number && String(row.invoice_number) === String(invoice.invoice_number)))
+      const request = requests.find((row) => invoice.payment_request_id && String(row.id) === String(invoice.payment_request_id)) ||
+        requests.find((row) => row.invoice_number && String(row.invoice_number) === String(invoice.invoice_number) && String(row.matter_id || '') === String(invoice.matter_id || ''))
       if (!request) continue
       const matchedTransactions = transactions.filter((transaction) => {
         const linkedRequestId = transaction?.payment_request_id || transaction?.request_id || transaction?.raw?.mio_payment_request_id || transaction?.raw?.payment_request_id || ''
