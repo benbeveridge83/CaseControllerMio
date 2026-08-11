@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V213'
+const MIO_APP_VERSION = 'Mio V214'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -1999,6 +1999,8 @@ function App() {
     catch { return [] }
   })
   const [selectedFinanceInvoice, setSelectedFinanceInvoice] = useState(null)
+  const [invoiceEditorMode, setInvoiceEditorMode] = useState('view')
+  const [invoiceEditDraft, setInvoiceEditDraft] = useState(null)
   const [invoiceDocumentBusy, setInvoiceDocumentBusy] = useState(false)
   const [invoiceSendDraft, setInvoiceSendDraft] = useState({ recipient_email: '', sender_email: '', subject: '' })
   const [mioTrustTransactions, setMioTrustTransactions] = useState(() => {
@@ -3189,7 +3191,8 @@ function App() {
       amount: doNotBill ? 0 : (row?.amount ?? payload.amount ?? 0),
       non_billable: doNotBill,
       do_not_bill: doNotBill,
-      created_at: row?.created_at || payload.created_at || row?.updated_at || ''
+      created_at: row?.created_at || payload.created_at || row?.updated_at || '',
+      updated_at: row?.updated_at || payload.updated_at || row?.created_at || ''
     }
   }
 
@@ -3278,9 +3281,16 @@ function App() {
           return
         }
         const merged = { ...existing, ...entry }
+        const existingInvoiceLinkTime = new Date(existing.invoice_link_updated_at || 0).getTime() || 0
+        const incomingInvoiceLinkTime = new Date(entry.invoice_link_updated_at || 0).getTime() || 0
+        const invoiceLinkSource = incomingInvoiceLinkTime >= existingInvoiceLinkTime ? entry : existing
+        if (Object.prototype.hasOwnProperty.call(invoiceLinkSource, 'invoice_id')) merged.invoice_id = invoiceLinkSource.invoice_id || ''
+        if (Object.prototype.hasOwnProperty.call(invoiceLinkSource, 'invoice_number')) merged.invoice_number = invoiceLinkSource.invoice_number || ''
+        if (Object.prototype.hasOwnProperty.call(invoiceLinkSource, 'invoiced_at')) merged.invoiced_at = invoiceLinkSource.invoiced_at || ''
+        if (invoiceLinkSource.invoice_link_updated_at) merged.invoice_link_updated_at = invoiceLinkSource.invoice_link_updated_at
         const existingScore = billingEntryCompletenessScore(existing)
         const incomingScore = billingEntryCompletenessScore(entry)
-        byKey.set(key, incomingScore >= existingScore ? merged : { ...entry, ...existing })
+        byKey.set(key, incomingScore >= existingScore ? merged : { ...entry, ...existing, invoice_id: merged.invoice_id, invoice_number: merged.invoice_number, invoiced_at: merged.invoiced_at, invoice_link_updated_at: merged.invoice_link_updated_at })
       })
     })
     return order
@@ -16054,6 +16064,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function invoiceStatusLabel(invoice) {
+    if (invoice?.status === 'void') return 'Deleted / void'
     if (invoiceBalanceAmount(invoice) <= 0.005) return 'Paid'
     if (invoice?.status === 'draft') return 'Draft'
     return financeNumber(invoice?.amount_paid) > 0.005 ? 'Partial' : 'Outstanding'
@@ -16061,7 +16072,7 @@ async function updateTeamCell(memberId, field, value) {
 
   function financeInvoicesForMatter(matter) {
     return (mioInvoices || [])
-      .filter((invoice) => String(invoice?.matter_id || '') === String(matter?.id || ''))
+      .filter((invoice) => invoice?.status !== 'void' && String(invoice?.matter_id || '') === String(matter?.id || ''))
       .sort((a, b) => String(b.issue_date || b.created_at || '').localeCompare(String(a.issue_date || a.created_at || '')))
   }
 
@@ -16281,11 +16292,17 @@ async function updateTeamCell(memberId, field, value) {
 
   async function persistMioInvoiceRecord(invoice, eventType = '', details = {}) {
     if (!session?.user?.id) throw new Error('Sign in before creating or updating an invoice.')
-    const payload = invoiceDatabasePayload(invoice)
+    const originalId = String(invoice?.id || '')
+    const databaseId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(originalId)
+      ? originalId
+      : (crypto?.randomUUID ? crypto.randomUUID() : originalId)
+    const databaseInvoice = databaseId && databaseId !== originalId ? { ...invoice, id: databaseId } : invoice
+    const payload = invoiceDatabasePayload(databaseInvoice)
     const { data, error } = await supabase.from('mio_invoices').upsert(payload, { onConflict: 'id' }).select('*').single()
     if (error) throw new Error(`Mio could not save the invoice record. ${error.message || error}`)
     const saved = invoiceFromDatabaseRow(data)
-    setMioInvoices((current) => [saved, ...(current || []).filter((row) => String(row.id) !== String(saved.id))])
+    setMioInvoices((current) => [saved, ...(current || []).filter((row) => String(row.id) !== String(saved.id) && String(row.id) !== originalId)])
+    if (databaseId !== originalId) details = { ...details, legacy_invoice_id: originalId }
     if (eventType) await recordInvoiceEvent(saved, eventType, details)
     return saved
   }
@@ -16568,11 +16585,206 @@ async function updateTeamCell(memberId, field, value) {
 
   function openFinanceInvoice(invoice, matter = billingInvoiceMatter(invoice)) {
     setSelectedFinanceInvoice(invoice)
+    setInvoiceEditorMode('view')
+    setInvoiceEditDraft(null)
     setInvoiceSendDraft({
       recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || localStorage.getItem('caseMioPendingInvoiceRecipient') || '',
       sender_email: DEFAULT_BILLING_SENDER_EMAIL,
       subject: invoice.email_subject || renderBillingTemplate(invoice.invoice_type === 'trust_request' ? 'replenishment' : 'service_invoice', { invoice_number: invoice.invoice_number, matter_name: matter?.name || invoice.matter_name || '' }).subject
     })
+  }
+
+  function closeFinanceInvoice() {
+    setSelectedFinanceInvoice(null)
+    setInvoiceEditorMode('view')
+    setInvoiceEditDraft(null)
+  }
+
+  function invoiceEditLine(line = {}, index = 0) {
+    return {
+      ...line,
+      _edit_id: line._edit_id || line.billing_entry_id || `invoice-line-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
+    }
+  }
+
+  function invoiceDraftTotal(draft = invoiceEditDraft) {
+    return Number(((draft?.line_items || []).reduce((sum, line) => sum + Math.max(0, financeNumber(line.amount)), 0)).toFixed(2))
+  }
+
+  function beginInvoiceEdit(invoice = selectedFinanceInvoice) {
+    if (!invoice) return
+    if (financeNumber(invoice.amount_paid) > 0.005) return alert('Cancel or reverse every payment on this invoice before editing it.')
+    setInvoiceEditDraft({ ...invoice, line_items: (invoice.line_items || []).map(invoiceEditLine) })
+    setInvoiceEditorMode('edit')
+  }
+
+  function updateInvoiceEditField(field, value) {
+    setInvoiceEditDraft((current) => ({ ...(current || {}), [field]: value }))
+  }
+
+  function updateInvoiceEditLine(lineId, field, value) {
+    setInvoiceEditDraft((current) => ({ ...(current || {}), line_items: (current?.line_items || []).map((line) => {
+      if (String(line._edit_id) !== String(lineId)) return line
+      const next = { ...line, [field]: value }
+      if (field === 'hours' || field === 'rate') {
+        const hours = next.hours === '' || next.hours === null || next.hours === undefined ? NaN : financeNumber(next.hours, NaN)
+        const rate = next.rate === '' || next.rate === null || next.rate === undefined ? NaN : financeNumber(next.rate, NaN)
+        if (Number.isFinite(hours) && Number.isFinite(rate)) next.amount = Number((hours * rate).toFixed(2))
+      }
+      if (field === 'amount') next.amount = Math.max(0, financeNumber(value))
+      return next
+    }) }))
+  }
+
+  function addInvoiceEditLine() {
+    setInvoiceEditDraft((current) => ({ ...(current || {}), line_items: [...(current?.line_items || []), invoiceEditLine({ date: current?.issue_date || new Date().toISOString().slice(0, 10), professional: '', description: 'Professional services', hours: '', rate: '', amount: 0, source_kind: 'manual' }, (current?.line_items || []).length)] }))
+  }
+
+  function removeInvoiceEditLine(lineId) {
+    setInvoiceEditDraft((current) => ({ ...(current || {}), line_items: (current?.line_items || []).filter((line) => String(line._edit_id) !== String(lineId)) }))
+  }
+
+  function addUninvoicedWipToInvoice() {
+    const matter = billingInvoiceMatter(selectedFinanceInvoice)
+    if (!matter) return
+    const currentIds = new Set((invoiceEditDraft?.line_items || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
+    const additions = clientFinanceNumbers(matter).uninvoicedEntries
+      .filter((entry) => !currentIds.has(String(entry.id)))
+      .map((entry, index) => invoiceEditLine({ billing_entry_id: entry.id, date: entry.date || '', description: entry.description || entry.matter_step || 'Professional services', professional: billingUserName(entry.user_id), hours: financeNumber(entry.billing_time), rate: financeNumber(entry.rate), amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate)) }, index))
+    if (!additions.length) return alert('There are no additional uninvoiced billing entries for this matter.')
+    setInvoiceEditDraft((current) => ({ ...(current || {}), line_items: [...(current?.line_items || []), ...additions] }))
+  }
+
+  function invoiceFromEditDraft(draft, baseInvoice, status = baseInvoice?.status || 'draft') {
+    const lineItems = (draft?.line_items || []).map(({ _edit_id, ...line }) => ({
+      ...line,
+      hours: line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours),
+      rate: line.rate === '' || line.rate === undefined ? '' : financeNumber(line.rate),
+      amount: Number(Math.max(0, financeNumber(line.amount)).toFixed(2))
+    })).filter((line) => line.amount > 0.005)
+    const total = Number(lineItems.reduce((sum, line) => sum + financeNumber(line.amount), 0).toFixed(2))
+    const snapshotAmount = lineItems.filter((line) => line.source_kind === 'snapshot_wip' || (!line.billing_entry_id && /unbilled work from latest financial snapshot/i.test(String(line.description || '')))).reduce((sum, line) => sum + financeNumber(line.amount), 0)
+    return {
+      ...baseInvoice,
+      ...draft,
+      status,
+      issue_date: draft?.issue_date || new Date().toISOString().slice(0, 10),
+      due_date: draft?.due_date || null,
+      subtotal: total,
+      total,
+      balance: Math.max(0, Number((total - financeNumber(baseInvoice?.amount_paid)).toFixed(2))),
+      source_wip_amount: Number(snapshotAmount.toFixed(2)),
+      line_items: lineItems,
+      updated_at: new Date().toISOString()
+    }
+  }
+
+  async function syncBillingEntryInvoiceLinks(invoiceId, invoiceNumber, nextLines = [], priorLines = []) {
+    const nextIds = new Set((nextLines || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
+    const priorIds = new Set((priorLines || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
+    const touchedIds = new Set([...nextIds, ...priorIds])
+    if (!touchedIds.size) return
+    const changedAt = new Date().toISOString()
+    const changeEntry = (entry) => {
+      if (!touchedIds.has(String(entry.id))) return entry
+      if (nextIds.has(String(entry.id))) return { ...entry, invoice_id: invoiceId, invoice_number: invoiceNumber, invoiced_at: entry.invoiced_at || changedAt, invoice_link_updated_at: changedAt, updated_at: changedAt }
+      if (String(entry.invoice_id || '') !== String(invoiceId)) return entry
+      return { ...entry, invoice_id: '', invoice_number: '', invoiced_at: '', invoice_link_updated_at: changedAt, updated_at: changedAt }
+    }
+    const nextEntries = (billingEntries || []).map(changeEntry)
+    const changedEntries = nextEntries.filter((entry, index) => entry !== (billingEntries || [])[index])
+    setBillingEntries((current) => (current || []).map(changeEntry))
+    await Promise.all(changedEntries.map((entry) => saveBillingEntryToRelational(entry, billingPrivateNotes?.[entry.id] || '')))
+    await saveMioStateKeyNow('caseMioBillingEntries', JSON.stringify(nextEntries), { throwOnError: true })
+  }
+
+  async function approveNewInvoice() {
+    if (invoiceEditorMode !== 'new' || !selectedFinanceInvoice || !invoiceEditDraft) return
+    const total = invoiceDraftTotal()
+    if (total <= 0.005) return alert('The invoice must contain at least one line item with an amount greater than zero.')
+    setInvoiceDocumentBusy(true)
+    try {
+      const invoiceNumber = await reserveMioInvoiceNumber()
+      const approved = invoiceFromEditDraft({ ...invoiceEditDraft, invoice_number: invoiceNumber }, { ...selectedFinanceInvoice, invoice_number: invoiceNumber, amount_paid: 0 }, 'outstanding')
+      const saved = await persistMioInvoiceRecord(approved, 'invoice_created', { source: 'reviewed_work_in_progress', line_item_count: approved.line_items.length, approved_before_creation: true })
+      await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, [])
+      setSelectedFinanceInvoice(saved)
+      setInvoiceEditorMode('view')
+      setInvoiceEditDraft(null)
+      setClientFinanceView('invoices')
+      alert(`${saved.invoice_number} was approved and created for ${money(saved.total)}.`)
+    } catch (error) { alert(error?.message || String(error)) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
+  async function saveInvoiceEdits() {
+    if (invoiceEditorMode !== 'edit' || !selectedFinanceInvoice || !invoiceEditDraft) return
+    if (financeNumber(selectedFinanceInvoice.amount_paid) > 0.005) return alert('This invoice received a payment while it was open. Cancel or reverse the payment before saving changes.')
+    const edited = invoiceFromEditDraft(invoiceEditDraft, selectedFinanceInvoice, selectedFinanceInvoice.status)
+    if (edited.total <= 0.005) return alert('The invoice must contain at least one line item with an amount greater than zero. Use Delete invoice if the invoice is no longer needed.')
+    setInvoiceDocumentBusy(true)
+    try {
+      const saved = await persistMioInvoiceRecord(edited, 'invoice_edited', { prior_total: financeNumber(selectedFinanceInvoice.total), new_total: edited.total, prior_line_count: (selectedFinanceInvoice.line_items || []).length, new_line_count: edited.line_items.length })
+      await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, selectedFinanceInvoice.line_items || [])
+      setSelectedFinanceInvoice(saved)
+      setInvoiceEditorMode('view')
+      setInvoiceEditDraft(null)
+      alert(`${saved.invoice_number} was updated.`)
+    } catch (error) { alert(`The invoice was not updated. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
+  async function approveExistingDraft(invoice = selectedFinanceInvoice) {
+    if (!invoice || invoice.status !== 'draft') return
+    if (financeNumber(invoice.amount_paid) > 0.005) return alert('This invoice has a payment and cannot be approved until the payment is canceled or reversed.')
+    if (!window.confirm(`Approve ${invoice.invoice_number} and make it an outstanding invoice?`)) return
+    setInvoiceDocumentBusy(true)
+    try {
+      const saved = await persistMioInvoiceRecord({ ...invoice, status: 'outstanding', balance: invoiceBalanceAmount(invoice), updated_at: new Date().toISOString() }, 'invoice_approved', {})
+      if (String(saved.id) !== String(invoice.id)) await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items || [], invoice.line_items || [])
+      setSelectedFinanceInvoice(saved)
+    } catch (error) { alert(`The invoice was not approved. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
+  async function deleteUnpaidInvoice(invoice = selectedFinanceInvoice) {
+    if (!invoice) return
+    if (financeNumber(invoice.amount_paid) > 0.005) return alert('This invoice is locked because a payment is recorded. Cancel or reverse every payment before deleting it.')
+    if (!window.confirm(`Delete ${invoice.invoice_number}? Its linked billing entries will return to WIP. The invoice number will be retained as void in the audit history.`)) return
+    setInvoiceDocumentBusy(true)
+    try {
+      const deleted = await persistMioInvoiceRecord({ ...invoice, status: 'void', balance: 0, updated_at: new Date().toISOString() }, 'invoice_voided', { prior_status: invoice.status, prior_total: financeNumber(invoice.total) })
+      await syncBillingEntryInvoiceLinks(invoice.id, invoice.invoice_number, [], invoice.line_items || [])
+      setMioInvoices((current) => (current || []).map((row) => String(row.id) === String(deleted.id) ? deleted : row))
+      closeFinanceInvoice()
+      alert(`${invoice.invoice_number} was deleted from active invoices. Its billing entries are available as WIP again.`)
+    } catch (error) { alert(`The invoice was not deleted. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
+  }
+
+  function activeTrustPaymentsForInvoice(invoice) {
+    const reversedIds = new Set((mioTrustTransactions || []).map((row) => String(row.reverses_transaction_id || '')).filter(Boolean))
+    return (mioTrustTransactions || []).filter((row) => String(row.invoice_id || '') === String(invoice?.id || '') && row.direction === 'out' && row.transaction_type === 'operating_transfer' && !reversedIds.has(String(row.id)))
+  }
+
+  async function reverseTrustInvoicePayment(transaction, invoice = selectedFinanceInvoice) {
+    if (!transaction || !invoice) return
+    const amount = Math.min(financeNumber(transaction.amount), financeNumber(invoice.amount_paid))
+    if (amount <= 0.005) return alert('This trust payment has already been reversed or no longer applies to the invoice.')
+    if (!window.confirm(`Reverse the ${money(amount)} trust payment applied to ${invoice.invoice_number}? This returns the funds to the client's calculated trust balance and reduces the invoice payment by the same amount.`)) return
+    const now = new Date().toISOString()
+    const nextPaid = Math.max(0, financeNumber(invoice.amount_paid) - amount)
+    const nextBalance = Math.max(0, financeNumber(invoice.total) - nextPaid)
+    const updated = { ...invoice, amount_paid: Number(nextPaid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: invoice.status === 'draft' ? 'draft' : 'outstanding', updated_at: now }
+    const reversal = { id: crypto?.randomUUID ? crypto.randomUUID() : `trust-reversal-${Date.now()}`, matter_id: invoice.matter_id, client_id: invoice.client_id || '', date: now.slice(0, 10), direction: 'in', transaction_type: 'adjustment', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number, memo: `Reversed trust payment previously applied to ${invoice.invoice_number}`, invoice_id: invoice.id, reverses_transaction_id: transaction.id, source: 'Mio invoice payment reversal', created_at: now }
+    setInvoiceDocumentBusy(true)
+    try {
+      const saved = await persistMioInvoiceRecord(updated, 'trust_payment_reversed', { transaction_id: transaction.id, reversal_id: reversal.id, amount }, amount)
+      setMioTrustTransactions((current) => [reversal, ...(current || [])])
+      setSelectedFinanceInvoice(saved)
+      alert(`${money(amount)} was returned to trust. ${saved.invoice_number} now has ${money(saved.amount_paid)} paid and ${money(invoiceBalanceAmount(saved))} outstanding.`)
+    } catch (error) { alert(`The trust payment was not reversed. ${error?.message || error}`) }
+    finally { setInvoiceDocumentBusy(false) }
   }
 
   async function sendSelectedInvoiceEmail() {
@@ -16712,11 +16924,10 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
-  async function createInvoiceFromClientWip(matter) {
+  function createInvoiceFromClientWip(matter) {
     const finance = clientFinanceNumbers(matter)
     const amount = Number(finance.wip.toFixed(2))
     if (amount <= 0) return alert('There is no work in progress available to invoice for this matter.')
-    if (!window.confirm(`Create an invoice for ${money(amount)} of work in progress for ${matter.name || 'this matter'}?`)) return
     const entryLines = finance.uninvoicedEntries.map((entry) => ({
       billing_entry_id: entry.id,
       date: entry.date || '',
@@ -16729,18 +16940,14 @@ async function updateTeamCell(memberId, field, value) {
     const entryTotal = entryLines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
     const snapshotPortion = Math.max(0, Number((amount - entryTotal).toFixed(2)))
     const lineItems = snapshotPortion > 0.005
-      ? [{ billing_entry_id: '', date: finance.snapshot?.snapshot_date || '', description: 'Unbilled work from latest financial snapshot', hours: '', rate: '', amount: snapshotPortion }, ...entryLines]
+      ? [{ billing_entry_id: '', source_kind: 'snapshot_wip', date: finance.snapshot?.snapshot_date || '', description: 'Unbilled work from latest financial snapshot', hours: '', rate: '', amount: snapshotPortion }, ...entryLines]
       : entryLines
     const now = new Date()
     const due = new Date(now)
     due.setDate(due.getDate() + 30)
-    const invoiceId = crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}`
-    let invoiceNumber = ''
-    try { invoiceNumber = await reserveMioInvoiceNumber() }
-    catch (error) { return alert(error?.message || String(error)) }
-    const invoice = {
-      id: invoiceId,
-      invoice_number: invoiceNumber,
+    const preview = {
+      id: crypto?.randomUUID ? crypto.randomUUID() : `invoice-${Date.now()}`,
+      invoice_number: 'Not assigned yet',
       invoice_type: 'services',
       matter_id: matter.id,
       client_id: matter.client_id || '',
@@ -16750,7 +16957,7 @@ async function updateTeamCell(memberId, field, value) {
       matter_description: matter.matter_subtype || matter.matter_type || '',
       issue_date: now.toISOString().slice(0, 10),
       due_date: due.toISOString().slice(0, 10),
-      status: 'outstanding',
+      status: 'draft',
       subtotal: amount,
       total: amount,
       amount_paid: 0,
@@ -16761,20 +16968,10 @@ async function updateTeamCell(memberId, field, value) {
       created_at: now.toISOString(),
       updated_at: now.toISOString()
     }
-    let savedInvoice = invoice
-    const entryIds = new Set(entryLines.map((line) => String(line.billing_entry_id)).filter(Boolean))
-    if (entryIds.size) {
-      setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) ? { ...entry, invoice_id: invoiceId, invoice_number: invoice.invoice_number, invoiced_at: now.toISOString() } : entry))
-    }
-    try {
-      savedInvoice = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'work_in_progress', line_item_count: lineItems.length })
-      setClientFinanceView('invoices')
-      openFinanceInvoice(savedInvoice, matter)
-      alert(`${savedInvoice.invoice_number} was created for ${money(amount)}. Open, download, print, or email it from the invoice window.`)
-    } catch (error) {
-      if (entryIds.size) setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) && String(entry.invoice_id) === String(invoiceId) ? { ...entry, invoice_id: '', invoice_number: '', invoiced_at: '' } : entry))
-      alert(error?.message || String(error))
-    }
+    setSelectedFinanceInvoice(preview)
+    setInvoiceEditDraft({ ...preview, line_items: lineItems.map(invoiceEditLine) })
+    setInvoiceEditorMode('new')
+    setInvoiceSendDraft({ recipient_email: matterClientEmail(matter) || clientEmailForMatter(matter) || '', sender_email: DEFAULT_BILLING_SENDER_EMAIL, subject: '' })
   }
 
   async function applyTrustToInvoice(matter, invoice) {
@@ -16889,8 +17086,8 @@ async function updateTeamCell(memberId, field, value) {
       updated_at: now.toISOString()
     }
     const entryIds = new Set(cleanLines.map((line) => String(line.billing_entry_id || '')).filter(Boolean))
-    setBillingEntries((current) => current.map((entry) => entryIds.has(String(entry.id)) ? { ...entry, invoice_id: invoiceId, invoice_number: invoice.invoice_number, invoiced_at: now.toISOString() } : entry))
     const saved = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'bulk_wip_review', line_item_count: cleanLines.length })
+    if (entryIds.size) await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, [])
     setBulkWipReview((current) => ({ ...current, invoice: saved }))
     return saved
   }
@@ -17147,28 +17344,44 @@ async function updateTeamCell(memberId, field, value) {
     if (!selectedFinanceInvoice) return null
     const invoice = selectedFinanceInvoice
     const matter = billingInvoiceMatter(invoice)
-    return createPortal(<div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.64)', display: 'grid', placeItems: 'center', padding: 20 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedFinanceInvoice(null) }}>
+    const editing = invoiceEditorMode === 'new' || invoiceEditorMode === 'edit'
+    const draftTotal = editing ? invoiceDraftTotal(invoiceEditDraft) : financeNumber(invoice.total)
+    const shownInvoice = editing ? { ...invoice, ...(invoiceEditDraft || {}), subtotal: draftTotal, total: draftTotal, balance: Math.max(0, draftTotal - financeNumber(invoice.amount_paid)) } : invoice
+    const invoicePaid = financeNumber(invoice.amount_paid) > 0.005
+    const trustPayments = activeTrustPaymentsForInvoice(invoice)
+    const activeTrustPaid = trustPayments.reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const otherPaid = Math.max(0, financeNumber(invoice.amount_paid) - activeTrustPaid)
+    const cancelEditing = () => {
+      if (invoiceEditorMode === 'new') closeFinanceInvoice()
+      else { setInvoiceEditorMode('view'); setInvoiceEditDraft(null) }
+    }
+    return createPortal(<div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.64)', display: 'grid', placeItems: 'center', padding: 20 }} onMouseDown={(event) => { if (event.target === event.currentTarget) closeFinanceInvoice() }}>
       <section style={{ width: 'min(1020px,96vw)', maxHeight: '94vh', overflow: 'auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(0,0,0,.35)', padding: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start' }}><div><h2 style={{ margin: 0 }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice'} {invoice.invoice_number}</h2><div className="hint">{invoice.client_name || matterClientName(matter)} — {invoice.matter_name || matter?.name || ''}</div></div><button type="button" onClick={() => setSelectedFinanceInvoice(null)}>Close</button></div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start' }}><div><h2 style={{ margin: 0 }}>{invoiceEditorMode === 'new' ? 'Review new invoice' : `${invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice'} ${invoice.invoice_number}`}</h2><div className="hint">{invoice.client_name || matterClientName(matter)} — {invoice.matter_name || matter?.name || ''}</div>{invoiceEditorMode === 'new' && <div style={{ marginTop: 6, color: '#1d4ed8', fontWeight: 800 }}>Not created yet. Review and change anything below before approval.</div>}</div><button type="button" onClick={closeFinanceInvoice}>Close</button></div>
+        {editing ? <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '16px 0', padding: 12, border: '2px solid #2563eb', borderRadius: 10, background: '#eff6ff' }}><strong>{invoiceEditorMode === 'new' ? 'Invoice review — no changes have been posted' : `Editing ${invoice.invoice_number}`}</strong><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={cancelEditing} disabled={invoiceDocumentBusy}>Cancel</button><button type="button" className="btnPrimary" onClick={invoiceEditorMode === 'new' ? approveNewInvoice : saveInvoiceEdits} disabled={invoiceDocumentBusy || draftTotal <= 0.005}>{invoiceDocumentBusy ? 'Saving…' : invoiceEditorMode === 'new' ? 'Approve & create invoice' : 'Save invoice changes'}</button></div></div> : <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '16px 0' }}>
           <button type="button" className="btnPrimary" onClick={() => openInvoicePdf(invoice, 'open')} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Generating…' : 'Open / Print PDF'}</button>
           <button type="button" onClick={() => openInvoicePdf(invoice, 'download')} disabled={invoiceDocumentBusy}>Download PDF</button>
-          {invoice.payment_url && <button type="button" onClick={() => window.open(invoice.payment_url, '_blank', 'noopener,noreferrer')}>Open LawPay test link</button>}
+          {invoice.status === 'draft' && <button type="button" className="btnPrimary" onClick={() => approveExistingDraft(invoice)} disabled={invoiceDocumentBusy || invoicePaid}>Approve invoice</button>}
+          <button type="button" onClick={() => beginInvoiceEdit(invoice)} disabled={invoiceDocumentBusy || invoicePaid}>Edit invoice</button>
+          <button type="button" className="btnDanger" onClick={() => deleteUnpaidInvoice(invoice)} disabled={invoiceDocumentBusy || invoicePaid}>Delete invoice</button>
+          {invoice.payment_url && <button type="button" onClick={() => window.open(invoice.payment_url, '_blank', 'noopener,noreferrer')}>Open LawPay link</button>}
           {(invoice.payment_url || invoice.payment_request_id) && <button type="button" onClick={refreshSelectedInvoicePayment} disabled={invoiceDocumentBusy}>Sync / verify payment</button>}
-        </div>
+        </div>}
+        {invoicePaid && !editing && <section style={{ marginBottom: 14, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>Invoice locked — payment must be canceled first</strong><div style={{ marginTop: 5 }}>Editing and deletion are disabled while {money(invoice.amount_paid)} is paid. Reverse each trust payment below, or void/refund an outside payment in LawPay and then click <strong>Sync / verify payment</strong>.</div>{trustPayments.map((transaction) => <div key={transaction.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}><span>Trust payment applied {transaction.date || ''}: <strong>{money(transaction.amount)}</strong></span><button type="button" onClick={() => reverseTrustInvoicePayment(transaction, invoice)} disabled={invoiceDocumentBusy}>Reverse trust payment</button></div>)}{otherPaid > 0.005 && <div style={{ marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}>LawPay or other payment still applied: <strong>{money(otherPaid)}</strong>. Complete its void/refund with the payment provider, then synchronize this invoice.</div>}</section>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10, padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10 }}>
-          <div><strong>Issued</strong><br/>{invoice.issue_date}</div><div><strong>Due</strong><br/>{invoice.due_date || 'Upon receipt'}</div><div><strong>Status</strong><br/>{invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(invoice.total)}</div><div><strong>Paid</strong><br/>{money(invoice.amount_paid)}</div><div><strong>Balance</strong><br/>{money(invoiceBalanceAmount(invoice))}</div>
+          <div><strong>Issued</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.issue_date || ''} onChange={(event) => updateInvoiceEditField('issue_date', event.target.value)} /> : invoice.issue_date}</div><div><strong>Due</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.due_date || ''} onChange={(event) => updateInvoiceEditField('due_date', event.target.value)} /> : (invoice.due_date || 'Upon receipt')}</div><div><strong>Status</strong><br/>{invoiceEditorMode === 'new' ? 'Not created' : invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(shownInvoice.total)}</div><div><strong>Paid</strong><br/>{money(invoice.amount_paid)}</div><div><strong>Balance</strong><br/>{money(shownInvoice.balance)}</div>
         </div>
         <h3>Line items</h3>
-        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', background: '#dbeafe', borderBottom: '1px solid #bfdbfe' }}>{label}</th>)}</tr></thead><tbody>{(invoice.line_items || []).map((line, index) => <tr key={line.billing_entry_id || index}><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.date || invoice.issue_date}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.professional || line.attorney || ''}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{line.description}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '' : money(line.rate)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}</tbody></table></div>
-        {invoice.payment_url && <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: '#eff6ff', border: '1px solid #93c5fd' }}><strong>LawPay payment link</strong><div style={{ overflowWrap: 'anywhere', marginTop: 5 }}><a href={invoice.payment_url} target="_blank" rel="noreferrer">{invoice.payment_url}</a></div></div>}
-        <section style={{ marginTop: 16, border: '1px solid #cbd5e1', borderRadius: 10, padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Email or test-send</h3><div className="hint">The email includes the PDF attachment and a visible LawPay payment button.</div></div><div style={{ color: serviceGraphAuth?.connected ? '#166534' : '#b45309', fontWeight: 700 }}>{serviceGraphAuth?.connected ? `Microsoft connected: ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || ''}` : 'Microsoft not connected'}</div></div>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: editing ? 920 : 720 }}><thead><tr>{[...['Date','Professional','Description','Hours','Rate','Amount'], ...(editing ? [''] : [])].map((label, index) => <th key={`${label}-${index}`} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', background: '#dbeafe', borderBottom: '1px solid #bfdbfe' }}>{label}</th>)}</tr></thead><tbody>{(editing ? invoiceEditDraft?.line_items || [] : invoice.line_items || []).map((line, index) => <tr key={line._edit_id || line.billing_entry_id || index}><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input type="date" value={line.date || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'date', event.target.value)} /> : (line.date || invoice.issue_date)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input value={line.professional || line.attorney || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'professional', event.target.value)} style={{ width: 130 }} /> : (line.professional || line.attorney || '')}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input value={line.description || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'description', event.target.value)} style={{ width: '100%', minWidth: 260 }} /> : line.description}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{editing ? <input type="number" min="0" step="0.01" value={line.hours ?? ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'hours', event.target.value)} style={{ width: 80, textAlign: 'right' }} /> : (line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours).toFixed(2))}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{editing ? <input type="number" min="0" step="0.01" value={line.rate ?? ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'rate', event.target.value)} style={{ width: 90, textAlign: 'right' }} /> : (line.rate === '' || line.rate === undefined ? '' : money(line.rate))}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right', fontWeight: 800 }}>{editing ? <input type="number" min="0" step="0.01" value={line.amount ?? 0} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'amount', event.target.value)} style={{ width: 100, textAlign: 'right' }} /> : money(line.amount)}</td>{editing && <td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeInvoiceEditLine(line._edit_id)}>Remove</button></td>}</tr>)}</tbody>{editing && <tfoot><tr><td colSpan="5" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(draftTotal)}</td><td /></tr></tfoot>}</table></div>
+        {editing && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><button type="button" onClick={addInvoiceEditLine}>+ Add line item</button><button type="button" onClick={addUninvoicedWipToInvoice}>+ Add uninvoiced WIP</button></div>}
+        {!editing && invoice.payment_url && <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: '#eff6ff', border: '1px solid #93c5fd' }}><strong>LawPay payment link</strong><div style={{ overflowWrap: 'anywhere', marginTop: 5 }}><a href={invoice.payment_url} target="_blank" rel="noreferrer">{invoice.payment_url}</a></div></div>}
+        {!editing && <section style={{ marginTop: 16, border: '1px solid #cbd5e1', borderRadius: 10, padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Email or test-send</h3><div className="hint">The email includes the PDF attachment and a visible LawPay payment button.</div></div><div style={{ color: serviceGraphAuth?.connected ? '#166534' : '#b45309', fontWeight: 700 }}>{serviceGraphAuth?.connected ? `Microsoft connected: ${serviceGraphAuth.account?.username || serviceGraphAuth.account?.name || ''}` : 'Microsoft not connected'}</div></div>
           {!serviceGraphAuth?.connected && <button type="button" onClick={connectMicrosoftGraph} style={{ marginTop: 10 }}>Connect Microsoft</button>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 10, marginTop: 12 }}><label>Send to<input type="email" value={invoiceSendDraft.recipient_email} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, recipient_email: event.target.value }))} placeholder="Your email for a test" /></label><label>Send from<input type="email" value={DEFAULT_BILLING_SENDER_EMAIL} readOnly title="Billing documents are always sent through the firm billing mailbox." /></label></div>
           <label style={{ display: 'grid', gap: 4, marginTop: 10 }}>Subject<input value={invoiceSendDraft.subject} onChange={(event) => setInvoiceSendDraft((current) => ({ ...current, subject: event.target.value }))} /></label>
           <button type="button" className="btnPrimary" onClick={sendSelectedInvoiceEmail} disabled={invoiceDocumentBusy || !invoiceSendDraft.recipient_email} style={{ marginTop: 12 }}>{invoiceDocumentBusy ? 'Generating and sending…' : 'Send PDF + LawPay link'}</button>
-        </section>
-        {!!invoice.email_history?.length && <section style={{ marginTop: 16 }}><h3>Email history</h3>{invoice.email_history.slice().reverse().map((entry, index) => <div key={`${entry.sent_at}-${index}`} style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{new Date(entry.sent_at).toLocaleString()} — {entry.sender_email} → {entry.recipient_email}<br/><small>{entry.subject}</small></div>)}</section>}
+        </section>}
+        {!editing && !!invoice.email_history?.length && <section style={{ marginTop: 16 }}><h3>Email history</h3>{invoice.email_history.slice().reverse().map((entry, index) => <div key={`${entry.sent_at}-${index}`} style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{new Date(entry.sent_at).toLocaleString()} — {entry.sender_email} → {entry.recipient_email}<br/><small>{entry.subject}</small></div>)}</section>}
       </section>
     </div>, document.body)
   }
@@ -17176,7 +17389,6 @@ async function updateTeamCell(memberId, field, value) {
   function renderClientFinanceInvoices(matter, finance) {
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">LawPay payments refresh automatically when this page opens. Click an invoice number for its PDF, email, link, and payment details.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
       <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}><thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.invoices.map((invoice) => <tr key={invoice.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#e2e8f0' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#334155' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 700 }}>{invoiceStatusLabel(invoice)}</span></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)}>Open</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td></tr>)}{!finance.invoices.length && <tr><td colSpan="9" className="empty">No Mio invoices have been created for this matter.</td></tr>}</tbody></table></div>
-      {renderInvoiceDocumentModal()}
     </section>
   }
 
@@ -17191,9 +17403,10 @@ async function updateTeamCell(memberId, field, value) {
   function invoiceForBillingActivity(entry = {}) {
     const directId = String(entry.invoice_id || '')
     const directNumber = String(entry.invoice_number || '')
-    return (mioInvoices || []).find((invoice) => directId && String(invoice.id) === directId) ||
-      (mioInvoices || []).find((invoice) => directNumber && String(invoice.invoice_number) === directNumber) ||
-      (mioInvoices || []).find((invoice) => (invoice.line_items || []).some((line) => String(line.billing_entry_id || '') === String(entry.id || ''))) || null
+    const activeInvoices = (mioInvoices || []).filter((invoice) => invoice?.status !== 'void')
+    return activeInvoices.find((invoice) => directId && String(invoice.id) === directId) ||
+      activeInvoices.find((invoice) => directNumber && String(invoice.invoice_number) === directNumber) ||
+      activeInvoices.find((invoice) => (invoice.line_items || []).some((line) => String(line.billing_entry_id || '') === String(entry.id || ''))) || null
   }
 
   function renderClientBillingActivities(matter) {
@@ -17226,6 +17439,7 @@ async function updateTeamCell(memberId, field, value) {
         })}{!rows.length && <tr><td colSpan="8" className="empty">No billing activities have been recorded for this matter.</td></tr>}</tbody>
         {!!rows.length && <tfoot><tr style={{ background: '#f8fafc', fontWeight: 900 }}><td colSpan="4" style={{ padding: 9, textAlign: 'right' }}>Total</td><td style={{ padding: 9, textAlign: 'right' }}>{totals.hours.toFixed(2)}</td><td></td><td style={{ padding: 9, textAlign: 'right' }}>{money(totals.amount)}</td><td></td></tr></tfoot>}
       </table></div>
+      {renderInvoiceDocumentModal()}
     </section>
   }
 
@@ -17260,6 +17474,7 @@ async function updateTeamCell(memberId, field, value) {
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
       {clientFinanceView === 'wip' && renderClientFinanceWip(matter, finance)}
       {clientFinanceView === 'clio_history' && renderClientFinanceClioHistory(matter)}
+      {renderInvoiceDocumentModal()}
     </div>
   }
 
@@ -38938,8 +39153,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             setBankConnecting(false)
           }
         },
-        onExit: (error) => {
-          if (error) setBankError(error.display_message || error.error_message || 'Bank connection was not completed.')
+        onExit: (error, metadata = {}) => {
+          if (error) {
+            const institutionName = metadata?.institution?.name || 'Unknown institution'
+            const institutionId = metadata?.institution?.institution_id || 'not returned'
+            const diagnostic = [`Error code: ${error.error_code || 'not returned'}`, `Error type: ${error.error_type || 'not returned'}`, `Institution: ${institutionName} (${institutionId})`, `Link session: ${metadata?.link_session_id || 'not returned'}`, `Request ID: ${metadata?.request_id || 'not returned'}`, `Exit point: ${metadata?.status || 'not returned'}`].join(' | ')
+            console.error('Plaid Link exit diagnostic:', { error, metadata })
+            setBankError(`${error.display_message || error.error_message || 'Bank connection was not completed.'} ${diagnostic}`)
+          }
           setBankConnecting(false)
         }
       })
@@ -39177,17 +39398,20 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         const refunded = Math.abs(financeNumber(transaction.amount_refunded_cents) / 100)
         return sum + (/refund|chargeback|reversal/.test(type) ? -amount : Math.max(0, amount - refunded))
       }, 0)
-      const paidAmount = Math.max(0, transactionPaid || recordedRequestAmount)
-      if (paidAmount <= financeNumber(invoice.amount_paid) + 0.005) continue
-      const amountPaid = Math.min(financeNumber(invoice.total), Math.max(financeNumber(invoice.amount_paid), paidAmount))
+      const priorPaid = financeNumber(invoice.amount_paid)
+      const paidAmount = Math.max(0, successful.length ? transactionPaid : recordedRequestAmount)
+      if (Math.abs(paidAmount - priorPaid) <= 0.005) continue
+      const amountPaid = Math.min(financeNumber(invoice.total), paidAmount)
       const balance = Math.max(0, financeNumber(invoice.total) - amountPaid)
       const updated = { ...invoice, amount_paid: Number(amountPaid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: new Date().toISOString() }
       const { data: saved, error: saveError } = await supabase.from('mio_invoices').update(invoiceDatabasePayload(updated)).eq('id', invoice.id).select('*').single()
       if (saveError) { console.warn('LawPay invoice reconciliation failed:', saveError); continue }
       updatedInvoices.push(invoiceFromDatabaseRow(saved))
-      const providerId = successful[0]?.gateway_transaction_id || request.gateway_transaction_id || `lawpay-request:${request.id}`
-      await recordInvoiceEvent(updated, 'lawpay_payment_recorded', { payment_request_id: request.id, transaction_ids: successful.map((row) => row.gateway_transaction_id).filter(Boolean), amount: amountPaid }, amountPaid, providerId)
-      if (invoice.invoice_type === 'trust_request') {
+      const paymentReduced = amountPaid < priorPaid
+      const providerTransaction = paymentReduced ? successful.find((row) => /refund|chargeback|reversal/.test(String(row.transaction_type || '').toLowerCase()) || financeNumber(row.amount_refunded_cents) > 0) : successful[0]
+      const providerId = providerTransaction?.gateway_transaction_id || request.gateway_transaction_id || `lawpay-request:${request.id}`
+      await recordInvoiceEvent(updated, paymentReduced ? 'lawpay_payment_reversed' : 'lawpay_payment_recorded', { payment_request_id: request.id, transaction_ids: successful.map((row) => row.gateway_transaction_id).filter(Boolean), prior_amount_paid: priorPaid, amount_paid: amountPaid, change: Number((amountPaid - priorPaid).toFixed(2)) }, Math.abs(amountPaid - priorPaid), providerId)
+      if (!paymentReduced && invoice.invoice_type === 'trust_request') {
         const transaction = successful.find((row) => !/refund|chargeback|reversal/.test(String(row.transaction_type || '').toLowerCase())) || successful[0]
         newTrustRows.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${invoice.id}`, matter_id: invoice.matter_id, client_id: invoice.client_id || '', date: financeDateOnly(transaction?.occurred_at || request.paid_at || new Date().toISOString()), direction: 'in', transaction_type: 'lawpay', amount: Number(amountPaid.toFixed(2)), payer_payee: transaction?.payer_name || transaction?.payer_email || request.payer_name || request.payer_email || invoice.client_name || '', reference: invoice.invoice_number, memo: `LawPay trust deposit for ${invoice.invoice_number}`, invoice_id: invoice.id, lawpay_transaction_id: transaction?.gateway_transaction_id || request.gateway_transaction_id || String(request.id), payment_request_id: String(request.id), source: 'LawPay', created_at: transaction?.occurred_at || request.paid_at || new Date().toISOString() })
       }
