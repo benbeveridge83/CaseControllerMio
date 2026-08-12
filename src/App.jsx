@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V219'
+const MIO_APP_VERSION = 'Mio V220'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -2016,6 +2016,7 @@ function App() {
   const [manualRfpSettingsOpen, setManualRfpSettingsOpen] = useState(false)
   const [manualRfpTagPanelOpen, setManualRfpTagPanelOpen] = useState(false)
   const [manualRfpBusy, setManualRfpBusy] = useState('')
+  const [manualRfpNotice, setManualRfpNotice] = useState(null)
   const [manualRfpVisibleDocumentColumns, setManualRfpVisibleDocumentColumns] = useState({ file_name: true, document_name: true, upload_date: true })
   const [manualRfpObjectionOptions, setManualRfpObjectionOptions] = useState(() => {
     try {
@@ -9764,15 +9765,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         }))
         .filter((item) => item.request_text)
       const localItems = localExtractRespondingDiscoveryRequests(rawText, type)
-      // Prefer the browser parser when it found the actual numbered list. For Texas RFD,
-      // RFP, Roggs, and RFA documents, the API can mistake instructions/definitions for
-      // requests. The local parser starts at the true list heading, such as Exhibit A.
-      const key = discoveryTypeColumnKey(type)
-      if (localItems.length >= 2 && (localItems.length >= apiItems.length || ['disclosures', 'production', 'interrogatories', 'admissions'].includes(key))) return localItems
-      return apiItems
+      // Use the browser result as a guardrail when the AI and the numbered headings
+      // materially disagree. When they agree, keep the AI-cleaned request text.
+      if (localItems.length >= 2 && localItems.length !== apiItems.length) {
+        return { requests: localItems, method: 'browser_verified', warning: `AI found ${apiItems.length} requests, but the numbered headings identified ${localItems.length}. Mio used the numbered headings.` }
+      }
+      return { requests: apiItems, method: String(data?.extraction_method || 'ai') }
     } catch (error) {
-      console.warn('Discovery extraction API unavailable; using browser fallback.', error)
-      return localExtractRespondingDiscoveryRequests(rawText, type)
+      console.info('Discovery extraction API unavailable; Mio used its browser parser.', error?.message || error)
+      return { requests: localExtractRespondingDiscoveryRequests(rawText, type), method: 'browser_fallback', warning: error?.message || String(error) }
     }
   }
 
@@ -9809,7 +9810,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return [respondingDiscoveryRequestTemplate({ request_number: 1, request_text: title || 'New discovery request. Paste or type the request text here.' }, 0, setType, respondingDiscoveryForm.attorney_comments || '')]
     }
     setRespondingDiscoveryProgress('Sending text to discovery extraction API...')
-    const extracted = await callRespondingDiscoveryExtractionApi(rawText, setType, title || chosenDoc.name || chosenDoc.file_name || '')
+    const extractionResult = await callRespondingDiscoveryExtractionApi(rawText, setType, title || chosenDoc.name || chosenDoc.file_name || '')
+    const extracted = extractionResult?.requests || []
     return (extracted.length ? extracted : localExtractRespondingDiscoveryRequests(rawText, setType))
       .map((item, index) => respondingDiscoveryRequestTemplate(item, index, setType, respondingDiscoveryForm.attorney_comments || ''))
   }
@@ -10094,12 +10096,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   async function createManualRfpSetWithAi(matter, documentId) {
     const doc = documents.find((item) => String(item.id) === String(documentId) && String(item.matter_id) === String(matter.id))
     if (!doc) { alert('Select the RFP document from this matter first.'); return }
-    setManualRfpBusy('AI is reading the RFP and creating request folders...')
+    setManualRfpNotice(null)
+    setManualRfpBusy('Reading the RFP and creating request folders...')
     try {
       const extraction = await extractDocumentTextForAi(doc)
       const rawText = extraction?.extracted_text || ''
       if (!String(rawText).trim()) throw new Error((extraction?.warnings || ['No readable text was found in that document.']).join('\n'))
-      const extracted = await callRespondingDiscoveryExtractionApi(rawText, 'Request for Production', doc.name || doc.file_name || '')
+      const extractionResult = await callRespondingDiscoveryExtractionApi(rawText, 'Request for Production', doc.name || doc.file_name || '')
+      const extracted = extractionResult?.requests || []
       if (!extracted.length) throw new Error('No numbered requests were found. You can still create the folders manually.')
       const now = new Date().toISOString()
       const nextSet = {
@@ -10112,6 +10116,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         created_at: now,
         updated_at: now,
         manual_rfp_workspace: true,
+        extraction_method: extractionResult?.method || 'unknown',
         bates_prefix: 'Original-RFP',
         bates_start: 1,
         reference_production_log: false,
@@ -10129,8 +10134,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       setRespondingDiscoverySelectedSetId(nextSet.id)
       setRespondingDiscoveryMatterId(matter.id)
       setManualRfpAiDocumentId('')
+      const methodLabel = extractionResult?.method === 'ai' ? 'AI extraction'
+        : extractionResult?.method === 'browser_verified' ? 'numbered-heading verification'
+          : extractionResult?.method === 'server_parser' ? 'the secure server parser'
+            : extractionResult?.method === 'browser_fallback' ? 'the browser safety parser'
+              : 'the discovery extractor'
+      setManualRfpNotice({ type: 'success', text: `Created ${extracted.length} request folders using ${methodLabel}. Review the request text before assigning documents.` })
     } catch (error) {
       console.error('Manual RFP AI setup failed', error)
+      setManualRfpNotice({ type: 'error', text: `Mio could not create request folders: ${error?.message || error}` })
       alert(`Mio could not create the request folders: ${error?.message || error}`)
     } finally { setManualRfpBusy('') }
   }
@@ -10431,13 +10443,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <button type="button" onClick={() => setClientDashboardTab('discovery')} style={{ height: 38 }}>Open Client Discovery</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px,1fr) auto', gap: 8, alignItems: 'end', marginTop: 10, paddingTop: 10, borderTop: '1px solid #dbeafe' }}>
-          <label><strong>Start with AI</strong><select value={manualRfpAiDocumentId} onChange={(event) => setManualRfpAiDocumentId(event.target.value)} style={{ width: '100%', marginTop: 4 }}><option value="">Choose the uploaded RFP document...</option>{matterDocs.map((doc) => <option key={doc.id} value={doc.id}>{documentLabel(doc)}</option>)}</select></label>
-          <button type="button" onClick={() => createManualRfpSetWithAi(matter, manualRfpAiDocumentId)} disabled={!manualRfpAiDocumentId || Boolean(manualRfpBusy)} style={{ height: 38, background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '0 14px', fontWeight: 800 }}>Start with AI</button>
+          <label><strong>Create from Document</strong><select value={manualRfpAiDocumentId} onChange={(event) => setManualRfpAiDocumentId(event.target.value)} style={{ width: '100%', marginTop: 4 }}><option value="">Choose the uploaded RFP document...</option>{matterDocs.map((doc) => <option key={doc.id} value={doc.id}>{documentLabel(doc)}</option>)}</select></label>
+          <button type="button" onClick={() => createManualRfpSetWithAi(matter, manualRfpAiDocumentId)} disabled={!manualRfpAiDocumentId || Boolean(manualRfpBusy)} style={{ height: 38, background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '0 14px', fontWeight: 800 }}>Create from Document</button>
         </div>
         {manualRfpBusy && <div style={{ marginTop: 8, color: '#1d4ed8', fontWeight: 700 }}>{manualRfpBusy}</div>}
+        {manualRfpNotice && <div role="status" style={{ marginTop: 8, padding: '9px 11px', borderRadius: 8, border: `1px solid ${manualRfpNotice.type === 'error' ? '#fecaca' : '#86efac'}`, background: manualRfpNotice.type === 'error' ? '#fef2f2' : '#f0fdf4', color: manualRfpNotice.type === 'error' ? '#991b1b' : '#166534', fontWeight: 700 }}>{manualRfpNotice.text}</div>}
       </div>
 
-      {!set && <div style={{ border: '2px dashed #cbd5e1', borderRadius: 14, padding: 34, textAlign: 'center', color: '#64748b' }}>Create the request folders manually or select an uploaded RFP document and use Start with AI.</div>}
+      {!set && <div style={{ border: '2px dashed #cbd5e1', borderRadius: 14, padding: 34, textAlign: 'center', color: '#64748b' }}>Create the request folders manually or select an uploaded RFP document and use Create from Document.</div>}
 
       {set && <>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(380px,1fr) minmax(520px,1.25fr)', gap: 12, alignItems: 'start' }}>
