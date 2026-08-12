@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V217'
+const MIO_APP_VERSION = 'Mio V218'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -2109,6 +2109,7 @@ function App() {
   const [bulkBillingResult, setBulkBillingResult] = useState('')
   const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], drafts: {}, approved_ids: [], invoice_by_matter: {} })
   const [bulkWipProgress, setBulkWipProgress] = useState('')
+  const [bulkOutstandingInvoiceReview, setBulkOutstandingInvoiceReview] = useState({ open: false, rows: [], skipped: [], progress: '' })
   const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)
   const [bulkInvoiceFilters, setBulkInvoiceFilters] = useState(() => {
     try { return { ...DEFAULT_BULK_INVOICE_FILTERS, ...(JSON.parse(localStorage.getItem('caseMioBulkInvoiceFilters') || '{}') || {}) } }
@@ -16687,12 +16688,12 @@ async function updateTeamCell(memberId, field, value) {
   async function sendInvoiceDocumentEmail(matter, invoice, options = {}) {
     if (!matter) throw new Error('The invoice matter could not be found.')
     const recipient = String(options.recipient_email || invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '').trim()
-    let sender = DEFAULT_BILLING_SENDER_EMAIL
+    let sender = String(options.sender_email || invoice.sender_email || DEFAULT_BILLING_SENDER_EMAIL).trim()
     if (!recipient) throw new Error('Enter a recipient email address.')
     if (!serviceGraphAuth?.connected || serviceGraphConfig.mode !== 'live') {
       localStorage.setItem('caseMioPendingInvoiceRecipient', recipient)
       await getMicrosoftGraphToken({ allowInteractive: true })
-      sender = DEFAULT_BILLING_SENDER_EMAIL
+      sender = String(options.sender_email || invoice.sender_email || DEFAULT_BILLING_SENDER_EMAIL).trim()
     }
     if (!sender) throw new Error('The billing mailbox is not configured.')
     let linkedInvoice = { ...invoice, recipient_email: recipient, sender_email: sender }
@@ -16918,7 +16919,13 @@ async function updateTeamCell(memberId, field, value) {
     setInvoiceDocumentBusy(true)
     try {
       const saved = await persistMioInvoiceRecord(updated, 'trust_payment_reversed', { transaction_id: transaction.id, reversal_id: reversal.id, amount }, amount)
-      setMioTrustTransactions((current) => [reversal, ...(current || [])])
+      const nextTrustRows = [reversal, ...(mioTrustTransactions || [])]
+      try { await saveMioStateKeyNow('caseMioTrustTransactions', JSON.stringify(nextTrustRows), { throwOnError: true }) }
+      catch (trustError) {
+        await persistMioInvoiceRecord(invoice, 'trust_payment_reversal_rolled_back', { reversal_id: reversal.id, error: trustError?.message || String(trustError) })
+        throw new Error(`The trust-ledger reversal could not be saved, so Mio restored the prior invoice balance. ${trustError?.message || trustError}`)
+      }
+      setMioTrustTransactions(nextTrustRows)
       setSelectedFinanceInvoice(saved)
       alert(`${money(amount)} was returned to trust. ${saved.invoice_number} now has ${money(saved.amount_paid)} paid and ${money(invoiceBalanceAmount(saved))} outstanding.`)
     } catch (error) { alert(`The trust payment was not reversed. ${error?.message || error}`) }
@@ -17126,8 +17133,7 @@ async function updateTeamCell(memberId, field, value) {
     const paid = financeNumber(invoice.amount_paid) + amount
     const nextBalance = Math.max(0, financeNumber(invoice.total) - paid)
     const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: nextBalance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
-    setMioInvoices((current) => current.map((item) => String(item.id) === String(invoice.id) ? paidInvoice : item))
-    setMioTrustTransactions((current) => [{
+    const transaction = {
       id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}`,
       matter_id: matter.id,
       client_id: matter.client_id || '',
@@ -17141,9 +17147,12 @@ async function updateTeamCell(memberId, field, value) {
       invoice_id: invoice.id,
       source: 'Mio invoice payment',
       created_at: now
-    }, ...(current || [])])
-    try { await persistMioInvoiceRecord(paidInvoice, 'trust_applied', { source: 'client_trust', amount }, amount) }
-    catch (error) { alert(`The trust ledger was updated locally, but the invoice database record could not be saved. ${error?.message || error}`) }
+    }
+    try {
+      const result = await persistOutstandingTrustPaymentPlans([{ matter, paid: amount, transactions: [transaction], invoiceUpdates: [{ before: invoice, after: paidInvoice, amount }] }])
+      const saved = result.savedInvoices.find((row) => String(row.id) === String(invoice.id)) || paidInvoice
+      if (selectedFinanceInvoice && String(selectedFinanceInvoice.id) === String(invoice.id)) setSelectedFinanceInvoice(saved)
+    } catch (error) { alert(`The trust payment was not saved, so Mio kept the prior balances. ${error?.message || error}`) }
   }
 
   function wipReviewLinesForMatter(matter, preparedFinance = null) {
@@ -17326,14 +17335,14 @@ async function updateTeamCell(memberId, field, value) {
     const paid = financeNumber(invoice.amount_paid) + amount
     const balance = Math.max(0, financeNumber(invoice.total) - paid)
     const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
-    setMioInvoices((current) => current.map((row) => String(row.id) === String(invoice.id) ? paidInvoice : row))
-    setMioTrustTransactions((current) => [{
+    const transaction = {
       id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer',
       amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number,
       memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now
-    }, ...(current || [])])
-    return await persistMioInvoiceRecord(paidInvoice, 'trust_applied', { source: 'bulk_billing', amount }, amount)
+    }
+    const result = await persistOutstandingTrustPaymentPlans([{ matter, paid: amount, transactions: [transaction], invoiceUpdates: [{ before: invoice, after: paidInvoice, amount }] }])
+    return result.savedInvoices.find((row) => String(row.id) === String(invoice.id)) || paidInvoice
   }
 
   async function emailServiceInvoice(matter, invoice) {
@@ -17343,11 +17352,10 @@ async function updateTeamCell(memberId, field, value) {
     return await sendInvoiceDocumentEmail(matter, invoice, { recipient_email: recipient, sender_email: sender })
   }
 
-  function payMatterOutstandingFromTrust(matter, { confirm = true } = {}) {
+  function planMatterOutstandingFromTrust(matter) {
     const finance = clientFinanceNumbers(matter)
     const payable = Math.min(finance.trust, finance.outstanding)
     if (payable <= 0.005) return { paid: 0, message: 'No outstanding balance can be paid from trust.' }
-    if (confirm && !window.confirm(`Apply ${money(payable)} from ${matter.name || 'this matter'} trust funds to its outstanding balance?`)) return { paid: 0, cancelled: true }
     let remaining = payable
     const now = new Date().toISOString()
     const transactions = []
@@ -17365,12 +17373,74 @@ async function updateTeamCell(memberId, field, value) {
       remaining -= amount
       const paid = financeNumber(invoice.amount_paid) + amount
       const balance = Math.max(0, financeNumber(invoice.total) - paid)
-      invoiceUpdates.set(String(invoice.id), { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now })
+      invoiceUpdates.set(String(invoice.id), { before: invoice, after: { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }, amount: Number(amount.toFixed(2)) })
       transactions.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${invoice.id}`, matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number, memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now })
     })
-    if (invoiceUpdates.size) setMioInvoices((current) => current.map((invoice) => invoiceUpdates.get(String(invoice.id)) || invoice))
-    if (transactions.length) setMioTrustTransactions((current) => [...transactions, ...(current || [])])
-    return { paid: Number((payable - remaining).toFixed(2)), message: `${money(payable - remaining)} paid from trust.` }
+    const paid = Number((payable - remaining).toFixed(2))
+    return { matter, paid, transactions, invoiceUpdates: [...invoiceUpdates.values()], message: `${money(paid)} paid from trust.` }
+  }
+
+  async function persistOutstandingTrustPaymentPlans(plans = []) {
+    if (!session?.user?.id) throw new Error('Sign in before applying trust funds.')
+    const usablePlans = plans.filter((plan) => financeNumber(plan?.paid) > 0.005 && Array.isArray(plan?.transactions) && plan.transactions.length)
+    const transactions = usablePlans.flatMap((plan) => plan.transactions)
+    const invoiceUpdates = usablePlans.flatMap((plan) => plan.invoiceUpdates || [])
+    if (!transactions.length) return { paid: 0, savedInvoices: [], nextTrustRows: mioTrustTransactions || [] }
+    const priorTrustRows = [...(mioTrustTransactions || [])]
+    const nextTrustRows = [...transactions, ...priorTrustRows]
+    let invoicesSaved = false
+    let trustSaved = false
+    let savedInvoices = []
+    try {
+      if (invoiceUpdates.length) {
+        const { data, error } = await supabase.from('mio_invoices').upsert(invoiceUpdates.map((update) => invoiceDatabasePayload(update.after)), { onConflict: 'id' }).select('*')
+        if (error) throw new Error(`The invoice payments were not saved. ${error.message || error}`)
+        savedInvoices = (data || []).map(invoiceFromDatabaseRow)
+        if (savedInvoices.length !== invoiceUpdates.length) throw new Error(`Mio saved ${savedInvoices.length} of ${invoiceUpdates.length} invoice payment updates, so the trust transfer was stopped.`)
+        invoicesSaved = true
+      }
+      await saveMioStateKeyNow('caseMioTrustTransactions', JSON.stringify(nextTrustRows), { throwOnError: true })
+      trustSaved = true
+      const { data: verification, error: verificationError } = await supabase.from('case_mio_user_state').select('raw_value,json_value').eq('user_id', session.user.id).eq('key', 'caseMioTrustTransactions').maybeSingle()
+      if (verificationError) throw new Error(`Mio could not verify the saved trust ledger. ${verificationError.message || verificationError}`)
+      let verifiedRows = Array.isArray(verification?.json_value) ? verification.json_value : []
+      if (!verifiedRows.length && verification?.raw_value) {
+        try { verifiedRows = JSON.parse(verification.raw_value) } catch { verifiedRows = [] }
+      }
+      const verifiedIds = new Set((Array.isArray(verifiedRows) ? verifiedRows : []).map((row) => String(row?.id || '')))
+      const missingTransaction = transactions.find((transaction) => !verifiedIds.has(String(transaction.id)))
+      if (missingTransaction) throw new Error('The saved trust ledger did not contain every new transfer.')
+    } catch (error) {
+      const rollbackErrors = []
+      if (trustSaved) {
+        try { await saveMioStateKeyNow('caseMioTrustTransactions', JSON.stringify(priorTrustRows), { throwOnError: true }) }
+        catch (rollbackError) { rollbackErrors.push(`trust rollback: ${rollbackError?.message || rollbackError}`) }
+      }
+      if (invoicesSaved && invoiceUpdates.length) {
+        const { error: rollbackError } = await supabase.from('mio_invoices').upsert(invoiceUpdates.map((update) => invoiceDatabasePayload(update.before)), { onConflict: 'id' })
+        if (rollbackError) rollbackErrors.push(`invoice rollback: ${rollbackError.message || rollbackError}`)
+      }
+      throw new Error(`${error?.message || error}${rollbackErrors.length ? ` Mio also could not fully roll back (${rollbackErrors.join('; ')}). Refresh and review the affected matters before retrying.` : ' No balance changes were kept.'}`)
+    }
+    const replacements = new Map(savedInvoices.map((invoice) => [String(invoice.id), invoice]))
+    if (replacements.size) setMioInvoices((current) => (current || []).map((invoice) => replacements.get(String(invoice.id)) || invoice))
+    setMioTrustTransactions(nextTrustRows)
+    const occurredAt = new Date().toISOString()
+    const events = invoiceUpdates.map((update) => ({ invoice_id: update.after.id, user_id: session.user.id, event_type: 'trust_applied', amount: update.amount, details: { source: 'bulk_billing', persisted_before_ui_update: true }, occurred_at: occurredAt }))
+    if (events.length) {
+      const { data: savedEvents, error: eventError } = await supabase.from('mio_invoice_events').insert(events).select('*')
+      if (!eventError && savedEvents?.length) setMioInvoiceEvents((current) => [...savedEvents, ...(current || [])])
+      else if (eventError) console.warn('Trust transfers were saved, but their invoice audit events could not be saved:', eventError)
+    }
+    return { paid: Number(usablePlans.reduce((sum, plan) => sum + financeNumber(plan.paid), 0).toFixed(2)), savedInvoices, nextTrustRows }
+  }
+
+  async function payMatterOutstandingFromTrust(matter, { confirm = true } = {}) {
+    const plan = planMatterOutstandingFromTrust(matter)
+    if (!plan?.paid) return plan
+    if (confirm && !window.confirm(`Apply ${money(plan.paid)} from ${matter.name || 'this matter'} trust funds to its outstanding balance?`)) return { paid: 0, cancelled: true }
+    await persistOutstandingTrustPaymentPlans([plan])
+    return { paid: plan.paid, message: plan.message }
   }
 
   async function completeBulkWipReview(matterId, action) {
@@ -17507,14 +17577,155 @@ async function updateTeamCell(memberId, field, value) {
     setBulkBillingResult(`${created.length} replenishment request${created.length === 1 ? '' : 's'} emailed.${failures.length ? ` ${failures.length} failed: ${failures.join(' | ')}` : ''}`)
   }
 
-  function paySelectedOutstandingFromTrust(matterIds) {
+  async function paySelectedOutstandingFromTrust(matterIds) {
     const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter((matter) => matter && latestTrustSnapshotForMatter(matter))
-    const payable = rows.reduce((sum, matter) => { const finance = clientFinanceNumbers(matter); return sum + Math.min(finance.trust, finance.outstanding) }, 0)
+    const plans = rows.map(planMatterOutstandingFromTrust).filter((plan) => financeNumber(plan?.paid) > 0.005)
+    const payable = plans.reduce((sum, plan) => sum + financeNumber(plan.paid), 0)
     if (payable <= 0.005) return alert('None of the selected matters has both an outstanding balance and available trust funds.')
-    if (!window.confirm(`Apply up to ${money(payable)} from trust across ${rows.length} selected matter${rows.length === 1 ? '' : 's'}?`)) return
-    let paid = 0
-    rows.forEach((matter) => { paid += payMatterOutstandingFromTrust(matter, { confirm: false }).paid || 0 })
-    setBulkBillingResult(`${money(paid)} was applied from trust to selected outstanding balances.`)
+    if (!window.confirm(`Apply ${money(payable)} from trust across ${plans.length} selected matter${plans.length === 1 ? '' : 's'}? Mio will save and verify the invoice payments and trust-ledger transfers before changing the balances on this screen.`)) return
+    setBulkBillingBusy(true)
+    setBulkBillingResult(`Saving and verifying ${plans.length} trust payment${plans.length === 1 ? '' : 's'}…`)
+    try {
+      const result = await persistOutstandingTrustPaymentPlans(plans)
+      setBulkBillingResult(`${money(result.paid)} was applied from trust and verified in Supabase. These balances will remain after a hard refresh.`)
+    } catch (error) {
+      setBulkBillingResult(`No bulk trust payment was completed. ${error?.message || error}`)
+      alert(`Mio did not complete the bulk trust payment. ${error?.message || error}`)
+    } finally { setBulkBillingBusy(false) }
+  }
+
+  function bulkOutstandingInvoiceDraft(invoice, matter) {
+    const template = renderBillingTemplate('service_invoice', {
+      client_name: matterClientName(matter) || invoice.client_name || 'Client',
+      matter_name: matter.name || invoice.matter_name || 'Matter',
+      invoice_number: invoice.invoice_number,
+      amount: money(invoiceBalanceAmount(invoice)),
+      due_date: invoice.due_date || '',
+      payment_link: invoice.payment_url || ''
+    })
+    return {
+      id: String(invoice.id),
+      matter_id: String(invoice.matter_id || ''),
+      invoice,
+      included: true,
+      recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '',
+      sender_email: DEFAULT_BILLING_SENDER_EMAIL,
+      subject: invoice.email_subject || template.subject,
+      message: template.body,
+      send_status: 'ready',
+      send_error: ''
+    }
+  }
+
+  async function openBulkOutstandingInvoiceReview(matterIds = []) {
+    const selectedIds = new Set((matterIds || []).map(String))
+    if (!selectedIds.size) return alert('Check at least one matter first.')
+    setBulkBillingBusy(true)
+    setBulkBillingResult('Loading the latest outstanding invoices for review…')
+    try {
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const invoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      const reviewRows = invoiceSource
+        .filter((invoice) => selectedIds.has(String(invoice?.matter_id || '')) && invoice?.invoice_type !== 'trust_request' && !['draft','void'].includes(invoice?.status) && invoiceBalanceAmount(invoice) > 0.005)
+        .map((invoice) => {
+          const matter = matters.find((row) => String(row.id) === String(invoice.matter_id))
+          return matter ? { matter, draft: bulkOutstandingInvoiceDraft(invoice, matter) } : null
+        })
+        .filter(Boolean)
+        .sort((left, right) => (matterClientName(left.matter) || left.matter.name || '').localeCompare(matterClientName(right.matter) || right.matter.name || '') || String(left.draft.invoice.issue_date || '').localeCompare(String(right.draft.invoice.issue_date || '')))
+        .map((row) => row.draft)
+      const mattersWithInvoice = new Set(reviewRows.map((row) => row.matter_id))
+      const skipped = [...selectedIds].map((matterId) => {
+        const matter = matters.find((row) => String(row.id) === matterId)
+        if (!matter || mattersWithInvoice.has(matterId)) return null
+        const finance = clientFinanceNumbers(matter)
+        if (finance.outstanding <= 0.005) return { matter_id: matterId, label: `${matterClientName(matter) || matter.name}: no outstanding balance` }
+        return { matter_id: matterId, label: `${matterClientName(matter) || matter.name}: ${money(finance.outstanding)} is shown as outstanding, but no sendable Mio services invoice is linked to that balance` }
+      }).filter(Boolean)
+      setBulkOutstandingInvoiceReview({ open: true, rows: reviewRows, skipped, progress: reviewRows.length ? `${reviewRows.length} outstanding services invoice${reviewRows.length === 1 ? '' : 's'} loaded. Review every email below before sending.` : 'No sendable outstanding services invoices were found.' })
+      setBulkBillingResult(reviewRows.length ? `${reviewRows.length} outstanding services invoice${reviewRows.length === 1 ? '' : 's'} ready for review.` : 'No sendable outstanding services invoices were found for the checked matters.')
+    } catch (error) {
+      alert(`Mio could not load the outstanding invoices. ${error?.message || error}`)
+      setBulkBillingResult(`Outstanding invoice review could not be opened. ${error?.message || error}`)
+    } finally { setBulkBillingBusy(false) }
+  }
+
+  function updateBulkOutstandingInvoiceReviewRow(invoiceId, patch) {
+    setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => String(row.id) === String(invoiceId) ? { ...row, ...patch, send_status: row.send_status === 'sent' ? 'sent' : 'ready', send_error: '' } : row) }))
+  }
+
+  async function sendBulkOutstandingInvoices() {
+    const rows = (bulkOutstandingInvoiceReview.rows || []).filter((row) => row.included && row.send_status !== 'sent')
+    if (!rows.length) return alert('Check at least one unsent invoice.')
+    const invalid = rows.find((row) => !String(row.recipient_email || '').trim() || !String(row.subject || '').trim() || !String(row.message || '').trim())
+    if (invalid) return alert(`Complete the recipient, subject, and message for ${invalid.invoice?.invoice_number || 'every checked invoice'} before sending.`)
+    const total = rows.reduce((sum, row) => sum + invoiceBalanceAmount(row.invoice), 0)
+    if (!window.confirm(`Send ${rows.length} outstanding invoice email${rows.length === 1 ? '' : 's'} totaling ${money(total)}? Each email will include its invoice PDF and operating-account LawPay link.`)) return
+    setBulkBillingBusy(true)
+    let sentCount = 0
+    const failures = []
+    for (const row of rows) {
+      setBulkOutstandingInvoiceReview((current) => ({ ...current, progress: `Sending ${sentCount + 1} of ${rows.length}: ${row.invoice.invoice_number}…`, rows: (current.rows || []).map((item) => String(item.id) === String(row.id) ? { ...item, send_status: 'sending', send_error: '' } : item) }))
+      try {
+        const matter = matters.find((item) => String(item.id) === String(row.matter_id))
+        if (!matter) throw new Error('Matter record not found.')
+        const currentInvoice = (mioInvoices || []).find((invoice) => String(invoice.id) === String(row.id)) || row.invoice
+        if (invoiceBalanceAmount(currentInvoice) <= 0.005) throw new Error('This invoice no longer has an outstanding balance.')
+        const sent = await sendInvoiceDocumentEmail(matter, currentInvoice, { recipient_email: row.recipient_email, sender_email: row.sender_email, subject: row.subject, message: row.message })
+        sentCount += 1
+        setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((item) => String(item.id) === String(row.id) ? { ...item, invoice: sent, send_status: 'sent', send_error: '', included: false } : item) }))
+      } catch (error) {
+        const message = error?.message || String(error)
+        failures.push(`${row.invoice.invoice_number}: ${message}`)
+        setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((item) => String(item.id) === String(row.id) ? { ...item, send_status: 'error', send_error: message } : item) }))
+      }
+    }
+    const progress = `${sentCount} invoice email${sentCount === 1 ? '' : 's'} sent.${failures.length ? ` ${failures.length} failed and remain checked for correction or retry.` : ''}`
+    setBulkOutstandingInvoiceReview((current) => ({ ...current, progress }))
+    setBulkBillingResult(progress)
+    setBulkBillingBusy(false)
+  }
+
+  function renderBulkOutstandingInvoiceReview() {
+    if (!bulkOutstandingInvoiceReview.open) return null
+    const rows = bulkOutstandingInvoiceReview.rows || []
+    const checkedRows = rows.filter((row) => row.included && row.send_status !== 'sent')
+    const checkedTotal = checkedRows.reduce((sum, row) => sum + invoiceBalanceAmount(row.invoice), 0)
+    const senderOptions = financeSenderOptions()
+    return <div style={{ position: 'fixed', inset: 0, zIndex: 12200, background: 'rgba(15,23,42,.58)', padding: 16 }}>
+      <section style={{ width: 'min(1320px,98vw)', height: '95vh', overflow: 'auto', margin: '0 auto', background: '#f8fafc', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.4)' }}>
+        <div style={{ position: 'sticky', top: 0, zIndex: 8, background: '#fff', borderBottom: '1px solid #cbd5e1', padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap' }}>
+            <div><h2 style={{ margin: 0 }}>Outstanding invoice email review — all selected matters</h2><div className="hint">Every sendable non-trust invoice, recipient, subject, message, amount, and attachment summary is on this one scrolling page.</div><div style={{ marginTop: 6, fontWeight: 900 }}>{rows.length} invoices loaded • {checkedRows.length} checked to send • {money(checkedTotal)} checked balance</div></div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: row.send_status !== 'sent' })) }))} disabled={bulkBillingBusy}>Check all unsent</button><button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: false })) }))} disabled={bulkBillingBusy}>Uncheck all</button><button type="button" className="btnPrimary" onClick={sendBulkOutstandingInvoices} disabled={bulkBillingBusy || !checkedRows.length}>{bulkBillingBusy ? 'Sending…' : `Send ${checkedRows.length} reviewed invoice${checkedRows.length === 1 ? '' : 's'}`}</button><button type="button" onClick={() => setBulkOutstandingInvoiceReview({ open: false, rows: [], skipped: [], progress: '' })} disabled={bulkBillingBusy}>Close</button></div>
+          </div>
+          {bulkOutstandingInvoiceReview.progress && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, padding: 9, color: '#1e3a8a', background: '#eff6ff', fontWeight: 700 }}>{bulkOutstandingInvoiceReview.progress}</div>}
+        </div>
+        <div style={{ display: 'grid', gap: 16, padding: 16 }}>
+          {!!bulkOutstandingInvoiceReview.skipped?.length && <section style={{ border: '1px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e', padding: 12 }}><strong>Checked matters without a sendable services invoice</strong><ul style={{ marginBottom: 0 }}>{bulkOutstandingInvoiceReview.skipped.map((item) => <li key={item.matter_id}>{item.label}. Snapshot-only balances must first be matched to or created as a Mio invoice before Mio can attach and send an invoice.</li>)}</ul></section>}
+          {rows.map((row, index) => {
+            const invoice = row.invoice
+            const matter = matters.find((item) => String(item.id) === String(row.matter_id))
+            const lineItems = Array.isArray(invoice.line_items) ? invoice.line_items : []
+            return <section key={row.id} style={{ border: `2px solid ${row.send_status === 'sent' ? '#86efac' : row.send_status === 'error' ? '#fca5a5' : row.included ? '#93c5fd' : '#cbd5e1'}`, borderRadius: 12, background: '#fff', overflow: 'hidden', opacity: row.included || row.send_status === 'sent' ? 1 : 0.7 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap', padding: 14, background: row.send_status === 'sent' ? '#f0fdf4' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}><input type="checkbox" aria-label={`Send ${invoice.invoice_number}`} checked={!!row.included} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { included: event.target.checked })} style={{ marginTop: 4 }} /><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>INVOICE {index + 1} OF {rows.length}</div><h3 style={{ margin: '3px 0' }}>{matterClientName(matter) || invoice.client_name || 'Client'}</h3><div style={{ fontWeight: 800 }}>{matter?.name || invoice.matter_name || 'Matter'} • {invoice.invoice_number}</div><div style={{ color: '#64748b', fontSize: 12 }}>Issued {invoice.issue_date || '—'} • Due {invoice.due_date || 'upon receipt'}{invoice.emailed_at ? ` • Last sent ${new Date(invoice.emailed_at).toLocaleString()}` : ' • Not previously sent'}</div></div></div>
+                <div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>AMOUNT TO REQUEST</div><div style={{ fontSize: 28, fontWeight: 900 }}>{money(invoiceBalanceAmount(invoice))}</div><div style={{ color: '#64748b', fontSize: 12 }}>Invoice total {money(invoice.total)} • Paid {money(invoice.amount_paid)}</div><button type="button" onClick={() => openInvoicePdf(invoice)} disabled={bulkBillingBusy} style={{ marginTop: 7 }}>Preview PDF</button></div>
+              </div>
+              <div style={{ padding: 14, display: 'grid', gap: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(260px,1fr)', gap: 10 }}><LabeledField label="To"><input type="email" value={row.recipient_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { recipient_email: event.target.value })} placeholder="Client email required" /></LabeledField><LabeledField label="From"><select value={row.sender_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { sender_email: event.target.value })}>{senderOptions.map((email) => <option key={email} value={email}>{email}</option>)}</select></LabeledField></div>
+                <LabeledField label="Subject"><input value={row.subject} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { subject: event.target.value })} style={{ width: '100%' }} /></LabeledField>
+                <LabeledField label="Email message"><textarea value={row.message} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { message: event.target.value })} rows={4} style={{ width: '100%', resize: 'vertical' }} /></LabeledField>
+                <details><summary style={{ cursor: 'pointer', fontWeight: 800 }}>Invoice attachment details — {lineItems.length} line item{lineItems.length === 1 ? '' : 's'}, {money(invoice.total)} total</summary><div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ padding: 7, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lineItems.map((line, lineIndex) => <tr key={`${row.id}:${line.billing_entry_id || lineIndex}`}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.date || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.professional || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.description || 'Professional services'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '—' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '—' : money(line.rate)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}{!lineItems.length && <tr><td colSpan="6" className="empty">No itemized lines are stored on this invoice.</td></tr>}</tbody></table></div></details>
+                {row.send_status === 'sent' && <div style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 9, fontWeight: 800 }}>Sent to {row.invoice.recipient_email}.</div>}
+                {row.send_status === 'error' && <div style={{ border: '1px solid #fca5a5', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 9, fontWeight: 800 }}>Not sent: {row.send_error}</div>}
+              </div>
+            </section>
+          })}
+          {!rows.length && <div className="empty">No outstanding non-trust Mio invoices are available for the checked matters.</div>}
+        </div>
+      </section>
+    </div>
   }
 
   function openClientFinanceTransaction(matter, direction = 'in') {
@@ -40321,7 +40532,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
       if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
-      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={clioSnapshotLoading || !!clioSnapshotError || row.wip <= 0.005}>Review WIP</button> <button type="button" title={row.finance.financialSnapshotResolved ? '' : 'Blocked until this matter has a matched Clio financial snapshot'} onClick={() => { const result = payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message}`) }} disabled={clioSnapshotLoading || !!clioSnapshotError || !row.finance.financialSnapshotResolved || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={clioSnapshotLoading || !!clioSnapshotError || row.wip <= 0.005}>Review WIP</button> <button type="button" title={row.finance.financialSnapshotResolved ? '' : 'Blocked until this matter has a matched Clio financial snapshot'} onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || clioSnapshotLoading || !!clioSnapshotError || !row.finance.financialSnapshotResolved || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
       if (snapshotDependent && !row.finance.financialSnapshotResolved) return <td key={column.key} title="No matched Clio financial snapshot" style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(null)}</td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
     }
@@ -40350,6 +40561,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <button type="button" onClick={openBulkInvoiceLedger}>All invoices</button>
             <button type="button" className="btnPrimary" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
             <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all OBs with trust</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkOutstandingInvoiceReview(selectedVisibleIds)}>Review/send all OB invoices selected</button>
             <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => replenishSelectedMatters(selectedSnapshotIds)}>Replenish all selected</button>
           </div>
         </div>
@@ -40420,6 +40632,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         </div>
       </div>}
+      {renderBulkOutstandingInvoiceReview()}
       {renderBulkInvoiceLedger()}
     </div>
   }
