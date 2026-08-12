@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V218'
+const MIO_APP_VERSION = 'Mio V219'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -53,6 +53,29 @@ const DISCOVERY_RFP_RESPONSE_OPTIONS = [
   'The requested items were attached to a prior response',
   "The documents exist but I'm not producing them - I'll specify in the comment why",
   'I am not sure / need attorney help'
+]
+
+const MANUAL_RFP_RESPONSE_KEYS = [
+  'permitted_as_requested',
+  'served_with_response',
+  'specified_time_place',
+  'none_after_diligent_search',
+  'withhold_objection',
+  'withhold_privilege',
+  'withhold_privilege_objection'
+]
+
+const DEFAULT_MANUAL_RFP_OBJECTIONS = [
+  'Overbroad and not proportional to the needs of the case.',
+  'Vague and ambiguous as written.',
+  'Unduly burdensome and oppressive.',
+  'Seeks information that is neither relevant nor reasonably calculated to lead to admissible evidence.',
+  'Seeks information protected by the attorney-client privilege.',
+  'Seeks attorney work product or trial-preparation material.',
+  'Seeks confidential or private information without an appropriate protective order.',
+  'Assumes facts not established and mischaracterizes the record.',
+  'The requested time period is overbroad.',
+  'The request is duplicative of discovery already served.'
 ]
 
 const DEFAULT_DISCOVERY_INSTRUCTIONS = {
@@ -1980,6 +2003,26 @@ function App() {
     try { return { ...DEFAULT_DISCOVERY_INSTRUCTIONS, ...(JSON.parse(localStorage.getItem('caseMioDiscoveryInstructionSettings') || '{}') || {}) } }
     catch (error) { return { ...DEFAULT_DISCOVERY_INSTRUCTIONS } }
   })
+  const [manualRfpSelectedSetId, setManualRfpSelectedSetId] = useState('')
+  const [manualRfpDraftCount, setManualRfpDraftCount] = useState('20')
+  const [manualRfpAiDocumentId, setManualRfpAiDocumentId] = useState('')
+  const [manualRfpSelectedDocumentIds, setManualRfpSelectedDocumentIds] = useState([])
+  const [manualRfpLastDocumentIndex, setManualRfpLastDocumentIndex] = useState(-1)
+  const [manualRfpDocumentSearch, setManualRfpDocumentSearch] = useState('')
+  const [manualRfpDocumentStatusFilter, setManualRfpDocumentStatusFilter] = useState('all')
+  const [manualRfpDocumentSort, setManualRfpDocumentSort] = useState('upload_desc')
+  const [manualRfpExpandedRequestIds, setManualRfpExpandedRequestIds] = useState({})
+  const [manualRfpGeneratedResponseOpen, setManualRfpGeneratedResponseOpen] = useState(false)
+  const [manualRfpSettingsOpen, setManualRfpSettingsOpen] = useState(false)
+  const [manualRfpTagPanelOpen, setManualRfpTagPanelOpen] = useState(false)
+  const [manualRfpBusy, setManualRfpBusy] = useState('')
+  const [manualRfpVisibleDocumentColumns, setManualRfpVisibleDocumentColumns] = useState({ file_name: true, document_name: true, upload_date: true })
+  const [manualRfpObjectionOptions, setManualRfpObjectionOptions] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioManualRfpObjectionOptions') || '[]')
+      return Array.isArray(stored) && stored.length ? stored : DEFAULT_MANUAL_RFP_OBJECTIONS
+    } catch { return DEFAULT_MANUAL_RFP_OBJECTIONS }
+  })
 
   const [editingTeamId, setEditingTeamId] = useState(null)
   const [editingClientId, setEditingClientId] = useState(null)
@@ -3018,6 +3061,7 @@ function App() {
       caseMioDiscoveryCaseStatusFilter: { setter: setDiscoveryCaseStatusFilter, kind: 'object', fallback: null },
       caseMioDiscoveryPageMode: { setter: setDiscoveryPageMode, kind: 'string', fallback: 'tracking' },
       caseMioRespondingDiscoverySets: { setter: setRespondingDiscoverySets, kind: 'array', fallback: [] },
+      caseMioManualRfpObjectionOptions: { setter: (value) => setManualRfpObjectionOptions(Array.isArray(value) && value.length ? value : DEFAULT_MANUAL_RFP_OBJECTIONS), kind: 'array', fallback: DEFAULT_MANUAL_RFP_OBJECTIONS },
       caseControllerMatterExtraInfo: { setter: setMatterExtraInfoById, kind: 'object', fallback: {} },
       caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioInvoices: { setter: (value) => setMioInvoices((current) => {
@@ -4400,7 +4444,13 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseMioRespondingDiscoverySets', JSON.stringify(respondingDiscoverySets || []))
+    try { saveMioStateKey('caseMioRespondingDiscoverySets', JSON.stringify(respondingDiscoverySets || [])) } catch {}
   }, [respondingDiscoverySets])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioManualRfpObjectionOptions', JSON.stringify(manualRfpObjectionOptions || DEFAULT_MANUAL_RFP_OBJECTIONS))
+    try { saveMioStateKey('caseMioManualRfpObjectionOptions', JSON.stringify(manualRfpObjectionOptions || DEFAULT_MANUAL_RFP_OBJECTIONS)) } catch {}
+  }, [manualRfpObjectionOptions])
 
 
   useEffect(() => {
@@ -9947,6 +9997,498 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     win.document.write(`<!doctype html><html><head><title>Responses</title><style>body{font-family:Arial,sans-serif;margin:20px;color:#0f172a}.top{display:flex;gap:8px;flex-wrap:wrap;align-items:center}button{border:1px solid #d8e2ef;border-radius:10px;background:white;padding:10px 12px;margin:5px 0;font-weight:700;cursor:pointer}.tab.active{background:#dbeafe;color:#1d4ed8}.hint{color:#64748b}.file,.req{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:8px 0}textarea,select{width:100%;border:1px solid #d8e2ef;border-radius:8px;padding:8px;margin-top:6px}.actions{display:grid;gap:6px;margin:10px 0}.actions button{text-align:left;width:100%;}label{display:block;font-weight:700;margin:8px 0}h3{margin-bottom:6px}.matter-hover-menu:hover .matter-hover-menu-panel,.matter-hover-menu:focus-within .matter-hover-menu-panel{display:block!important;}
   </style></head><body><h1>Responses</h1><p class="hint">${escapeHtmlForRulesReport(latestSet.title || '')}</p><div class="actions"><button onclick="window.opener.downloadRespondingDiscoveryRequests('${safeSetId}')">Download discovery requests</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', true)">Download responses with Notes to attorney</button><button onclick="window.opener.downloadRespondingDiscoveryText('${safeSetId}', false)">Download responses without attorney notes</button><button onclick="document.getElementById('files').hidden=!document.getElementById('files').hidden">Uploaded documents</button><div id="files" hidden>${filesHtml}</div><button onclick="alert('PDF conversion can be added after the response text is finalized. The text downloads are available now.')">Convert documents to PDFs</button><button onclick='alert(${logPreview})'>Discovery log</button></div><h2>Client response page</h2><div class="top">${phaseButtons}<button onclick="addPhase('supplemental')">Add Supplemental Responses</button><button onclick="addPhase('amended')">Add Amended Responses</button></div><p class="hint">Use Original Response for the first response. Add supplemental or amended responses when you need a separate later response set.</p><div id="phaseLabel" style="font-weight:900;margin:12px 0">Original Response</div><div id="requestHost">${requestCardsHtml}</div><script>let active='original';function showPhase(p){active=p;document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));const tab=document.getElementById('tab_'+p);if(tab)tab.classList.add('active');document.getElementById('phaseLabel').textContent=tab?tab.textContent:p;document.querySelectorAll('[data-field]').forEach(el=>{el.value='';});}function addPhase(kind){if(window.opener&&window.opener.addRespondingDiscoveryResponsePhase){const phase=window.opener.addRespondingDiscoveryResponsePhase('${safeSetId}',kind);if(phase){const btn=document.createElement('button');btn.className='tab';btn.id='tab_'+phase.key;btn.textContent=phase.label;btn.onclick=()=>showPhase(phase.key);document.querySelector('.top').insertBefore(btn,document.querySelector('.top button[onclick^="addPhase"]'));showPhase(phase.key);}}}function saveField(el){if(window.opener&&window.opener.updateRespondingDiscoveryResponseVersion){const patch={};patch[el.dataset.field]=el.value;window.opener.updateRespondingDiscoveryResponseVersion('${safeSetId}',el.dataset.requestId,active,patch);}}document.querySelectorAll('[data-field]').forEach(el=>{el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>saveField(el));});showPhase('original');</script></body></html>`)
     win.document.close()
+  }
+
+  function manualRfpSetsForMatter(matterId = '') {
+    return respondingDiscoverySetsForMatter(matterId).filter((set) => isProductionDiscoveryType(set.discovery_type))
+  }
+
+  function manualRfpSetForMatter(matterId = '') {
+    const rows = manualRfpSetsForMatter(matterId)
+    return rows.find((set) => String(set.id) === String(manualRfpSelectedSetId)) || rows[0] || null
+  }
+
+  function manualRfpShortName(request = {}, index = 0) {
+    if (String(request.short_name || '').trim()) return request.short_name.trim()
+    const stop = new Set(['the','a','an','and','or','of','to','for','from','your','all','any','each','every','that','which','including','relating','concerning','documents','document','produce','request'])
+    const words = String(request.request_text || '')
+      .replace(/[^a-z0-9' -]+/gi, ' ')
+      .split(/\s+/)
+      .filter((word) => word && !stop.has(word.toLowerCase()))
+      .slice(0, 5)
+    return words.length ? words.join(' ') : `Request ${request.request_number || index + 1}`
+  }
+
+  function manualRfpPartyLanguage(matter = {}) {
+    const raw = [matter.client_party, matter.client_role, matter.party_role, matter.designation, matter.side, matter.case_style].filter(Boolean).join(' ').toLowerCase()
+    const party = /respondent|defendant/.test(raw) ? 'Respondent' : 'Petitioner'
+    return { party, possessive: 'his/her' }
+  }
+
+  function manualRfpResponseOptions(matter = {}) {
+    const { party, possessive } = manualRfpPartyLanguage(matter)
+    return [
+      { key: 'permitted_as_requested', label: 'Production, inspection, or other requested action will be permitted as requested.' },
+      { key: 'served_with_response', label: 'The requested items are being served on the requesting party with the response.' },
+      { key: 'specified_time_place', label: 'Production, inspection, or other requested action will take place at a specified time and place, if the responding party is objecting to the time and place of production.' },
+      { key: 'none_after_diligent_search', label: 'No items have been identified - after a diligent search - that are responsive to the request.' },
+      { key: 'withhold_objection', label: `${party} stands on ${possessive} objection and is withholding documents.` },
+      { key: 'withhold_privilege', label: `${party} stands on ${possessive} privilege assertion and is withholding documents.` },
+      { key: 'withhold_privilege_objection', label: `${party} stands on ${possessive} privilege assertion and objection and is withholding documents.` }
+    ]
+  }
+
+  function manualRfpRequestDocumentIds(request = {}) {
+    return Array.from(new Set([...(request.assigned_document_ids || []), ...(request.document_ids || [])].map(String).filter(Boolean)))
+  }
+
+  function manualRfpDefaultResponseKey(request = {}) {
+    return manualRfpRequestDocumentIds(request).length ? 'served_with_response' : 'none_after_diligent_search'
+  }
+
+  function manualRfpRequestResponseKey(request = {}) {
+    return MANUAL_RFP_RESPONSE_KEYS.includes(request.generated_response_key) ? request.generated_response_key : manualRfpDefaultResponseKey(request)
+  }
+
+  function updateManualRfpSet(setId, updater) {
+    setRespondingDiscoverySets((current) => (current || []).map((set) => {
+      if (String(set.id) !== String(setId)) return set
+      const next = typeof updater === 'function' ? updater(set) : { ...set, ...(updater || {}) }
+      return { ...next, updated_at: new Date().toISOString() }
+    }))
+  }
+
+  function createManualRfpSet(matter, requestCount) {
+    const count = Math.max(1, Math.min(250, Number(requestCount) || 1))
+    const now = new Date().toISOString()
+    const nextSet = {
+      id: nextRespondingDiscoveryId('manual-rfp'),
+      matter_id: matter.id,
+      discovery_type: 'Request for Production',
+      title: `Manual RFP Responses - ${new Date().toLocaleDateString()}`,
+      created_at: now,
+      updated_at: now,
+      manual_rfp_workspace: true,
+      bates_prefix: 'Original-RFP',
+      bates_start: 1,
+      reference_production_log: false,
+      include_bates_in_responses: true,
+      tag_base_path: `Discovery > Them to Us > Original RFP > Our Responsive Docs > ${new Date().toLocaleDateString()}`,
+      add_request_tags: true,
+      special_folders: { privilege_log: [], responsive_not_responding: [] },
+      requests: Array.from({ length: count }, (_, index) => ({
+        ...respondingDiscoveryRequestTemplate({ request_number: index + 1, request_text: '' }, index, 'Request for Production', ''),
+        short_name: `Request ${index + 1}`,
+        assigned_document_ids: [],
+        generated_response_key: 'none_after_diligent_search',
+        objection: ''
+      }))
+    }
+    setRespondingDiscoverySets((current) => [nextSet, ...(current || [])])
+    setManualRfpSelectedSetId(nextSet.id)
+    setRespondingDiscoverySelectedSetId(nextSet.id)
+    setRespondingDiscoveryMatterId(matter.id)
+    setManualRfpExpandedRequestIds({})
+  }
+
+  async function createManualRfpSetWithAi(matter, documentId) {
+    const doc = documents.find((item) => String(item.id) === String(documentId) && String(item.matter_id) === String(matter.id))
+    if (!doc) { alert('Select the RFP document from this matter first.'); return }
+    setManualRfpBusy('AI is reading the RFP and creating request folders...')
+    try {
+      const extraction = await extractDocumentTextForAi(doc)
+      const rawText = extraction?.extracted_text || ''
+      if (!String(rawText).trim()) throw new Error((extraction?.warnings || ['No readable text was found in that document.']).join('\n'))
+      const extracted = await callRespondingDiscoveryExtractionApi(rawText, 'Request for Production', doc.name || doc.file_name || '')
+      if (!extracted.length) throw new Error('No numbered requests were found. You can still create the folders manually.')
+      const now = new Date().toISOString()
+      const nextSet = {
+        id: nextRespondingDiscoveryId('manual-rfp'),
+        matter_id: matter.id,
+        discovery_type: 'Request for Production',
+        title: doc.name || doc.file_name || 'Manual RFP Responses',
+        document_id: doc.id,
+        date_received: doc.date || doc.doc_date || '',
+        created_at: now,
+        updated_at: now,
+        manual_rfp_workspace: true,
+        bates_prefix: 'Original-RFP',
+        bates_start: 1,
+        reference_production_log: false,
+        include_bates_in_responses: true,
+        tag_base_path: `Discovery > Them to Us > Original RFP > Our Responsive Docs > ${new Date().toLocaleDateString()}`,
+        add_request_tags: true,
+        special_folders: { privilege_log: [], responsive_not_responding: [] },
+        requests: extracted.map((item, index) => {
+          const request = respondingDiscoveryRequestTemplate(item, index, 'Request for Production', '')
+          return { ...request, short_name: manualRfpShortName(request, index), assigned_document_ids: [], generated_response_key: 'none_after_diligent_search', objection: '' }
+        })
+      }
+      setRespondingDiscoverySets((current) => [nextSet, ...(current || [])])
+      setManualRfpSelectedSetId(nextSet.id)
+      setRespondingDiscoverySelectedSetId(nextSet.id)
+      setRespondingDiscoveryMatterId(matter.id)
+      setManualRfpAiDocumentId('')
+    } catch (error) {
+      console.error('Manual RFP AI setup failed', error)
+      alert(`Mio could not create the request folders: ${error?.message || error}`)
+    } finally { setManualRfpBusy('') }
+  }
+
+  async function addManualRfpMatterFiles(fileList, matter) {
+    const files = Array.from(fileList || [])
+    if (!files.length || !matter?.id) return
+    setManualRfpBusy(`Adding ${files.length} file${files.length === 1 ? '' : 's'} to Documents...`)
+    try {
+      const rows = []
+      for (const file of files) {
+        const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const temporary = await readFileAsDataUrl(file)
+        const stored = await uploadMioDocumentFile(file, docId, matter.id)
+        rows.push({ id: docId, matter_id: matter.id, name: file.name.replace(/\.[^.]+$/, ''), date: '', description: 'Added from Manual RFP Responses', status: 'Neither', tag_ids: [], document_field_values: {}, upload_date: dateToInputValue(new Date()), ...emptyDocumentAiReview, ...temporary, ...stored })
+      }
+      setDocuments((current) => [...(current || []), ...rows])
+      setManualRfpSelectedDocumentIds(rows.map((row) => String(row.id)))
+    } finally { setManualRfpBusy('') }
+  }
+
+  function manualRfpAssignmentMap(set) {
+    const map = {}
+    ;(set?.requests || []).forEach((request, index) => manualRfpRequestDocumentIds(request).forEach((docId) => {
+      map[docId] = [...(map[docId] || []), String(request.request_number || index + 1)]
+    }))
+    const special = set?.special_folders || {}
+    ;(special.privilege_log || []).forEach((docId) => { map[String(docId)] = [...(map[String(docId)] || []), 'Privilege Log'] })
+    ;(special.responsive_not_responding || []).forEach((docId) => { map[String(docId)] = [...(map[String(docId)] || []), 'Responsive but not responding'] })
+    return map
+  }
+
+  function assignManualRfpDocuments(setId, targetType, targetId, explicitIds = []) {
+    const ids = Array.from(new Set((explicitIds.length ? explicitIds : manualRfpSelectedDocumentIds).map(String).filter(Boolean)))
+    if (!ids.length) { alert('Select one or more documents first, then drag or assign them to a folder.'); return }
+    updateManualRfpSet(setId, (set) => {
+      if (targetType === 'request') {
+        const special = { privilege_log: [], responsive_not_responding: [], ...(set.special_folders || {}) }
+        Object.keys(special).forEach((key) => { special[key] = (special[key] || []).filter((id) => !ids.includes(String(id))) })
+        return { ...set, special_folders: special, requests: (set.requests || []).map((request) => String(request.id) === String(targetId) ? { ...request, assigned_document_ids: Array.from(new Set([...manualRfpRequestDocumentIds(request), ...ids])), generated_response_key: request.generated_response_locked ? request.generated_response_key : 'served_with_response' } : request) }
+      }
+      const special = { privilege_log: [], responsive_not_responding: [], ...(set.special_folders || {}) }
+      Object.keys(special).forEach((key) => { if (key !== targetId) special[key] = (special[key] || []).filter((id) => !ids.includes(String(id))) })
+      special[targetId] = Array.from(new Set([...(special[targetId] || []).map(String), ...ids]))
+      const requests = (set.requests || []).map((request) => {
+        const nextIds = manualRfpRequestDocumentIds(request).filter((id) => !ids.includes(String(id)))
+        return { ...request, assigned_document_ids: nextIds, generated_response_key: request.generated_response_locked ? request.generated_response_key : (nextIds.length ? 'served_with_response' : 'none_after_diligent_search') }
+      })
+      return { ...set, special_folders: special, requests }
+    })
+  }
+
+  function removeManualRfpDocument(setId, targetType, targetId, documentId) {
+    updateManualRfpSet(setId, (set) => {
+      if (targetType === 'request') {
+        return { ...set, requests: (set.requests || []).map((request) => {
+          if (String(request.id) !== String(targetId)) return request
+          const nextIds = manualRfpRequestDocumentIds(request).filter((id) => String(id) !== String(documentId))
+          return { ...request, assigned_document_ids: nextIds, generated_response_key: request.generated_response_locked ? request.generated_response_key : (nextIds.length ? 'served_with_response' : 'none_after_diligent_search') }
+        }) }
+      }
+      const special = { privilege_log: [], responsive_not_responding: [], ...(set.special_folders || {}) }
+      special[targetId] = (special[targetId] || []).filter((id) => String(id) !== String(documentId))
+      return { ...set, special_folders: special }
+    })
+  }
+
+  function manualRfpDragDocumentIds(event, fallbackId = '') {
+    try {
+      const parsed = JSON.parse(event.dataTransfer.getData('application/x-mio-document-ids') || '[]')
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(String)
+    } catch {}
+    return fallbackId ? [String(fallbackId)] : []
+  }
+
+  function manualRfpProductionRows(set, matterDocs) {
+    const requestByDoc = {}
+    ;(set?.requests || []).forEach((request, index) => manualRfpRequestDocumentIds(request).forEach((docId) => {
+      requestByDoc[String(docId)] = Array.from(new Set([...(requestByDoc[String(docId)] || []), String(request.request_number || index + 1)]))
+    }))
+    const candidateIds = Object.keys(requestByDoc)
+    const savedOrder = Array.isArray(set?.production_order) ? set.production_order.map(String).filter((id) => candidateIds.includes(id)) : []
+    const order = [...savedOrder, ...candidateIds.filter((id) => !savedOrder.includes(id))]
+    return order.map((id) => ({ doc: matterDocs.find((item) => String(item.id) === id), document_id: id, request_numbers: requestByDoc[id] || [], bates: set?.bates_by_document?.[id] || null })).filter((row) => row.doc)
+  }
+
+  function moveManualRfpProductionDocument(setId, documentId, direction, matterDocs) {
+    updateManualRfpSet(setId, (set) => {
+      const order = manualRfpProductionRows(set, matterDocs).map((row) => String(row.document_id))
+      const index = order.indexOf(String(documentId))
+      const target = index + direction
+      if (index < 0 || target < 0 || target >= order.length) return set
+      ;[order[index], order[target]] = [order[target], order[index]]
+      return { ...set, production_order: order }
+    })
+  }
+
+  async function createManualRfpBatesCopies(set, matterDocs) {
+    const rows = manualRfpProductionRows(set, matterDocs)
+    if (!rows.length) { alert('Add documents to one or more request folders before applying Bates stamps.'); return }
+    setManualRfpBusy('Creating Bates-stamped PDF copies and preserving the originals...')
+    try {
+      await ensureBillingPdfLibrary()
+      const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+      let pageNumber = Math.max(1, Number(set.bates_start) || 1)
+      const batesByDocument = { ...(set.bates_by_document || {}) }
+      const createdRows = []
+      const skipped = []
+      for (const row of rows) {
+        const doc = row.doc
+        const sourceName = doc.file_name || doc.original_file_name || doc.name || 'document'
+        if (!/\.pdf$/i.test(sourceName) && !/pdf/i.test(String(doc.file_type || doc.mime_type || ''))) { skipped.push(sourceName); continue }
+        const dataUrl = await loadDocumentFileDataUrl(doc)
+        if (!dataUrl) { skipped.push(sourceName); continue }
+        let source
+        try { source = await PDFDocument.load(dataUrlToUint8Array(dataUrl), { ignoreEncryption: true }) }
+        catch { skipped.push(sourceName); continue }
+        const output = await PDFDocument.create()
+        const font = await output.embedFont(StandardFonts.Helvetica)
+        const copied = await output.copyPages(source, source.getPageIndices())
+        const start = pageNumber
+        const requestLabel = row.request_numbers.join('-') || 'Unassigned'
+        copied.forEach((page) => {
+          output.addPage(page)
+          const { width } = page.getSize()
+          const stamp = `${set.bates_prefix || 'Original-RFP'}-Request-${requestLabel}-${String(pageNumber).padStart(6, '0')}`
+          page.drawRectangle({ x: Math.max(18, width - font.widthOfTextAtSize(stamp, 9) - 34), y: 13, width: font.widthOfTextAtSize(stamp, 9) + 18, height: 18, color: rgb(1, 1, 1), opacity: .88 })
+          page.drawText(stamp, { x: width - font.widthOfTextAtSize(stamp, 9) - 25, y: 18, size: 9, font, color: rgb(.1, .1, .1) })
+          pageNumber += 1
+        })
+        const end = pageNumber - 1
+        const bytes = await output.save()
+        const baseName = sourceName.replace(/\.pdf$/i, '').replace(/[^a-z0-9._-]+/gi, '_')
+        const fileName = `${baseName}_BATES_${start}-${end}.pdf`
+        const file = new File([bytes], fileName, { type: 'application/pdf' })
+        const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const temporary = await readFileAsDataUrl(file)
+        const stored = await uploadMioDocumentFile(file, docId, set.matter_id)
+        createdRows.push({ id: docId, matter_id: set.matter_id, name: `${doc.name || baseName} - Bates copy`, date: doc.date || '', description: `Bates-stamped production copy of ${sourceName}. Original preserved.`, status: doc.status || 'Neither', tag_ids: [...(doc.tag_ids || [])], document_field_values: { ...(doc.document_field_values || {}) }, upload_date: dateToInputValue(new Date()), bates_copy_of: doc.id, bates_start: start, bates_end: end, request_numbers: row.request_numbers, ...emptyDocumentAiReview, ...temporary, ...stored })
+        batesByDocument[String(doc.id)] = { start, end, prefix: set.bates_prefix || 'Original-RFP', stamped_document_id: docId, stamped_file_name: fileName }
+      }
+      if (createdRows.length) setDocuments((current) => [...(current || []), ...createdRows])
+      updateManualRfpSet(set.id, { bates_by_document: batesByDocument, bates_completed_at: new Date().toISOString(), bates_next_number: pageNumber })
+      const message = `Created ${createdRows.length} Bates-stamped cop${createdRows.length === 1 ? 'y' : 'ies'} in Documents. Originals were not changed.${skipped.length ? `\n\nSkipped non-PDF or unavailable files: ${skipped.join(', ')}` : ''}`
+      alert(message)
+    } catch (error) {
+      console.error('Manual RFP Bates stamping failed', error)
+      alert(`Bates stamping failed: ${error?.message || error}`)
+    } finally { setManualRfpBusy('') }
+  }
+
+  function ensureManualRfpTagPath(path = '', startingTags = tags) {
+    const parts = String(path || '').split('>').map((part) => part.trim()).filter(Boolean)
+    if (!parts.length) return { workingTags: startingTags, tagIds: [] }
+    const working = [...(startingTags || [])]
+    const ids = []
+    let parentId = ''
+    parts.forEach((name, index) => {
+      let tag = working.find((item) => String(item.parent_id || '') === String(parentId) && String(item.name || '').trim().toLowerCase() === name.toLowerCase())
+      if (!tag) {
+        tag = { id: `tag-manual-rfp-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`, parent_id: parentId, name, color: '#2563eb', is_active: true, sort_order: working.filter((item) => String(item.parent_id || '') === String(parentId)).length + 1 }
+        working.push(tag)
+      }
+      ids.push(tag.id)
+      parentId = tag.id
+    })
+    return { workingTags: working, tagIds: ids }
+  }
+
+  function applyManualRfpTags(set) {
+    const base = ensureManualRfpTagPath(set.tag_base_path || '')
+    let workingTags = base.workingTags
+    const tagsByDocument = {}
+    ;(set.requests || []).forEach((request, index) => {
+      const requestPath = `${set.tag_base_path || 'Discovery > Responsive Documents'} > Request ${request.request_number || index + 1}`
+      const ensured = set.add_request_tags ? ensureManualRfpTagPath(requestPath, workingTags) : { workingTags, tagIds: base.tagIds }
+      workingTags = ensured.workingTags
+      const requestTags = ensured.tagIds
+      manualRfpRequestDocumentIds(request).forEach((docId) => { tagsByDocument[String(docId)] = Array.from(new Set([...(tagsByDocument[String(docId)] || []), ...requestTags])) })
+    })
+    const specialConfigs = [['privilege_log', 'Privilege Log'], ['responsive_not_responding', 'Responsive but not responding']]
+    specialConfigs.forEach(([key, label]) => {
+      const ensured = ensureManualRfpTagPath(`${set.tag_base_path || 'Discovery > Responsive Documents'} > ${label}`, workingTags)
+      workingTags = ensured.workingTags
+      ;(set.special_folders?.[key] || []).forEach((docId) => { tagsByDocument[String(docId)] = Array.from(new Set([...(tagsByDocument[String(docId)] || []), ...ensured.tagIds])) })
+    })
+    setTags(workingTags)
+    setDocuments((current) => (current || []).map((doc) => tagsByDocument[String(doc.id)] ? { ...doc, tag_ids: tagAndParentIds(Array.from(new Set([...(doc.tag_ids || []), ...tagsByDocument[String(doc.id)]]))) } : doc))
+    alert(`Tags were added to ${Object.keys(tagsByDocument).length} document${Object.keys(tagsByDocument).length === 1 ? '' : 's'}.`)
+  }
+
+  function manualRfpBatesText(set, request) {
+    const ranges = manualRfpRequestDocumentIds(request).map((docId) => set?.bates_by_document?.[String(docId)]).filter(Boolean)
+    if (!ranges.length) return ''
+    return ranges.map((range) => `${range.prefix || set.bates_prefix || 'Original-RFP'} ${range.start}-${range.end}`).join('; ')
+  }
+
+  function manualRfpGeneratedResponseText(set, matter) {
+    const options = manualRfpResponseOptions(matter)
+    const lines = [set.title || 'Responses to Requests for Production', `Matter: ${matterLabelById(set.matter_id)}`, '']
+    ;(set.requests || []).forEach((request, index) => {
+      const response = options.find((option) => option.key === manualRfpRequestResponseKey(request))?.label || ''
+      lines.push(`REQUEST FOR PRODUCTION NO. ${request.request_number || index + 1}`)
+      lines.push(request.request_text || '')
+      lines.push('')
+      if (request.objection) lines.push(`OBJECTION: ${request.objection}`)
+      lines.push(`RESPONSE: ${response}`)
+      if (request.specified_time_place && manualRfpRequestResponseKey(request) === 'specified_time_place') lines.push(`Specified time and place: ${request.specified_time_place}`)
+      if (set.reference_production_log && manualRfpRequestDocumentIds(request).length) lines.push('See the production log for documents responsive to this request.')
+      const batesText = set.include_bates_in_responses ? manualRfpBatesText(set, request) : ''
+      if (batesText) lines.push(`Responsive Bates range(s): ${batesText}.`)
+      if (request.response_additional_text) lines.push(request.response_additional_text)
+      lines.push('')
+    })
+    return lines.join('\n')
+  }
+
+  function downloadManualRfpGeneratedResponse(set, matter) {
+    const text = manualRfpGeneratedResponseText(set, matter)
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Generated RFP Responses</title><style>body{font-family:'Times New Roman',serif;font-size:12pt;line-height:1.45;margin:1in;white-space:pre-wrap}</style></head><body>${String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</body></html>`
+    const blob = new Blob([html], { type: 'application/msword;charset=utf-8' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${(set.title || 'Generated-RFP-Responses').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '')}.doc`
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+  }
+
+  function renderManualRfpResponses(matter) {
+    const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter.id))
+    const sets = manualRfpSetsForMatter(matter.id)
+    const set = manualRfpSetForMatter(matter.id)
+    const assignmentMap = manualRfpAssignmentMap(set)
+    const productionRows = manualRfpProductionRows(set, matterDocs)
+    const normalizedSearch = String(manualRfpDocumentSearch || '').trim().toLowerCase()
+    const visibleDocs = [...matterDocs].filter((doc) => {
+      const assigned = Boolean(assignmentMap[String(doc.id)]?.length)
+      if (manualRfpDocumentStatusFilter === 'assigned' && !assigned) return false
+      if (manualRfpDocumentStatusFilter === 'unassigned' && assigned) return false
+      if (!normalizedSearch) return true
+      return [doc.name, doc.file_name, doc.original_file_name, doc.description, doc.date, doc.upload_date].some((value) => String(value || '').toLowerCase().includes(normalizedSearch))
+    }).sort((a, b) => {
+      if (manualRfpDocumentSort === 'name_asc') return String(a.name || a.file_name || '').localeCompare(String(b.name || b.file_name || ''))
+      if (manualRfpDocumentSort === 'name_desc') return String(b.name || b.file_name || '').localeCompare(String(a.name || a.file_name || ''))
+      const aDate = String(a.upload_date || a.created_at || a.date || '')
+      const bDate = String(b.upload_date || b.created_at || b.date || '')
+      return manualRfpDocumentSort === 'upload_asc' ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate)
+    })
+    const selectedSetIds = new Set(manualRfpSelectedDocumentIds.map(String))
+    const columnCount = 2 + Object.values(manualRfpVisibleDocumentColumns).filter(Boolean).length
+    const documentLabel = (doc) => doc.name || doc.file_name || doc.original_file_name || 'Document'
+    const fileLabel = (doc) => doc.file_name || doc.original_file_name || doc.name || 'Document'
+    const assignedDocumentsFor = (ids = []) => ids.map((id) => matterDocs.find((doc) => String(doc.id) === String(id))).filter(Boolean)
+    const selectDocumentRow = (docId, rowIndex, event = {}, checkboxClick = false) => {
+      const id = String(docId)
+      const shift = Boolean(event.shiftKey || event.nativeEvent?.shiftKey)
+      const additive = Boolean(event.ctrlKey || event.metaKey || event.nativeEvent?.ctrlKey || event.nativeEvent?.metaKey || checkboxClick)
+      if (shift && manualRfpLastDocumentIndex >= 0) {
+        const start = Math.min(manualRfpLastDocumentIndex, rowIndex)
+        const end = Math.max(manualRfpLastDocumentIndex, rowIndex)
+        const range = visibleDocs.slice(start, end + 1).map((doc) => String(doc.id))
+        setManualRfpSelectedDocumentIds((current) => Array.from(new Set([...(additive ? current.map(String) : []), ...range])))
+      } else if (additive) {
+        setManualRfpSelectedDocumentIds((current) => current.map(String).includes(id) ? current.filter((value) => String(value) !== id) : [...current, id])
+      } else {
+        setManualRfpSelectedDocumentIds([id])
+      }
+      setManualRfpLastDocumentIndex(rowIndex)
+    }
+    const folderDropHandlers = (targetType, targetId) => ({
+      onDragOver: (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' },
+      onDrop: (event) => { event.preventDefault(); assignManualRfpDocuments(set.id, targetType, targetId, manualRfpDragDocumentIds(event)) }
+    })
+    const renderAssignedFilePills = (ids, targetType, targetId) => (
+      <div style={{ display: 'grid', gap: 5, marginTop: 7 }}>
+        {assignedDocumentsFor(ids).map((doc) => <div key={`${targetType}-${targetId}-${doc.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '5px 8px', borderRadius: 7, background: '#fff', border: '1px solid #dbeafe', fontSize: 12 }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textAlign: 'left', padding: 0 }}>{documentLabel(doc)}</button><button type="button" onClick={() => removeManualRfpDocument(set.id, targetType, targetId, doc.id)} title="Remove from this folder" style={{ border: 0, background: 'transparent', color: '#991b1b' }}>×</button></div>)}
+      </div>
+    )
+    const specialFolder = (key, label, color, hint) => {
+      const ids = set?.special_folders?.[key] || []
+      return <div {...folderDropHandlers('special', key)} style={{ border: `2px dashed ${color}`, borderRadius: 12, padding: 11, background: '#fff', minHeight: 82 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><strong>📁 {label}</strong><span style={{ borderRadius: 999, background: color, color: '#fff', padding: '2px 8px', fontSize: 12 }}>{ids.length}</span></div><div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{hint}</div>{renderAssignedFilePills(ids, 'special', key)}</div>
+    }
+
+    return <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ border: '1px solid #bfdbfe', borderRadius: 14, background: 'linear-gradient(135deg,#eff6ff,#fff)', padding: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div><h2 style={{ margin: 0 }}>Manual RFP Responses</h2><div style={{ color: '#64748b', marginTop: 4 }}>Build request folders, assign the matter's documents, prepare the production log, and generate the response language on one scrolling page.</div></div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => setManualRfpGeneratedResponseOpen((value) => !value)} disabled={!set} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Generated Response</button>
+            <button type="button" onClick={() => setManualRfpTagPanelOpen((value) => !value)} disabled={!set}>Add Tags</button>
+            <button type="button" onClick={() => setManualRfpSettingsOpen((value) => !value)}>⚙ Settings</button>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) auto minmax(260px,1.3fr) auto', gap: 8, alignItems: 'end', marginTop: 12 }}>
+          <label><strong>RFP response set</strong><select value={set?.id || ''} onChange={(event) => setManualRfpSelectedSetId(event.target.value)} style={{ width: '100%', marginTop: 4 }}><option value="">Select a set</option>{sets.map((item) => <option key={item.id} value={item.id}>{item.title || 'RFP set'} ({item.requests?.length || 0})</option>)}</select></label>
+          <label><strong>Requests</strong><input type="number" min="1" max="250" value={manualRfpDraftCount} onChange={(event) => setManualRfpDraftCount(event.target.value)} style={{ width: 82, marginTop: 4, display: 'block' }} /></label>
+          <button type="button" onClick={() => createManualRfpSet(matter, manualRfpDraftCount)} style={{ height: 38 }}>Create Request Folders</button>
+          <button type="button" onClick={() => setClientDashboardTab('discovery')} style={{ height: 38 }}>Open Client Discovery</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px,1fr) auto', gap: 8, alignItems: 'end', marginTop: 10, paddingTop: 10, borderTop: '1px solid #dbeafe' }}>
+          <label><strong>Start with AI</strong><select value={manualRfpAiDocumentId} onChange={(event) => setManualRfpAiDocumentId(event.target.value)} style={{ width: '100%', marginTop: 4 }}><option value="">Choose the uploaded RFP document...</option>{matterDocs.map((doc) => <option key={doc.id} value={doc.id}>{documentLabel(doc)}</option>)}</select></label>
+          <button type="button" onClick={() => createManualRfpSetWithAi(matter, manualRfpAiDocumentId)} disabled={!manualRfpAiDocumentId || Boolean(manualRfpBusy)} style={{ height: 38, background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '0 14px', fontWeight: 800 }}>Start with AI</button>
+        </div>
+        {manualRfpBusy && <div style={{ marginTop: 8, color: '#1d4ed8', fontWeight: 700 }}>{manualRfpBusy}</div>}
+      </div>
+
+      {!set && <div style={{ border: '2px dashed #cbd5e1', borderRadius: 14, padding: 34, textAlign: 'center', color: '#64748b' }}>Create the request folders manually or select an uploaded RFP document and use Start with AI.</div>}
+
+      {set && <>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(380px,1fr) minmax(520px,1.25fr)', gap: 12, alignItems: 'start' }}>
+          <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#f8fafc', overflow: 'hidden' }}>
+            <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', background: '#fff', display: 'flex', justifyContent: 'space-between', gap: 8 }}><div><strong>Request folders</strong><div style={{ color: '#64748b', fontSize: 12 }}>{set.requests?.length || 0} requests • drop selected documents into any folder</div></div><button type="button" onClick={() => updateManualRfpSet(set.id, { requests_collapsed: !set.requests_collapsed })}>{set.requests_collapsed ? 'Show requests' : 'Condense all'}</button></div>
+            {!set.requests_collapsed && <div style={{ display: 'grid', gap: 8, padding: 9, maxHeight: 720, overflow: 'auto' }}>
+              {(set.requests || []).map((request, index) => {
+                const assignedIds = manualRfpRequestDocumentIds(request)
+                const expanded = Boolean(manualRfpExpandedRequestIds[request.id])
+                return <div key={request.id} {...folderDropHandlers('request', request.id)} style={{ border: '2px dashed #93c5fd', borderRadius: 12, background: assignedIds.length ? '#eff6ff' : '#fff', padding: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '34px minmax(0,1fr) auto', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontSize: 25 }}>📁</span>
+                    <div><div style={{ color: '#1d4ed8', fontWeight: 900, fontSize: 12 }}>REQUEST {request.request_number || index + 1}</div><input value={request.short_name || manualRfpShortName(request, index)} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { short_name: event.target.value })} style={{ width: '100%', fontWeight: 800, border: 0, background: 'transparent', padding: '3px 0' }} /></div>
+                    <span style={{ borderRadius: 999, background: '#2563eb', color: '#fff', padding: '3px 8px', fontSize: 12 }}>{assignedIds.length}</span>
+                  </div>
+                  <button type="button" onClick={() => setManualRfpExpandedRequestIds((current) => ({ ...current, [request.id]: !current[request.id] }))} style={{ marginTop: 5, border: 0, background: 'transparent', color: '#475569', padding: 0, fontSize: 12 }}>{expanded ? 'Hide full request ▴' : 'Show full request ▾'}</button>
+                  {expanded && <textarea value={request.request_text || ''} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { request_text: event.target.value })} placeholder="Enter the complete discovery request" style={{ width: '100%', minHeight: 78, marginTop: 6 }} />}
+                  {renderAssignedFilePills(assignedIds, 'request', request.id)}
+                </div>
+              })}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {specialFolder('privilege_log', 'Privilege Log', '#7c3aed', 'Responsive documents withheld based on privilege.')}
+                {specialFolder('responsive_not_responding', 'Responsive but not responding', '#b45309', 'Responsive documents intentionally not included in this production.')}
+              </div>
+            </div>}
+          </section>
+
+          <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
+            <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Matter documents</strong><div style={{ color: '#64748b', fontSize: 12 }}>{visibleDocs.length} shown • assigned documents are faint and show their folder(s)</div></div><label style={{ border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', padding: '7px 10px', color: '#1d4ed8', fontWeight: 800, cursor: 'pointer' }}>+ Add Files<input type="file" multiple style={{ display: 'none' }} onChange={(event) => { addManualRfpMatterFiles(event.target.files, matter); event.target.value = '' }} /></label></div>
+            <div style={{ padding: 9, display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) 155px 155px', gap: 7, borderBottom: '1px solid #e2e8f0' }}><input value={manualRfpDocumentSearch} onChange={(event) => setManualRfpDocumentSearch(event.target.value)} placeholder="Filter file name, document name, date..." /><select value={manualRfpDocumentStatusFilter} onChange={(event) => setManualRfpDocumentStatusFilter(event.target.value)}><option value="all">All documents</option><option value="unassigned">Not assigned</option><option value="assigned">Already assigned</option></select><select value={manualRfpDocumentSort} onChange={(event) => setManualRfpDocumentSort(event.target.value)}><option value="upload_desc">Newest uploaded</option><option value="upload_asc">Oldest uploaded</option><option value="name_asc">Name A-Z</option><option value="name_desc">Name Z-A</option></select></div>
+            <div style={{ padding: '7px 9px', display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => setManualRfpSelectedDocumentIds(visibleDocs.map((doc) => String(doc.id)))}>Select all</button><button type="button" onClick={() => setManualRfpSelectedDocumentIds([])}>Select none</button><span style={{ color: '#64748b', fontSize: 12 }}>{manualRfpSelectedDocumentIds.length} selected</span><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Columns</summary><div style={{ position: 'absolute', zIndex: 20, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}>{Object.entries({ file_name: 'File name', document_name: 'Document name', upload_date: 'Upload date' }).map(([key, label]) => <label key={key} style={{ display: 'block', whiteSpace: 'nowrap' }}><input type="checkbox" checked={manualRfpVisibleDocumentColumns[key]} onChange={(event) => setManualRfpVisibleDocumentColumns((current) => ({ ...current, [key]: event.target.checked }))} /> {label}</label>)}</div></details></div>
+            <div style={{ maxHeight: 650, overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 540 }}><thead style={{ position: 'sticky', top: 0, zIndex: 4, background: '#f8fafc' }}><tr><th style={{ padding: 7 }}></th><th style={{ textAlign: 'left', padding: 7 }}>Assigned</th>{manualRfpVisibleDocumentColumns.file_name && <th style={{ textAlign: 'left', padding: 7 }}>File name</th>}{manualRfpVisibleDocumentColumns.document_name && <th style={{ textAlign: 'left', padding: 7 }}>Document name</th>}{manualRfpVisibleDocumentColumns.upload_date && <th style={{ textAlign: 'left', padding: 7 }}>Upload date</th>}</tr></thead><tbody>{visibleDocs.map((doc) => {
+              const assignments = assignmentMap[String(doc.id)] || []
+              const checked = selectedSetIds.has(String(doc.id))
+              return <tr key={doc.id} draggable onClick={(event) => { if (event.target.closest('button,input,a,select,textarea')) return; selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event) }} onDragStart={(event) => { const ids = checked && manualRfpSelectedDocumentIds.length ? manualRfpSelectedDocumentIds : [String(doc.id)]; event.dataTransfer.setData('application/x-mio-document-ids', JSON.stringify(ids)); event.dataTransfer.effectAllowed = 'copy' }} style={{ opacity: assignments.length ? .55 : 1, background: checked ? '#dbeafe' : '#fff', cursor: 'grab' }}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event, true)} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{assignments.length ? assignments.map((value) => <span key={value} style={{ display: 'inline-block', margin: 2, padding: '2px 6px', borderRadius: 999, background: '#e2e8f0', fontSize: 10 }}>{String(value).match(/^\d+$/) ? `Request ${value}` : value}</span>) : <span style={{ color: '#94a3b8' }}>—</span>}</td>{manualRfpVisibleDocumentColumns.file_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textAlign: 'left' }}>{fileLabel(doc)}</button></td>}{manualRfpVisibleDocumentColumns.document_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(doc)}</td>}{manualRfpVisibleDocumentColumns.upload_date && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{doc.upload_date || String(doc.created_at || '').slice(0, 10) || doc.date || ''}</td>}</tr>
+            })}{!visibleDocs.length && <tr><td colSpan={columnCount} style={{ padding: 22, textAlign: 'center', color: '#64748b' }}>No matter documents match the current filter.</td></tr>}</tbody></table></div>
+          </section>
+        </div>
+
+        <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
+          <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Document List / Production Log</strong><div style={{ color: '#64748b', fontSize: 12 }}>Unique documents are produced once even when linked to more than one request. Use the arrows to set Bates order.</div></div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><label>Prefix <input value={set.bates_prefix || 'Original-RFP'} onChange={(event) => updateManualRfpSet(set.id, { bates_prefix: event.target.value })} style={{ width: 130 }} /></label><label>Start <input type="number" min="1" value={set.bates_start || 1} onChange={(event) => updateManualRfpSet(set.id, { bates_start: Math.max(1, Number(event.target.value) || 1) })} style={{ width: 70 }} /></label><button type="button" onClick={() => createManualRfpBatesCopies(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#7c3aed', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Add Bates Stamps</button></div></div>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Request folder(s)</th><th style={{ textAlign: 'left', padding: 7 }}>Short request name(s)</th><th style={{ textAlign: 'left', padding: 7 }}>File name</th><th style={{ textAlign: 'left', padding: 7 }}>Document name</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th></tr></thead><tbody>{productionRows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, -1, matterDocs)} disabled={index === 0}>↑</button><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, 1, matterDocs)} disabled={index === productionRows.length - 1}>↓</button> {index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.request_numbers.map((number) => `Request ${number}`).join(', ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{(set.requests || []).filter((request, requestIndex) => row.request_numbers.includes(String(request.request_number || requestIndex + 1))).map((request, requestIndex) => manualRfpShortName(request, requestIndex)).join('; ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{fileLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.bates ? `${row.bates.prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td></tr>)}{!productionRows.length && <tr><td colSpan="6" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>No documents have been assigned to a request folder.</td></tr>}</tbody></table></div>
+        </section>
+
+        {manualRfpTagPanelOpen && <section style={{ border: '1px solid #86efac', borderRadius: 14, background: '#f0fdf4', padding: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><div><strong>Add Tags</strong><div style={{ color: '#64748b', fontSize: 12 }}>Apply a shared discovery path and optional Request # child tags to every assigned document.</div></div><button type="button" onClick={() => setManualRfpTagPanelOpen(false)}>Close</button></div><div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1fr) auto auto', gap: 10, alignItems: 'end', marginTop: 10 }}><label><strong>Base tag path</strong><input value={set.tag_base_path || ''} onChange={(event) => updateManualRfpSet(set.id, { tag_base_path: event.target.value })} style={{ width: '100%', marginTop: 4 }} /></label><label><input type="checkbox" checked={set.add_request_tags !== false} onChange={(event) => updateManualRfpSet(set.id, { add_request_tags: event.target.checked })} /> Add Request # tags</label><button type="button" onClick={() => applyManualRfpTags(set)} style={{ background: '#15803d', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Apply Tags</button></div></section>}
+
+        {manualRfpGeneratedResponseOpen && <section style={{ border: '1px solid #99f6e4', borderRadius: 14, background: '#f0fdfa', overflow: 'hidden' }}><div style={{ padding: 12, borderBottom: '1px solid #99f6e4', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Generated Response</h3><div style={{ color: '#475569', fontSize: 12 }}>Defaults update automatically: a folder with files uses “served with the response”; an empty folder uses “no items after a diligent search.” Your manual choice then stays locked.</div></div><div style={{ display: 'flex', gap: 7 }}><button type="button" onClick={() => downloadManualRfpGeneratedResponse(set, matter)} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Download Generated Response</button><button type="button" onClick={() => setManualRfpGeneratedResponseOpen(false)}>Close</button></div></div><div style={{ padding: 12, display: 'grid', gap: 10 }}><div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}><label><input type="checkbox" checked={Boolean(set.reference_production_log)} onChange={(event) => updateManualRfpSet(set.id, { reference_production_log: event.target.checked })} /> Direct the requesting party to review the production log</label><label><input type="checkbox" checked={set.include_bates_in_responses !== false} onChange={(event) => updateManualRfpSet(set.id, { include_bates_in_responses: event.target.checked })} /> Include responsive Bates ranges</label></div>{(set.requests || []).map((request, index) => <div key={`generated-${request.id}`} style={{ border: '1px solid #cbd5e1', borderRadius: 11, background: '#fff', padding: 11 }}><div style={{ fontWeight: 900, color: '#0f766e' }}>Request {request.request_number || index + 1} — {manualRfpShortName(request, index)}</div><div style={{ whiteSpace: 'pre-wrap', margin: '6px 0', color: '#334155' }}>{request.request_text || '(Request text has not been entered.)'}</div><div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px,1fr) minmax(260px,.8fr)', gap: 9 }}><label><strong>Response</strong><select value={manualRfpRequestResponseKey(request)} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { generated_response_key: event.target.value, generated_response_locked: true })} style={{ width: '100%', marginTop: 4 }}>{manualRfpResponseOptions(matter).map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}</select></label><label><strong>Assert objection</strong><select value={request.objection || ''} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { objection: event.target.value })} style={{ width: '100%', marginTop: 4 }}><option value="">No objection selected</option>{manualRfpObjectionOptions.map((objection, objectionIndex) => <option key={`${objectionIndex}-${objection}`} value={objection}>{objection}</option>)}</select></label></div>{manualRfpRequestResponseKey(request) === 'specified_time_place' && <label style={{ display: 'block', marginTop: 8 }}><strong>Specified time and place</strong><input value={request.specified_time_place || ''} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { specified_time_place: event.target.value })} style={{ width: '100%', marginTop: 4 }} /></label>}<label style={{ display: 'block', marginTop: 8 }}><strong>Additional response text (optional)</strong><textarea value={request.response_additional_text || ''} onChange={(event) => updateRespondingDiscoveryRequest(set.id, request.id, { response_additional_text: event.target.value })} style={{ width: '100%', minHeight: 52, marginTop: 4 }} /></label>{set.include_bates_in_responses !== false && manualRfpBatesText(set, request) && <div style={{ color: '#475569', marginTop: 6, fontSize: 12 }}><strong>Bates:</strong> {manualRfpBatesText(set, request)}</div>}</div>)}</div></section>}
+
+        {manualRfpSettingsOpen && <section style={{ border: '1px solid #c4b5fd', borderRadius: 14, background: '#faf5ff', padding: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}><div><h3 style={{ margin: 0 }}>Manual RFP Response Settings</h3><div style={{ color: '#64748b', fontSize: 12 }}>These objection choices are saved and also appear in Mio Settings.</div></div><button type="button" onClick={() => setManualRfpSettingsOpen(false)}>Collapse settings</button></div><div style={{ display: 'grid', gap: 7, marginTop: 10 }}>{manualRfpObjectionOptions.map((objection, index) => <div key={index} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 7 }}><input value={objection} onChange={(event) => setManualRfpObjectionOptions((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" onClick={() => setManualRfpObjectionOptions((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={{ color: '#991b1b' }}>Delete</button></div>)}</div><div style={{ display: 'flex', gap: 7, marginTop: 9 }}><button type="button" onClick={() => setManualRfpObjectionOptions((current) => [...current, 'New objection'])}>+ Add objection</button><button type="button" onClick={() => setManualRfpObjectionOptions(DEFAULT_MANUAL_RFP_OBJECTIONS)}>Restore defaults</button></div></section>}
+      </>}
+    </div>
   }
 
   function startRespondingDiscoveryForMatter(matterId) {
@@ -42003,6 +42545,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => { setClientDashboardTab('manual_rfp_responses'); setRespondingDiscoveryMatterId(selectedTemplateMatter().id); const first = manualRfpSetsForMatter(selectedTemplateMatter().id)[0]; if (first) setManualRfpSelectedSetId(first.id) }}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'manual_rfp_responses' ? '#2f6584' : 'white', color: clientDashboardTab === 'manual_rfp_responses' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'manual_rfp_responses' ? 'bold' : 'normal' }}
+                  >
+                    Manual RFP Responses
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => { ensureInventoryForMatter(selectedTemplateMatter()); setClientDashboardTab('inventory') }}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'inventory' ? '#2f6584' : 'white', color: clientDashboardTab === 'inventory' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'inventory' ? 'bold' : 'normal' }}
                   >
@@ -42064,6 +42613,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
                 {clientDashboardTab === 'discovery' && renderRespondingDiscoveryDashboard({ matterId: selectedTemplateMatter().id })}
+
+                {clientDashboardTab === 'manual_rfp_responses' && renderManualRfpResponses(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'inventory' && renderMatterInventoryPanel(selectedTemplateMatter())}
 
@@ -44599,7 +45150,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </button>
 
 
-              <button onClick={() => setSettingsTab('inventory')} style={{ marginRight: 10, fontWeight: settingsTab === 'inventory' ? 'bold' : 'normal', marginRight: 10 }}>
+              <button onClick={() => setSettingsTab('inventory')} style={{ marginRight: 10, fontWeight: settingsTab === 'inventory' ? 'bold' : 'normal' }}>
                 Inventory
               </button>
               <button onClick={() => setSettingsTab('requested_relief')} style={{ marginRight: 10, fontWeight: settingsTab === 'requested_relief' ? 'bold' : 'normal' }}>
@@ -44662,6 +45213,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <LabeledField label="Requests for Production instructions"><textarea value={discoveryInstructionSettings.production || ''} onChange={(e) => updateDiscoveryInstructionSetting('production', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
                   <LabeledField label="Interrogatories instructions"><textarea value={discoveryInstructionSettings.interrogatories || ''} onChange={(e) => updateDiscoveryInstructionSetting('interrogatories', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
                   <LabeledField label="Requests for Admissions instructions"><textarea value={discoveryInstructionSettings.admissions || ''} onChange={(e) => updateDiscoveryInstructionSetting('admissions', e.target.value)} style={{ width: '100%', minHeight: 140 }} /></LabeledField>
+                </div>
+                <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid #d8e2ef' }}>
+                  <h3 style={{ margin: '0 0 5px' }}>Manual RFP Objections</h3>
+                  <p style={{ color: '#64748b', marginTop: 0 }}>These choices appear in the objection dropdown for every request on Manual RFP Responses.</p>
+                  <div style={{ display: 'grid', gap: 7 }}>
+                    {manualRfpObjectionOptions.map((objection, index) => <div key={index} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 7 }}><input value={objection} onChange={(event) => setManualRfpObjectionOptions((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" onClick={() => setManualRfpObjectionOptions((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={{ color: '#991b1b' }}>Delete</button></div>)}
+                  </div>
+                  <div style={{ display: 'flex', gap: 7, marginTop: 9 }}><button type="button" onClick={() => setManualRfpObjectionOptions((current) => [...current, 'New objection'])}>+ Add objection</button><button type="button" onClick={() => setManualRfpObjectionOptions(DEFAULT_MANUAL_RFP_OBJECTIONS)}>Restore defaults</button></div>
                 </div>
               </div>
             )}
