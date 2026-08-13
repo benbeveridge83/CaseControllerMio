@@ -3,10 +3,11 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V226'
+const MIO_APP_VERSION = 'Mio V228'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
+const MIO_ONLY_FINANCE_MODE = true
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -2133,6 +2134,7 @@ function App() {
     try { return localStorage.getItem('caseMioBillingCutoverDate') || DEFAULT_MIO_BILLING_CUTOVER_DATE }
     catch { return DEFAULT_MIO_BILLING_CUTOVER_DATE }
   })
+  const activeMioBillingCutoverDate = MIO_ONLY_FINANCE_MODE ? DEFAULT_MIO_BILLING_CUTOVER_DATE : (mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
   const [bulkBillingFilters, setBulkBillingFilters] = useState(() => {
     try { return { case_status: 'all', matter_status: 'all', search: '', ...(JSON.parse(localStorage.getItem('caseMioBulkBillingFilters') || '{}') || {}) } }
     catch { return { case_status: 'all', matter_status: 'all', search: '' } }
@@ -2180,23 +2182,28 @@ function App() {
   const bulkBillingScrollSyncRef = useRef(false)
   const bulkInvoiceSequenceRef = useRef(0)
   const billingEntriesRef = useRef([])
+  // Clio is a frozen opening-balance source only. Rows after Mio's cutover date
+  // are deliberately ignored so a later Clio report can never reset Mio balances.
   const latestFinancialSnapshotByMatterId = useMemo(() => {
     const result = new Map()
+    const cutoverDate = financeDateOnly(activeMioBillingCutoverDate)
     for (const matter of matters || []) {
       let latest = null
       for (const row of clioSnapshotRows || []) {
         if (!financialSnapshotMatchesMatter(row, matter)) continue
+        const rowDate = financeDateOnly(row.snapshot_date)
+        if (!rowDate || (cutoverDate && rowDate > cutoverDate)) continue
         if (!latest || new Date(row.snapshot_date || 0) > new Date(latest.snapshot_date || 0)) latest = row
       }
       result.set(String(matter.id), latest)
     }
     return result
-  }, [clioSnapshotRows, matters, clioMioRosetta])
+  }, [clioSnapshotRows, matters, clioMioRosetta, activeMioBillingCutoverDate])
   const bulkFinanceByMatterId = useMemo(() => {
     const result = new Map()
     for (const matter of matters || []) result.set(String(matter.id), clientFinanceNumbers(matter))
     return result
-  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, mioBillingCutoverDate, clioMinimumBalancesByMatterId])
+  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
     catch { return {} }
@@ -3769,11 +3776,31 @@ function App() {
 
   useEffect(() => {
     if (page !== 'billing' || billingTab !== 'bulk_billing' || !session?.user?.id) return
-    // Bulk Billing depends on the durable Clio opening-balance rows. V207 loaded
-    // Clio matter names here but left the snapshot array empty until another page
-    // happened to request it, which made every snapshot-backed amount look like $0.
+    // Read the frozen opening balances. This never contacts Clio and rows after
+    // Mio's cutover date are ignored by the financial calculator.
     loadClioFinancialSnapshots({ ignoreDateFilters: true })
+    loadLawPayWorkspace()
   }, [page, billingTab, session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.id) return
+    const financialPageOpen = page === 'billing' || page === 'lawpay' || clientDashboardTab === 'finances'
+    if (!financialPageOpen) return
+    let cancelled = false
+    const loadRecordedPayments = async () => {
+      if (cancelled) return
+      await loadLawPayWorkspace()
+      await loadMioInvoicesFromDatabase()
+    }
+    const intervalId = window.setInterval(loadRecordedPayments, 30000)
+    const onFocus = () => { loadRecordedPayments().catch(() => {}) }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [page, billingTab, clientDashboardTab, selectedTemplateMatterId, session?.user?.id])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioBankAccountRoles', JSON.stringify(bankAccountRoles || {})) } catch {}
@@ -4210,18 +4237,17 @@ function App() {
 
 
   useEffect(() => {
-    const previousPage = previousPageRef.current
     previousPageRef.current = page
     if (page !== 'matters' || !session?.user?.id) return
     if (mattersClioRefreshRef.current) return
     mattersClioRefreshRef.current = (async () => {
       try {
         setClioSnapshotError('')
-        await loadClioFinancialSnapshots()
-        await importCurrentClioFinancialValuesFromReports()
-        await loadClioFinancialSnapshots()
+        await loadClioFinancialSnapshots({ ignoreDateFilters: true })
+        await loadLawPayWorkspace()
+        await loadMioInvoicesFromDatabase()
       } catch (error) {
-        console.error('Automatic Clio trust refresh on Matters page failed:', error)
+        console.error('Automatic Mio financial load on Matters page failed:', error)
         setClioSnapshotError(error?.message || String(error))
       } finally {
         mattersClioRefreshRef.current = null
@@ -17280,18 +17306,13 @@ async function updateTeamCell(memberId, field, value) {
   function latestTrustSnapshotForMatter(matter = {}) {
     const matterId = String(matter?.id || '')
     if (matterId && latestFinancialSnapshotByMatterId.has(matterId)) return latestFinancialSnapshotByMatterId.get(matterId) || null
-    const candidates = (clioSnapshotRows || []).filter((row) => financialSnapshotMatchesMatter(row, matter))
+    const cutoverDate = financeDateOnly(activeMioBillingCutoverDate)
+    const candidates = (clioSnapshotRows || []).filter((row) => financialSnapshotMatchesMatter(row, matter) && financeDateOnly(row.snapshot_date) <= cutoverDate)
     return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
   }
 
   function latestTrustAmountForMatter(matter = {}) {
-    const snapshot = latestTrustSnapshotForMatter(matter)
-    const rawValue = snapshot
-      ? (snapshot.matter_trust_funds ?? snapshot.trust_running_balance)
-      : (matter.matter_trust_funds ?? matter.trust_running_balance ?? matter.trust_amount ?? matter.trust_balance)
-    if (rawValue === '' || rawValue === null || rawValue === undefined) return ''
-    const value = Number(rawValue)
-    return Number.isFinite(value) ? money(value) : ''
+    return money(clientFinanceNumbers(matter).trust)
   }
 
   function financeNumber(value, fallback = 0) {
@@ -17309,15 +17330,13 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function financeRowAfterSnapshot(row, snapshot) {
-    if (!snapshot?.snapshot_date) return true
-    const snapshotTime = new Date(snapshot.updated_at || `${snapshot.snapshot_date}T23:59:59`).getTime()
-    const rowTime = new Date(row?.created_at || row?.occurred_at || row?.updated_at || row?.date || 0).getTime()
-    if (Number.isFinite(snapshotTime) && Number.isFinite(rowTime) && rowTime > 0) return rowTime > snapshotTime
-    return financeDateOnly(row?.date || row?.occurred_at || row?.created_at) > financeDateOnly(snapshot.snapshot_date)
+    const cutoverDate = financeDateOnly(activeMioBillingCutoverDate || snapshot?.snapshot_date || DEFAULT_MIO_BILLING_CUTOVER_DATE)
+    const rowDate = financeDateOnly(row?.date || row?.issue_date || row?.occurred_at || row?.created_at || row?.updated_at)
+    return !cutoverDate || (!!rowDate && rowDate > cutoverDate)
   }
 
   function financeBillingEntryAfterCutover(entry) {
-    const cutover = financeDateOnly(mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
+    const cutover = financeDateOnly(activeMioBillingCutoverDate)
     if (!cutover) return true
     const entryDate = financeDateOnly(entry?.date || entry?.entry_date || entry?.occurred_at || entry?.created_at)
     return !!entryDate && entryDate > cutover
@@ -17336,10 +17355,30 @@ async function updateTeamCell(memberId, field, value) {
     return financeNumber(invoice?.amount_paid) > 0.005 ? 'Partial' : 'Outstanding'
   }
 
-  function financeInvoicesForMatter(matter) {
-    return (mioInvoices || [])
+  function financeInvoicesForMatter(matter, invoiceSource = mioInvoices) {
+    return (invoiceSource || [])
       .filter((invoice) => invoice?.status !== 'void' && String(invoice?.matter_id || '') === String(matter?.id || ''))
       .sort((a, b) => String(b.issue_date || b.created_at || '').localeCompare(String(a.issue_date || a.created_at || '')))
+  }
+
+  function openingWipOnlyInvoice(invoice = {}) {
+    const lines = Array.isArray(invoice.line_items) ? invoice.line_items : []
+    return invoice.invoice_type !== 'trust_request' && financeNumber(invoice.source_wip_amount) > 0.005 && !!lines.length && lines.every((line) => line?.source_kind === 'snapshot_wip' && !line?.billing_entry_id)
+  }
+
+  function duplicateOpeningWipInvoiceIdsForMatter(matter, invoiceSource = mioInvoices) {
+    const snapshot = latestTrustSnapshotForMatter(matter)
+    let remainingOpeningWip = Math.max(0, financeNumber(snapshot?.work_in_progress))
+    const duplicates = new Set()
+    financeInvoicesForMatter(matter, invoiceSource)
+      .filter(openingWipOnlyInvoice)
+      .sort((a, b) => String(a.created_at || a.issue_date || '').localeCompare(String(b.created_at || b.issue_date || '')))
+      .forEach((invoice) => {
+        const sourceAmount = Math.max(0, financeNumber(invoice.source_wip_amount))
+        if (sourceAmount <= remainingOpeningWip + 0.005) remainingOpeningWip = Math.max(0, remainingOpeningWip - sourceAmount)
+        else duplicates.add(String(invoice.id))
+      })
+    return duplicates
   }
 
   function lawPayRequestForTransaction(transaction) {
@@ -17349,6 +17388,23 @@ async function updateTeamCell(memberId, field, value) {
       const gatewayId = transaction?.gateway_transaction_id || transaction?.transaction_id || ''
       return !!gatewayId && [request.gateway_transaction_id, request.transaction_id].filter(Boolean).some((value) => String(value) === String(gatewayId))
     }) || null
+  }
+
+  function lawPayTransactionsForMatter(matter) {
+    const matterId = String(matter?.id || '')
+    return (lawPayTransactions || []).filter((transaction) => {
+      const request = lawPayRequestForTransaction(transaction)
+      const linkedMatterId = transaction?.matter_id || transaction?.raw?.mio_matter_id || transaction?.raw?.matter_id || request?.matter_id || ''
+      return !!matterId && String(linkedMatterId) === matterId
+    })
+  }
+
+  function pendingLawPayPaymentsForMatter(matter) {
+    return lawPayTransactionsForMatter(matter).filter((transaction) => {
+      const status = String(transaction?.status || '').trim().toLowerCase()
+      const type = String(transaction?.transaction_type || '').trim().toLowerCase()
+      return /authoriz|pending|process|submitted/.test(status) && !/refund|chargeback|reversal/.test(type) && financeNumber(transaction?.amount_cents) > 0
+    })
   }
 
   function clientFinanceLedgerRows(matter) {
@@ -17363,7 +17419,7 @@ async function updateTeamCell(memberId, field, value) {
       }))
     const lawPayRows = (lawPayTransactions || []).map((transaction) => {
       const request = lawPayRequestForTransaction(transaction)
-      const linkedMatterId = transaction.matter_id || request?.matter_id || ''
+      const linkedMatterId = transaction.matter_id || transaction?.raw?.mio_matter_id || transaction?.raw?.matter_id || request?.matter_id || ''
       const accountKey = String(transaction.account_key || request?.account_key || '').toLowerCase()
       const status = String(transaction.status || '').toLowerCase()
       if (String(linkedMatterId) !== matterId || !accountKey.includes('trust')) return null
@@ -17406,17 +17462,18 @@ async function updateTeamCell(memberId, field, value) {
   function clientFinanceNumbers(matter) {
     const snapshot = latestTrustSnapshotForMatter(matter)
     const hasSnapshot = !!snapshot
-    const snapshotTrust = financeNumber(snapshot?.matter_trust_funds ?? snapshot?.trust_running_balance ?? matter?.matter_trust_funds ?? matter?.trust_running_balance ?? matter?.trust_amount ?? matter?.trust_balance)
-    const snapshotWip = financeNumber(snapshot?.work_in_progress)
-    const snapshotOutstanding = financeNumber(snapshot?.outstanding_balance)
+    const snapshotTrust = hasSnapshot ? financeNumber(snapshot?.matter_trust_funds ?? snapshot?.trust_running_balance) : 0
+    const snapshotWip = hasSnapshot ? financeNumber(snapshot?.work_in_progress) : 0
+    const snapshotOutstanding = hasSnapshot ? financeNumber(snapshot?.outstanding_balance) : 0
     const matterEntries = (billingEntries || []).filter((entry) => String(entry?.matter_id || '') === String(matter?.id || '') && !entry.non_billable && !entry.do_not_bill)
     const uninvoicedEntries = matterEntries.filter((entry) => !entry.invoice_id)
-    // Clio received all Mio billing entries dated on or before the cutover date.
-    // The current Clio snapshot remains the baseline, while Mio adds only its own
-    // still-uninvoiced entries after that date. Using the later snapshot-import date
-    // here incorrectly hid Mio work performed between July 25 and the report import.
+    // The cutover snapshot is a frozen opening balance. Mio adds only its own
+    // still-uninvoiced entries after that date; later Clio rows never reset finance.
     const newerUninvoicedEntries = uninvoicedEntries.filter(financeBillingEntryAfterCutover)
-    const newerInvoices = financeInvoicesForMatter(matter).filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot) || invoice.source_snapshot_date === snapshot.snapshot_date)
+    const invoices = financeInvoicesForMatter(matter)
+    const duplicateInvoiceIds = duplicateOpeningWipInvoiceIdsForMatter(matter)
+    const serviceInvoices = invoices.filter((invoice) => invoice.invoice_type !== 'trust_request' && !duplicateInvoiceIds.has(String(invoice.id)))
+    const newerInvoices = serviceInvoices.filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot))
     const convertedSnapshotWip = newerInvoices.reduce((sum, invoice) => sum + financeNumber(invoice.source_wip_amount), 0)
     const clioBaselineWip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0)
     const mioPostCutoverWip = billingTotals(newerUninvoicedEntries).amount
@@ -17444,7 +17501,7 @@ async function updateTeamCell(memberId, field, value) {
       snapshotOutstanding,
       clioBaselineWip,
       mioPostCutoverWip,
-      billingCutoverDate: mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE,
+      billingCutoverDate: activeMioBillingCutoverDate,
       trust,
       minimumBalance,
       wip: safeWip,
@@ -17454,10 +17511,13 @@ async function updateTeamCell(memberId, field, value) {
       trustMinusMinimumMinusWip: trust - minimumBalance - safeWip,
       trustMinusMinimumMinusWipMinusOutstanding: trust - minimumBalance - safeWip - safeOutstanding,
       uninvoicedEntries: newerUninvoicedEntries,
-      invoices: financeInvoicesForMatter(matter),
+      invoices,
+      serviceInvoices,
+      duplicateInvoiceIds,
+      duplicateInvoices: invoices.filter((invoice) => duplicateInvoiceIds.has(String(invoice.id))),
       ledgerRows,
       currentLedgerRows,
-      financialSnapshotResolved: hasSnapshot
+      financialSnapshotResolved: MIO_ONLY_FINANCE_MODE || hasSnapshot
     }
   }
 
@@ -17878,7 +17938,7 @@ async function updateTeamCell(memberId, field, value) {
     const template = renderBillingTemplate(templateKey, {
       client_name: matterClientName(matter) || linkedInvoice.client_name || 'Client', matter_name: matter.name || linkedInvoice.matter_name || 'Matter',
       invoice_number: linkedInvoice.invoice_number, amount: money(invoiceBalanceAmount(linkedInvoice)), due_date: linkedInvoice.due_date || '',
-      trust_balance: money(clientFinanceNumbers(matter).trust), retainer_target: money(matterRetainerTarget(matter)), payment_link: linkedInvoice.payment_url
+      trust_balance: money(clientFinanceNumbers(matter).trust), minimum_balance: money(clientFinanceNumbers(matter).minimumBalance), retainer_target: money(matterRetainerTarget(matter)), payment_link: linkedInvoice.payment_url
     })
     const subject = String(options.subject || linkedInvoice.email_subject || template.subject || `${linkedInvoice.invoice_type === 'trust_request' ? 'Trust request' : 'Invoice'} ${linkedInvoice.invoice_number}`).trim()
     const introductoryText = String(options.message || template.body || '').trim()
@@ -17905,7 +17965,7 @@ async function updateTeamCell(memberId, field, value) {
     setInvoiceSendDraft({
       recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || localStorage.getItem('caseMioPendingInvoiceRecipient') || '',
       sender_email: DEFAULT_BILLING_SENDER_EMAIL,
-      subject: invoice.email_subject || renderBillingTemplate(invoice.invoice_type === 'trust_request' ? 'replenishment' : 'service_invoice', { invoice_number: invoice.invoice_number, matter_name: matter?.name || invoice.matter_name || '' }).subject
+      subject: invoice.email_subject || renderBillingTemplate(invoice.invoice_type === 'trust_request' ? 'replenishment' : 'service_invoice', { invoice_number: invoice.invoice_number, matter_name: matter?.name || invoice.matter_name || '', minimum_balance: matter ? money(clientFinanceNumbers(matter).minimumBalance) : '' }).subject
     })
   }
 
@@ -18166,6 +18226,7 @@ async function updateTeamCell(memberId, field, value) {
       matter_name: matter.name || matterClientName(matter) || 'Matter',
       amount: money(shortage),
       trust_balance: money(finance.trust),
+      minimum_balance: money(finance.minimumBalance),
       retainer_target: money(matterRetainerTarget(matter))
     })
     setTrustRequestDraft({
@@ -18261,7 +18322,7 @@ async function updateTeamCell(memberId, field, value) {
     const entryTotal = entryLines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
     const snapshotPortion = Math.max(0, Number((amount - entryTotal).toFixed(2)))
     const lineItems = snapshotPortion > 0.005
-      ? [{ billing_entry_id: '', source_kind: 'snapshot_wip', date: finance.snapshot?.snapshot_date || '', description: 'Prior Clio WIP balance — itemized descriptions were not included in the financial snapshot', hours: '', rate: '', amount: snapshotPortion }, ...entryLines]
+      ? [{ billing_entry_id: '', source_kind: 'snapshot_wip', date: finance.snapshot?.snapshot_date || '', description: 'Mio opening WIP balance — itemized descriptions were not included in the opening record', hours: '', rate: '', amount: snapshotPortion }, ...entryLines]
       : entryLines
     const now = new Date()
     const due = new Date(now)
@@ -18296,6 +18357,8 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function applyTrustToInvoice(matter, invoice) {
+    if (invoice?.invoice_type === 'trust_request') return alert('A trust replenishment request records funds coming into trust; it cannot be paid from the trust account.')
+    if (duplicateOpeningWipInvoiceIdsForMatter(matter).has(String(invoice?.id))) return alert('This invoice is flagged as a duplicate opening-WIP invoice. Review and delete/void it instead of paying it.')
     const balance = invoiceBalanceAmount(invoice)
     const trustAvailable = clientFinanceNumbers(matter).trust
     if (balance <= 0.005) return alert('This invoice is already paid.')
@@ -18346,7 +18409,7 @@ async function updateTeamCell(memberId, field, value) {
     const itemizedTotal = itemized.reduce((sum, line) => sum + financeNumber(line.amount), 0)
     const snapshotPortion = Math.max(0, Number((finance.wip - itemizedTotal).toFixed(2)))
     return snapshotPortion > 0.005
-      ? [{ id: `snapshot:${matter.id}`, billing_entry_id: '', source_kind: 'snapshot_wip', date: finance.snapshot?.snapshot_date || '', description: 'Prior Clio WIP balance — itemized descriptions were not included in the financial snapshot', hours: '', rate: '', amount: snapshotPortion }, ...itemized]
+      ? [{ id: `snapshot:${matter.id}`, billing_entry_id: '', source_kind: 'snapshot_wip', date: finance.snapshot?.snapshot_date || '', description: 'Mio opening WIP balance — itemized descriptions were not included in the opening record', hours: '', rate: '', amount: snapshotPortion }, ...itemized]
       : itemized
   }
 
@@ -18504,6 +18567,8 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
+    if (invoice?.invoice_type === 'trust_request') throw new Error('Trust requests cannot be paid from trust funds.')
+    if (duplicateOpeningWipInvoiceIdsForMatter(matter).has(String(invoice?.id))) throw new Error('This duplicate opening-WIP invoice must be reviewed and voided, not paid.')
     const trustAvailable = clientFinanceNumbers(matter).trust
     const amount = Math.min(invoiceBalanceAmount(invoice), trustAvailable)
     if (amount <= 0.005) throw new Error('No available trust funds can be applied to this invoice.')
@@ -18543,7 +18608,7 @@ async function updateTeamCell(memberId, field, value) {
       transactions.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-snapshot`, matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: 'Snapshot outstanding balance', memo: 'Applied trust funds to outstanding balance from latest financial snapshot', applies_to_snapshot_outstanding: true, source: 'Mio bulk billing', created_at: now })
     }
     const invoiceUpdates = new Map()
-    finance.invoices.filter((invoice) => invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005).sort((a, b) => String(a.issue_date || '').localeCompare(String(b.issue_date || ''))).forEach((invoice) => {
+    finance.serviceInvoices.filter((invoice) => invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005).sort((a, b) => String(a.issue_date || '').localeCompare(String(b.issue_date || ''))).forEach((invoice) => {
       if (remaining <= 0.005) return
       const amount = Math.min(invoiceBalanceAmount(invoice), remaining)
       remaining -= amount
@@ -18708,7 +18773,6 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function createAndEmailReplenishmentRequest(matter) {
-    if (!latestTrustSnapshotForMatter(matter)) throw new Error('This matter has no matched Clio financial snapshot. Refresh or link its snapshot before creating a bulk replenishment request.')
     const amount = matterReplenishmentAmount(matter)
     if (amount <= 0.005) throw new Error('No replenishment is currently due.')
     const trustPaymentPageUrl = await resolvedLawPayHostedPageUrl(true)
@@ -18779,6 +18843,7 @@ async function updateTeamCell(memberId, field, value) {
       invoice_number: invoice.invoice_number,
       amount: money(invoiceBalanceAmount(invoice)),
       due_date: invoice.due_date || '',
+      minimum_balance: money(clientFinanceNumbers(matter).minimumBalance),
       payment_link: invoice.payment_url || ''
     })
     return {
@@ -18807,7 +18872,8 @@ async function updateTeamCell(memberId, field, value) {
         .filter((invoice) => selectedIds.has(String(invoice?.matter_id || '')) && invoice?.invoice_type !== 'trust_request' && !['draft','void'].includes(invoice?.status) && invoiceBalanceAmount(invoice) > 0.005)
         .map((invoice) => {
           const matter = matters.find((row) => String(row.id) === String(invoice.matter_id))
-          return matter ? { matter, draft: bulkOutstandingInvoiceDraft(invoice, matter) } : null
+          if (!matter || duplicateOpeningWipInvoiceIdsForMatter(matter, invoiceSource).has(String(invoice.id))) return null
+          return { matter, draft: bulkOutstandingInvoiceDraft(invoice, matter) }
         })
         .filter(Boolean)
         .sort((left, right) => (matterClientName(left.matter) || left.matter.name || '').localeCompare(matterClientName(right.matter) || right.matter.name || '') || String(left.draft.invoice.issue_date || '').localeCompare(String(right.draft.invoice.issue_date || '')))
@@ -19017,8 +19083,8 @@ async function updateTeamCell(memberId, field, value) {
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button type="submit" className="btnPrimary">Record transaction</button><button type="button" onClick={() => setShowClientFinanceTransactionForm(false)}>Cancel</button></div>
       </form>}
       <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}><thead><tr>{['Date','Source','Nature','Reference','Payer / payee','Funds out','Funds in','Running balance'].map((label) => <th key={label} style={{ textAlign: ['Funds out','Funds in','Running balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>
-        {priorRows.map((row) => <tr key={`prior:${row.id}`} style={{ color: '#64748b' }}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{trustTransactionNature(row)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.reference || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'in' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontSize: 12 }}>Included in snapshot</td></tr>)}
-        {finance.snapshot && <tr><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{finance.snapshot.snapshot_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Financial snapshot</td><td colSpan="4" style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Opening balance from Trust Management Report</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(finance.snapshotTrust)}</td></tr>}
+        {priorRows.map((row) => <tr key={`prior:${row.id}`} style={{ color: '#64748b' }}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{trustTransactionNature(row)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.reference || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'in' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontSize: 12 }}>Included in opening balance</td></tr>)}
+        {finance.snapshot && <tr><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{finance.snapshot.snapshot_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Mio opening balance</td><td colSpan="4" style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Frozen financial opening record</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(finance.snapshotTrust)}</td></tr>}
         {rows.map((row) => <tr key={row.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{trustTransactionNature(row)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.reference || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'in' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(row.running_balance)}</td></tr>)}
         {!finance.snapshot && !rows.length && <tr><td colSpan="8" className="empty">No trust transactions have been recorded for this matter.</td></tr>}
       </tbody></table></div>
@@ -19079,17 +19145,19 @@ async function updateTeamCell(memberId, field, value) {
     const brokenTotals = billingTotals(brokenRows)
     const renderInvoiceTable = (invoices, emptyText) => <div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}>
       <thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
-      <tbody>{invoices.map((invoice) => <tr key={invoice.id}>
+      <tbody>{invoices.map((invoice) => {
+        const duplicateOpeningWip = finance.duplicateInvoiceIds?.has(String(invoice.id))
+        return <tr key={invoice.id} style={{ background: duplicateOpeningWip ? '#fff1f2' : undefined }}>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date || '—'}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date || 'Upon receipt'}</td>
-        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{invoiceStatusLabel(invoice)}</span></td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: duplicateOpeningWip ? '#fee2e2' : invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: duplicateOpeningWip ? '#991b1b' : invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{duplicateOpeningWip ? 'Duplicate — void' : invoiceStatusLabel(invoice)}</span></td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td>
-        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
-      </tr>)}{!invoices.length && <tr><td colSpan="9" className="empty">{emptyText}</td></tr>}</tbody>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{duplicateOpeningWip ? 'Review / void' : invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.invoice_type !== 'trust_request' && !duplicateOpeningWip && invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
+      </tr>})}{!invoices.length && <tr><td colSpan="9" className="empty">{emptyText}</td></tr>}</tbody>
     </table></div>
     return <section className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Drafts are listed first for review, editing, approval, or deletion. LawPay payments refresh automatically when this page opens.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
@@ -19098,6 +19166,7 @@ async function updateTeamCell(memberId, field, value) {
         <div style={{ marginTop: 5 }}>The referenced invoice is missing, belongs to another matter, is a trust request, or does not contain these activities. It is not treated as a valid services invoice.</div>
         <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{brokenGroups.map((group) => <div key={group.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff' }}><div><strong>{group.reference}</strong> — {group.entries.length} {group.entries.length === 1 ? 'activity' : 'activities'}, {money(group.totals.amount)}<div style={{ fontSize: 11, marginTop: 3 }}>{group.problem?.label || 'Invalid invoice link'}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => reviewBrokenBillingActivities(matter, group.entries)} disabled={invoiceDocumentBusy}>Review as new invoice</button><button type="button" onClick={() => releaseBrokenBillingActivitiesToWip(matter, group.entries)} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Repairing…' : 'Release to WIP'}</button></div></div>)}</div>
       </section>}
+      {!!finance.duplicateInvoices?.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>{finance.duplicateInvoices.length} duplicate opening-WIP invoice{finance.duplicateInvoices.length === 1 ? '' : 's'} excluded from the outstanding balance</strong><div style={{ marginTop: 5 }}>A later Clio snapshot recreated WIP that Mio had already invoiced. These invoices are blocked from bulk email and trust payment. Open each highlighted row, confirm it is the duplicate, and delete/void it to clean the audit record.</div></section>}
       <section style={{ marginTop: 16, border: '2px solid #2563eb', borderRadius: 10, padding: 12, background: '#eff6ff' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><div><h4 style={{ margin: 0 }}>Draft invoices requiring review</h4><div className="hint">Open any draft to edit, approve, or delete it.</div></div><strong>{draftInvoices.length}</strong></div>{renderInvoiceTable(draftInvoices, 'No saved draft invoices exist for this matter.')}</section>
       <section style={{ marginTop: 16 }}><h4 style={{ margin: 0 }}>Outstanding, paid, and other invoices</h4>{renderInvoiceTable(otherInvoices, 'No approved or paid invoices exist for this matter.')}</section>
     </section>
@@ -19106,8 +19175,8 @@ async function updateTeamCell(memberId, field, value) {
   function renderClientFinanceWip(matter, finance) {
     const totals = billingTotals(finance.uninvoicedEntries)
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Work in progress</h3><div className="hint">Billable work completed but not yet placed on an invoice</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button></div>
-      {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Clio baseline WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.clioBaselineWip)}</strong>. Mio adds <strong>{money(finance.mioPostCutoverWip)}</strong> from still-uninvoiced billing entries dated after {finance.billingCutoverDate}. Entries on or before that cutover are excluded because they were transferred to Clio.</div>}
-      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the saved Clio snapshot.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Clio baseline WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
+      {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Frozen opening WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.clioBaselineWip)}</strong>. Mio adds <strong>{money(finance.mioPostCutoverWip)}</strong> from still-uninvoiced Mio billing entries dated after {finance.billingCutoverDate}. Later Clio snapshots are ignored.</div>}
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the frozen opening balance.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Frozen opening WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
     </section>
   }
 
@@ -19302,20 +19371,23 @@ async function updateTeamCell(memberId, field, value) {
   function renderClientDashboardFinances(matter) {
     if (!matter) return null
     const finance = clientFinanceNumbers(matter)
+    const pendingLawPayPayments = pendingLawPayPaymentsForMatter(matter)
+    const pendingLawPayTotal = pendingLawPayPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
     const tabButton = (value, label) => <button type="button" onClick={() => setClientFinanceView(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '7px 12px', background: clientFinanceView === value ? '#1d4ed8' : '#fff', color: clientFinanceView === value ? '#fff' : '#334155', fontWeight: clientFinanceView === value ? 800 : 600 }}>{label}</button>
     return <div style={{ display: 'grid', gap: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}{tabButton('clio_history', 'Clio history')}</div></div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12 }}>
-        {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Snapshot ${finance.snapshot.snapshot_date} plus newer activity` : 'Recorded deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Frozen Mio opening balance ${finance.snapshot.snapshot_date} plus Mio activity` : 'Mio deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
         {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
         {renderClientFinanceSummaryCard({ label: 'Minimum balance', amount: finance.minimumBalance, color: '#0369a1', note: 'Required trust retainer floor', children: <button type="button" onClick={() => updateMatterMinimumBalanceFromFinances(matter)}>Set minimum</button> })}
         {renderClientFinanceSummaryCard({ label: 'Work in progress', amount: finance.wip, color: '#7c3aed', note: 'Work done but not invoiced', children: <button type="button" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button> })}
         {renderClientFinanceSummaryCard({ label: 'Retainer replenishment target', amount: matterRetainerTarget(matter), color: '#0f766e', note: 'Defaults to the first retainer request and may be changed', children: <button type="button" onClick={() => { const entered = window.prompt('Retainer replenishment target:', matterRetainerTarget(matter).toFixed(2)); if (entered !== null) setMatterRetainerTarget(matter, entered) }}>Set target</button> })}
         {renderClientFinanceSummaryCard({ label: 'Replenishment amount', amount: matterReplenishmentAmount(matter), color: '#c2410c', note: 'Retainer target minus current trust balance', children: <button type="button" onClick={() => openTrustRequest(matter)} disabled={matterReplenishmentAmount(matter) <= 0.005}>Request funds</button> })}
       </div>
+      {!!pendingLawPayPayments.length && <section style={{ border: '2px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e', padding: 12 }}><strong>Pending LawPay payment{pendingLawPayPayments.length === 1 ? '' : 's'}: {money(pendingLawPayTotal)}</strong><div style={{ marginTop: 4 }}>LawPay has authorized the payment, so Mio shows it immediately as pending. It is not added to trust or applied to an invoice until LawPay reports COMPLETED/settled.</div>{pendingLawPayPayments.map((transaction) => <div key={transaction.id || transaction.gateway_transaction_id} style={{ marginTop: 5, fontSize: 12 }}>{transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : 'Pending'} — {money(financeNumber(transaction.amount_cents) / 100 || transaction.amount)} — {transaction.status || 'Pending'} — {transaction.reference || 'LawPay payment'}</div>)}</section>}
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − outstanding: <strong>{money(finance.trustMinusMinimumMinusOutstanding)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
       {showTrustRequestForm && renderTrustRequestForm(matter, finance)}
-      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Data sources</h3><div><strong>Baseline:</strong> {finance.snapshot ? `financial snapshot dated ${finance.snapshot.snapshot_date}` : 'no financial snapshot loaded'}</div><div><strong>Trust activity:</strong> LawPay trust payments and Mio ledger entries</div><div><strong>New work:</strong> Mio billing entries not yet assigned to an invoice</div><button type="button" onClick={() => { loadClioFinancialSnapshots({ ignoreDateFilters: true }); refreshLawPayFinancialData({ silent: false }).catch(() => {}) }} disabled={clioSnapshotLoading || lawPayBusy} style={{ marginTop: 10 }}>{clioSnapshotLoading || lawPayBusy ? 'Refreshing…' : 'Refresh financial data'}</button></section></div>}
+      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Mio-only data sources</h3><div><strong>Opening balances:</strong> {finance.snapshot ? `frozen as of ${finance.snapshot.snapshot_date}` : 'started at $0 for this matter'}</div><div><strong>Trust activity:</strong> completed LawPay payments and Mio ledger entries</div><div><strong>Invoices and WIP:</strong> Mio invoices and billing entries only</div><div style={{ marginTop: 6, color: '#166534', fontWeight: 800 }}>Later Clio snapshots cannot change these balances.</div><button type="button" onClick={() => { loadLawPayWorkspace(); loadMioInvoicesFromDatabase(); refreshLawPayFinancialData({ silent: false }).catch(() => {}) }} disabled={lawPayBusy} style={{ marginTop: 10 }}>{lawPayBusy ? 'Refreshing…' : 'Refresh Mio & LawPay'}</button></section></div>}
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
       {clientFinanceView === 'wip' && renderClientFinanceWip(matter, finance)}
@@ -19490,7 +19562,7 @@ async function updateTeamCell(memberId, field, value) {
             {showMatterStepsOnMatterPage && matterStepsForMatter(matter).length > 0 && <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} style={{ padding:'2px 5px', fontSize:10 }}>{matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Steps'}</button>}
           </span>
         </td>
-        <td style={{ ...matterDataCellStyle('trust'), minWidth: 132, textAlign: 'right', fontWeight: 700, color: latestTrustAmountForMatter(matter) ? '#166534' : '#94a3b8', background: '#f8fafc' }} title="Most recent trust value from loaded Clio financial snapshots">
+        <td style={{ ...matterDataCellStyle('trust'), minWidth: 132, textAlign: 'right', fontWeight: 700, color: latestTrustAmountForMatter(matter) ? '#166534' : '#94a3b8', background: '#f8fafc' }} title="Current Mio trust balance: frozen opening plus Mio and completed LawPay activity">
           {latestTrustAmountForMatter(matter) || '--'}
         </td>
         {visibleMatterColumns.matter && (
@@ -39606,7 +39678,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
   }
 
+  function blockClioFinancialMutation() {
+    if (!MIO_ONLY_FINANCE_MODE) return false
+    alert('Mio-only finance mode is active. Clio financial imports, refreshes, backfills, and migrations are disabled. Saved pre-cutover rows remain read-only opening history.')
+    return true
+  }
+
   async function backfillSnapshotMioOwnedFields() {
+    if (blockClioFinancialMutation()) return
     if (!session?.user?.id) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
@@ -39676,6 +39755,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function backfillSnapshotClientContacts() {
+    if (blockClioFinancialMutation()) return
     if (!session?.user?.id) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
@@ -39752,6 +39832,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function backfillSnapshotBills() {
+    if (blockClioFinancialMutation()) return
     if (!session?.user?.id) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
@@ -39872,6 +39953,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function importClioSnapshotReport(report) {
+    if (MIO_ONLY_FINANCE_MODE) throw new Error('Mio-only finance mode blocks Clio financial snapshot imports.')
     if (!session?.user?.id) throw new Error('You must be logged in to save snapshots to Supabase.')
     if (!report?.id) throw new Error('No report selected.')
     const response = await fetch(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
@@ -39887,6 +39969,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function importSelectedClioSnapshotReport() {
+    if (blockClioFinancialMutation()) return
     const report = clioSnapshotReports.find((r) => String(r.id) === String(clioSnapshotSelectedReportId))
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
@@ -39941,6 +40024,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function importCurrentClioFinancialValuesFromReports() {
+    if (blockClioFinancialMutation()) return
     if (!session?.user?.id) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
@@ -40001,6 +40085,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function importWeeklyClioSnapshotReports() {
+    if (blockClioFinancialMutation()) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
@@ -40280,6 +40365,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function commitClioHistoricalMigration() {
+    if (blockClioFinancialMutation()) return
     const preview = clioMigrationPreview
     if (!preview) return
     if (preview.missingRequiredKinds?.length) return alert(`The staged migration is missing required report type(s): ${preview.missingRequiredKinds.join(', ')}. Add those reports and stage the full set again.`)
@@ -40338,7 +40424,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <li>Export all-date <strong>trust ledger/transactions</strong>, <strong>bills or invoices</strong>, <strong>payments</strong>, and <strong>activities/time entries</strong>.</li>
           <li>Select all CSV/XLSX files below. Mio stages, cleans, de-duplicates, and reconciles them before anything is committed.</li>
         </ol>
-        <input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple onChange={stageClioHistoricalMigration} disabled={clioMigrationBusy} />
+        <input type="file" accept=".csv,.xlsx,.xls,text/csv" multiple onChange={stageClioHistoricalMigration} disabled title="Mio-only finance mode keeps Clio financial files read-only." />
         {clioMigrationMessage && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e3a8a', borderRadius: 8, padding: 10 }}>{clioMigrationMessage}</div>}
       </section>
       <section className="card">
@@ -40357,7 +40443,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </div>
         <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr>{['File','Detected type','Source rows','Opening','Archive','Excluded','Treatment'].map((label) => <th key={label} style={{ textAlign: 'left', padding: 7, borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{preview.files.map((file) => <tr key={file.name}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{file.name}</td><td>{file.kind}</td><td>{file.rows}</td><td>{file.baselineCount}</td><td>{file.archiveCount}</td><td>{file.skippedCount}</td><td style={{ maxWidth: 360 }}>{file.note || (file.referenceCount ? `${file.referenceCount} active matter references verified.` : 'Included as shown.')}</td></tr>)}</tbody></table></div>
         <div style={{ marginTop: 10, color: invalidArchive || unmatchedBaseline || preview.missingRequiredKinds?.length ? '#991b1b' : '#166534' }}>{preview.missingRequiredKinds?.length ? `Import blocked: add ${preview.missingRequiredKinds.join(', ')} and stage the complete set again.` : (invalidArchive || unmatchedBaseline ? `${unmatchedBaseline} opening exception(s) and ${invalidArchive} invalid history row(s) need review.` : 'Reconciliation passed: every opening row matched an active Mio matter and every historical row has a valid Clio matter number.')}</div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={commitClioHistoricalMigration} disabled={clioMigrationBusy || !!preview.missingRequiredKinds?.length}>Approve & import staged data</button><button type="button" onClick={downloadClioMigrationExceptions} disabled={!unmatchedBaseline && !invalidArchive}>Download exceptions</button><button type="button" onClick={() => { setClioMigrationPreview(null); setClioMigrationMessage('Staged import discarded. No data was changed.') }} disabled={clioMigrationBusy}>Discard preview</button></div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={commitClioHistoricalMigration} disabled>Clio financial import disabled</button><button type="button" onClick={downloadClioMigrationExceptions} disabled={!unmatchedBaseline && !invalidArchive}>Download exceptions</button><button type="button" onClick={() => { setClioMigrationPreview(null); setClioMigrationMessage('Staged import discarded. No data was changed.') }} disabled={clioMigrationBusy}>Discard preview</button></div>
       </section>}
     </div>
   }
@@ -40427,6 +40513,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
 
   async function createMatterBalanceSummaryAllDatesReport() {
+    if (blockClioFinancialMutation()) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
@@ -40451,6 +40538,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function runV33FinancialFieldAudit() {
+    if (blockClioFinancialMutation()) return
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
@@ -40688,7 +40776,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
           <button type="button" onClick={loadClioFinancialSnapshots} disabled={clioSnapshotLoading}>Load saved snapshots</button>
-          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled={clioSnapshotLoading}>Refresh current from reports</button>
+          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled>Clio refresh disabled</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 5).map((row) => row.matterNo))}>Select first 5 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 15).map((row) => row.matterNo))}>Select first 15 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.map((row) => row.matterNo))}>Select all shown</button>
@@ -40718,24 +40806,24 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Financial Snapshots</h2>
-        <p style={{ color: '#64748b' }}>Build Mio's own weekly financial database from Clio reports. Graphs can then read from Supabase snapshots instead of rebuilding history from live Clio calls.</p>
-        <p style={{ color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 10 }}>For current values, Mio now uses the newest Trust Management Report for trust balance and WIP, then merges the newest Matter Balance Summary or A/R report for outstanding balance into one snapshot dated today.</p>
+        <p style={{ color: '#64748b' }}>Saved Clio rows are retained only as read-only history and as the pre-cutover opening record.</p>
+        <p style={{ color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 10 }}><strong>Mio-only finance mode is active.</strong> Clio financial imports, refreshes, backfills, and migrations are disabled. Current balances change only through Mio and LawPay activity.</p>
         {renderClioFinancialFieldPlanTable()}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
           <button type="button" onClick={downloadClioSnapshotSqlMigration}>Download snapshot SQL</button>
           <button type="button" onClick={loadClioSnapshotReports} disabled={clioSnapshotLoading}>Load Clio report list</button>
-          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled={clioSnapshotLoading}>Refresh current from Trust Mgmt + MBS/A/R</button>
-          <button type="button" onClick={createMatterBalanceSummaryAllDatesReport} disabled={clioSnapshotLoading}>Test/create MBS all dates</button>
-          <button type="button" onClick={runV33FinancialFieldAudit} disabled={clioSnapshotLoading}>Run v37 missing-field audit</button>
-          <button type="button" onClick={backfillSnapshotMioOwnedFields} disabled={clioSnapshotLoading}>Backfill Mio-owned fields</button>
-          <button type="button" onClick={backfillSnapshotClientContacts} disabled={clioSnapshotLoading}>Backfill client contacts</button>
-          <button type="button" onClick={backfillSnapshotBills} disabled={clioSnapshotLoading}>Backfill invoice fields</button>
+          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled>Clio refresh disabled</button>
+          <button type="button" onClick={createMatterBalanceSummaryAllDatesReport} disabled>Create Clio report disabled</button>
+          <button type="button" onClick={runV33FinancialFieldAudit} disabled>Clio audit disabled</button>
+          <button type="button" onClick={backfillSnapshotMioOwnedFields} disabled>Financial backfill disabled</button>
+          <button type="button" onClick={backfillSnapshotClientContacts} disabled>Contact backfill disabled</button>
+          <button type="button" onClick={backfillSnapshotBills} disabled>Invoice backfill disabled</button>
           <select value={clioSnapshotSelectedReportId} onChange={(e) => setClioSnapshotSelectedReportId(e.target.value)} style={{ minWidth: 320 }}>
             <option value="">Select Clio report...</option>
             {reports.map((report) => <option key={report.id} value={report.id}>{report.name}</option>)}
           </select>
-          <button type="button" onClick={importSelectedClioSnapshotReport} disabled={clioSnapshotLoading || !clioSnapshotSelectedReportId}>Import selected report</button>
-          <button type="button" onClick={importWeeklyClioSnapshotReports} disabled={clioSnapshotLoading}>Import report-based 6-month table</button>
+          <button type="button" onClick={importSelectedClioSnapshotReport} disabled>Snapshot import disabled</button>
+          <button type="button" onClick={importWeeklyClioSnapshotReports} disabled>Weekly import disabled</button>
           <button type="button" onClick={loadClioFinancialSnapshots} disabled={clioSnapshotLoading}>Load saved snapshots</button>
         </div>
         {clioSnapshotLoading && <p>Working...</p>}
@@ -40874,7 +40962,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
           <button type="button" onClick={loadClioFinancialSnapshots} disabled={clioSnapshotLoading}>Load saved snapshots</button>
-          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled={clioSnapshotLoading}>Refresh current from reports</button>
+          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled>Clio refresh disabled</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 5).map((row) => row.matterNo))}>Select first 5 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 15).map((row) => row.matterNo))}>Select first 15 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.map((row) => row.matterNo))}>Select all shown</button>
@@ -41306,7 +41394,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         // gateway check must never prevent the database invoice/transaction data from loading.
         await loadMioInvoicesFromDatabase()
         await loadLawPayWorkspace()
-        const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 100 } })
+        const recentStart = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString()
+        const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 25, start_date: recentStart } })
         if (error) throw error
         if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
         syncData = data
@@ -41445,7 +41534,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const selectedMatter = matters.find((row) => String(row.id) === String(lawPayForm.matter_id))
     return <div>
       <h1>LawPay</h1>
-      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Clio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>
+      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Mio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>
 
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14, background: '#f8fafc' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -41500,7 +41589,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function renderBillingEmailTemplateSettings() {
     const labels = { initial_trust: 'Initial trust request', replenishment: 'Trust replenishment request', service_invoice: 'Invoice payment request (work performed)' }
-    const placeholders = '{{client_name}}, {{matter_name}}, {{amount}}, {{invoice_number}}, {{due_date}}, {{trust_balance}}, {{retainer_target}}, {{payment_link}}'
+    const placeholders = '{{client_name}}, {{matter_name}}, {{amount}}, {{invoice_number}}, {{due_date}}, {{trust_balance}}, {{minimum_balance}}, {{retainer_target}}, {{payment_link}}'
     return <div style={{ border: '1px solid #d8e2ef', borderRadius: 12, padding: 16, background: '#fff' }}>
       <h2 style={{ marginTop: 0 }}>Billing email templates</h2>
       <p style={{ color: '#64748b' }}>These templates are used by individual and bulk billing emails. Available placeholders: <code>{placeholders}</code></p>
@@ -41688,7 +41777,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     })
     const visibleIds = rows.map((row) => String(row.matter.id))
     const selectedVisibleIds = visibleIds.filter((id) => bulkBillingSelectedIds.includes(id))
-    const selectedSnapshotIds = rows.filter((row) => row.finance.financialSnapshotResolved && selectedVisibleIds.includes(String(row.matter.id))).map((row) => String(row.matter.id))
+    const selectedSnapshotIds = selectedVisibleIds
     const toggleSort = (field) => setBulkBillingSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
     const sortLabel = (field, label) => <button type="button" onClick={() => toggleSort(field)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 800, whiteSpace: 'nowrap' }}>{label}{bulkBillingSort.field === field ? (bulkBillingSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>
     const moneyCell = (value) => {
@@ -41706,12 +41795,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }
     const renderBulkBillingCell = (row, column) => {
       const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
-      const snapshotDependent = ['trust','outstanding','trustMinusMinimum','trustMinusMinimumMinusOutstanding','trustMinusMinimumMinusWip','trustMinusMinimumMinusWipMinusOutstanding','replenishment'].includes(column.key)
       if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
-      if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Clio {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
+      if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Opening {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
-      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={clioSnapshotLoading || !!clioSnapshotError || row.wip <= 0.005}>Review WIP</button> <button type="button" title={row.finance.financialSnapshotResolved ? '' : 'Blocked until this matter has a matched Clio financial snapshot'} onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || clioSnapshotLoading || !!clioSnapshotError || !row.finance.financialSnapshotResolved || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
-      if (snapshotDependent && !row.finance.financialSnapshotResolved) return <td key={column.key} title="No matched Clio financial snapshot" style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(null)}</td>
+      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
     }
     const reviewRows = bulkWipReview.open ? (bulkWipReview.matter_ids || []).map((matterId) => {
@@ -41722,14 +41809,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }).filter((row) => row.matter) : []
     const reviewGrandTotal = reviewRows.reduce((sum, row) => sum + row.total, 0)
     const reviewCreatedCount = reviewRows.filter((row) => row.invoice).length
-    const snapshotDependentColumnKeys = new Set(['trust','outstanding','trustMinusMinimum','trustMinusMinimumMinusOutstanding','trustMinusMinimumMinusWip','trustMinusMinimumMinusWipMinusOutstanding','replenishment'])
-    const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.filter((row) => !snapshotDependentColumnKeys.has(column.key) || row.finance.financialSnapshotResolved).reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
-    const resolvedSnapshotCount = rows.filter((row) => row.finance.financialSnapshotResolved).length
-    const unresolvedSnapshotCount = rows.length - resolvedSnapshotCount
-    const loadedSnapshotBalanceTotal = (clioSnapshotRows || []).reduce((sum, snapshot) => sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)), 0)
-    const resolvedSnapshotBalanceTotal = matters.reduce((sum, matter) => { const snapshot = latestFinancialSnapshotByMatterId.get(String(matter.id)); return snapshot ? sum + Math.abs(financeNumber(snapshot.matter_trust_funds ?? snapshot.trust_running_balance)) + Math.abs(financeNumber(snapshot.outstanding_balance)) + Math.abs(financeNumber(snapshot.work_in_progress)) : sum }, 0)
-    const snapshotMatchFailure = clioSnapshotLoadAttempted && !clioSnapshotLoading && loadedSnapshotBalanceTotal > 0.005 && resolvedSnapshotBalanceTotal <= 0.005
-    const snapshotDataUnavailable = !clioSnapshotLoadAttempted || clioSnapshotLoading || !!clioSnapshotError || snapshotMatchFailure || !clioSnapshotRows.length
+    const bulkColumnTotal = (column) => column.key === 'matter' || column.key === 'actions' ? null : rows.reduce((sum, row) => sum + financeNumber(row[column.key]), 0)
 
     return <div style={{ display: 'grid', gap: 14 }}>
       <section className="card">
@@ -41737,17 +41817,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <div><h2 style={{ margin: 0 }}>Bulk billing</h2><div className="hint">Review WIP, create invoices, apply trust, and send replenishment requests for checked matters.</div></div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" onClick={openBulkInvoiceLedger}>All invoices</button>
-            <button type="button" className="btnPrimary" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
-            <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all OBs with trust</button>
+            <button type="button" className="btnPrimary" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all OBs with trust</button>
             <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkOutstandingInvoiceReview(selectedVisibleIds)}>Review/send all OB invoices selected</button>
-            <button type="button" disabled={bulkBillingBusy || snapshotDataUnavailable || !selectedSnapshotIds.length} onClick={() => replenishSelectedMatters(selectedSnapshotIds)}>Replenish all selected</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedSnapshotIds.length} onClick={() => replenishSelectedMatters(selectedSnapshotIds)}>Replenish all selected</button>
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginTop: 14, alignItems: 'end' }}>
           <LabeledField label="Search"><input value={bulkBillingFilters.search} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, or cause #" /></LabeledField>
           <LabeledField label="Case status"><select value={bulkBillingFilters.case_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All</option>{caseStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
           <LabeledField label="Matter status"><select value={bulkBillingFilters.matter_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All</option>{matterStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
-          <LabeledField label="Mio WIP starts after"><input type="date" value={mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE} onChange={(event) => setMioBillingCutoverDate(event.target.value || DEFAULT_MIO_BILLING_CUTOVER_DATE)} title="Entries on or before this date were transferred to Clio and are excluded from Mio WIP." /></LabeledField>
+          <LabeledField label="Mio opening balance through"><input type="date" value={activeMioBillingCutoverDate} readOnly title="This opening date is locked in Mio-only finance mode. Later Clio snapshots are ignored." /></LabeledField>
           <div style={{ position: 'relative', minWidth: 210 }}>
             <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 4 }}>Case type</div>
             <button type="button" onClick={() => setBulkBillingCaseTypeMenuOpen((open) => !open)} style={{ width: '100%', textAlign: 'left', minHeight: 30 }}>Case type: {caseTypeSelectionLabel} ▾</button>
@@ -41766,11 +41846,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         </div>
         <div style={{ marginTop: 10, color: '#475569' }}>{selectedVisibleIds.length} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} checked. Bulk actions apply only to these checked rows.</div>
-        {clioSnapshotLoading && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e40af', padding: 10, fontWeight: 700 }}>Loading saved Clio financial snapshots… Snapshot-dependent actions are temporarily disabled.</div>}
-        {!clioSnapshotLoading && clioSnapshotError && <div style={{ marginTop: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 10, fontWeight: 700 }}>Financial snapshots could not be loaded: {clioSnapshotError}. Trust, outstanding-balance, and replenishment actions are disabled.</div>}
-        {snapshotMatchFailure && <div style={{ marginTop: 10, border: '2px solid #dc2626', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 10, fontWeight: 800 }}>Mio loaded {clioSnapshotRows.length} saved snapshot rows containing balances, but none matched a Mio matter. Do not use bulk trust actions. Review the Clio matter links or refresh financial data.</div>}
-        {!clioSnapshotLoading && !clioSnapshotError && clioSnapshotLoadAttempted && !clioSnapshotRows.length && <div style={{ marginTop: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e', padding: 10, fontWeight: 700 }}>No saved Clio financial snapshots were returned. Snapshot-backed amounts are shown as — and bulk trust actions are disabled.</div>}
-        {!snapshotMatchFailure && !clioSnapshotLoading && clioSnapshotRows.length > 0 && <div style={{ marginTop: 10, border: `1px solid ${unresolvedSnapshotCount ? '#f59e0b' : '#86efac'}`, borderRadius: 8, background: unresolvedSnapshotCount ? '#fffbeb' : '#f0fdf4', color: unresolvedSnapshotCount ? '#92400e' : '#166534', padding: 10 }}><strong>{clioSnapshotRows.length} saved snapshot row{clioSnapshotRows.length === 1 ? '' : 's'} loaded.</strong> {resolvedSnapshotCount} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} matched.{unresolvedSnapshotCount ? ` ${unresolvedSnapshotCount} unmatched matter${unresolvedSnapshotCount === 1 ? '' : 's'} show — for snapshot-backed values and are excluded from bulk trust actions.` : ''}</div>}
+        <div style={{ marginTop: 10, border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 10, fontWeight: 700 }}>Mio-only finance mode is active. Opening balances are frozen through {activeMioBillingCutoverDate}; later Clio snapshots are ignored. All later balance changes come from Mio invoices, billing entries, trust activity, and LawPay.</div>
         {bulkBillingResult && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', padding: 10 }}>{bulkBillingResult}</div>}
       </section>
 
@@ -41778,7 +41854,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <div ref={bulkBillingTableScrollRef} onScroll={() => syncBulkBillingHorizontalScroll('table')} style={{ overflowX: 'auto' }}><table style={{ width: bulkBillingTableWidth, minWidth: bulkBillingTableWidth, borderCollapse: 'collapse' }}>
           <thead><tr style={{ background: '#f8fafc' }}>
             <th style={{ padding: 9, borderBottom: '1px solid #cbd5e1' }}><input type="checkbox" aria-label="Select all filtered matters" checked={!!visibleIds.length && selectedVisibleIds.length === visibleIds.length} onChange={(event) => setBulkBillingSelectedIds((current) => event.target.checked ? Array.from(new Set([...current, ...visibleIds])) : current.filter((id) => !visibleIds.includes(id)))} /></th>
-            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}{bulkColumnTotal(column) !== null && <div style={{ marginTop: 4, fontSize: 12, color: '#0f172a', fontWeight: 900 }}>{snapshotDataUnavailable && snapshotDependentColumnKeys.has(column.key) ? '—' : money(bulkColumnTotal(column))}</div>}</th>)}
+            {visibleColumns.map((column) => <th key={column.key} style={{ padding: 9, borderBottom: '1px solid #cbd5e1', textAlign: column.key === 'matter' || column.key === 'actions' ? 'left' : 'right', minWidth: column.width, width: column.width }}>{column.key === 'actions' ? column.label : sortLabel(column.key, column.label)}{bulkColumnTotal(column) !== null && <div style={{ marginTop: 4, fontSize: 12, color: '#0f172a', fontWeight: 900 }}>{money(bulkColumnTotal(column))}</div>}</th>)}
           </tr></thead>
           <tbody>{rows.map((row) => <tr key={row.matter.id} style={{ background: bulkBillingSelectedIds.includes(String(row.matter.id)) ? '#fff' : '#f8fafc', opacity: bulkBillingSelectedIds.includes(String(row.matter.id)) ? 1 : 0.66 }}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><input type="checkbox" checked={bulkBillingSelectedIds.includes(String(row.matter.id))} onChange={() => setBulkBillingSelectedIds((current) => current.includes(String(row.matter.id)) ? current.filter((id) => id !== String(row.matter.id)) : [...current, String(row.matter.id)])} /></td>
@@ -41800,8 +41876,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             {reviewRows.map(({ id, matter, lines, total, invoice }, matterIndex) => <section key={id} style={{ border: `2px solid ${invoice ? '#86efac' : '#cbd5e1'}`, borderRadius: 12, background: '#fff', overflow: 'hidden' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap', padding: 14, background: invoice ? '#f0fdf4' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>MATTER {matterIndex + 1} OF {reviewRows.length}</div><h3 style={{ margin: '3px 0 0' }}>{matterClientName(matter) || 'Client'}</h3><div style={{ fontSize: 16, fontWeight: 800 }}>{matter.name || matter.matter_name || 'Unnamed matter'}</div>{matter.cause_number && <div style={{ color: '#64748b' }}>Cause / matter number: {matter.cause_number}</div>}</div><div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 700 }}>INVOICE TOTAL</div><div style={{ fontSize: 24, fontWeight: 900 }}>{money(total)}</div>{invoice && <div style={{ color: '#166534', fontWeight: 900 }}>{invoice.invoice_number} generated</div>}</div></div>
               <div style={{ padding: 14 }}>
-                {lines.some((line) => line.source_kind === 'snapshot_wip') && <div style={{ marginBottom: 12, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}><strong>Prior Clio WIP is not itemized.</strong> The financial snapshot supplies only a total, not the descriptions entered in Clio. Review and replace that line's description before approval if needed.</div>}
-                <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}><thead><tr>{['Date','Description','Hours','Rate','Amount',''].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lines.map((line) => <tr key={line.id} style={{ background: line.source_kind === 'snapshot_wip' ? '#fffbeb' : '#fff' }}><td style={{ padding: 6 }}><input type="date" value={line.date || ''} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={line.description || ''} disabled={!!invoice || bulkBillingBusy} title={line.source_kind === 'snapshot_wip' ? 'This is an aggregate Clio WIP balance. Its source snapshot did not contain individual descriptions.' : ''} onChange={(event) => updateBulkWipLine(id, line.id, { description: event.target.value })} style={{ width: '100%' }} />{line.source_kind === 'snapshot_wip' && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>Aggregate snapshot balance — description must be reviewed</div>}</td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.hours} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { hours: event.target.value })} style={{ width: 90, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.rate} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { rate: event.target.value })} style={{ width: 100, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.amount} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { amount: event.target.value })} style={{ width: 110, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><button type="button" onClick={() => removeBulkWipLine(id, line.id)} disabled={!!invoice || bulkBillingBusy}>Remove</button></td></tr>)}</tbody><tfoot><tr><td colSpan="4" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(total)}</td><td /></tr></tfoot></table></div>
+                {lines.some((line) => line.source_kind === 'snapshot_wip') && <div style={{ marginBottom: 12, padding: 10, border: '1px solid #f59e0b', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}><strong>Opening WIP is not itemized.</strong> The frozen opening record supplies only a total. Review and replace that line's description before approval if needed.</div>}
+                <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}><thead><tr>{['Date','Description','Hours','Rate','Amount',''].map((label) => <th key={label} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lines.map((line) => <tr key={line.id} style={{ background: line.source_kind === 'snapshot_wip' ? '#fffbeb' : '#fff' }}><td style={{ padding: 6 }}><input type="date" value={line.date || ''} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { date: event.target.value })} /></td><td style={{ padding: 6 }}><input value={line.description || ''} disabled={!!invoice || bulkBillingBusy} title={line.source_kind === 'snapshot_wip' ? 'This is an aggregate Mio opening WIP balance. The opening record did not contain individual descriptions.' : ''} onChange={(event) => updateBulkWipLine(id, line.id, { description: event.target.value })} style={{ width: '100%' }} />{line.source_kind === 'snapshot_wip' && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>Aggregate opening balance — description must be reviewed</div>}</td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.hours} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { hours: event.target.value })} style={{ width: 90, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.rate} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { rate: event.target.value })} style={{ width: 100, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><input type="number" step="0.01" min="0" value={line.amount} disabled={!!invoice || bulkBillingBusy} onChange={(event) => updateBulkWipLine(id, line.id, { amount: event.target.value })} style={{ width: 110, textAlign: 'right' }} /></td><td style={{ padding: 6 }}><button type="button" onClick={() => removeBulkWipLine(id, line.id)} disabled={!!invoice || bulkBillingBusy}>Remove</button></td></tr>)}</tbody><tfoot><tr><td colSpan="4" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(total)}</td><td /></tr></tfoot></table></div>
                 {!lines.length && <div className="empty">No billable items remain for this matter.</div>}
                 {invoice && <div style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 10, marginTop: 12 }}><strong>{invoice.invoice_number} was created for {money(invoice.total)}.</strong> Its billing items are locked because they have been invoiced.</div>}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginTop: 12 }}><button type="button" onClick={() => completeBulkWipReview(id, 'create')} disabled={bulkBillingBusy || total <= 0.005 || !!invoice}>{invoice ? 'Invoice generated' : 'Approve & create invoice'}</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview(id, 'pay')} disabled={bulkBillingBusy || total <= 0.005}>Approve & pay from trust</button><button type="button" className="btnPrimary" onClick={() => completeBulkWipReview(id, 'email')} disabled={bulkBillingBusy || total <= 0.005}>Approve & email client</button></div>
