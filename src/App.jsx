@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V230'
+const MIO_APP_VERSION = 'Mio V231'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -2089,6 +2089,8 @@ function App() {
   const [clioMigrationMessage, setClioMigrationMessage] = useState('')
   const [clientFinanceView, setClientFinanceView] = useState('overview')
   const [showClientFinanceTransactionForm, setShowClientFinanceTransactionForm] = useState(false)
+  const [clientFinanceTransactionBusy, setClientFinanceTransactionBusy] = useState(false)
+  const [expandedAccountingInvoiceIds, setExpandedAccountingInvoiceIds] = useState([])
   const [clientFinanceTransactionDraft, setClientFinanceTransactionDraft] = useState({
     date: new Date().toISOString().slice(0, 10),
     direction: 'in',
@@ -2096,7 +2098,8 @@ function App() {
     amount: '',
     payer_payee: '',
     reference: '',
-    memo: ''
+    memo: '',
+    target_matter_id: ''
   })
   const [showTrustRequestForm, setShowTrustRequestForm] = useState(false)
   const [trustRequestBusy, setTrustRequestBusy] = useState(false)
@@ -17492,9 +17495,9 @@ async function updateTeamCell(memberId, field, value) {
     return pendingLawPayPaymentsForMatter(matter).reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
   }
 
-  function clientFinanceLedgerRows(matter) {
+  function clientFinanceLedgerRows(matter, trustTransactionSource = mioTrustTransactions) {
     const matterId = String(matter?.id || '')
-    const manualRows = (mioTrustTransactions || [])
+    const manualRows = (trustTransactionSource || [])
       .filter((transaction) => String(transaction?.matter_id || '') === matterId)
       .map((transaction) => ({
         ...transaction,
@@ -17538,6 +17541,10 @@ async function updateTeamCell(memberId, field, value) {
       cash: 'Cash retainer payment received by attorney',
       check: 'Check retainer payment received by attorney',
       refund: 'Refund to client',
+      client_refund: 'Refund to client',
+      matter_transfer: 'Transfer to client’s other matter',
+      matter_transfer_in: 'Transfer received from client’s other matter',
+      other_disbursement: 'Other trust disbursement',
       operating_transfer: 'Transfer to firm operating account',
       adjustment: 'Trust account adjustment'
     }
@@ -19160,39 +19167,123 @@ async function updateTeamCell(memberId, field, value) {
       matter_id: matter?.id || '',
       date: new Date().toISOString().slice(0, 10),
       direction,
-      transaction_type: direction === 'out' ? 'refund' : 'cash',
+      transaction_type: direction === 'out' ? 'client_refund' : 'cash',
       amount: '',
       payer_payee: direction === 'out' ? matterClientName(matter) : '',
       reference: '',
-      memo: ''
+      memo: '',
+      target_matter_id: ''
     })
     setShowClientFinanceTransactionForm(true)
   }
 
-  function saveClientFinanceTransaction(event, matter) {
+  function clientTransferMatters(matter) {
+    const matterId = String(matter?.id || '')
+    const clientId = String(matter?.client_id || '')
+    const clientName = financialIdentityText(matterClientName(matter) || matter?.client_name || '')
+    return (matters || []).filter((candidate) => {
+      if (!candidate?.id || String(candidate.id) === matterId) return false
+      const candidateClientId = String(candidate.client_id || '')
+      if (clientId && candidateClientId) return candidateClientId === clientId
+      return !!clientName && financialIdentityText(matterClientName(candidate) || candidate.client_name || '') === clientName
+    }).sort((left, right) => String(left.name || left.matter_name || '').localeCompare(String(right.name || right.matter_name || '')))
+  }
+
+  function trustBalanceForMatterFromRows(matter, trustRows) {
+    const snapshot = latestTrustSnapshotForMatter(matter)
+    const opening = financeNumber(snapshot?.matter_trust_funds ?? snapshot?.trust_running_balance)
+    const rows = clientFinanceLedgerRows(matter, trustRows)
+    const currentRows = snapshot ? rows.filter((row) => financeRowAfterSnapshot(row, snapshot)) : rows
+    return Math.max(0, Number((opening + currentRows.reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)).toFixed(2)))
+  }
+
+  async function latestStoredTrustTransactions() {
+    if (!session?.user?.id) return Array.isArray(mioTrustTransactions) ? [...mioTrustTransactions] : []
+    const { data, error } = await supabase.from('case_mio_user_state').select('raw_value,json_value').eq('user_id', session.user.id).eq('key', 'caseMioTrustTransactions').maybeSingle()
+    if (error) throw new Error(`Mio could not verify the current trust ledger. ${error.message || error}`)
+    if (Array.isArray(data?.json_value)) return data.json_value
+    if (data?.raw_value) {
+      try {
+        const parsed = JSON.parse(data.raw_value)
+        if (Array.isArray(parsed)) return parsed
+      } catch {}
+    }
+    return Array.isArray(mioTrustTransactions) ? [...mioTrustTransactions] : []
+  }
+
+  async function saveClientFinanceTransaction(event, matter) {
     event.preventDefault()
+    if (!session?.user?.id) return alert('Sign in before recording a trust transaction.')
     const amount = financeNumber(String(clientFinanceTransactionDraft.amount || '').replace(/[$,]/g, ''), NaN)
     if (!Number.isFinite(amount) || amount <= 0) return alert('Enter a valid transaction amount.')
     const direction = clientFinanceTransactionDraft.direction === 'out' ? 'out' : 'in'
-    if (direction === 'out' && amount > clientFinanceNumbers(matter).trust + 0.005) {
-      if (!window.confirm('This transaction is greater than Mio\'s current calculated trust balance. Record it anyway as a reconciliation item?')) return
+    const reason = clientFinanceTransactionDraft.transaction_type || (direction === 'out' ? 'client_refund' : 'cash')
+    const details = String(clientFinanceTransactionDraft.memo || '').trim()
+    if (direction === 'out' && !details) return alert('Enter details explaining why the trust funds are leaving the account.')
+    const transferTargets = clientTransferMatters(matter)
+    const targetMatter = reason === 'matter_transfer' ? transferTargets.find((candidate) => String(candidate.id) === String(clientFinanceTransactionDraft.target_matter_id || '')) : null
+    if (reason === 'matter_transfer' && !targetMatter) return alert('Select the client’s other matter that will receive the funds.')
+    if (reason === 'matter_transfer' && String(targetMatter.id) === String(matter.id)) return alert('Select a different matter for the transfer.')
+    setClientFinanceTransactionBusy(true)
+    try {
+      const latestRows = await latestStoredTrustTransactions()
+      const available = trustBalanceForMatterFromRows(matter, latestRows)
+      if (direction === 'out' && amount > available + 0.005) throw new Error(`Only ${money(available)} is available in this matter’s trust account. The transfer was not recorded.`)
+      const now = new Date().toISOString()
+      const transferId = crypto?.randomUUID ? crypto.randomUUID() : `matter-transfer-${Date.now()}`
+      const sourceId = crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}`
+      const targetId = targetMatter ? (crypto?.randomUUID ? crypto.randomUUID() : `trust-target-${Date.now()}`) : ''
+      const sourceTransaction = {
+        id: sourceId,
+        matter_id: matter.id,
+        client_id: matter.client_id || '',
+        date: clientFinanceTransactionDraft.date || now.slice(0, 10),
+        direction,
+        transaction_type: reason,
+        amount: Number(amount.toFixed(2)),
+        payer_payee: targetMatter ? `${matterClientName(targetMatter) || 'Client'} — ${targetMatter.name || targetMatter.matter_name || 'Other matter'}` : (clientFinanceTransactionDraft.payer_payee || matterClientName(matter) || ''),
+        reference: clientFinanceTransactionDraft.reference || '',
+        memo: details,
+        transfer_id: targetMatter ? transferId : '',
+        target_matter_id: targetMatter?.id || '',
+        counterpart_transaction_id: targetId,
+        source: targetMatter ? 'Mio matter transfer' : 'Mio manual trust entry',
+        created_at: now
+      }
+      const newRows = [sourceTransaction]
+      if (targetMatter) newRows.push({
+        id: targetId,
+        matter_id: targetMatter.id,
+        client_id: targetMatter.client_id || matter.client_id || '',
+        date: sourceTransaction.date,
+        direction: 'in',
+        transaction_type: 'matter_transfer_in',
+        amount: sourceTransaction.amount,
+        payer_payee: `${matterClientName(matter) || 'Client'} — ${matter.name || matter.matter_name || 'Source matter'}`,
+        reference: sourceTransaction.reference,
+        memo: details,
+        transfer_id: transferId,
+        source_matter_id: matter.id,
+        counterpart_transaction_id: sourceId,
+        source: 'Mio matter transfer',
+        created_at: now
+      })
+      const nextRows = [...newRows, ...latestRows]
+      await saveMioStateKeyNow('caseMioTrustTransactions', JSON.stringify(nextRows), { throwOnError: true })
+      const verifiedRows = await latestStoredTrustTransactions()
+      const verifiedIds = new Set(verifiedRows.map((row) => String(row?.id || '')))
+      const missing = newRows.find((row) => !verifiedIds.has(String(row.id)))
+      if (missing) throw new Error('The trust ledger save could not be verified. Refresh the matter before retrying; Mio did not update the on-screen balance.')
+      setMioTrustTransactions(verifiedRows)
+      setShowClientFinanceTransactionForm(false)
+      alert(targetMatter
+        ? `${money(amount)} was transferred from ${matter.name || 'this matter'} to ${targetMatter.name || 'the client’s other matter'}. Both sides of the transfer were recorded.`
+        : `${money(amount)} was recorded as ${direction === 'out' ? 'funds out' : 'funds in'} and verified.`)
+    } catch (error) {
+      alert(`The trust transaction was not recorded. ${error?.message || error}`)
+    } finally {
+      setClientFinanceTransactionBusy(false)
     }
-    const transaction = {
-      id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}`,
-      matter_id: matter.id,
-      client_id: matter.client_id || '',
-      date: clientFinanceTransactionDraft.date || new Date().toISOString().slice(0, 10),
-      direction,
-      transaction_type: clientFinanceTransactionDraft.transaction_type || (direction === 'out' ? 'refund' : 'cash'),
-      amount: Number(amount.toFixed(2)),
-      payer_payee: clientFinanceTransactionDraft.payer_payee || '',
-      reference: clientFinanceTransactionDraft.reference || '',
-      memo: clientFinanceTransactionDraft.memo || '',
-      source: 'Mio manual entry',
-      created_at: new Date().toISOString()
-    }
-    setMioTrustTransactions((current) => [transaction, ...(current || [])])
-    setShowClientFinanceTransactionForm(false)
   }
 
   function renderClientFinanceSummaryCard({ label, amount, color, children, note }) {
@@ -19240,37 +19331,156 @@ async function updateTeamCell(memberId, field, value) {
     </form>
   }
 
-  function renderClientFinanceTrustLedger(matter, finance) {
-    let running = finance.snapshot ? finance.snapshotTrust : 0
-    const currentIds = new Set(finance.currentLedgerRows.map((row) => String(row.id)))
-    const priorRows = finance.snapshot ? finance.ledgerRows.filter((row) => !currentIds.has(String(row.id))) : []
-    const rows = finance.currentLedgerRows.map((row) => {
-      running += row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)
-      return { ...row, running_balance: running }
+  function accountingDateTime(value, endOfDay = false) {
+    const raw = String(value || '').trim()
+    if (!raw) return ''
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`
+    const parsed = new Date(raw)
+    return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString()
+  }
+
+  function accountingInvoiceForRow(row, finance) {
+    const invoiceId = String(row?.invoice_id || '')
+    const reference = String(row?.reference || row?.invoice_number || '').trim()
+    return (finance?.invoices || []).find((invoice) => invoiceId && String(invoice.id) === invoiceId) ||
+      (finance?.invoices || []).find((invoice) => reference && String(invoice.invoice_number || '').trim() === reference) || null
+  }
+
+  function accountingOutstandingEvents(matter, finance) {
+    const events = []
+    const snapshotDate = financeDateOnly(finance.snapshot?.snapshot_date || activeMioBillingCutoverDate)
+    const currentLedgerRows = finance.currentLedgerRows || []
+    const serviceInvoices = (finance.serviceInvoices || []).filter((invoice) => invoice.status !== 'draft' && (!snapshotDate || financeRowAfterSnapshot(invoice, finance.snapshot)))
+    serviceInvoices.forEach((invoice) => events.push({ at: accountingDateTime(invoice.issue_date || invoice.created_at), delta: financeNumber(invoice.total), kind: 'invoice_issued', invoice_id: invoice.id }))
+    currentLedgerRows.forEach((row) => {
+      if (!row.invoice_id && !row.applies_to_snapshot_outstanding) return
+      const amount = financeNumber(row.amount)
+      const delta = row.direction === 'out' ? -amount : row.reverses_transaction_id ? amount : 0
+      if (Math.abs(delta) > 0.005) events.push({ at: accountingDateTime(row.created_at || row.occurred_at || row.date, true), delta, kind: 'trust_payment', transaction_id: row.id })
     })
+    serviceInvoices.forEach((invoice) => {
+      const trustPaid = activeTrustPaymentsForInvoice(invoice).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+      const outsidePaid = Math.max(0, invoicePaidAmount(invoice) - trustPaid)
+      if (outsidePaid <= 0.005) return
+      const paymentEvents = (mioInvoiceEvents || []).filter((event) => String(event.invoice_id || '') === String(invoice.id) && ['lawpay_payment_recorded','lawpay_payment_reversed','outside_payment_recorded','client_payment_recorded'].includes(String(event.event_type || '')))
+      let recordedChange = 0
+      paymentEvents.forEach((event) => {
+        const details = event.details && typeof event.details === 'object' ? event.details : {}
+        const rawChange = financeNumber(details.change, NaN)
+        const change = Number.isFinite(rawChange) && Math.abs(rawChange) > 0.005 ? rawChange : (String(event.event_type || '').includes('reversed') ? -financeNumber(event.amount) : financeNumber(event.amount))
+        if (Math.abs(change) <= 0.005) return
+        recordedChange += change
+        events.push({ at: accountingDateTime(event.occurred_at || invoice.updated_at, true), delta: -change, kind: 'outside_payment', invoice_id: invoice.id })
+      })
+      const remainder = outsidePaid - recordedChange
+      if (Math.abs(remainder) > 0.005) events.push({ at: accountingDateTime(invoice.updated_at || invoice.issue_date, true), delta: -remainder, kind: 'outside_payment_reconciliation', invoice_id: invoice.id })
+    })
+    return events.filter((event) => event.at).sort((left, right) => String(left.at).localeCompare(String(right.at)))
+  }
+
+  function historicalOutstandingForMatterAt(matter, date) {
+    const target = accountingDateTime(date, true)
+    const rows = (clioHistoricalFinancialArchive || []).filter((row) => String(row.matter_id || '') === String(matter?.id || '') && (!target || accountingDateTime(row.date, true) <= target))
+    const invoiceTotals = new Map()
+    rows.filter((row) => row.report_kind === 'invoices' && row.invoice_number).forEach((row) => invoiceTotals.set(String(row.invoice_number), Math.max(0, financeNumber(row.amount))))
+    rows.filter((row) => row.report_kind === 'payments' && row.invoice_number).forEach((row) => invoiceTotals.set(String(row.invoice_number), Math.max(0, (invoiceTotals.get(String(row.invoice_number)) || 0) - financeNumber(row.amount))))
+    return Number([...invoiceTotals.values()].reduce((sum, amount) => sum + Math.max(0, amount), 0).toFixed(2))
+  }
+
+  function accountingLedgerRows(matter, finance) {
+    const outstandingEvents = accountingOutstandingEvents(matter, finance)
+    let running = finance.snapshot ? finance.snapshotTrust : 0
+    const currentRows = (finance.currentLedgerRows || []).map((row) => {
+      running += row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)
+      const at = accountingDateTime(row.created_at || row.occurred_at || row.date, true)
+      const futureOutstandingChange = outstandingEvents.filter((event) => String(event.at) > String(at)).reduce((sum, event) => sum + financeNumber(event.delta), 0)
+      return { ...row, accounting_source: row.source || 'Mio', running_balance: Number(running.toFixed(2)), ob_balance: Math.max(0, Number((finance.outstanding - futureOutstandingChange).toFixed(2))), accounting_at: at }
+    })
+    const openingDate = financeDateOnly(finance.snapshot?.snapshot_date || activeMioBillingCutoverDate)
+    const historicalRows = (clioHistoricalFinancialArchive || [])
+      .filter((row) => String(row.matter_id || '') === String(matter?.id || '') && row.report_kind === 'trust_transactions' && (!openingDate || financeDateOnly(row.date) < openingDate))
+      .sort((left, right) => String(left.date || '').localeCompare(String(right.date || '')) || Number(left.source_row_number || 0) - Number(right.source_row_number || 0))
+      .map((row) => ({
+        ...row,
+        id: `accounting:${row.id}`,
+        direction: financeNumber(row.amount) < 0 ? 'out' : 'in',
+        amount: Math.abs(financeNumber(row.amount)),
+        payer_payee: row.description || '',
+        reference: row.invoice_number || '',
+        memo: row.description || 'Imported Clio trust transaction',
+        accounting_source: 'Clio history',
+        running_balance: financeNumber(row.balance),
+        ob_balance: historicalOutstandingForMatterAt(matter, row.date),
+        historical: true,
+        accounting_at: accountingDateTime(row.date, true)
+      }))
+    const openingRow = finance.snapshot ? [{
+      id: `opening:${matter.id}`,
+      date: openingDate,
+      direction: 'opening',
+      amount: finance.snapshotTrust,
+      accounting_source: 'Clio → Mio opening',
+      memo: 'Fixed opening record; later Clio snapshots do not change this account',
+      reference: 'Mio opening balance',
+      payer_payee: '',
+      running_balance: finance.snapshotTrust,
+      ob_balance: finance.snapshotOutstanding,
+      opening: true,
+      accounting_at: accountingDateTime(openingDate)
+    }] : []
+    return [...historicalRows, ...openingRow, ...currentRows]
+  }
+
+  function toggleAccountingInvoice(invoiceId) {
+    const id = String(invoiceId || '')
+    if (!id) return
+    setExpandedAccountingInvoiceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
+  }
+
+  function renderAccountingInvoiceLines(invoice) {
+    const lines = Array.isArray(invoice?.line_items) ? invoice.line_items : []
+    return <div style={{ padding: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}><strong>{invoice.invoice_number} billing items</strong><span>Total {money(invoice.total)} • Paid {money(invoicePaidAmount(invoice))} • OB {money(invoiceBalanceAmount(invoice))}</span></div><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 7, borderBottom: '1px solid #93c5fd' }}>{label}</th>)}</tr></thead><tbody>{lines.map((line, index) => <tr key={line.billing_entry_id || index}><td style={{ padding: 7, borderBottom: '1px solid #dbeafe' }}>{line.date || invoice.issue_date || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #dbeafe' }}>{line.professional || line.attorney || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #dbeafe' }}>{line.description || 'Professional services'}</td><td style={{ padding: 7, borderBottom: '1px solid #dbeafe', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '—' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 7, borderBottom: '1px solid #dbeafe', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '—' : money(line.rate)}</td><td style={{ padding: 7, borderBottom: '1px solid #dbeafe', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}{!lines.length && <tr><td colSpan="6" className="empty">No itemized billing entries are stored on this invoice.</td></tr>}</tbody></table></div>
+  }
+
+  function renderClientFinanceTrustLedger(matter, finance = clientFinanceNumbers(matter)) {
+    const rows = accountingLedgerRows(matter, finance)
+    const transferTargets = clientTransferMatters(matter)
+    const isFundsOut = clientFinanceTransactionDraft.direction === 'out'
+    const isMatterTransfer = isFundsOut && clientFinanceTransactionDraft.transaction_type === 'matter_transfer'
+    const transactionFormOpenForMatter = showClientFinanceTransactionForm && String(clientFinanceTransactionDraft.matter_id || '') === String(matter.id || '')
     return <section className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div><h3 style={{ margin: 0 }}>Trust account activity</h3><div className="hint">Funds received, refunds, and transfers to the operating account</div></div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => openClientFinanceTransaction(matter, 'in')}>+ Funds in</button><button type="button" onClick={() => openClientFinanceTransaction(matter, 'out')}>− Funds out</button><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Syncing LawPay…' : 'Sync LawPay'}</button></div>
+        <div><h2 style={{ margin: 0 }}>Matter accounting — trust account</h2><div className="hint">Complete trust ledger for {matterClientName(matter) || matter.name}: imported Clio history, the fixed Mio opening record, LawPay receipts, invoice payments, refunds, and matter transfers.</div></div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => openClientFinanceTransaction(matter, 'in')}>+ Record funds in</button><button type="button" className="btnPrimary" onClick={() => openClientFinanceTransaction(matter, 'out')}>Transfer funds out</button><button type="button" onClick={() => { syncLawPayTransactions(); loadMioInvoicesFromDatabase(); loadMioInvoiceEventsFromDatabase() }} disabled={lawPayBusy}>{lawPayBusy ? 'Refreshing…' : 'Refresh accounting'}</button></div>
       </div>
-      {showClientFinanceTransactionForm && <form onSubmit={(event) => saveClientFinanceTransaction(event, matter)} style={{ border: '1px solid #bfdbfe', borderRadius: 10, background: '#eff6ff', padding: 12, marginTop: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10 }}>
-          <LabeledField label="Direction"><select value={clientFinanceTransactionDraft.direction} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, direction: event.target.value, transaction_type: event.target.value === 'out' ? 'refund' : 'cash' }))}><option value="in">Funds in</option><option value="out">Funds out</option></select></LabeledField>
-          <LabeledField label="Nature"><select value={clientFinanceTransactionDraft.transaction_type} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, transaction_type: event.target.value }))}>{clientFinanceTransactionDraft.direction === 'out' ? <><option value="refund">Refund to client</option><option value="operating_transfer">Transfer to operating account</option><option value="adjustment">Adjustment</option></> : <><option value="cash">Cash paid to attorney</option><option value="check">Check paid to attorney</option><option value="lawpay">LawPay digital payment</option><option value="adjustment">Adjustment</option></>}</select></LabeledField>
-          <LabeledField label="Date"><input type="date" value={clientFinanceTransactionDraft.date} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, date: event.target.value }))} /></LabeledField>
-          <LabeledField label="Amount"><input type="number" min="0.01" step="0.01" value={clientFinanceTransactionDraft.amount} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, amount: event.target.value }))} /></LabeledField>
-          <LabeledField label="Payer / payee"><input value={clientFinanceTransactionDraft.payer_payee} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, payer_payee: event.target.value }))} /></LabeledField>
-          <LabeledField label="Reference"><input value={clientFinanceTransactionDraft.reference} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, reference: event.target.value }))} placeholder="Check, receipt, or invoice #" /></LabeledField>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 10, marginTop: 12 }}>
+        <div style={{ padding: 12, border: '1px solid #86efac', borderRadius: 9, background: '#f0fdf4' }}><div className="hint">Current trust balance</div><strong style={{ color: '#166534', fontSize: 24 }}>{money(finance.trust)}</strong></div>
+        <div style={{ padding: 12, border: '1px solid #fca5a5', borderRadius: 9, background: '#fff1f2' }}><div className="hint">Current outstanding balance</div><strong style={{ color: '#b91c1c', fontSize: 24 }}>{money(finance.outstanding)}</strong></div>
+        <div style={{ padding: 12, border: '1px solid #bfdbfe', borderRadius: 9, background: '#eff6ff' }}><div className="hint">Opening source</div><strong>{finance.snapshot ? `${finance.snapshot.snapshot_date} fixed record` : 'Mio $0 opening'}</strong><div style={{ fontSize: 11, marginTop: 3 }}>No later Clio snapshot resets these balances.</div></div>
+      </div>
+      {transactionFormOpenForMatter && <form onSubmit={(event) => saveClientFinanceTransaction(event, matter)} style={{ border: `2px solid ${isFundsOut ? '#dc2626' : '#2563eb'}`, borderRadius: 10, background: isFundsOut ? '#fff1f2' : '#eff6ff', padding: 14, marginTop: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>{isFundsOut ? 'Transfer funds out of trust' : 'Record funds received into trust'}</h3><div className="hint">The transaction is saved and verified before Mio changes the displayed balance.</div></div><button type="button" onClick={() => setShowClientFinanceTransactionForm(false)} disabled={clientFinanceTransactionBusy}>Cancel</button></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 10, marginTop: 10 }}>
+          <LabeledField label="Direction"><select value={clientFinanceTransactionDraft.direction} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, direction: event.target.value, transaction_type: event.target.value === 'out' ? 'client_refund' : 'cash', target_matter_id: '' }))}><option value="in">Funds in</option><option value="out">Funds out</option></select></LabeledField>
+          <LabeledField label={isFundsOut ? 'Reason' : 'Payment method'}><select value={clientFinanceTransactionDraft.transaction_type} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, transaction_type: event.target.value, target_matter_id: event.target.value === 'matter_transfer' ? current.target_matter_id : '' }))}>{isFundsOut ? <><option value="client_refund">Client refund</option><option value="matter_transfer">Transfer to client’s other matter</option><option value="other_disbursement">Other</option></> : <><option value="cash">Cash</option><option value="check">Check</option><option value="lawpay">LawPay</option><option value="adjustment">Other / adjustment</option></>}</select></LabeledField>
+          <LabeledField label="Date"><input type="date" value={clientFinanceTransactionDraft.date} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, date: event.target.value }))} /></LabeledField>
+          <LabeledField label="Amount"><input type="number" min="0.01" max={isFundsOut ? finance.trust.toFixed(2) : undefined} step="0.01" value={clientFinanceTransactionDraft.amount} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, amount: event.target.value }))} /><span className="hint">Available: {money(finance.trust)}</span></LabeledField>
+          {isMatterTransfer && <LabeledField label="Client’s receiving matter"><select value={clientFinanceTransactionDraft.target_matter_id} disabled={clientFinanceTransactionBusy || !transferTargets.length} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, target_matter_id: event.target.value }))}><option value="">{transferTargets.length ? 'Select receiving matter…' : 'No other matter found for this client'}</option>{transferTargets.map((target) => <option key={target.id} value={target.id}>{target.name || target.matter_name || 'Matter'}{target.cause_number ? ` — ${target.cause_number}` : ''}</option>)}</select></LabeledField>}
+          {!isMatterTransfer && <LabeledField label={isFundsOut ? 'Payee / recipient' : 'Payer'}><input value={clientFinanceTransactionDraft.payer_payee} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, payer_payee: event.target.value }))} /></LabeledField>}
+          <LabeledField label="Reference"><input value={clientFinanceTransactionDraft.reference} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, reference: event.target.value }))} placeholder="Check, confirmation, or reference #" /></LabeledField>
         </div>
-        <LabeledField label="Nature / memo"><input value={clientFinanceTransactionDraft.memo} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, memo: event.target.value }))} placeholder="Why the funds moved" style={{ width: '100%' }} /></LabeledField>
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}><button type="submit" className="btnPrimary">Record transaction</button><button type="button" onClick={() => setShowClientFinanceTransactionForm(false)}>Cancel</button></div>
+        <LabeledField label={isFundsOut ? 'Transfer details (required)' : 'Payment details / memo'}><textarea rows="3" value={clientFinanceTransactionDraft.memo} disabled={clientFinanceTransactionBusy} onChange={(event) => setClientFinanceTransactionDraft((current) => ({ ...current, memo: event.target.value }))} placeholder={isFundsOut ? 'Explain why the funds are leaving trust and any delivery or authorization details.' : 'Describe the funds received.'} style={{ width: '100%', boxSizing: 'border-box' }} /></LabeledField>
+        <button type="submit" className="btnPrimary" disabled={clientFinanceTransactionBusy || (isMatterTransfer && !clientFinanceTransactionDraft.target_matter_id)} style={{ marginTop: 10 }}>{clientFinanceTransactionBusy ? 'Saving and verifying…' : isMatterTransfer ? 'Record both sides of transfer' : 'Record transaction'}</button>
       </form>}
-      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}><thead><tr>{['Date','Source','Nature','Reference','Payer / payee','Funds out','Funds in','Running balance'].map((label) => <th key={label} style={{ textAlign: ['Funds out','Funds in','Running balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>
-        {priorRows.map((row) => <tr key={`prior:${row.id}`} style={{ color: '#64748b' }}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{trustTransactionNature(row)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.reference || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'in' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontSize: 12 }}>Included in opening balance</td></tr>)}
-        {finance.snapshot && <tr><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{finance.snapshot.snapshot_date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Mio opening balance</td><td colSpan="4" style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>Frozen financial opening record</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}></td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(finance.snapshotTrust)}</td></tr>}
-        {rows.map((row) => <tr key={row.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{trustTransactionNature(row)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.reference || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{row.direction === 'in' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(row.running_balance)}</td></tr>)}
-        {!finance.snapshot && !rows.length && <tr><td colSpan="8" className="empty">No trust transactions have been recorded for this matter.</td></tr>}
-      </tbody></table></div>
+      <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}><thead><tr>{['Date','Source','Transaction / details','Invoice / reference','Payer / payee','Funds out','Funds in','Trust balance','OB amount'].map((label) => <th key={label} style={{ textAlign: ['Funds out','Funds in','Trust balance','OB amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc', whiteSpace: 'nowrap' }}>{label}</th>)}</tr></thead><tbody>
+        {rows.map((row) => {
+          const invoice = accountingInvoiceForRow(row, finance)
+          const invoiceExpanded = invoice && expandedAccountingInvoiceIds.includes(String(invoice.id))
+          return <Fragment key={row.id}><tr style={{ background: row.opening ? '#f0fdf4' : row.historical ? '#f8fafc' : '#fff' }}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{row.date || financeDateOnly(row.occurred_at) || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.accounting_source || row.source || 'Mio'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', minWidth: 260 }}><strong>{trustTransactionNature(row)}</strong>{row.transfer_id && <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>Linked two-sided matter transfer</div>}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice ? <button type="button" onClick={() => toggleAccountingInvoice(invoice.id)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', padding: 0, fontWeight: 800, cursor: 'pointer' }}>{invoiceExpanded ? '▾' : '▸'} {invoice.invoice_number}</button> : (row.reference || '—')}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{row.payer_payee || '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', color: row.direction === 'out' ? '#b91c1c' : undefined, fontWeight: row.direction === 'out' ? 800 : 500 }}>{row.direction === 'out' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', color: row.direction === 'in' || row.direction === 'opening' ? '#166534' : undefined, fontWeight: row.direction === 'in' || row.direction === 'opening' ? 800 : 500 }}>{row.direction === 'in' || row.direction === 'opening' ? money(row.amount) : '—'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 900, color: financeNumber(row.running_balance) < -0.005 ? '#b91c1c' : '#166534' }}>{money(row.running_balance)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 900, color: financeNumber(row.ob_balance) > 0.005 ? '#b91c1c' : '#475569' }}>{money(row.ob_balance)}</td></tr>{invoiceExpanded && <tr><td colSpan="9" style={{ padding: '8px 18px 14px', background: '#f8fafc' }}>{renderAccountingInvoiceLines(invoice)}</td></tr>}</Fragment>
+        })}
+        {!rows.length && <tr><td colSpan="9" className="empty">No imported opening record or trust transactions exist for this matter.</td></tr>}
+      </tbody><tfoot><tr style={{ background: '#f8fafc' }}><td colSpan="7" style={{ padding: 10, textAlign: 'right', fontWeight: 900 }}>Current reconciled balances</td><td style={{ padding: 10, textAlign: 'right', fontWeight: 900, color: '#166534' }}>{money(finance.trust)}</td><td style={{ padding: 10, textAlign: 'right', fontWeight: 900, color: finance.outstanding > 0.005 ? '#b91c1c' : '#475569' }}>{money(finance.outstanding)}</td></tr></tfoot></table></div>
+      <div style={{ marginTop: 10, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc', color: '#475569', fontSize: 12 }}><strong>Reconciliation rule:</strong> Clio history is read-only. The fixed opening row bridges Clio into Mio; after that row, balances change only through Mio invoices, Mio trust transactions, and completed LawPay activity. OB means invoiced but unpaid.</div>
     </section>
   }
 
@@ -19565,9 +19775,9 @@ async function updateTeamCell(memberId, field, value) {
     const pendingLawPayTotal = pendingLawPayPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
     const tabButton = (value, label) => <button type="button" onClick={() => setClientFinanceView(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '7px 12px', background: clientFinanceView === value ? '#1d4ed8' : '#fff', color: clientFinanceView === value ? '#fff' : '#334155', fontWeight: clientFinanceView === value ? 800 : 600 }}>{label}</button>
     return <div style={{ display: 'grid', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}{tabButton('trust', 'Trust activity')}{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}{tabButton('clio_history', 'Clio history')}</div></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Client finances</h2><div className="hint">Trust, invoiced-but-unpaid balances, minimum balance, and unbilled work for {matterClientName(matter) || matter.name}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => openTrustRequest(matter)}>+ New trust request</button>{tabButton('overview', 'Overview')}<button type="button" onClick={() => setClientDashboardTab('accounting')} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '7px 12px', background: '#fff', color: '#334155', fontWeight: 600 }}>Accounting</button>{tabButton('invoices', 'Invoices')}{tabButton('wip', 'WIP details')}{tabButton('clio_history', 'Clio history')}</div></div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12 }}>
-        {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Frozen Mio opening balance ${finance.snapshot.snapshot_date} plus Mio activity` : 'Mio deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Frozen Mio opening balance ${finance.snapshot.snapshot_date} plus Mio activity` : 'Mio deposits less withdrawals', children: <button type="button" onClick={() => setClientDashboardTab('accounting')}>Open accounting ledger</button> })}
         {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
         {renderClientFinanceSummaryCard({ label: 'Pending LawPay', amount: pendingLawPayTotal, color: '#d97706', note: pendingLawPayTotal > 0.005 ? 'Received by LawPay; awaiting completion/settlement' : 'No pending LawPay payments', children: <button type="button" onClick={() => setClientFinanceView('invoices')} disabled={pendingLawPayTotal <= 0.005}>View pending invoice</button> })}
         {renderClientFinanceSummaryCard({ label: 'Minimum balance', amount: finance.minimumBalance, color: '#0369a1', note: 'Required trust retainer floor', children: <button type="button" onClick={() => updateMatterMinimumBalanceFromFinances(matter)}>Set minimum</button> })}
@@ -40459,13 +40669,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   async function loadClioHistoricalFinancialArchive() {
     if (!session?.user?.id) return
-    const { data, error } = await supabase
-      .from('clio_financial_history')
-      .select('id,user_id,source,source_file,report_kind,source_row_number,matter_id,matter_name,client_name,clio_matter_number,date,invoice_number,amount,balance,description,imported_at')
-      .eq('user_id', session.user.id)
-      .order('date', { ascending: false, nullsFirst: false })
-      .limit(20000)
-    if (error) {
+    let data
+    try {
+      data = await loadAllSupabasePages(() => supabase
+        .from('clio_financial_history')
+        .select('id,user_id,source,source_file,report_kind,source_row_number,matter_id,matter_name,client_name,clio_matter_number,date,invoice_number,amount,balance,description,imported_at')
+        .eq('user_id', session.user.id)
+        .order('date', { ascending: false, nullsFirst: false })
+        .order('id', { ascending: true }))
+    } catch (error) {
       if (!/does not exist|schema cache/i.test(error.message || '')) console.error('Clio historical archive load failed:', error)
       return
     }
@@ -43427,6 +43639,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('accounting')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'accounting' ? '#2f6584' : 'white', color: clientDashboardTab === 'accounting' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'accounting' ? 'bold' : 'normal' }}
+                  >
+                    Accounting
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('billing_activities')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'billing_activities' ? '#2f6584' : 'white', color: clientDashboardTab === 'billing_activities' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'billing_activities' ? 'bold' : 'normal' }}
                   >
@@ -43516,6 +43735,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'matter_information' && renderClientDashboardMatterInformation(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'finances' && renderClientDashboardFinances(selectedTemplateMatter())}
+
+                {clientDashboardTab === 'accounting' && renderClientFinanceTrustLedger(selectedTemplateMatter(), clientFinanceNumbers(selectedTemplateMatter()))}
 
                 {clientDashboardTab === 'billing_activities' && renderClientBillingActivities(selectedTemplateMatter())}
 
