@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V220'
+const MIO_APP_VERSION = 'Mio V222'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -10371,6 +10371,100 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     window.setTimeout(() => URL.revokeObjectURL(link.href), 1000)
   }
 
+  function manualRfpZipSafeName(value = '', fallback = 'Folder') {
+    return String(value || fallback)
+      .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '_')
+      .replace(/[. ]+$/g, '')
+      .trim()
+      .slice(0, 100) || fallback
+  }
+
+  async function ensureManualRfpZipLibrary() {
+    if (window.JSZip) return
+    await new Promise((resolve, reject) => {
+      const src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+      const existing = Array.from(document.scripts).find((script) => script.src === src)
+      if (existing) {
+        existing.addEventListener('load', resolve, { once: true })
+        existing.addEventListener('error', () => reject(new Error('The ZIP library could not load.')), { once: true })
+        return
+      }
+      const script = document.createElement('script')
+      script.src = src
+      script.async = true
+      script.onload = resolve
+      script.onerror = () => reject(new Error('The ZIP library could not load.'))
+      document.head.appendChild(script)
+    })
+    if (!window.JSZip) throw new Error('The ZIP library did not become available.')
+  }
+
+  async function downloadManualRfpRequestFolders(set, matterDocs) {
+    if (!set) return
+    const requestAssignments = (set.requests || []).map((request, index) => ({
+      folderName: `Request ${request.request_number || index + 1} - ${manualRfpShortName(request, index)}`,
+      documentIds: manualRfpRequestDocumentIds(request)
+    }))
+    const specialAssignments = [
+      { folderName: 'Privilege Log', documentIds: set.special_folders?.privilege_log || [] },
+      { folderName: 'Responsive but not responding', documentIds: set.special_folders?.responsive_not_responding || [] }
+    ]
+    const assignments = [...requestAssignments, ...specialAssignments]
+    const assignedCount = assignments.reduce((sum, row) => sum + row.documentIds.length, 0)
+    if (!assignedCount) return alert('Assign documents to at least one request or special folder before downloading.')
+
+    setManualRfpBusy('Preparing request folders and downloading their files...')
+    setManualRfpNotice(null)
+    try {
+      await ensureManualRfpZipLibrary()
+      const zip = new window.JSZip()
+      const missing = []
+      const exported = []
+      for (const assignment of assignments) {
+        const folder = zip.folder(manualRfpZipSafeName(assignment.folderName))
+        if (!assignment.documentIds.length) {
+          folder.file('EMPTY.txt', 'No documents are currently assigned to this folder.')
+          continue
+        }
+        const usedNames = new Set()
+        for (const documentId of assignment.documentIds) {
+          const original = matterDocs.find((doc) => String(doc.id) === String(documentId))
+          if (!original) { missing.push(`${assignment.folderName}: missing document record ${documentId}`); continue }
+          const stampedId = set.bates_by_document?.[String(documentId)]?.stamped_document_id
+          const stamped = stampedId ? documents.find((doc) => String(doc.id) === String(stampedId)) : null
+          const source = stamped || original
+          const dataUrl = await loadDocumentFileDataUrl(source)
+          if (!dataUrl) { missing.push(`${assignment.folderName}: ${source.file_name || source.original_file_name || source.name || documentId}`); continue }
+          const rawName = source.file_name || source.original_file_name || source.name || `Document-${documentId}`
+          const extension = String(rawName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
+          const baseName = manualRfpZipSafeName(extension ? rawName.slice(0, -extension.length) : rawName, 'Document')
+          let fileName = `${baseName}${extension}`
+          let suffix = 2
+          while (usedNames.has(fileName.toLowerCase())) fileName = `${baseName}_${suffix++}${extension}`
+          usedNames.add(fileName.toLowerCase())
+          folder.file(fileName, dataUrlToUint8Array(dataUrl))
+          exported.push(`${assignment.folderName}/${fileName}`)
+        }
+      }
+      zip.file('FOLDER_INDEX.txt', assignments.map((row) => `${row.folderName}: ${row.documentIds.length} assigned file(s)`).join('\n'))
+      if (missing.length) zip.file('MISSING_FILES.txt', `These assigned files could not be downloaded and were skipped:\n\n${missing.join('\n')}`)
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${manualRfpZipSafeName(set.title || 'RFP-Request-Folders', 'RFP-Request-Folders')}.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+      setManualRfpNotice({ type: 'success', text: `Downloaded ${exported.length} file${exported.length === 1 ? '' : 's'} in ${assignments.length} folders.${missing.length ? ` ${missing.length} unavailable file${missing.length === 1 ? ' was' : 's were'} listed in MISSING_FILES.txt.` : ''}` })
+    } catch (error) {
+      console.error('Manual RFP folder download failed', error)
+      setManualRfpNotice({ type: 'error', text: `The request-folder ZIP could not be created: ${error?.message || error}` })
+      alert(`The request-folder ZIP could not be created. ${error?.message || error}`)
+    } finally { setManualRfpBusy('') }
+  }
+
   function renderManualRfpResponses(matter) {
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter.id))
     const sets = manualRfpSetsForMatter(matter.id)
@@ -10432,6 +10526,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <div><h2 style={{ margin: 0 }}>Manual RFP Responses</h2><div style={{ color: '#64748b', marginTop: 4 }}>Build request folders, assign the matter's documents, prepare the production log, and generate the response language on one scrolling page.</div></div>
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => setManualRfpGeneratedResponseOpen((value) => !value)} disabled={!set} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Generated Response</button>
+            <button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs)} disabled={!set || Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Download Request Folders (.zip)</button>
             <button type="button" onClick={() => setManualRfpTagPanelOpen((value) => !value)} disabled={!set}>Add Tags</button>
             <button type="button" onClick={() => setManualRfpSettingsOpen((value) => !value)}>⚙ Settings</button>
           </div>
@@ -17211,6 +17306,22 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
+  async function resolvedLawPayHostedPageUrl(isTrust = false) {
+    const settingKey = isTrust ? 'trust_page_url' : 'operating_page_url'
+    const inMemoryUrl = String(lawPaySettings?.[settingKey] || '').trim()
+    if (inMemoryUrl) return inMemoryUrl
+
+    const { data, error } = await supabase
+      .from('lawpay_settings')
+      .select(settingKey)
+      .eq('id', 1)
+      .maybeSingle()
+    if (error) throw new Error(`Mio could not load the saved LawPay payment-page URL. ${error.message || error}`)
+    const savedUrl = String(data?.[settingKey] || '').trim()
+    if (savedUrl) setLawPaySettings((current) => ({ ...current, [settingKey]: savedUrl }))
+    return savedUrl
+  }
+
   async function ensureInvoiceLawPayLink(matter, invoice) {
     const isTrust = invoice.invoice_type === 'trust_request'
     if (invoice.payment_url) {
@@ -17219,7 +17330,7 @@ async function updateTeamCell(memberId, field, value) {
       return await persistMioInvoiceRecord({ ...invoice, payment_url: correctedUrl, updated_at: new Date().toISOString() }, 'lawpay_link_corrected', { corrected_amount_units: true, lock_amount: !isTrust })
     }
     const accountKey = isTrust ? 'trust' : 'operating'
-    const paymentPageUrl = String(isTrust ? lawPaySettings?.trust_page_url : lawPaySettings?.operating_page_url || '').trim()
+    const paymentPageUrl = await resolvedLawPayHostedPageUrl(isTrust)
     if (!paymentPageUrl) throw new Error(`Configure and save the LawPay ${isTrust ? 'Trust/IOLTA' : 'Operating'} hosted payment-page URL before sending this document.`)
     const client = lawPayMatterClient(matter)
     const recipient = invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || ''
@@ -18090,6 +18201,8 @@ async function updateTeamCell(memberId, field, value) {
     if (!latestTrustSnapshotForMatter(matter)) throw new Error('This matter has no matched Clio financial snapshot. Refresh or link its snapshot before creating a bulk replenishment request.')
     const amount = matterReplenishmentAmount(matter)
     if (amount <= 0.005) throw new Error('No replenishment is currently due.')
+    const trustPaymentPageUrl = await resolvedLawPayHostedPageUrl(true)
+    if (!trustPaymentPageUrl) throw new Error('Configure and save the LawPay Trust/IOLTA hosted payment-page URL before sending this document.')
     const recipient = matterClientEmail(matter) || clientEmailForMatter(matter) || ''
     const sender = DEFAULT_BILLING_SENDER_EMAIL
     if (!recipient) throw new Error('No client email is saved.')
