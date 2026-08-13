@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V223'
+const MIO_APP_VERSION = 'Mio V224'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -2017,6 +2017,12 @@ function App() {
   const [manualRfpTagPanelOpen, setManualRfpTagPanelOpen] = useState(false)
   const [manualRfpBusy, setManualRfpBusy] = useState('')
   const [manualRfpNotice, setManualRfpNotice] = useState(null)
+  const [manualRfpJobName, setManualRfpJobName] = useState('')
+  const [manualRfpPoolName, setManualRfpPoolName] = useState('')
+  const [manualRfpActivePoolId, setManualRfpActivePoolId] = useState('')
+  const [manualRfpSelectedTagIds, setManualRfpSelectedTagIds] = useState([])
+  const [manualRfpViewer, setManualRfpViewer] = useState({ open: false, name: '', url: '', loading: false })
+  const [manualRfpDownloadReview, setManualRfpDownloadReview] = useState({ open: false, prefix_bates: true, rows: [] })
   const [manualRfpVisibleDocumentColumns, setManualRfpVisibleDocumentColumns] = useState({ file_name: true, document_name: true, upload_date: true })
   const [manualRfpObjectionOptions, setManualRfpObjectionOptions] = useState(() => {
     try {
@@ -3061,7 +3067,17 @@ function App() {
       caseMioDiscoveryMatterStatusFilter: { setter: setDiscoveryMatterStatusFilter, kind: 'object', fallback: null },
       caseMioDiscoveryCaseStatusFilter: { setter: setDiscoveryCaseStatusFilter, kind: 'object', fallback: null },
       caseMioDiscoveryPageMode: { setter: setDiscoveryPageMode, kind: 'string', fallback: 'tracking' },
-      caseMioRespondingDiscoverySets: { setter: setRespondingDiscoverySets, kind: 'array', fallback: [] },
+      caseMioRespondingDiscoverySets: { setter: (value) => setRespondingDiscoverySets((current) => {
+        const merged = new Map()
+        ;[...(Array.isArray(value) ? value : []), ...(Array.isArray(current) ? current : [])].forEach((set) => {
+          if (!set?.id) return
+          const prior = merged.get(String(set.id))
+          const priorTime = Date.parse(prior?.updated_at || prior?.created_at || '') || 0
+          const nextTime = Date.parse(set.updated_at || set.created_at || '') || 0
+          if (!prior || nextTime >= priorTime) merged.set(String(set.id), set)
+        })
+        return Array.from(merged.values()).sort((a, b) => (Date.parse(b.updated_at || b.created_at || '') || 0) - (Date.parse(a.updated_at || a.created_at || '') || 0))
+      }), kind: 'array', fallback: [] },
       caseMioManualRfpObjectionOptions: { setter: (value) => setManualRfpObjectionOptions(Array.isArray(value) && value.length ? value : DEFAULT_MANUAL_RFP_OBJECTIONS), kind: 'array', fallback: DEFAULT_MANUAL_RFP_OBJECTIONS },
       caseControllerMatterExtraInfo: { setter: setMatterExtraInfoById, kind: 'object', fallback: {} },
       caseMioBillingEntries: { setter: (value) => mergeBillingEntriesIntoState(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
@@ -10053,11 +10069,69 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function updateManualRfpSet(setId, updater) {
-    setRespondingDiscoverySets((current) => (current || []).map((set) => {
-      if (String(set.id) !== String(setId)) return set
-      const next = typeof updater === 'function' ? updater(set) : { ...set, ...(updater || {}) }
-      return { ...next, updated_at: new Date().toISOString() }
-    }))
+    setRespondingDiscoverySets((current) => {
+      const nextSets = (current || []).map((set) => {
+        if (String(set.id) !== String(setId)) return set
+        const next = typeof updater === 'function' ? updater(set) : { ...set, ...(updater || {}) }
+        return { ...next, updated_at: new Date().toISOString(), manual_rfp_workspace: true }
+      })
+      const serialized = JSON.stringify(nextSets)
+      safeSetLocalStorage('caseMioRespondingDiscoverySets', serialized)
+      saveMioStateKeyNow('caseMioRespondingDiscoverySets', serialized, { throwOnError: true }).catch((error) => {
+        console.error('Immediate RFP workspace save failed:', error)
+        setManualRfpNotice({ type: 'error', text: `Your changes remain in this browser, but Mio could not save them to the cloud: ${error?.message || error}` })
+      })
+      return nextSets
+    })
+  }
+
+  async function saveManualRfpJob(set, saveAsNew = false) {
+    if (!set) return
+    const requestedName = String(manualRfpJobName || set.job_name || set.title || '').trim()
+    if (!requestedName) return alert('Enter a job name first.')
+    setManualRfpBusy(saveAsNew ? 'Saving a new copy of this job...' : 'Saving this job...')
+    try {
+      const now = new Date().toISOString()
+      let nextSets
+      let savedId = set.id
+      if (saveAsNew) {
+        savedId = nextRespondingDiscoveryId('manual-rfp-job')
+        const copy = { ...set, id: savedId, job_name: requestedName, title: requestedName, created_at: now, updated_at: now, saved_at: now, manual_rfp_workspace: true }
+        nextSets = [copy, ...(respondingDiscoverySets || [])]
+      } else {
+        nextSets = (respondingDiscoverySets || []).map((item) => String(item.id) === String(set.id) ? { ...item, job_name: requestedName, title: requestedName, updated_at: now, saved_at: now, manual_rfp_workspace: true } : item)
+      }
+      const serialized = JSON.stringify(nextSets)
+      safeSetLocalStorage('caseMioRespondingDiscoverySets', serialized)
+      await saveMioStateKeyNow('caseMioRespondingDiscoverySets', serialized, { throwOnError: true })
+      setRespondingDiscoverySets(nextSets)
+      setManualRfpSelectedSetId(savedId)
+      setManualRfpJobName(requestedName)
+      setManualRfpNotice({ type: 'success', text: `${saveAsNew ? 'New job' : 'Job'} “${requestedName}” saved at ${new Date().toLocaleTimeString()}. Folder assignments, pools, responses, objections, Bates data, and export filenames are included.` })
+    } catch (error) {
+      setManualRfpNotice({ type: 'error', text: `The job could not be saved to the cloud. This browser copy is still available: ${error?.message || error}` })
+    } finally { setManualRfpBusy('') }
+  }
+
+  function createManualRfpPool(set, documentIds) {
+    const ids = Array.from(new Set((documentIds || []).map(String).filter(Boolean)))
+    const name = String(manualRfpPoolName || '').trim()
+    if (!name) return alert('Enter a pool name first.')
+    if (!ids.length) return alert('Use the filters and checkboxes to select documents for this pool first.')
+    const pool = { id: nextRespondingDiscoveryId('rfp-pool'), name, document_ids: ids, created_at: new Date().toISOString() }
+    updateManualRfpSet(set.id, { document_pools: [...(set.document_pools || []), pool], active_pool_id: pool.id })
+    setManualRfpActivePoolId(pool.id)
+    setManualRfpPoolName('')
+    setManualRfpSelectedDocumentIds([])
+    setManualRfpNotice({ type: 'success', text: `Pool “${name}” created with ${ids.length} documents. Only this pool is now shown for assignment.` })
+  }
+
+  async function openManualRfpViewer(doc) {
+    if (!doc) return
+    const name = doc.file_name || doc.original_file_name || doc.name || 'Document'
+    setManualRfpViewer({ open: true, name, url: '', loading: true })
+    const url = await loadDocumentFileDataUrl(doc)
+    setManualRfpViewer({ open: true, name, url, loading: false })
   }
 
   function createManualRfpSet(matter, requestCount) {
@@ -10483,7 +10557,42 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!window.JSZip) throw new Error('The ZIP library did not become available.')
   }
 
-  async function downloadManualRfpRequestFolders(set, matterDocs) {
+  function openManualRfpDownloadReview(set, matterDocs) {
+    const ids = new Set()
+    ;(set?.requests || []).forEach((request) => manualRfpRequestDocumentIds(request).forEach((id) => ids.add(String(id))))
+    ;['privilege_log', 'responsive_not_responding'].forEach((key) => (set?.special_folders?.[key] || []).forEach((id) => ids.add(String(id))))
+    if (!ids.size) return alert('Assign documents to at least one request or special folder before downloading.')
+    const productionOrder = manualRfpProductionRows(set, matterDocs).map((row) => String(row.document_id))
+    const orderedIds = [...productionOrder, ...Array.from(ids).filter((id) => !productionOrder.includes(id))]
+    const rows = orderedIds.map((documentId) => {
+      const original = matterDocs.find((doc) => String(doc.id) === documentId)
+      const bates = set.bates_by_document?.[documentId] || null
+      const stamped = bates?.stamped_document_id ? documents.find((doc) => String(doc.id) === String(bates.stamped_document_id)) : null
+      const source = stamped || original
+      return {
+        document_id: documentId,
+        include: true,
+        original_name: original?.file_name || original?.original_file_name || original?.name || `Document-${documentId}`,
+        export_name: set.export_file_names?.[documentId] || source?.file_name || source?.original_file_name || source?.name || `Document-${documentId}`,
+        bates
+      }
+    }).filter((row) => row.original_name)
+    setManualRfpDownloadReview({ open: true, prefix_bates: set.export_prefix_bates !== false, rows })
+    window.setTimeout(() => document.getElementById('manual-rfp-download-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
+
+  function manualRfpReviewedExportName(set, row, prefixWithBates) {
+    const rawName = row?.export_name || row?.original_name || `Document-${row?.document_id || 'file'}`
+    const extension = String(rawName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
+    const baseName = manualRfpZipSafeName(extension ? rawName.slice(0, -extension.length) : rawName, 'Document')
+    const bates = row?.bates || set?.bates_by_document?.[String(row?.document_id)]
+    const batesPrefix = prefixWithBates && bates
+      ? `${manualRfpZipSafeName(bates.prefix || set?.bates_prefix || 'BATES', 'BATES')}-${String(bates.start).padStart(6, '0')}-${String(bates.end).padStart(6, '0')}_`
+      : ''
+    return `${batesPrefix}${baseName}${extension}`
+  }
+
+  async function downloadManualRfpRequestFolders(set, matterDocs, review = null) {
     if (!set) return
     const requestAssignments = (set.requests || []).map((request, index) => ({
       folderName: `Request ${request.request_number || index + 1} - ${manualRfpShortName(request, index)}`,
@@ -10496,7 +10605,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const assignments = [...requestAssignments, ...specialAssignments]
     const assignedCount = assignments.reduce((sum, row) => sum + row.documentIds.length, 0)
     if (!assignedCount) return alert('Assign documents to at least one request or special folder before downloading.')
-    const prefixWithBates = window.confirm('Prefix downloaded filenames with their Bates name/number so Windows sorts them in production order?\n\nExample: Original-RFP-000001-000013_Enforcement_Bills.pdf\n\nClick OK to add Bates prefixes. Click Cancel to keep the existing filenames.')
+    const prefixWithBates = review ? review.prefix_bates !== false : true
+    const reviewedById = new Map((review?.rows || []).map((row) => [String(row.document_id), row]))
+    if (review && !(review.rows || []).some((row) => row.include !== false)) return alert('Select at least one document to include in the ZIP.')
+    const exportNames = Object.fromEntries((review?.rows || []).map((row) => [String(row.document_id), row.export_name]))
+    if (review) updateManualRfpSet(set.id, { export_file_names: exportNames, export_prefix_bates: prefixWithBates })
 
     setManualRfpBusy('Preparing request folders and downloading their files...')
     setManualRfpNotice(null)
@@ -10513,6 +10626,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         }
         const usedNames = new Set()
         for (const documentId of assignment.documentIds) {
+          const reviewed = reviewedById.get(String(documentId))
+          if (review && reviewed?.include === false) continue
           const original = matterDocs.find((doc) => String(doc.id) === String(documentId))
           if (!original) { missing.push(`${assignment.folderName}: missing document record ${documentId}`); continue }
           const stampedId = set.bates_by_document?.[String(documentId)]?.stamped_document_id
@@ -10520,16 +10635,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           const source = stamped || original
           const dataUrl = await loadDocumentFileDataUrl(source)
           if (!dataUrl) { missing.push(`${assignment.folderName}: ${source.file_name || source.original_file_name || source.name || documentId}`); continue }
-          const rawName = source.file_name || source.original_file_name || source.name || `Document-${documentId}`
-          const extension = String(rawName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
-          const baseName = manualRfpZipSafeName(extension ? rawName.slice(0, -extension.length) : rawName, 'Document')
           const bates = set.bates_by_document?.[String(documentId)]
-          const batesPrefix = prefixWithBates && bates
-            ? `${manualRfpZipSafeName(bates.prefix || set.bates_prefix || 'BATES', 'BATES')}-${String(bates.start).padStart(6, '0')}-${String(bates.end).padStart(6, '0')}_`
-            : ''
-          let fileName = `${batesPrefix}${baseName}${extension}`
+          const rawName = reviewed?.export_name || source.file_name || source.original_file_name || source.name || `Document-${documentId}`
+          const reviewedRow = { document_id: documentId, export_name: rawName, original_name: rawName, bates }
+          let fileName = manualRfpReviewedExportName(set, reviewedRow, prefixWithBates)
+          const extension = String(fileName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
+          const baseName = extension ? fileName.slice(0, -extension.length) : fileName
           let suffix = 2
-          while (usedNames.has(fileName.toLowerCase())) fileName = `${batesPrefix}${baseName}_${suffix++}${extension}`
+          while (usedNames.has(fileName.toLowerCase())) fileName = `${baseName}_${suffix++}${extension}`
           usedNames.add(fileName.toLowerCase())
           folder.file(fileName, dataUrlToUint8Array(dataUrl))
           exported.push(`${assignment.folderName}/${fileName}`)
@@ -10547,6 +10660,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       link.remove()
       window.setTimeout(() => URL.revokeObjectURL(url), 5000)
       setManualRfpNotice({ type: 'success', text: `Downloaded ${exported.length} file${exported.length === 1 ? '' : 's'} in ${assignments.length} folders.${missing.length ? ` ${missing.length} unavailable file${missing.length === 1 ? ' was' : 's were'} listed in MISSING_FILES.txt.` : ''}` })
+      setManualRfpDownloadReview((current) => ({ ...current, open: false }))
     } catch (error) {
       console.error('Manual RFP folder download failed', error)
       setManualRfpNotice({ type: 'error', text: `The request-folder ZIP could not be created: ${error?.message || error}` })
@@ -10560,13 +10674,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const set = manualRfpSetForMatter(matter.id)
     const assignmentMap = manualRfpAssignmentMap(set)
     const productionRows = manualRfpProductionRows(set, matterDocs)
+    const pools = Array.isArray(set?.document_pools) ? set.document_pools : []
+    const activePoolId = manualRfpActivePoolId || set?.active_pool_id || ''
+    const activePool = pools.find((pool) => String(pool.id) === String(activePoolId)) || null
+    const activePoolIds = activePool ? new Set((activePool.document_ids || []).map(String)) : null
+    const poolSourceDocs = activePoolIds ? matterDocs.filter((doc) => activePoolIds.has(String(doc.id))) : matterDocs
+    const matterTagIds = Array.from(new Set(matterDocs.flatMap((doc) => doc.tag_ids || []).map(String))).filter(Boolean)
     const normalizedSearch = String(manualRfpDocumentSearch || '').trim().toLowerCase()
-    const visibleDocs = [...matterDocs].filter((doc) => {
+    const visibleDocs = [...poolSourceDocs].filter((doc) => {
       const assigned = Boolean(assignmentMap[String(doc.id)]?.length)
       if (manualRfpDocumentStatusFilter === 'assigned' && !assigned) return false
       if (manualRfpDocumentStatusFilter === 'unassigned' && assigned) return false
-      if (!normalizedSearch) return true
-      return [doc.name, doc.file_name, doc.original_file_name, doc.description, doc.date, doc.upload_date].some((value) => String(value || '').toLowerCase().includes(normalizedSearch))
+      if (manualRfpSelectedTagIds.length && !manualRfpSelectedTagIds.every((tagId) => (doc.tag_ids || []).map(String).includes(String(tagId)))) return false
+      if (normalizedSearch && ![doc.name, doc.file_name, doc.original_file_name, doc.description, doc.date, doc.upload_date].some((value) => String(value || '').toLowerCase().includes(normalizedSearch))) return false
+      return true
     }).sort((a, b) => {
       if (manualRfpDocumentSort === 'name_asc') return String(a.name || a.file_name || '').localeCompare(String(b.name || b.file_name || ''))
       if (manualRfpDocumentSort === 'name_desc') return String(b.name || b.file_name || '').localeCompare(String(a.name || a.file_name || ''))
@@ -10601,7 +10722,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     })
     const renderAssignedFilePills = (ids, targetType, targetId) => (
       <div style={{ display: 'grid', gap: 5, marginTop: 7 }}>
-        {assignedDocumentsFor(ids).map((doc) => <div key={`${targetType}-${targetId}-${doc.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '5px 8px', borderRadius: 7, background: '#fff', border: '1px solid #dbeafe', fontSize: 12 }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textAlign: 'left', padding: 0 }}>{documentLabel(doc)}</button><button type="button" onClick={() => removeManualRfpDocument(set.id, targetType, targetId, doc.id)} title="Remove from this folder" style={{ border: 0, background: 'transparent', color: '#991b1b' }}>×</button></div>)}
+        {assignedDocumentsFor(ids).map((doc) => <div key={`${targetType}-${targetId}-${doc.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '5px 8px', borderRadius: 7, background: '#fff', border: '1px solid #dbeafe', fontSize: 12 }}><button type="button" onClick={() => openManualRfpViewer(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', textAlign: 'left', padding: 0 }}>{documentLabel(doc)}</button><button type="button" onClick={() => removeManualRfpDocument(set.id, targetType, targetId, doc.id)} title="Remove from this folder" style={{ border: 0, background: 'transparent', color: '#991b1b' }}>×</button></div>)}
       </div>
     )
     const specialFolder = (key, label, color, hint) => {
@@ -10610,18 +10731,22 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     }
 
     return <div style={{ display: 'grid', gap: 12 }}>
+      {manualRfpDownloadReview.open && <section id="manual-rfp-download-review" style={{ border: '2px solid #2563eb', borderRadius: 14, background: '#eff6ff', overflow: 'hidden' }}><div style={{ padding: 12, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#dbeafe' }}><div><h3 style={{ margin: 0 }}>Review Production Names &amp; Download Folders</h3><div style={{ color: '#475569', fontSize: 12 }}>Edit the base name below and confirm the exact final ZIP filename before downloading.</div></div><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, open: false }))}>Close</button></div><div style={{ padding: 12 }}><label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 800 }}><input type="checkbox" checked={manualRfpDownloadReview.prefix_bates !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, prefix_bates: event.target.checked }))} /> Add Bates name and range at the beginning of each filename for sorting</label><div style={{ overflowX: 'auto', maxHeight: 520, marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050, background: '#fff' }}><thead><tr><th style={{ padding: 7 }}>Include</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th><th style={{ textAlign: 'left', padding: 7 }}>Original filename</th><th style={{ textAlign: 'left', padding: 7 }}>Editable base filename</th><th style={{ textAlign: 'left', padding: 7 }}>Final ZIP / production-log filename</th></tr></thead><tbody>{manualRfpDownloadReview.rows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', textAlign: 'center' }}><input type="checkbox" checked={row.include !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, include: event.target.checked } : item) }))} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{row.bates ? `${row.bates.prefix || set.bates_prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.original_name}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={row.export_name} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, export_name: event.target.value } : item) }))} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', fontWeight: 700 }}>{manualRfpReviewedExportName(set, row, manualRfpDownloadReview.prefix_bates !== false)}</td></tr>)}</tbody></table></div><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: true })) }))}>Select all</button><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: false })) }))}>Select none</button><button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs, manualRfpDownloadReview)} disabled={Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 13px', fontWeight: 900 }}>Create &amp; Download ZIP</button></div></div></section>}
+
+      {manualRfpViewer.open && <div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.62)', display: 'grid', placeItems: 'center', padding: 24 }} onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}><section style={{ width: 'min(1180px,96vw)', height: 'min(850px,92vh)', background: '#fff', borderRadius: 14, overflow: 'hidden', boxShadow: '0 24px 70px rgba(0,0,0,.35)', display: 'grid', gridTemplateRows: 'auto 1fr' }} onClick={(event) => event.stopPropagation()}><div style={{ padding: 10, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><strong>{manualRfpViewer.name}</strong><button type="button" onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}>Close Viewer</button></div>{manualRfpViewer.loading ? <div style={{ display: 'grid', placeItems: 'center', color: '#475569' }}>Loading document…</div> : manualRfpViewer.url ? <iframe title={`Document viewer - ${manualRfpViewer.name}`} src={manualRfpViewer.url} style={{ width: '100%', height: '100%', border: 0 }} /> : <div style={{ display: 'grid', placeItems: 'center', color: '#991b1b' }}>No saved file content is available for this document.</div>}</section></div>}
       <div style={{ border: '1px solid #bfdbfe', borderRadius: 14, background: 'linear-gradient(135deg,#eff6ff,#fff)', padding: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <div><h2 style={{ margin: 0 }}>Manual RFP Responses</h2><div style={{ color: '#64748b', marginTop: 4 }}>Build request folders, assign the matter's documents, prepare the production log, and generate the response language on one scrolling page.</div></div>
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
             <button type="button" onClick={() => setManualRfpGeneratedResponseOpen((value) => !value)} disabled={!set} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Generated Response</button>
-            <button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs)} disabled={!set || Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Download Request Folders (.zip)</button>
+            <button type="button" onClick={() => openManualRfpDownloadReview(set, matterDocs)} disabled={!set || Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Review &amp; Download Folders</button>
             <button type="button" onClick={() => setManualRfpTagPanelOpen((value) => !value)} disabled={!set}>Add Tags</button>
             <button type="button" onClick={() => setManualRfpSettingsOpen((value) => !value)}>⚙ Settings</button>
           </div>
         </div>
+        {set && <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) auto auto', gap: 8, alignItems: 'end', marginTop: 10, padding: 10, border: '1px solid #93c5fd', borderRadius: 10, background: '#fff' }}><label><strong>Job name</strong><input value={manualRfpJobName || set.job_name || set.title || ''} onChange={(event) => setManualRfpJobName(event.target.value)} placeholder="Example: Jamal Malcolm RFP Production - August 2026" style={{ width: '100%', marginTop: 4 }} /></label><button type="button" onClick={() => saveManualRfpJob(set, false)} disabled={Boolean(manualRfpBusy)} style={{ height: 38, background: '#166534', color: '#fff', border: 0, borderRadius: 8, fontWeight: 800 }}>Save Job</button><button type="button" onClick={() => saveManualRfpJob(set, true)} disabled={Boolean(manualRfpBusy)} style={{ height: 38 }}>Save As New Job</button></div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) auto minmax(260px,1.3fr) auto', gap: 8, alignItems: 'end', marginTop: 12 }}>
-          <label><strong>RFP response set</strong><select value={set?.id || ''} onChange={(event) => setManualRfpSelectedSetId(event.target.value)} style={{ width: '100%', marginTop: 4 }}><option value="">Select a set</option>{sets.map((item) => <option key={item.id} value={item.id}>{item.title || 'RFP set'} ({item.requests?.length || 0})</option>)}</select></label>
+          <label><strong>Saved job / RFP response set</strong><select value={set?.id || ''} onChange={(event) => { const next = sets.find((item) => String(item.id) === String(event.target.value)); setManualRfpSelectedSetId(event.target.value); setManualRfpJobName(next?.job_name || next?.title || ''); setManualRfpActivePoolId(next?.active_pool_id || ''); setManualRfpSelectedDocumentIds([]) }} style={{ width: '100%', marginTop: 4 }}><option value="">Select a saved job</option>{sets.map((item) => <option key={item.id} value={item.id}>{item.job_name || item.title || 'RFP job'} ({item.requests?.length || 0})</option>)}</select></label>
           <label><strong>Requests</strong><input type="number" min="1" max="250" value={manualRfpDraftCount} onChange={(event) => setManualRfpDraftCount(event.target.value)} style={{ width: 82, marginTop: 4, display: 'block' }} /></label>
           <button type="button" onClick={() => createManualRfpSet(matter, manualRfpDraftCount)} style={{ height: 38 }}>Create Request Folders</button>
           <button type="button" onClick={() => setClientDashboardTab('discovery')} style={{ height: 38 }}>Open Client Discovery</button>
@@ -10664,19 +10789,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
           <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
             <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Matter documents</strong><div style={{ color: '#64748b', fontSize: 12 }}>{visibleDocs.length} shown • assigned documents are faint and show their folder(s)</div></div><label style={{ border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', padding: '7px 10px', color: '#1d4ed8', fontWeight: 800, cursor: 'pointer' }}>+ Add Files<input type="file" multiple style={{ display: 'none' }} onChange={(event) => { addManualRfpMatterFiles(event.target.files, matter); event.target.value = '' }} /></label></div>
+            <div style={{ padding: 9, borderBottom: '1px solid #bfdbfe', background: '#eff6ff', display: 'grid', gap: 8 }}><div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px,.8fr) minmax(220px,1fr) auto', gap: 7, alignItems: 'end' }}><label><strong>Document pool</strong><select value={activePoolId} onChange={(event) => { setManualRfpActivePoolId(event.target.value); updateManualRfpSet(set.id, { active_pool_id: event.target.value }); setManualRfpSelectedDocumentIds([]) }} style={{ width: '100%', marginTop: 4 }}><option value="">All matter documents (build a pool)</option>{pools.map((pool) => <option key={pool.id} value={pool.id}>{pool.name} ({pool.document_ids?.length || 0})</option>)}</select></label><label><strong>New pool name</strong><input value={manualRfpPoolName} onChange={(event) => setManualRfpPoolName(event.target.value)} placeholder="Example: School records" style={{ width: '100%', marginTop: 4 }} /></label><button type="button" onClick={() => createManualRfpPool(set, manualRfpSelectedDocumentIds)} disabled={!manualRfpSelectedDocumentIds.length}>Create Pool from Checked ({manualRfpSelectedDocumentIds.length})</button></div><div style={{ color: '#475569', fontSize: 12 }}>{activePool ? `Only “${activePool.name}” is shown below. Switch pools to use another group in this same job.` : 'Filter all matter documents, check the documents you want, name the pool, then create it. Once created, only that pool is shown.'}</div></div>
             <div style={{ padding: 9, display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) 155px 155px', gap: 7, borderBottom: '1px solid #e2e8f0' }}><input value={manualRfpDocumentSearch} onChange={(event) => setManualRfpDocumentSearch(event.target.value)} placeholder="Filter file name, document name, date..." /><select value={manualRfpDocumentStatusFilter} onChange={(event) => setManualRfpDocumentStatusFilter(event.target.value)}><option value="all">All documents</option><option value="unassigned">Not assigned</option><option value="assigned">Already assigned</option></select><select value={manualRfpDocumentSort} onChange={(event) => setManualRfpDocumentSort(event.target.value)}><option value="upload_desc">Newest uploaded</option><option value="upload_asc">Oldest uploaded</option><option value="name_asc">Name A-Z</option><option value="name_desc">Name Z-A</option></select></div>
-            <div style={{ padding: '7px 9px', display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => setManualRfpSelectedDocumentIds(visibleDocs.map((doc) => String(doc.id)))}>Select all</button><button type="button" onClick={() => setManualRfpSelectedDocumentIds([])}>Select none</button><span style={{ color: '#64748b', fontSize: 12 }}>{manualRfpSelectedDocumentIds.length} selected</span><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Columns</summary><div style={{ position: 'absolute', zIndex: 20, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}>{Object.entries({ file_name: 'File name', document_name: 'Document name', upload_date: 'Upload date' }).map(([key, label]) => <label key={key} style={{ display: 'block', whiteSpace: 'nowrap' }}><input type="checkbox" checked={manualRfpVisibleDocumentColumns[key]} onChange={(event) => setManualRfpVisibleDocumentColumns((current) => ({ ...current, [key]: event.target.checked }))} /> {label}</label>)}</div></details></div>
+            <div style={{ padding: '7px 9px', display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => setManualRfpSelectedDocumentIds(visibleDocs.map((doc) => String(doc.id)))}>Select all shown</button><button type="button" onClick={() => setManualRfpSelectedDocumentIds([])}>Select none</button><span style={{ color: '#64748b', fontSize: 12 }}>{manualRfpSelectedDocumentIds.length} selected</span><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Filter by tags ({manualRfpSelectedTagIds.length})</summary><div style={{ position: 'absolute', zIndex: 30, width: 360, maxHeight: 340, overflow: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 6 }}><button type="button" onClick={() => setManualRfpSelectedTagIds(matterTagIds)}>All tags</button><button type="button" onClick={() => setManualRfpSelectedTagIds([])}>No tag filter</button></div>{matterTagIds.map((tagId) => <label key={tagId} style={{ display: 'block', padding: 3 }}><input type="checkbox" checked={manualRfpSelectedTagIds.includes(tagId)} onChange={(event) => setManualRfpSelectedTagIds((current) => event.target.checked ? [...current, tagId] : current.filter((id) => id !== tagId))} /> {tagFullName(tagId) || tags.find((tag) => String(tag.id) === tagId)?.name || tagId}</label>)}</div></details><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Columns</summary><div style={{ position: 'absolute', zIndex: 20, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}>{Object.entries({ file_name: 'File name', document_name: 'Document name', upload_date: 'Upload date' }).map(([key, label]) => <label key={key} style={{ display: 'block', whiteSpace: 'nowrap' }}><input type="checkbox" checked={manualRfpVisibleDocumentColumns[key]} onChange={(event) => setManualRfpVisibleDocumentColumns((current) => ({ ...current, [key]: event.target.checked }))} /> {label}</label>)}</div></details></div>
             <div style={{ maxHeight: 650, overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 540 }}><thead style={{ position: 'sticky', top: 0, zIndex: 4, background: '#f8fafc' }}><tr><th style={{ padding: 7 }}></th><th style={{ textAlign: 'left', padding: 7 }}>Assigned</th>{manualRfpVisibleDocumentColumns.file_name && <th style={{ textAlign: 'left', padding: 7 }}>File name</th>}{manualRfpVisibleDocumentColumns.document_name && <th style={{ textAlign: 'left', padding: 7 }}>Document name</th>}{manualRfpVisibleDocumentColumns.upload_date && <th style={{ textAlign: 'left', padding: 7 }}>Upload date</th>}</tr></thead><tbody>{visibleDocs.map((doc) => {
               const assignments = assignmentMap[String(doc.id)] || []
               const checked = selectedSetIds.has(String(doc.id))
-              return <tr key={doc.id} draggable onClick={(event) => { if (event.target.closest('button,input,a,select,textarea')) return; selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event) }} onDragStart={(event) => { const ids = checked && manualRfpSelectedDocumentIds.length ? manualRfpSelectedDocumentIds : [String(doc.id)]; event.dataTransfer.setData('application/x-mio-document-ids', JSON.stringify(ids)); event.dataTransfer.effectAllowed = 'copy' }} style={{ opacity: assignments.length ? .55 : 1, background: checked ? '#dbeafe' : '#fff', cursor: 'grab' }}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event, true)} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{assignments.length ? assignments.map((value) => <span key={value} style={{ display: 'inline-block', margin: 2, padding: '2px 6px', borderRadius: 999, background: '#e2e8f0', fontSize: 10 }}>{String(value).match(/^\d+$/) ? `Request ${value}` : value}</span>) : <span style={{ color: '#94a3b8' }}>—</span>}</td>{manualRfpVisibleDocumentColumns.file_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textAlign: 'left' }}>{fileLabel(doc)}</button></td>}{manualRfpVisibleDocumentColumns.document_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(doc)}</td>}{manualRfpVisibleDocumentColumns.upload_date && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{doc.upload_date || String(doc.created_at || '').slice(0, 10) || doc.date || ''}</td>}</tr>
+              return <tr key={doc.id} draggable onClick={(event) => { if (event.target.closest('button,input,a,select,textarea')) return; selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event) }} onDoubleClick={() => openManualRfpViewer(doc)} onDragStart={(event) => { const ids = checked && manualRfpSelectedDocumentIds.length ? manualRfpSelectedDocumentIds : [String(doc.id)]; event.dataTransfer.setData('application/x-mio-document-ids', JSON.stringify(ids)); event.dataTransfer.effectAllowed = 'copy' }} style={{ opacity: assignments.length ? .55 : 1, background: checked ? '#dbeafe' : '#fff', cursor: 'grab' }}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event, true)} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{assignments.length ? assignments.map((value) => <span key={value} style={{ display: 'inline-block', margin: 2, padding: '2px 6px', borderRadius: 999, background: '#e2e8f0', fontSize: 10 }}>{String(value).match(/^\d+$/) ? `Request ${value}` : value}</span>) : <span style={{ color: '#94a3b8' }}>—</span>}</td>{manualRfpVisibleDocumentColumns.file_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => openManualRfpViewer(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textAlign: 'left' }}>{fileLabel(doc)}</button></td>}{manualRfpVisibleDocumentColumns.document_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(doc)}</td>}{manualRfpVisibleDocumentColumns.upload_date && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{doc.upload_date || String(doc.created_at || '').slice(0, 10) || doc.date || ''}</td>}</tr>
             })}{!visibleDocs.length && <tr><td colSpan={columnCount} style={{ padding: 22, textAlign: 'center', color: '#64748b' }}>No matter documents match the current filter.</td></tr>}</tbody></table></div>
           </section>
         </div>
 
         <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
-          <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Document List / Production Log</strong><div style={{ color: '#64748b', fontSize: 12 }}>Unique documents are produced once even when linked to more than one request. Use the arrows to set Bates order.</div></div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" onClick={() => { setManualRfpGeneratedResponseOpen(true); window.setTimeout(() => Array.from(document.querySelectorAll('h3')).find((node) => node.textContent === 'Generated Response')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Responses &amp; Objections</button><label>Prefix <input value={set.bates_prefix || 'Original-RFP'} onChange={(event) => updateManualRfpSet(set.id, { bates_prefix: event.target.value })} style={{ width: 130 }} /></label><label>Start <input type="number" min="1" value={set.bates_start || 1} onChange={(event) => updateManualRfpSet(set.id, { bates_start: Math.max(1, Number(event.target.value) || 1) })} style={{ width: 70 }} /></label><button type="button" onClick={() => createManualRfpBatesCopies(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#7c3aed', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Add Bates Stamps</button></div></div>
-          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Request folder(s)</th><th style={{ textAlign: 'left', padding: 7 }}>Short request name(s)</th><th style={{ textAlign: 'left', padding: 7 }}>File name</th><th style={{ textAlign: 'left', padding: 7 }}>Document name</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th></tr></thead><tbody>{productionRows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, -1, matterDocs)} disabled={index === 0}>↑</button><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, 1, matterDocs)} disabled={index === productionRows.length - 1}>↓</button> {index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.request_numbers.map((number) => `Request ${number}`).join(', ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{(set.requests || []).filter((request, requestIndex) => row.request_numbers.includes(String(request.request_number || requestIndex + 1))).map((request, requestIndex) => manualRfpShortName(request, requestIndex)).join('; ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{fileLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.bates ? `${row.bates.prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td></tr>)}{!productionRows.length && <tr><td colSpan="6" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>No documents have been assigned to a request folder.</td></tr>}</tbody></table></div>
+          <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Document List / Production Log</strong><div style={{ color: '#64748b', fontSize: 12 }}>Unique documents are produced once even when linked to more than one request. Use the arrows to set Bates order.</div></div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" onClick={() => openManualRfpDownloadReview(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Review &amp; Download Folders</button><button type="button" onClick={() => { setManualRfpGeneratedResponseOpen(true); window.setTimeout(() => Array.from(document.querySelectorAll('h3')).find((node) => node.textContent === 'Generated Response')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Responses &amp; Objections</button><label>Prefix <input value={set.bates_prefix || 'Original-RFP'} onChange={(event) => updateManualRfpSet(set.id, { bates_prefix: event.target.value })} style={{ width: 130 }} /></label><label>Start <input type="number" min="1" value={set.bates_start || 1} onChange={(event) => updateManualRfpSet(set.id, { bates_start: Math.max(1, Number(event.target.value) || 1) })} style={{ width: 70 }} /></label><button type="button" onClick={() => createManualRfpBatesCopies(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#7c3aed', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Add Bates Stamps</button></div></div>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Request folder(s)</th><th style={{ textAlign: 'left', padding: 7 }}>Short request name(s)</th><th style={{ textAlign: 'left', padding: 7 }}>Export file name</th><th style={{ textAlign: 'left', padding: 7 }}>Document name</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th></tr></thead><tbody>{productionRows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, -1, matterDocs)} disabled={index === 0}>↑</button><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, 1, matterDocs)} disabled={index === productionRows.length - 1}>↓</button> {index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.request_numbers.map((number) => `Request ${number}`).join(', ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{(set.requests || []).filter((request, requestIndex) => row.request_numbers.includes(String(request.request_number || requestIndex + 1))).map((request, requestIndex) => manualRfpShortName(request, requestIndex)).join('; ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{manualRfpReviewedExportName(set, { document_id: row.document_id, export_name: set.export_file_names?.[String(row.document_id)] || row.bates?.stamped_file_name || fileLabel(row.doc), bates: row.bates }, set.export_prefix_bates !== false)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.bates ? `${row.bates.prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td></tr>)}{!productionRows.length && <tr><td colSpan="6" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>No documents have been assigned to a request folder.</td></tr>}</tbody></table></div>
         </section>
 
         {manualRfpTagPanelOpen && <section style={{ border: '1px solid #86efac', borderRadius: 14, background: '#f0fdf4', padding: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><div><strong>Add Tags</strong><div style={{ color: '#64748b', fontSize: 12 }}>Apply a shared discovery path and optional Request # child tags to every assigned document.</div></div><button type="button" onClick={() => setManualRfpTagPanelOpen(false)}>Close</button></div><div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1fr) auto auto', gap: 10, alignItems: 'end', marginTop: 10 }}><label><strong>Base tag path</strong><input value={set.tag_base_path || ''} onChange={(event) => updateManualRfpSet(set.id, { tag_base_path: event.target.value })} style={{ width: '100%', marginTop: 4 }} /></label><label><input type="checkbox" checked={set.add_request_tags !== false} onChange={(event) => updateManualRfpSet(set.id, { add_request_tags: event.target.checked })} /> Add Request # tags</label><button type="button" onClick={() => applyManualRfpTags(set)} style={{ background: '#15803d', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Apply Tags</button></div></section>}
@@ -10743,16 +10869,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function updateRespondingDiscoverySet(setId, patch) {
-    setRespondingDiscoverySets((current) => (current || []).map((set) => String(set.id) === String(setId) ? { ...set, ...patch } : set))
+    updateManualRfpSet(setId, patch)
   }
 
   function updateRespondingDiscoveryRequest(setId, requestId, patch) {
-    setRespondingDiscoverySets((current) => (current || []).map((set) => {
-      if (String(set.id) !== String(setId)) return set
-      return {
-        ...set,
-        requests: (set.requests || []).map((request) => String(request.id) === String(requestId) ? { ...request, ...patch } : request)
-      }
+    updateManualRfpSet(setId, (target) => ({
+      ...target,
+      requests: (target.requests || []).map((request) => String(request.id) === String(requestId) ? { ...request, ...patch } : request)
     }))
   }
 
