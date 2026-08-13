@@ -3,10 +3,10 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V228'
+const MIO_APP_VERSION = 'Mio V230'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
-const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
+const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
 const MIO_ONLY_FINANCE_MODE = true
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
@@ -16,6 +16,7 @@ const BULK_BILLING_COLUMNS = [
   { key: 'matter', label: 'Matter', width: 300 },
   { key: 'trust', label: 'Trust', width: 105 },
   { key: 'outstanding', label: 'OB', width: 90 },
+  { key: 'pending', label: 'Pending', width: 110 },
   { key: 'wip', label: 'WIP', width: 90 },
   { key: 'minimum', label: 'Min bal', width: 105 },
   { key: 'trustMinusMinimum', label: 'Trust − min', width: 135 },
@@ -36,6 +37,7 @@ const BULK_INVOICE_COLUMNS = [
   { key: 'status', label: 'Status', width: 115 },
   { key: 'total', label: 'Total', width: 105 },
   { key: 'paidAmount', label: 'Amount paid', width: 120 },
+  { key: 'pendingAmount', label: 'Pending payment', width: 145 },
   { key: 'balance', label: 'Balance', width: 105 },
   { key: 'created', label: 'Date created', width: 135 },
   { key: 'sent', label: 'Date sent to client', width: 155 },
@@ -2077,6 +2079,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioTrustTransactions') || '[]') }
     catch { return [] }
   })
+  const [mioFinanceOpeningBalances, setMioFinanceOpeningBalances] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioFinanceOpeningBalances') || '{}') }
+    catch { return {} }
+  })
   const [clioHistoricalFinancialArchive, setClioHistoricalFinancialArchive] = useState([])
   const [clioMigrationPreview, setClioMigrationPreview] = useState(null)
   const [clioMigrationBusy, setClioMigrationBusy] = useState(false)
@@ -2157,6 +2163,8 @@ function App() {
   })
   const [bulkBillingColumnMenuOpen, setBulkBillingColumnMenuOpen] = useState(false)
   const [bulkBillingCaseTypeMenuOpen, setBulkBillingCaseTypeMenuOpen] = useState(false)
+  const [bulkObPopover, setBulkObPopover] = useState(null)
+  const bulkObPopoverCloseTimerRef = useRef(null)
   const [bulkBillingBusy, setBulkBillingBusy] = useState(false)
   const [bulkBillingResult, setBulkBillingResult] = useState('')
   const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], drafts: {}, approved_ids: [], invoice_by_matter: {} })
@@ -2182,10 +2190,26 @@ function App() {
   const bulkBillingScrollSyncRef = useRef(false)
   const bulkInvoiceSequenceRef = useRef(0)
   const billingEntriesRef = useRef([])
-  // Clio is a frozen opening-balance source only. Rows after Mio's cutover date
-  // are deliberately ignored so a later Clio report can never reset Mio balances.
+  // Opening balances are now a one-time Mio record. Clio rows remain available
+  // only in read-only history and can never alter current financial balances.
   const latestFinancialSnapshotByMatterId = useMemo(() => {
     const result = new Map()
+    if (MIO_ONLY_FINANCE_MODE) {
+      for (const matter of matters || []) {
+        const opening = mioFinanceOpeningBalances?.[String(matter.id)]
+        result.set(String(matter.id), opening ? {
+          ...opening,
+          mio_matter_id: String(matter.id),
+          snapshot_date: opening.snapshot_date || DEFAULT_MIO_BILLING_CUTOVER_DATE,
+          matter_trust_funds: financeNumber(opening.matter_trust_funds ?? opening.trust),
+          trust_running_balance: financeNumber(opening.trust_running_balance ?? opening.matter_trust_funds ?? opening.trust),
+          outstanding_balance: financeNumber(opening.outstanding_balance ?? opening.outstanding),
+          work_in_progress: financeNumber(opening.work_in_progress ?? opening.wip),
+          minimum_balance: financeNumber(opening.minimum_balance)
+        } : null)
+      }
+      return result
+    }
     const cutoverDate = financeDateOnly(activeMioBillingCutoverDate)
     for (const matter of matters || []) {
       let latest = null
@@ -2198,12 +2222,12 @@ function App() {
       result.set(String(matter.id), latest)
     }
     return result
-  }, [clioSnapshotRows, matters, clioMioRosetta, activeMioBillingCutoverDate])
+  }, [clioSnapshotRows, matters, clioMioRosetta, activeMioBillingCutoverDate, mioFinanceOpeningBalances])
   const bulkFinanceByMatterId = useMemo(() => {
     const result = new Map()
     for (const matter of matters || []) result.set(String(matter.id), clientFinanceNumbers(matter))
     return result
-  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId])
+  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId, mioFinanceOpeningBalances])
   const [billingRates, setBillingRates] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioBillingRates') || '{}') }
     catch { return {} }
@@ -2831,7 +2855,7 @@ function App() {
   })
   useEffect(() => {
     if (clientDashboardTab !== 'finances' || !session?.user?.id) return
-    loadClioFinancialSnapshots({ ignoreDateFilters: true })
+    loadMioInvoicesFromDatabase()
     refreshLawPayFinancialData({ silent: true }).catch(() => {})
   }, [clientDashboardTab, selectedTemplateMatterId, session?.user?.id])
   const [matterFilingsTab, setMatterFilingsTab] = useState('trial')
@@ -3094,6 +3118,7 @@ function App() {
         return mergeMioInvoiceState(current, cloudOnlyRows)
       }), kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
+      caseMioFinanceOpeningBalances: { setter: (value) => setMioFinanceOpeningBalances(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
       caseMioRetainerReplenishmentTargets: { setter: setRetainerReplenishmentTargets, kind: 'object', fallback: {} },
@@ -3721,6 +3746,10 @@ function App() {
   }, [mioTrustTransactions])
 
   useEffect(() => {
+    try { saveMioStateKey('caseMioFinanceOpeningBalances', JSON.stringify(mioFinanceOpeningBalances || {})) } catch {}
+  }, [mioFinanceOpeningBalances])
+
+  useEffect(() => {
     if (session?.user?.id) loadClioHistoricalFinancialArchive()
     else setClioHistoricalFinancialArchive([])
   }, [session?.user?.id])
@@ -3776,9 +3805,8 @@ function App() {
 
   useEffect(() => {
     if (page !== 'billing' || billingTab !== 'bulk_billing' || !session?.user?.id) return
-    // Read the frozen opening balances. This never contacts Clio and rows after
-    // Mio's cutover date are ignored by the financial calculator.
-    loadClioFinancialSnapshots({ ignoreDateFilters: true })
+    // Mio opening balances are stored in Mio cloud state. Bulk Billing no
+    // longer loads or recalculates balances from Clio snapshots.
     loadLawPayWorkspace()
   }, [page, billingTab, session?.user?.id])
 
@@ -4243,7 +4271,6 @@ function App() {
     mattersClioRefreshRef.current = (async () => {
       try {
         setClioSnapshotError('')
-        await loadClioFinancialSnapshots({ ignoreDateFilters: true })
         await loadLawPayWorkspace()
         await loadMioInvoicesFromDatabase()
       } catch (error) {
@@ -17306,6 +17333,7 @@ async function updateTeamCell(memberId, field, value) {
   function latestTrustSnapshotForMatter(matter = {}) {
     const matterId = String(matter?.id || '')
     if (matterId && latestFinancialSnapshotByMatterId.has(matterId)) return latestFinancialSnapshotByMatterId.get(matterId) || null
+    if (MIO_ONLY_FINANCE_MODE) return null
     const cutoverDate = financeDateOnly(activeMioBillingCutoverDate)
     const candidates = (clioSnapshotRows || []).filter((row) => financialSnapshotMatchesMatter(row, matter) && financeDateOnly(row.snapshot_date) <= cutoverDate)
     return candidates.sort((a, b) => new Date(b.snapshot_date || 0) - new Date(a.snapshot_date || 0))[0] || null
@@ -17342,17 +17370,22 @@ async function updateTeamCell(memberId, field, value) {
     return !!entryDate && entryDate > cutover
   }
 
+  function invoicePaidAmount(invoice) {
+    const total = Math.max(0, financeNumber(invoice?.total))
+    const storedPaid = Math.max(0, financeNumber(invoice?.amount_paid))
+    const trustPaid = activeTrustPaymentsForInvoice(invoice).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    return Math.min(total, Math.max(storedPaid, trustPaid))
+  }
+
   function invoiceBalanceAmount(invoice) {
-    const total = financeNumber(invoice?.total)
-    const paid = financeNumber(invoice?.amount_paid)
-    return Math.max(0, financeNumber(invoice?.balance, total - paid))
+    return Math.max(0, Number((financeNumber(invoice?.total) - invoicePaidAmount(invoice)).toFixed(2)))
   }
 
   function invoiceStatusLabel(invoice) {
     if (invoice?.status === 'void') return 'Deleted / void'
     if (invoiceBalanceAmount(invoice) <= 0.005) return 'Paid'
     if (invoice?.status === 'draft') return 'Draft'
-    return financeNumber(invoice?.amount_paid) > 0.005 ? 'Partial' : 'Outstanding'
+    return invoicePaidAmount(invoice) > 0.005 ? 'Partial' : 'Outstanding'
   }
 
   function financeInvoicesForMatter(matter, invoiceSource = mioInvoices) {
@@ -17381,20 +17414,54 @@ async function updateTeamCell(memberId, field, value) {
     return duplicates
   }
 
+  function lawPayRawObject(transaction = {}) {
+    if (transaction.raw && typeof transaction.raw === 'object') return transaction.raw
+    if (typeof transaction.raw === 'string') {
+      try { return JSON.parse(transaction.raw) || {} } catch {}
+    }
+    return {}
+  }
+
+  function lawPayTransactionRequestId(transaction = {}) {
+    const raw = lawPayRawObject(transaction)
+    return transaction.payment_request_id || transaction.request_id || raw.mio_payment_request_id || raw.payment_request_id || raw.data?.mio_payment_request_id || ''
+  }
+
+  function lawPayTransactionInvoiceNumber(transaction = {}) {
+    const raw = lawPayRawObject(transaction)
+    return String(
+      transaction.invoice_number ||
+      raw.mio_invoice_number ||
+      raw.invoice_number ||
+      raw.data?.custom_fields?.Invoice ||
+      raw.data?.custom_fields?.invoice ||
+      ''
+    ).trim()
+  }
+
   function lawPayRequestForTransaction(transaction) {
     return (lawPayPaymentRequests || []).find((request) => {
-      const linkedRequestId = transaction?.payment_request_id || transaction?.request_id || transaction?.raw?.mio_payment_request_id || transaction?.raw?.payment_request_id || ''
+      const linkedRequestId = lawPayTransactionRequestId(transaction)
       if (linkedRequestId && String(request.id) === String(linkedRequestId)) return true
       const gatewayId = transaction?.gateway_transaction_id || transaction?.transaction_id || ''
-      return !!gatewayId && [request.gateway_transaction_id, request.transaction_id].filter(Boolean).some((value) => String(value) === String(gatewayId))
+      if (gatewayId && [request.gateway_transaction_id, request.transaction_id].filter(Boolean).some((value) => String(value) === String(gatewayId))) return true
+      const invoiceNumber = lawPayTransactionInvoiceNumber(transaction)
+      return !!invoiceNumber && String(request.invoice_number || '').trim() === invoiceNumber
     }) || null
+  }
+
+  function lawPayTransactionMatterId(transaction) {
+    const raw = lawPayRawObject(transaction)
+    const request = lawPayRequestForTransaction(transaction)
+    const invoiceNumber = lawPayTransactionInvoiceNumber(transaction) || String(request?.invoice_number || '').trim()
+    const invoice = invoiceNumber ? (mioInvoices || []).find((row) => String(row.invoice_number || '').trim() === invoiceNumber) : null
+    return transaction?.matter_id || raw.mio_matter_id || raw.matter_id || raw.data?.mio_matter_id || request?.matter_id || invoice?.matter_id || ''
   }
 
   function lawPayTransactionsForMatter(matter) {
     const matterId = String(matter?.id || '')
     return (lawPayTransactions || []).filter((transaction) => {
-      const request = lawPayRequestForTransaction(transaction)
-      const linkedMatterId = transaction?.matter_id || transaction?.raw?.mio_matter_id || transaction?.raw?.matter_id || request?.matter_id || ''
+      const linkedMatterId = lawPayTransactionMatterId(transaction)
       return !!matterId && String(linkedMatterId) === matterId
     })
   }
@@ -17405,6 +17472,24 @@ async function updateTeamCell(memberId, field, value) {
       const type = String(transaction?.transaction_type || '').trim().toLowerCase()
       return /authoriz|pending|process|submitted/.test(status) && !/refund|chargeback|reversal/.test(type) && financeNumber(transaction?.amount_cents) > 0
     })
+  }
+
+  function pendingLawPayPaymentsForInvoice(invoice) {
+    const invoiceNumber = String(invoice?.invoice_number || '').trim()
+    const matterId = String(invoice?.matter_id || '')
+    if (!invoiceNumber) return []
+    return (lawPayTransactions || []).filter((transaction) => {
+      const request = lawPayRequestForTransaction(transaction)
+      const transactionInvoiceNumber = lawPayTransactionInvoiceNumber(transaction) || String(request?.invoice_number || '').trim()
+      const linkedMatterId = String(lawPayTransactionMatterId(transaction) || '')
+      const status = String(transaction?.status || '').trim().toLowerCase()
+      const type = String(transaction?.transaction_type || '').trim().toLowerCase()
+      return transactionInvoiceNumber === invoiceNumber && (!matterId || !linkedMatterId || linkedMatterId === matterId) && /authoriz|pending|process|submitted/.test(status) && !/refund|chargeback|reversal/.test(type) && financeNumber(transaction?.amount_cents) > 0
+    })
+  }
+
+  function pendingLawPayAmountForMatter(matter) {
+    return pendingLawPayPaymentsForMatter(matter).reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
   }
 
   function clientFinanceLedgerRows(matter) {
@@ -17419,7 +17504,7 @@ async function updateTeamCell(memberId, field, value) {
       }))
     const lawPayRows = (lawPayTransactions || []).map((transaction) => {
       const request = lawPayRequestForTransaction(transaction)
-      const linkedMatterId = transaction.matter_id || transaction?.raw?.mio_matter_id || transaction?.raw?.matter_id || request?.matter_id || ''
+      const linkedMatterId = lawPayTransactionMatterId(transaction)
       const accountKey = String(transaction.account_key || request?.account_key || '').toLowerCase()
       const status = String(transaction.status || '').toLowerCase()
       if (String(linkedMatterId) !== matterId || !accountKey.includes('trust')) return null
@@ -17480,11 +17565,12 @@ async function updateTeamCell(memberId, field, value) {
     const wip = clioBaselineWip + mioPostCutoverWip
     const ledgerRows = clientFinanceLedgerRows(matter)
     const currentLedgerRows = hasSnapshot ? ledgerRows.filter((row) => financeRowAfterSnapshot(row, snapshot)) : ledgerRows
-    const snapshotOutstandingPayments = currentLedgerRows
-      .filter((row) => row?.applies_to_snapshot_outstanding)
+    const snapshotOutstandingPayments = activeSnapshotOutstandingPayments(currentLedgerRows, matter?.id)
       .reduce((sum, row) => sum + financeNumber(row.amount), 0)
     const outstanding = Math.max(0, (hasSnapshot ? snapshotOutstanding : 0) - snapshotOutstandingPayments) + newerInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
-    const ledgerDelta = currentLedgerRows.reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
+    const ledgerDelta = currentLedgerRows.reduce((sum, row) => {
+      return sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount))
+    }, 0)
     const minimumBalance = Math.max(0, financeNumber(
       snapshot?.minimum_balance ??
       clioMinimumBalancesByMatterId?.[String(matter?.id || '')] ??
@@ -17518,6 +17604,22 @@ async function updateTeamCell(memberId, field, value) {
       ledgerRows,
       currentLedgerRows,
       financialSnapshotResolved: MIO_ONLY_FINANCE_MODE || hasSnapshot
+    }
+  }
+
+  function outstandingBreakdownForMatter(matter, preparedFinance = null) {
+    const finance = preparedFinance || clientFinanceNumbers(matter)
+    const openingPaid = activeSnapshotOutstandingPayments(finance.currentLedgerRows, matter?.id).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const openingBalance = Math.max(0, financeNumber(finance.snapshotOutstanding) - openingPaid)
+    const invoiceRows = (finance.serviceInvoices || [])
+      .filter((invoice) => invoice.status !== 'draft' && (!finance.snapshot || financeRowAfterSnapshot(invoice, finance.snapshot)) && !finance.duplicateInvoiceIds?.has(String(invoice.id)))
+      .map((invoice) => ({ invoice, label: invoice.invoice_number || 'Unnumbered invoice', balance: invoiceBalanceAmount(invoice), issue_date: invoice.issue_date || invoice.created_at || '' }))
+      .filter((row) => row.balance > 0.005)
+      .sort((left, right) => String(left.issue_date).localeCompare(String(right.issue_date)) || left.label.localeCompare(right.label))
+    return {
+      openingBalance,
+      invoiceRows,
+      total: Number((openingBalance + invoiceRows.reduce((sum, row) => sum + row.balance, 0)).toFixed(2))
     }
   }
 
@@ -17570,6 +17672,11 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function invoiceDatabasePayload(invoice = {}) {
+    const total = financeNumber(invoice.total)
+    const trustPaid = activeTrustPaymentsForInvoice(invoice).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const amountPaid = Math.min(total, Math.max(0, financeNumber(invoice.amount_paid), trustPaid))
+    const balance = Math.max(0, Number((total - amountPaid).toFixed(2)))
+    const status = invoice.status === 'void' || invoice.status === 'draft' ? invoice.status : balance <= 0.005 ? 'paid' : 'outstanding'
     return {
       id: invoice.id,
       user_id: session?.user?.id,
@@ -17583,11 +17690,11 @@ async function updateTeamCell(memberId, field, value) {
       matter_description: invoice.matter_description || '',
       issue_date: invoice.issue_date || new Date().toISOString().slice(0, 10),
       due_date: invoice.due_date || null,
-      status: ['draft','outstanding','paid','void'].includes(invoice.status) ? invoice.status : 'draft',
+      status,
       subtotal: financeNumber(invoice.subtotal),
-      total: financeNumber(invoice.total),
-      amount_paid: financeNumber(invoice.amount_paid),
-      balance: invoiceBalanceAmount(invoice),
+      total,
+      amount_paid: amountPaid,
+      balance,
       line_items: Array.isArray(invoice.line_items) ? invoice.line_items : [],
       source_snapshot_date: invoice.source_snapshot_date || null,
       source_wip_amount: financeNumber(invoice.source_wip_amount),
@@ -17814,7 +17921,7 @@ async function updateTeamCell(memberId, field, value) {
     }
     y -= 8
     page.drawLine({ start: { x: margin + 290, y }, end: { x: pageWidth - margin, y }, thickness: 0.6, color: gray }); y -= 18
-    const totalRows = [['Subtotal', invoice.subtotal], ['Total', invoice.total], ['Payments Received', -financeNumber(invoice.amount_paid)], [invoice.invoice_type === 'trust_request' ? 'Trust Request Amount Required' : 'Balance Owing', invoiceBalanceAmount(invoice)]]
+    const totalRows = [['Subtotal', invoice.subtotal], ['Total', invoice.total], ['Payments Received', -invoicePaidAmount(invoice)], [invoice.invoice_type === 'trust_request' ? 'Trust Request Amount Required' : 'Balance Owing', invoiceBalanceAmount(invoice)]]
     totalRows.forEach(([label, value], index) => {
       const rowFont = index === totalRows.length - 1 ? bold : regular
       const labelText = String(label)
@@ -17830,7 +17937,7 @@ async function updateTeamCell(memberId, field, value) {
     }
     y -= 18
     drawText('Statement of Account', margin, { size: 15, bold: true }); y -= 22
-    drawText(`New charges: ${moneyText(invoice.total)}     Payments received: ${moneyText(invoice.amount_paid)}     Total amount outstanding: ${moneyText(invoiceBalanceAmount(invoice))}`, margin, { size: 9 })
+    drawText(`New charges: ${moneyText(invoice.total)}     Payments received: ${moneyText(invoicePaidAmount(invoice))}     Total amount outstanding: ${moneyText(invoiceBalanceAmount(invoice))}`, margin, { size: 9 })
     page.drawText(`Please make all amounts payable to: ${lawFirmProfile.firm_name || 'Beveridge Law Firm'}`, { x: margin, y: 58, size: 9, font: regular, color: dark })
     const pages = pdf.getPages()
     pages.forEach((pdfPage, index) => pdfPage.drawText(`Page ${index + 1} of ${pages.length}`, { x: pageWidth / 2 - 24, y: 28, size: 8, font: regular, color: gray }))
@@ -17988,7 +18095,7 @@ async function updateTeamCell(memberId, field, value) {
 
   function beginInvoiceEdit(invoice = selectedFinanceInvoice) {
     if (!invoice) return
-    if (financeNumber(invoice.amount_paid) > 0.005) return alert('Cancel or reverse every payment on this invoice before editing it.')
+    if (invoicePaidAmount(invoice) > 0.005) return alert('Cancel or reverse every payment on this invoice before editing it.')
     setInvoiceEditDraft({ ...invoice, line_items: (invoice.line_items || []).map(invoiceEditLine) })
     setInvoiceEditorMode('edit')
   }
@@ -18047,7 +18154,7 @@ async function updateTeamCell(memberId, field, value) {
       due_date: draft?.due_date || null,
       subtotal: total,
       total,
-      balance: Math.max(0, Number((total - financeNumber(baseInvoice?.amount_paid)).toFixed(2))),
+      balance: Math.max(0, Number((total - invoicePaidAmount(baseInvoice)).toFixed(2))),
       source_wip_amount: Number(snapshotAmount.toFixed(2)),
       line_items: lineItems,
       updated_at: new Date().toISOString()
@@ -18094,7 +18201,7 @@ async function updateTeamCell(memberId, field, value) {
 
   async function saveInvoiceEdits() {
     if (invoiceEditorMode !== 'edit' || !selectedFinanceInvoice || !invoiceEditDraft) return
-    if (financeNumber(selectedFinanceInvoice.amount_paid) > 0.005) return alert('This invoice received a payment while it was open. Cancel or reverse the payment before saving changes.')
+    if (invoicePaidAmount(selectedFinanceInvoice) > 0.005) return alert('This invoice received a payment while it was open. Cancel or reverse the payment before saving changes.')
     const edited = invoiceFromEditDraft(invoiceEditDraft, selectedFinanceInvoice, selectedFinanceInvoice.status)
     if (edited.total <= 0.005) return alert('The invoice must contain at least one line item with an amount greater than zero. Use Delete invoice if the invoice is no longer needed.')
     setInvoiceDocumentBusy(true)
@@ -18111,7 +18218,7 @@ async function updateTeamCell(memberId, field, value) {
 
   async function approveExistingDraft(invoice = selectedFinanceInvoice) {
     if (!invoice || invoice.status !== 'draft') return
-    if (financeNumber(invoice.amount_paid) > 0.005) return alert('This invoice has a payment and cannot be approved until the payment is canceled or reversed.')
+    if (invoicePaidAmount(invoice) > 0.005) return alert('This invoice has a payment and cannot be approved until the payment is canceled or reversed.')
     if (!window.confirm(`Approve ${invoice.invoice_number} and make it an outstanding invoice?`)) return
     setInvoiceDocumentBusy(true)
     try {
@@ -18124,7 +18231,7 @@ async function updateTeamCell(memberId, field, value) {
 
   async function deleteUnpaidInvoice(invoice = selectedFinanceInvoice) {
     if (!invoice) return
-    if (financeNumber(invoice.amount_paid) > 0.005) return alert('This invoice is locked because a payment is recorded. Cancel or reverse every payment before deleting it.')
+    if (invoicePaidAmount(invoice) > 0.005) return alert('This invoice is locked because a payment is recorded. Cancel or reverse every payment before deleting it.')
     if (!window.confirm(`Delete ${invoice.invoice_number}? Its linked billing entries will return to WIP. The invoice number will be retained as void in the audit history.`)) return
     setInvoiceDocumentBusy(true)
     try {
@@ -18137,18 +18244,31 @@ async function updateTeamCell(memberId, field, value) {
     finally { setInvoiceDocumentBusy(false) }
   }
 
+  function activeTrustPaymentsForInvoiceFromRows(invoice, rows = mioTrustTransactions) {
+    const reversedIds = new Set((rows || []).map((row) => String(row.reverses_transaction_id || '')).filter(Boolean))
+    return (rows || [])
+      .filter((row) => String(row.invoice_id || '') === String(invoice?.id || '') && row.direction === 'out' && row.transaction_type === 'operating_transfer' && !reversedIds.has(String(row.id)))
+      .sort((left, right) => String(left.created_at || left.date || '').localeCompare(String(right.created_at || right.date || '')) || String(left.id || '').localeCompare(String(right.id || '')))
+  }
+
   function activeTrustPaymentsForInvoice(invoice) {
-    const reversedIds = new Set((mioTrustTransactions || []).map((row) => String(row.reverses_transaction_id || '')).filter(Boolean))
-    return (mioTrustTransactions || []).filter((row) => String(row.invoice_id || '') === String(invoice?.id || '') && row.direction === 'out' && row.transaction_type === 'operating_transfer' && !reversedIds.has(String(row.id)))
+    return activeTrustPaymentsForInvoiceFromRows(invoice, mioTrustTransactions)
+  }
+
+  function activeSnapshotOutstandingPayments(rows = mioTrustTransactions, matterId = '') {
+    const reversedIds = new Set((rows || []).map((row) => String(row.reverses_transaction_id || '')).filter(Boolean))
+    return (rows || [])
+      .filter((row) => String(row.matter_id || '') === String(matterId || '') && row.direction === 'out' && row.applies_to_snapshot_outstanding && !reversedIds.has(String(row.id)))
+      .sort((left, right) => String(left.created_at || left.date || '').localeCompare(String(right.created_at || right.date || '')) || String(left.id || '').localeCompare(String(right.id || '')))
   }
 
   async function reverseTrustInvoicePayment(transaction, invoice = selectedFinanceInvoice) {
     if (!transaction || !invoice) return
-    const amount = Math.min(financeNumber(transaction.amount), financeNumber(invoice.amount_paid))
+    const amount = Math.min(financeNumber(transaction.amount), invoicePaidAmount(invoice))
     if (amount <= 0.005) return alert('This trust payment has already been reversed or no longer applies to the invoice.')
     if (!window.confirm(`Reverse the ${money(amount)} trust payment applied to ${invoice.invoice_number}? This returns the funds to the client's calculated trust balance and reduces the invoice payment by the same amount.`)) return
     const now = new Date().toISOString()
-    const nextPaid = Math.max(0, financeNumber(invoice.amount_paid) - amount)
+    const nextPaid = Math.max(0, invoicePaidAmount(invoice) - amount)
     const nextBalance = Math.max(0, financeNumber(invoice.total) - nextPaid)
     const updated = { ...invoice, amount_paid: Number(nextPaid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: invoice.status === 'draft' ? 'draft' : 'outstanding', updated_at: now }
     const reversal = { id: crypto?.randomUUID ? crypto.randomUUID() : `trust-reversal-${Date.now()}`, matter_id: invoice.matter_id, client_id: invoice.client_id || '', date: now.slice(0, 10), direction: 'in', transaction_type: 'adjustment', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number, memo: `Reversed trust payment previously applied to ${invoice.invoice_number}`, invoice_id: invoice.id, reverses_transaction_id: transaction.id, source: 'Mio invoice payment reversal', created_at: now }
@@ -18191,7 +18311,7 @@ async function updateTeamCell(memberId, field, value) {
       const next = invoiceFromDatabaseRow(refreshed)
       setSelectedFinanceInvoice(next)
       setMioInvoices((current) => (current || []).map((invoice) => String(invoice.id) === String(next.id) ? next : invoice))
-      const paid = financeNumber(next.amount_paid)
+      const paid = invoicePaidAmount(next)
       alert(invoiceBalanceAmount(next) <= 0.005
         ? `Payment confirmed. ${money(paid)} has been received and the invoice is paid in full.`
         : paid > 0.005
@@ -18369,7 +18489,7 @@ async function updateTeamCell(memberId, field, value) {
     const amount = financeNumber(String(entered).replace(/[$,]/g, ''), NaN)
     if (!Number.isFinite(amount) || amount <= 0 || amount > balance + 0.005 || amount > trustAvailable + 0.005) return alert('Enter an amount no greater than the invoice balance and available trust funds.')
     const now = new Date().toISOString()
-    const paid = financeNumber(invoice.amount_paid) + amount
+    const paid = invoicePaidAmount(invoice) + amount
     const nextBalance = Math.max(0, financeNumber(invoice.total) - paid)
     const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(nextBalance.toFixed(2)), status: nextBalance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
     const transaction = {
@@ -18573,7 +18693,7 @@ async function updateTeamCell(memberId, field, value) {
     const amount = Math.min(invoiceBalanceAmount(invoice), trustAvailable)
     if (amount <= 0.005) throw new Error('No available trust funds can be applied to this invoice.')
     const now = new Date().toISOString()
-    const paid = financeNumber(invoice.amount_paid) + amount
+    const paid = invoicePaidAmount(invoice) + amount
     const balance = Math.max(0, financeNumber(invoice.total) - paid)
     const paidInvoice = { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }
     const transaction = {
@@ -18600,7 +18720,7 @@ async function updateTeamCell(memberId, field, value) {
     let remaining = payable
     const now = new Date().toISOString()
     const transactions = []
-    const alreadyPaidSnapshot = finance.currentLedgerRows.filter((row) => row?.applies_to_snapshot_outstanding).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+    const alreadyPaidSnapshot = activeSnapshotOutstandingPayments(finance.currentLedgerRows, matter?.id).reduce((sum, row) => sum + financeNumber(row.amount), 0)
     const snapshotDue = Math.max(0, finance.snapshotOutstanding - alreadyPaidSnapshot)
     if (snapshotDue > 0.005 && remaining > 0.005) {
       const amount = Math.min(snapshotDue, remaining)
@@ -18612,7 +18732,7 @@ async function updateTeamCell(memberId, field, value) {
       if (remaining <= 0.005) return
       const amount = Math.min(invoiceBalanceAmount(invoice), remaining)
       remaining -= amount
-      const paid = financeNumber(invoice.amount_paid) + amount
+      const paid = invoicePaidAmount(invoice) + amount
       const balance = Math.max(0, financeNumber(invoice.total) - paid)
       invoiceUpdates.set(String(invoice.id), { before: invoice, after: { ...invoice, amount_paid: Number(paid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: now }, amount: Number(amount.toFixed(2)) })
       transactions.push({ id: crypto?.randomUUID ? crypto.randomUUID() : `trust-${Date.now()}-${invoice.id}`, matter_id: matter.id, client_id: matter.client_id || '', date: now.slice(0, 10), direction: 'out', transaction_type: 'operating_transfer', amount: Number(amount.toFixed(2)), payer_payee: lawFirmProfile.firm_name || 'Firm operating account', reference: invoice.invoice_number, memo: `Applied trust funds to ${invoice.invoice_number}`, invoice_id: invoice.id, source: 'Mio bulk billing', created_at: now })
@@ -18624,10 +18744,73 @@ async function updateTeamCell(memberId, field, value) {
   async function persistOutstandingTrustPaymentPlans(plans = []) {
     if (!session?.user?.id) throw new Error('Sign in before applying trust funds.')
     const usablePlans = plans.filter((plan) => financeNumber(plan?.paid) > 0.005 && Array.isArray(plan?.transactions) && plan.transactions.length)
-    const transactions = usablePlans.flatMap((plan) => plan.transactions)
-    const invoiceUpdates = usablePlans.flatMap((plan) => plan.invoiceUpdates || [])
-    if (!transactions.length) return { paid: 0, savedInvoices: [], nextTrustRows: mioTrustTransactions || [] }
-    const priorTrustRows = [...(mioTrustTransactions || [])]
+    const { data: latestFinanceStates, error: latestTrustError } = await supabase.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id', session.user.id).in('key', ['caseMioTrustTransactions', 'caseMioFinanceOpeningBalances'])
+    if (latestTrustError) throw new Error(`Mio could not verify the current trust ledger before paying. ${latestTrustError.message || latestTrustError}`)
+    const financeStateValue = (key, fallback) => {
+      const state = (latestFinanceStates || []).find((row) => row.key === key)
+      if (state?.json_value !== null && state?.json_value !== undefined) return state.json_value
+      if (state?.raw_value) {
+        try { return JSON.parse(state.raw_value) } catch { return fallback }
+      }
+      return fallback
+    }
+    const latestTrustRows = financeStateValue('caseMioTrustTransactions', mioTrustTransactions || [])
+    const latestOpeningBalances = financeStateValue('caseMioFinanceOpeningBalances', mioFinanceOpeningBalances || {})
+    const priorTrustRows = Array.isArray(latestTrustRows) ? [...latestTrustRows] : [...(mioTrustTransactions || [])]
+    const plannedUpdates = new Map(usablePlans.flatMap((plan) => plan.invoiceUpdates || []).map((update) => [String(update.before.id), update]))
+    const plannedInvoiceIds = [...plannedUpdates.keys()]
+    let currentInvoices = []
+    if (plannedInvoiceIds.length) {
+      const { data, error } = await supabase.from('mio_invoices').select('*').in('id', plannedInvoiceIds)
+      if (error) throw new Error(`Mio could not verify current invoice balances before paying. ${error.message || error}`)
+      currentInvoices = (data || []).map(invoiceFromDatabaseRow)
+      if (currentInvoices.length !== plannedInvoiceIds.length) throw new Error('One or more invoices changed or were removed before the trust payment. Refresh Bulk Billing and review them again.')
+    }
+    const currentInvoiceById = new Map(currentInvoices.map((invoice) => [String(invoice.id), invoice]))
+    const currentPaidByInvoice = new Map(currentInvoices.map((invoice) => {
+      const trustPaid = activeTrustPaymentsForInvoiceFromRows(invoice, priorTrustRows).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+      return [String(invoice.id), Math.min(financeNumber(invoice.total), Math.max(financeNumber(invoice.amount_paid), trustPaid))]
+    }))
+    const currentSnapshotPaidByMatter = new Map()
+    const currentTrustByMatter = new Map()
+    const touchedMatterIds = new Set(usablePlans.flatMap((plan) => plan.transactions || []).map((transaction) => String(transaction.matter_id || '')).filter(Boolean))
+    touchedMatterIds.forEach((matterId) => {
+      const openingTrust = financeNumber(latestOpeningBalances?.[matterId]?.matter_trust_funds)
+      const ledgerDelta = priorTrustRows.filter((row) => String(row.matter_id || '') === matterId).reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
+      currentTrustByMatter.set(matterId, Math.max(0, openingTrust + ledgerDelta))
+      currentSnapshotPaidByMatter.set(matterId, activeSnapshotOutstandingPayments(priorTrustRows, matterId).reduce((sum, row) => sum + financeNumber(row.amount), 0))
+    })
+    const transactions = []
+    for (const transaction of usablePlans.flatMap((plan) => plan.transactions)) {
+      const matterId = String(transaction.matter_id || '')
+      const availableTrust = currentTrustByMatter.get(matterId) || 0
+      let accepted = Math.min(financeNumber(transaction.amount), availableTrust)
+      if (transaction.invoice_id) {
+        const invoiceId = String(transaction.invoice_id)
+        const currentInvoice = currentInvoiceById.get(invoiceId)
+        if (!currentInvoice) continue
+        accepted = Math.min(accepted, Math.max(0, financeNumber(currentInvoice.total) - (currentPaidByInvoice.get(invoiceId) || 0)))
+        if (accepted > 0.005) currentPaidByInvoice.set(invoiceId, (currentPaidByInvoice.get(invoiceId) || 0) + accepted)
+      } else if (transaction.applies_to_snapshot_outstanding) {
+        const openingOutstanding = financeNumber(latestOpeningBalances?.[matterId]?.outstanding_balance)
+        accepted = Math.min(accepted, Math.max(0, openingOutstanding - (currentSnapshotPaidByMatter.get(matterId) || 0)))
+        if (accepted > 0.005) currentSnapshotPaidByMatter.set(matterId, (currentSnapshotPaidByMatter.get(matterId) || 0) + accepted)
+      }
+      if (accepted <= 0.005) continue
+      currentTrustByMatter.set(matterId, Math.max(0, availableTrust - accepted))
+      transactions.push({ ...transaction, amount: Number(accepted.toFixed(2)), idempotency_key: transaction.idempotency_key || `trust-payment|${transaction.id}` })
+    }
+    const acceptedByInvoice = new Map()
+    transactions.filter((transaction) => transaction.invoice_id).forEach((transaction) => acceptedByInvoice.set(String(transaction.invoice_id), (acceptedByInvoice.get(String(transaction.invoice_id)) || 0) + financeNumber(transaction.amount)))
+    const invoiceUpdates = [...plannedUpdates.values()].map((update) => {
+      const before = currentInvoiceById.get(String(update.before.id)) || update.before
+      const existingTrustPaid = activeTrustPaymentsForInvoiceFromRows(before, priorTrustRows).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+      const accepted = acceptedByInvoice.get(String(before.id)) || 0
+      const amountPaid = Math.min(financeNumber(before.total), Math.max(financeNumber(before.amount_paid), existingTrustPaid) + accepted)
+      const balance = Math.max(0, financeNumber(before.total) - amountPaid)
+      return { ...update, before, amount: accepted, after: { ...before, amount_paid: Number(amountPaid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: new Date().toISOString() } }
+    }).filter((update) => update.amount > 0.005 || financeNumber(update.after.amount_paid) > financeNumber(update.before.amount_paid) + 0.005)
+    if (!transactions.length && !invoiceUpdates.length) return { paid: 0, savedInvoices: [], nextTrustRows: priorTrustRows }
     const nextTrustRows = [...transactions, ...priorTrustRows]
     let invoicesSaved = false
     let trustSaved = false
@@ -18667,21 +18850,21 @@ async function updateTeamCell(memberId, field, value) {
     if (replacements.size) setMioInvoices((current) => (current || []).map((invoice) => replacements.get(String(invoice.id)) || invoice))
     setMioTrustTransactions(nextTrustRows)
     const occurredAt = new Date().toISOString()
-    const events = invoiceUpdates.map((update) => ({ invoice_id: update.after.id, user_id: session.user.id, event_type: 'trust_applied', amount: update.amount, details: { source: 'bulk_billing', persisted_before_ui_update: true }, occurred_at: occurredAt }))
+    const events = invoiceUpdates.map((update) => ({ invoice_id: update.after.id, user_id: session.user.id, event_type: update.amount > 0.005 ? 'trust_applied' : 'trust_payment_reconciled', amount: update.amount, details: { source: 'bulk_billing', persisted_before_ui_update: true }, occurred_at: occurredAt }))
     if (events.length) {
       const { data: savedEvents, error: eventError } = await supabase.from('mio_invoice_events').insert(events).select('*')
       if (!eventError && savedEvents?.length) setMioInvoiceEvents((current) => [...savedEvents, ...(current || [])])
       else if (eventError) console.warn('Trust transfers were saved, but their invoice audit events could not be saved:', eventError)
     }
-    return { paid: Number(usablePlans.reduce((sum, plan) => sum + financeNumber(plan.paid), 0).toFixed(2)), savedInvoices, nextTrustRows }
+    return { paid: Number(transactions.reduce((sum, transaction) => sum + financeNumber(transaction.amount), 0).toFixed(2)), savedInvoices, nextTrustRows }
   }
 
   async function payMatterOutstandingFromTrust(matter, { confirm = true } = {}) {
     const plan = planMatterOutstandingFromTrust(matter)
     if (!plan?.paid) return plan
     if (confirm && !window.confirm(`Apply ${money(plan.paid)} from ${matter.name || 'this matter'} trust funds to its outstanding balance?`)) return { paid: 0, cancelled: true }
-    await persistOutstandingTrustPaymentPlans([plan])
-    return { paid: plan.paid, message: plan.message }
+    const result = await persistOutstandingTrustPaymentPlans([plan])
+    return { paid: result.paid, message: result.paid > 0.005 ? `${money(result.paid)} paid from trust.` : 'The invoice was already reconciled; no second trust transfer was created.' }
   }
 
   async function completeBulkWipReview(matterId, action) {
@@ -18954,7 +19137,7 @@ async function updateTeamCell(memberId, field, value) {
             return <section key={row.id} style={{ border: `2px solid ${row.send_status === 'sent' ? '#86efac' : row.send_status === 'error' ? '#fca5a5' : row.included ? '#93c5fd' : '#cbd5e1'}`, borderRadius: 12, background: '#fff', overflow: 'hidden', opacity: row.included || row.send_status === 'sent' ? 1 : 0.7 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap', padding: 14, background: row.send_status === 'sent' ? '#f0fdf4' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}><input type="checkbox" aria-label={`Send ${invoice.invoice_number}`} checked={!!row.included} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { included: event.target.checked })} style={{ marginTop: 4 }} /><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>INVOICE {index + 1} OF {rows.length}</div><h3 style={{ margin: '3px 0' }}>{matterClientName(matter) || invoice.client_name || 'Client'}</h3><div style={{ fontWeight: 800 }}>{matter?.name || invoice.matter_name || 'Matter'} • {invoice.invoice_number}</div><div style={{ color: '#64748b', fontSize: 12 }}>Issued {invoice.issue_date || '—'} • Due {invoice.due_date || 'upon receipt'}{invoice.emailed_at ? ` • Last sent ${new Date(invoice.emailed_at).toLocaleString()}` : ' • Not previously sent'}</div></div></div>
-                <div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>AMOUNT TO REQUEST</div><div style={{ fontSize: 28, fontWeight: 900 }}>{money(invoiceBalanceAmount(invoice))}</div><div style={{ color: '#64748b', fontSize: 12 }}>Invoice total {money(invoice.total)} • Paid {money(invoice.amount_paid)}</div><button type="button" onClick={() => openInvoicePdf(invoice)} disabled={bulkBillingBusy} style={{ marginTop: 7 }}>Preview PDF</button></div>
+                <div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>AMOUNT TO REQUEST</div><div style={{ fontSize: 28, fontWeight: 900 }}>{money(invoiceBalanceAmount(invoice))}</div><div style={{ color: '#64748b', fontSize: 12 }}>Invoice total {money(invoice.total)} • Paid {money(invoicePaidAmount(invoice))}</div><button type="button" onClick={() => openInvoicePdf(invoice)} disabled={bulkBillingBusy} style={{ marginTop: 7 }}>Preview PDF</button></div>
               </div>
               <div style={{ padding: 14, display: 'grid', gap: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(260px,1fr)', gap: 10 }}><LabeledField label="To"><input type="email" value={row.recipient_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { recipient_email: event.target.value })} placeholder="Client email required" /></LabeledField><LabeledField label="From"><select value={row.sender_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { sender_email: event.target.value })}>{senderOptions.map((email) => <option key={email} value={email}>{email}</option>)}</select></LabeledField></div>
@@ -19097,11 +19280,14 @@ async function updateTeamCell(memberId, field, value) {
     const matter = billingInvoiceMatter(invoice)
     const editing = invoiceEditorMode === 'new' || invoiceEditorMode === 'edit'
     const draftTotal = editing ? invoiceDraftTotal(invoiceEditDraft) : financeNumber(invoice.total)
-    const shownInvoice = editing ? { ...invoice, ...(invoiceEditDraft || {}), subtotal: draftTotal, total: draftTotal, balance: Math.max(0, draftTotal - financeNumber(invoice.amount_paid)) } : invoice
-    const invoicePaid = financeNumber(invoice.amount_paid) > 0.005
+    const shownInvoice = editing ? { ...invoice, ...(invoiceEditDraft || {}), subtotal: draftTotal, total: draftTotal, balance: Math.max(0, draftTotal - invoicePaidAmount(invoice)) } : invoice
+    const effectivePaid = invoicePaidAmount(invoice)
+    const invoicePaid = effectivePaid > 0.005
     const trustPayments = activeTrustPaymentsForInvoice(invoice)
     const activeTrustPaid = trustPayments.reduce((sum, row) => sum + financeNumber(row.amount), 0)
-    const otherPaid = Math.max(0, financeNumber(invoice.amount_paid) - activeTrustPaid)
+    const otherPaid = Math.max(0, effectivePaid - activeTrustPaid)
+    const pendingPayments = pendingLawPayPaymentsForInvoice(invoice)
+    const pendingAmount = pendingPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
     const cancelEditing = () => {
       if (invoiceEditorMode === 'new') closeFinanceInvoice()
       else { setInvoiceEditorMode('view'); setInvoiceEditDraft(null) }
@@ -19118,9 +19304,10 @@ async function updateTeamCell(memberId, field, value) {
           {invoice.payment_url && <button type="button" onClick={() => window.open(invoice.payment_url, '_blank', 'noopener,noreferrer')}>Open LawPay link</button>}
           {(invoice.payment_url || invoice.payment_request_id) && <button type="button" onClick={refreshSelectedInvoicePayment} disabled={invoiceDocumentBusy}>Sync / verify payment</button>}
         </div>}
-        {invoicePaid && !editing && <section style={{ marginBottom: 14, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>Invoice locked — payment must be canceled first</strong><div style={{ marginTop: 5 }}>Editing and deletion are disabled while {money(invoice.amount_paid)} is paid. Reverse each trust payment below, or void/refund an outside payment in LawPay and then click <strong>Sync / verify payment</strong>.</div>{trustPayments.map((transaction) => <div key={transaction.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}><span>Trust payment applied {transaction.date || ''}: <strong>{money(transaction.amount)}</strong></span><button type="button" onClick={() => reverseTrustInvoicePayment(transaction, invoice)} disabled={invoiceDocumentBusy}>Reverse trust payment</button></div>)}{otherPaid > 0.005 && <div style={{ marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}>LawPay or other payment still applied: <strong>{money(otherPaid)}</strong>. Complete its void/refund with the payment provider, then synchronize this invoice.</div>}</section>}
+        {invoicePaid && !editing && <section style={{ marginBottom: 14, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>Invoice locked — payment must be canceled first</strong><div style={{ marginTop: 5 }}>Editing and deletion are disabled while {money(effectivePaid)} is paid. Reverse each trust payment below, or void/refund an outside payment in LawPay and then click <strong>Sync / verify payment</strong>.</div>{trustPayments.map((transaction) => <div key={transaction.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}><span>Trust payment applied {transaction.date || ''}: <strong>{money(transaction.amount)}</strong></span><button type="button" onClick={() => reverseTrustInvoicePayment(transaction, invoice)} disabled={invoiceDocumentBusy}>Reverse trust payment</button></div>)}{otherPaid > 0.005 && <div style={{ marginTop: 9, padding: 9, borderRadius: 8, background: '#fff' }}>LawPay or other payment still applied: <strong>{money(otherPaid)}</strong>. Complete its void/refund with the payment provider, then synchronize this invoice.</div>}</section>}
+        {!editing && pendingAmount > 0.005 && <section style={{ marginBottom: 14, padding: 13, border: '2px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e' }}><strong>Pending LawPay payment: {money(pendingAmount)}</strong><div style={{ marginTop: 5 }}>LawPay has received the payment but has not reported it completed or settled. It is not included in Paid or applied to the account yet.</div>{pendingPayments.map((transaction) => <div key={transaction.id || transaction.gateway_transaction_id} style={{ marginTop: 5, fontSize: 12 }}>{transaction.status || 'Pending'} • {transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : 'Date unavailable'}</div>)}</section>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 10, padding: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10 }}>
-          <div><strong>Issued</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.issue_date || ''} onChange={(event) => updateInvoiceEditField('issue_date', event.target.value)} /> : invoice.issue_date}</div><div><strong>Due</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.due_date || ''} onChange={(event) => updateInvoiceEditField('due_date', event.target.value)} /> : (invoice.due_date || 'Upon receipt')}</div><div><strong>Status</strong><br/>{invoiceEditorMode === 'new' ? 'Not created' : invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(shownInvoice.total)}</div><div><strong>Paid</strong><br/>{money(invoice.amount_paid)}</div><div><strong>Balance</strong><br/>{money(shownInvoice.balance)}</div>
+          <div><strong>Issued</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.issue_date || ''} onChange={(event) => updateInvoiceEditField('issue_date', event.target.value)} /> : invoice.issue_date}</div><div><strong>Due</strong><br/>{editing ? <input type="date" value={invoiceEditDraft?.due_date || ''} onChange={(event) => updateInvoiceEditField('due_date', event.target.value)} /> : (invoice.due_date || 'Upon receipt')}</div><div><strong>Status</strong><br/>{invoiceEditorMode === 'new' ? 'Not created' : invoiceStatusLabel(invoice)}</div><div><strong>Total</strong><br/>{money(shownInvoice.total)}</div><div><strong>Paid</strong><br/>{money(effectivePaid)}</div><div><strong>Pending</strong><br/>{money(pendingAmount)}</div><div><strong>Balance</strong><br/>{money(shownInvoice.balance)}</div>
         </div>
         <h3>Line items</h3>
         <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: editing ? 920 : 720 }}><thead><tr>{[...['Date','Professional','Description','Hours','Rate','Amount'], ...(editing ? [''] : [])].map((label, index) => <th key={`${label}-${index}`} style={{ padding: 8, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', background: '#dbeafe', borderBottom: '1px solid #bfdbfe' }}>{label}</th>)}</tr></thead><tbody>{(editing ? invoiceEditDraft?.line_items || [] : invoice.line_items || []).map((line, index) => <tr key={line._edit_id || line.billing_entry_id || index}><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input type="date" value={line.date || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'date', event.target.value)} /> : (line.date || invoice.issue_date)}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input value={line.professional || line.attorney || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'professional', event.target.value)} style={{ width: 130 }} /> : (line.professional || line.attorney || '')}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{editing ? <input value={line.description || ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'description', event.target.value)} style={{ width: '100%', minWidth: 260 }} /> : line.description}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{editing ? <input type="number" min="0" step="0.01" value={line.hours ?? ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'hours', event.target.value)} style={{ width: 80, textAlign: 'right' }} /> : (line.hours === '' || line.hours === undefined ? '' : financeNumber(line.hours).toFixed(2))}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>{editing ? <input type="number" min="0" step="0.01" value={line.rate ?? ''} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'rate', event.target.value)} style={{ width: 90, textAlign: 'right' }} /> : (line.rate === '' || line.rate === undefined ? '' : money(line.rate))}</td><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0', textAlign: 'right', fontWeight: 800 }}>{editing ? <input type="number" min="0" step="0.01" value={line.amount ?? 0} onChange={(event) => updateInvoiceEditLine(line._edit_id, 'amount', event.target.value)} style={{ width: 100, textAlign: 'right' }} /> : money(line.amount)}</td>{editing && <td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeInvoiceEditLine(line._edit_id)}>Remove</button></td>}</tr>)}</tbody>{editing && <tfoot><tr><td colSpan="5" style={{ padding: 8, textAlign: 'right', fontWeight: 800 }}>Invoice total</td><td style={{ padding: 8, textAlign: 'right', fontWeight: 900 }}>{money(draftTotal)}</td><td /></tr></tfoot>}</table></div>
@@ -19143,10 +19330,12 @@ async function updateTeamCell(memberId, field, value) {
     const brokenGroups = brokenBillingEntryGroupsForMatter(matter)
     const brokenRows = brokenGroups.flatMap((group) => group.entries)
     const brokenTotals = billingTotals(brokenRows)
-    const renderInvoiceTable = (invoices, emptyText) => <div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 1050, borderCollapse: 'collapse' }}>
-      <thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
+    const renderInvoiceTable = (invoices, emptyText) => <div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 1160, borderCollapse: 'collapse' }}>
+      <thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Pending','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Pending','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
       <tbody>{invoices.map((invoice) => {
         const duplicateOpeningWip = finance.duplicateInvoiceIds?.has(String(invoice.id))
+        const pendingPayments = pendingLawPayPaymentsForInvoice(invoice)
+        const pendingAmount = pendingPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
         return <tr key={invoice.id} style={{ background: duplicateOpeningWip ? '#fff1f2' : undefined }}>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td>
@@ -19154,10 +19343,11 @@ async function updateTeamCell(memberId, field, value) {
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date || 'Upon receipt'}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: duplicateOpeningWip ? '#fee2e2' : invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: duplicateOpeningWip ? '#991b1b' : invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{duplicateOpeningWip ? 'Duplicate — void' : invoiceStatusLabel(invoice)}</span></td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td>
-        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.amount_paid)}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoicePaidAmount(invoice))}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: pendingAmount > 0.005 ? 900 : 500, color: pendingAmount > 0.005 ? '#92400e' : undefined, background: pendingAmount > 0.005 ? '#fffbeb' : undefined }}>{money(pendingAmount)}{pendingAmount > 0.005 && <div style={{ fontSize: 11 }}>{[...new Set(pendingPayments.map((transaction) => String(transaction.status || 'Pending').toUpperCase()))].join(', ')}</div>}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{duplicateOpeningWip ? 'Review / void' : invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.invoice_type !== 'trust_request' && !duplicateOpeningWip && invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
-      </tr>})}{!invoices.length && <tr><td colSpan="9" className="empty">{emptyText}</td></tr>}</tbody>
+      </tr>})}{!invoices.length && <tr><td colSpan="10" className="empty">{emptyText}</td></tr>}</tbody>
     </table></div>
     return <section className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Invoices and payments</h3><div className="hint">Drafts are listed first for review, editing, approval, or deletion. LawPay payments refresh automatically when this page opens.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={syncLawPayTransactions} disabled={lawPayBusy}>{lawPayBusy ? 'Checking LawPay…' : 'Refresh LawPay payments'}</button><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Create invoice from WIP</button></div></div>
@@ -19379,6 +19569,7 @@ async function updateTeamCell(memberId, field, value) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 12 }}>
         {renderClientFinanceSummaryCard({ label: 'Trust account', amount: finance.trust, color: '#15803d', note: finance.snapshot ? `Frozen Mio opening balance ${finance.snapshot.snapshot_date} plus Mio activity` : 'Mio deposits less withdrawals', children: <button type="button" onClick={() => setClientFinanceView('trust')}>View trust ledger</button> })}
         {renderClientFinanceSummaryCard({ label: 'Outstanding balance', amount: finance.outstanding, color: '#dc2626', note: 'Invoiced but not yet paid', children: <button type="button" onClick={() => setClientFinanceView('invoices')}>View invoices</button> })}
+        {renderClientFinanceSummaryCard({ label: 'Pending LawPay', amount: pendingLawPayTotal, color: '#d97706', note: pendingLawPayTotal > 0.005 ? 'Received by LawPay; awaiting completion/settlement' : 'No pending LawPay payments', children: <button type="button" onClick={() => setClientFinanceView('invoices')} disabled={pendingLawPayTotal <= 0.005}>View pending invoice</button> })}
         {renderClientFinanceSummaryCard({ label: 'Minimum balance', amount: finance.minimumBalance, color: '#0369a1', note: 'Required trust retainer floor', children: <button type="button" onClick={() => updateMatterMinimumBalanceFromFinances(matter)}>Set minimum</button> })}
         {renderClientFinanceSummaryCard({ label: 'Work in progress', amount: finance.wip, color: '#7c3aed', note: 'Work done but not invoiced', children: <button type="button" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button> })}
         {renderClientFinanceSummaryCard({ label: 'Retainer replenishment target', amount: matterRetainerTarget(matter), color: '#0f766e', note: 'Defaults to the first retainer request and may be changed', children: <button type="button" onClick={() => { const entered = window.prompt('Retainer replenishment target:', matterRetainerTarget(matter).toFixed(2)); if (entered !== null) setMatterRetainerTarget(matter, entered) }}>Set target</button> })}
@@ -41332,16 +41523,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         const refunded = Math.abs(financeNumber(transaction.amount_refunded_cents) / 100)
         return sum + (/refund|chargeback|reversal/.test(type) ? -amount : Math.max(0, amount - refunded))
       }, 0)
-      const priorPaid = financeNumber(invoice.amount_paid)
-      const paidAmount = Math.max(0, successful.length ? transactionPaid : recordedRequestAmount)
-      if (Math.abs(paidAmount - priorPaid) <= 0.005) continue
-      const amountPaid = Math.min(financeNumber(invoice.total), paidAmount)
+      const trustPaid = activeTrustPaymentsForInvoice(invoice).reduce((sum, row) => sum + financeNumber(row.amount), 0)
+      const priorPaid = invoicePaidAmount(invoice)
+      const priorProviderPaid = Math.max(0, priorPaid - trustPaid)
+      const providerPaid = Math.max(0, successful.length ? transactionPaid : recordedRequestAmount)
+      if (Math.abs(providerPaid - priorProviderPaid) <= 0.005) continue
+      const amountPaid = Math.min(financeNumber(invoice.total), trustPaid + providerPaid)
       const balance = Math.max(0, financeNumber(invoice.total) - amountPaid)
       const updated = { ...invoice, amount_paid: Number(amountPaid.toFixed(2)), balance: Number(balance.toFixed(2)), status: balance <= 0.005 ? 'paid' : 'outstanding', updated_at: new Date().toISOString() }
       const { data: saved, error: saveError } = await supabase.from('mio_invoices').update(invoiceDatabasePayload(updated)).eq('id', invoice.id).select('*').single()
       if (saveError) { console.warn('LawPay invoice reconciliation failed:', saveError); continue }
       updatedInvoices.push(invoiceFromDatabaseRow(saved))
-      const paymentReduced = amountPaid < priorPaid
+      const paymentReduced = providerPaid < priorProviderPaid
       const providerTransaction = paymentReduced ? successful.find((row) => /refund|chargeback|reversal/.test(String(row.transaction_type || '').toLowerCase()) || financeNumber(row.amount_refunded_cents) > 0) : successful[0]
       const providerId = providerTransaction?.gateway_transaction_id || request.gateway_transaction_id || `lawpay-request:${request.id}`
       await recordInvoiceEvent(updated, paymentReduced ? 'lawpay_payment_reversed' : 'lawpay_payment_recorded', { payment_request_id: request.id, transaction_ids: successful.map((row) => row.gateway_transaction_id).filter(Boolean), prior_amount_paid: priorPaid, amount_paid: amountPaid, change: Number((amountPaid - priorPaid).toFixed(2)) }, Math.abs(amountPaid - priorPaid), providerId)
@@ -41620,10 +41813,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   function bulkInvoiceLedgerRow(invoice) {
     const matter = billingInvoiceMatter(invoice)
+    const pendingPayments = pendingLawPayPaymentsForInvoice(invoice)
+    const pendingAmount = pendingPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
+    const pendingAt = pendingPayments.map((transaction) => transaction.occurred_at || transaction.created_at || '').filter(Boolean).sort((a, b) => String(b).localeCompare(String(a)))[0] || ''
+    const pendingStatuses = [...new Set(pendingPayments.map((transaction) => String(transaction.status || 'Pending').toUpperCase()))]
     const trustPayments = activeTrustPaymentsForInvoice(invoice)
     const trustPaidAmount = trustPayments.reduce((sum, transaction) => sum + financeNumber(transaction.amount), 0)
     const trustPaidAt = trustPayments.map((transaction) => transaction.created_at || transaction.date || '').sort((a, b) => String(b).localeCompare(String(a)))[0] || ''
-    const paidAmount = Math.max(0, financeNumber(invoice.amount_paid))
+    const paidAmount = invoicePaidAmount(invoice)
     const clientPaidAmount = Math.max(0, paidAmount - trustPaidAmount)
     const clientPaidAt = clientPaidAmount > 0.005 ? latestInvoiceEventDate(invoice, ['lawpay_payment_recorded', 'outside_payment_recorded', 'client_payment_recorded']) : ''
     const lastPaymentAt = [trustPaidAt, clientPaidAt, latestInvoiceEventDate(invoice, ['trust_applied', 'lawpay_payment_recorded', 'outside_payment_recorded', 'client_payment_recorded'])].filter(Boolean).sort((a, b) => String(b).localeCompare(String(a)))[0] || ''
@@ -41637,6 +41834,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       statusLabel: invoiceStatusLabel(invoice),
       total: financeNumber(invoice.total),
       paidAmount,
+      pendingAmount,
+      pendingAt,
+      pendingStatuses,
       balance: invoiceBalanceAmount(invoice),
       createdAt: invoice.created_at || invoice.issue_date || '',
       sentAt,
@@ -41651,7 +41851,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   function openBulkInvoiceLedger() {
     setBulkInvoiceLedgerOpen(true)
     setBulkInvoiceColumnMenuOpen(false)
-    Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase()]).catch(() => {})
+    Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase(), loadLawPayWorkspace()]).catch(() => {})
   }
 
   function renderBulkInvoiceLedger() {
@@ -41665,6 +41865,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (key === 'status') return row.statusLabel
       if (key === 'total') return row.total
       if (key === 'paidAmount') return row.paidAmount
+      if (key === 'pendingAmount') return row.pendingAmount
       if (key === 'balance') return row.balance
       if (key === 'created') return row.createdAt
       if (key === 'sent') return row.sentAt
@@ -41678,13 +41879,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (!filter) return true
       const value = valueFor(row, key)
       if (dateFields.has(key)) return financeDateOnly(value) === filter
-      if (key === 'total' || key === 'paidAmount' || key === 'balance') return money(value).toLowerCase().includes(filter) || String(value).includes(filter)
+      if (key === 'total' || key === 'paidAmount' || key === 'pendingAmount' || key === 'balance') return money(value).toLowerCase().includes(filter) || String(value).includes(filter)
       return String(value || '').toLowerCase().includes(filter)
     })).sort((left, right) => {
       const field = bulkInvoiceSort.field
       const a = valueFor(left, field)
       const b = valueFor(right, field)
-      const comparison = ['total','paidAmount','balance'].includes(field) ? financeNumber(a) - financeNumber(b) : String(a || '').localeCompare(String(b || ''))
+      const comparison = ['total','paidAmount','pendingAmount','balance'].includes(field) ? financeNumber(a) - financeNumber(b) : String(a || '').localeCompare(String(b || ''))
       return bulkInvoiceSort.direction === 'asc' ? comparison : -comparison
     })
     const toggleSort = (field) => setBulkInvoiceSort((current) => ({ field, direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc' }))
@@ -41703,6 +41904,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (column.key === 'status') return <td key={column.key} style={{ ...style, fontWeight: 800 }}>{row.statusLabel}{row.paidAmount > 0.005 && row.balance > 0.005 && <div style={{ color: '#92400e', fontSize: 11, marginTop: 3 }}>{money(row.paidAmount)} paid<br/>{money(row.balance)} remaining</div>}</td>
       if (column.key === 'total') return <td key={column.key} style={{ ...style, textAlign: 'right' }}>{money(row.total)}</td>
       if (column.key === 'paidAmount') return <td key={column.key} style={{ ...style, textAlign: 'right', fontWeight: row.paidAmount > 0.005 ? 800 : 500 }}>{money(row.paidAmount)}{row.paidAmount > 0.005 && row.balance > 0.005 && <div style={{ color: '#92400e', fontSize: 11 }}>Partial payment</div>}</td>
+      if (column.key === 'pendingAmount') return <td key={column.key} style={{ ...style, textAlign: 'right', background: row.pendingAmount > 0.005 ? '#fffbeb' : undefined, color: row.pendingAmount > 0.005 ? '#92400e' : undefined }}><strong>{money(row.pendingAmount)}</strong>{row.pendingAmount > 0.005 && <><div style={{ fontSize: 11 }}>{row.pendingStatuses.join(', ')}</div><div style={{ fontSize: 11 }}>{invoiceLedgerDate(row.pendingAt) || 'Date unavailable'}</div></>}</td>
       if (column.key === 'balance') return <td key={column.key} style={{ ...style, textAlign: 'right' }}>{money(row.balance)}</td>
       if (column.key === 'created') return <td key={column.key} style={style}>{invoiceLedgerDate(row.createdAt) || <span title="The invoice record has no creation date">—</span>}</td>
       if (column.key === 'sent') return <td key={column.key} style={style}>{row.sentAt ? invoiceLedgerDate(row.sentAt) : 'Not sent'}</td>
@@ -41714,9 +41916,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const tableWidth = Math.max(700, columns.reduce((sum, column) => sum + column.width, 0))
     return <div style={{ position: 'fixed', inset: 0, zIndex: 12100, background: 'rgba(15,23,42,.58)', padding: 16, overflow: 'auto' }}>
       <section style={{ width: 'min(1780px,98vw)', minHeight: 400, maxHeight: '95vh', overflow: 'auto', margin: '0 auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.38)', padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>All invoices</h2><div className="hint">One row per invoice. Filter under any column heading or choose which columns are visible.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase()])}>Refresh</button><button type="button" onClick={() => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS })}>Clear filters</button><div style={{ position: 'relative' }}><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen((open) => !open)}>Columns ({columns.length}/{BULK_INVOICE_COLUMNS.length}) ▾</button>{bulkInvoiceColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 2, width: 250, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkInvoiceVisibleColumns(Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>{BULK_INVOICE_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkInvoiceVisibleColumns[column.key] !== false} onChange={() => setBulkInvoiceVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}</div>}</div><button type="button" onClick={() => setBulkInvoiceLedgerOpen(false)}>Close</button></div></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>All invoices</h2><div className="hint">One row per invoice. Pending LawPay authorizations are shown separately and are not counted as paid until completed.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase(), loadLawPayWorkspace()])}>Refresh</button><button type="button" onClick={() => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS })}>Clear filters</button><div style={{ position: 'relative' }}><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen((open) => !open)}>Columns ({columns.length}/{BULK_INVOICE_COLUMNS.length}) ▾</button>{bulkInvoiceColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 2, width: 250, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkInvoiceVisibleColumns(Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>{BULK_INVOICE_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkInvoiceVisibleColumns[column.key] !== false} onChange={() => setBulkInvoiceVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}</div>}</div><button type="button" onClick={() => setBulkInvoiceLedgerOpen(false)}>Close</button></div></div>
         <div style={{ margin: '12px 0', color: '#475569' }}>{rows.length} of {(mioInvoices || []).length} invoice{(mioInvoices || []).length === 1 ? '' : 's'} shown.</div>
-        <div style={{ overflowX: 'auto' }}><table style={{ width: tableWidth, minWidth: tableWidth, borderCollapse: 'collapse' }}><thead><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ width: column.width, minWidth: column.width, padding: 8, textAlign: ['total','paidAmount','balance'].includes(column.key) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{column.key === 'actions' ? column.label : <button type="button" onClick={() => toggleSort(column.key)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 900 }}>{column.label}{bulkInvoiceSort.field === column.key ? (bulkInvoiceSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>}</th>)}</tr><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ padding: '0 6px 8px', borderBottom: '1px solid #cbd5e1' }}>{renderFilter(column)}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.invoice.id}>{columns.map((column) => renderCell(row, column))}</tr>)}{!rows.length && <tr><td colSpan={Math.max(1, columns.length)} className="empty">No invoices match the selected filters.</td></tr>}</tbody></table></div>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: tableWidth, minWidth: tableWidth, borderCollapse: 'collapse' }}><thead><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ width: column.width, minWidth: column.width, padding: 8, textAlign: ['total','paidAmount','pendingAmount','balance'].includes(column.key) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{column.key === 'actions' ? column.label : <button type="button" onClick={() => toggleSort(column.key)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 900 }}>{column.label}{bulkInvoiceSort.field === column.key ? (bulkInvoiceSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>}</th>)}</tr><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ padding: '0 6px 8px', borderBottom: '1px solid #cbd5e1' }}>{renderFilter(column)}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.invoice.id}>{columns.map((column) => renderCell(row, column))}</tr>)}{!rows.length && <tr><td colSpan={Math.max(1, columns.length)} className="empty">No invoices match the selected filters.</td></tr>}</tbody></table></div>
       </section>
       {renderInvoiceDocumentModal()}
     </div>
@@ -41748,6 +41950,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         matterName: matter.name || matter.matter_name || matterClientName(matter) || 'Unnamed matter',
         trust: finance.trust,
         outstanding: finance.outstanding,
+        pending: pendingLawPayAmountForMatter(matter),
         wip: finance.wip,
         minimum: finance.minimumBalance,
         trustMinusMinimum: finance.trustMinusMinimum,
@@ -41796,7 +41999,30 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const renderBulkBillingCell = (row, column) => {
       const baseStyle = { padding: 9, borderBottom: '1px solid #eef2f7', minWidth: column.width, width: column.width }
       if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
+      if (column.key === 'outstanding') {
+        const breakdown = outstandingBreakdownForMatter(row.matter, row.finance)
+        const popoverOpen = bulkObPopover?.matterId === String(row.matter.id)
+        const closePopoverSoon = () => {
+          window.clearTimeout(bulkObPopoverCloseTimerRef.current)
+          bulkObPopoverCloseTimerRef.current = window.setTimeout(() => setBulkObPopover(null), 220)
+        }
+        const popover = popoverOpen && row.outstanding > 0.005 && typeof document !== 'undefined' ? createPortal(<div onMouseEnter={() => window.clearTimeout(bulkObPopoverCloseTimerRef.current)} onMouseLeave={closePopoverSoon} onClick={(event) => event.stopPropagation()} style={{ position: 'fixed', zIndex: 15000, top: bulkObPopover.top, left: bulkObPopover.left, width: 360, maxHeight: 330, overflow: 'auto', padding: 11, border: '1px solid #94a3b8', borderRadius: 9, background: '#fff', boxShadow: '0 16px 34px rgba(15,23,42,.28)', textAlign: 'left', whiteSpace: 'normal' }}>
+            <div style={{ fontWeight: 900, marginBottom: 7 }}>Outstanding balance: {money(breakdown.total)}</div>
+            {breakdown.invoiceRows.map(({ invoice, label, balance, issue_date }) => <button key={invoice.id} type="button" onClick={() => openFinanceInvoice(invoice, row.matter)} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, width: '100%', padding: '8px 9px', marginBottom: 5, border: '1px solid #bfdbfe', borderRadius: 7, background: '#eff6ff', color: '#1d4ed8', textAlign: 'left' }}><span><strong>{label}</strong><br/><span style={{ fontSize: 11, color: '#64748b' }}>Issued {financeDateOnly(issue_date) || 'date unavailable'}</span></span><strong>{money(balance)}</strong></button>)}
+            {breakdown.openingBalance > 0.005 && <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '8px 9px', border: '1px solid #f59e0b', borderRadius: 7, background: '#fffbeb', color: '#92400e' }}><span><strong>Mio opening A/R</strong><br/><span style={{ fontSize: 11 }}>Opening balance without an itemized Mio invoice</span></span><strong>{money(breakdown.openingBalance)}</strong></div>}
+            {!breakdown.invoiceRows.length && breakdown.openingBalance <= 0.005 && <div className="empty">No unpaid invoice remains.</div>}
+          </div>, document.body) : null
+        return <Fragment key={column.key}><td onMouseEnter={(event) => {
+          window.clearTimeout(bulkObPopoverCloseTimerRef.current)
+          const rect = event.currentTarget.getBoundingClientRect()
+          setBulkObPopover({ matterId: String(row.matter.id), top: Math.max(8, Math.min(window.innerHeight - 350, rect.bottom + 3)), left: Math.max(8, Math.min(window.innerWidth - 370, rect.right - 360)) })
+        }} onMouseLeave={closePopoverSoon} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap', cursor: row.outstanding > 0.005 ? 'help' : 'default' }}>
+          {moneyCell(row.outstanding)}
+          {row.outstanding > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Hover for invoices</div>}
+        </td>{popover}</Fragment>
+      }
       if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Opening {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
+      if (column.key === 'pending') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap', background: row.pending > 0.005 ? '#fffbeb' : undefined, color: row.pending > 0.005 ? '#92400e' : undefined, fontWeight: row.pending > 0.005 ? 900 : 500 }}>{money(row.pending)}{row.pending > 0.005 && <div style={{ fontSize: 10 }}>LawPay pending</div>}</td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
       if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
@@ -41827,7 +42053,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <LabeledField label="Search"><input value={bulkBillingFilters.search} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Matter, client, or cause #" /></LabeledField>
           <LabeledField label="Case status"><select value={bulkBillingFilters.case_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All</option>{caseStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
           <LabeledField label="Matter status"><select value={bulkBillingFilters.matter_status} onChange={(event) => setBulkBillingFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All</option>{matterStatuses.map((value) => <option key={value} value={value}>{value}</option>)}</select></LabeledField>
-          <LabeledField label="Mio opening balance through"><input type="date" value={activeMioBillingCutoverDate} readOnly title="This opening date is locked in Mio-only finance mode. Later Clio snapshots are ignored." /></LabeledField>
+          <LabeledField label="Mio opening balance through"><input type="date" value={activeMioBillingCutoverDate} readOnly title="This is Mio's fixed opening date. Current balances use only this opening record plus Mio and LawPay activity." /></LabeledField>
           <div style={{ position: 'relative', minWidth: 210 }}>
             <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 4 }}>Case type</div>
             <button type="button" onClick={() => setBulkBillingCaseTypeMenuOpen((open) => !open)} style={{ width: '100%', textAlign: 'left', minHeight: 30 }}>Case type: {caseTypeSelectionLabel} ▾</button>
@@ -41846,7 +42072,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         </div>
         <div style={{ marginTop: 10, color: '#475569' }}>{selectedVisibleIds.length} of {rows.length} filtered matter{rows.length === 1 ? '' : 's'} checked. Bulk actions apply only to these checked rows.</div>
-        <div style={{ marginTop: 10, border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 10, fontWeight: 700 }}>Mio-only finance mode is active. Opening balances are frozen through {activeMioBillingCutoverDate}; later Clio snapshots are ignored. All later balance changes come from Mio invoices, billing entries, trust activity, and LawPay.</div>
+        <div style={{ marginTop: 10, border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 10, fontWeight: 700 }}>Mio-only finance mode is active. The fixed Mio opening record is dated {activeMioBillingCutoverDate}. Current balances reconcile that opening record with Mio invoices, billing entries, trust activity, and LawPay; Clio snapshots are not loaded into Bulk Billing.</div>
         {bulkBillingResult && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff', color: '#1e3a8a', padding: 10 }}>{bulkBillingResult}</div>}
       </section>
 
