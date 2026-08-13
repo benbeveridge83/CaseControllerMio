@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V222'
+const MIO_APP_VERSION = 'Mio V223'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -10243,10 +10243,87 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   async function createManualRfpBatesCopies(set, matterDocs) {
     const rows = manualRfpProductionRows(set, matterDocs)
     if (!rows.length) { alert('Add documents to one or more request folders before applying Bates stamps.'); return }
+    const nonPdfRows = rows.filter((row) => {
+      const doc = row.doc || {}
+      const sourceName = doc.file_name || doc.original_file_name || doc.name || 'document'
+      return !/\.pdf$/i.test(sourceName) && !/pdf/i.test(String(doc.file_type || doc.mime_type || ''))
+    })
+    const mediaRows = nonPdfRows.filter((row) => /^(audio|video)\//i.test(String(row.doc?.file_type || row.doc?.mime_type || '')) || /\.(mp3|wav|m4a|aac|ogg|mp4|mov|avi|wmv|mkv|webm)$/i.test(String(row.doc?.file_name || row.doc?.original_file_name || row.doc?.name || '')))
+    const convertibleRows = nonPdfRows.filter((row) => !mediaRows.includes(row))
+    let convertNonPdf = false
+    let createMediaSlips = false
+    if (convertibleRows.length) {
+      convertNonPdf = window.confirm(`${convertibleRows.length} assigned file${convertibleRows.length === 1 ? ' is' : 's are'} not PDF${convertibleRows.length === 1 ? '' : 's'}.\n\nConvert ${convertibleRows.length === 1 ? 'it' : 'them'} to PDF renditions and apply Bates stamps? Images will be placed on PDF pages. Other readable files will be converted from their extracted text.\n\nClick Cancel to skip those files.`)
+    }
+    if (mediaRows.length) {
+      createMediaSlips = window.confirm(`${mediaRows.length} assigned audio/video file${mediaRows.length === 1 ? ' cannot' : 's cannot'} be stamped directly.\n\nCreate a Bates-stamped placeholder PDF for each media file? Each placeholder will identify the original filename and state that the native media file is produced separately.\n\nClick Cancel to leave those media files unstamped.`)
+    }
     setManualRfpBusy('Creating Bates-stamped PDF copies and preserving the originals...')
     try {
       await ensureBillingPdfLibrary()
       const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+      const pageSize = [612, 792]
+      const addWrappedText = (pdf, font, text, options = {}) => {
+        const size = options.size || 10
+        const margin = options.margin || 54
+        const lineHeight = options.lineHeight || 14
+        const maxWidth = pageSize[0] - margin * 2
+        const paragraphs = String(text || '').replace(/\r/g, '').split('\n')
+        let page = pdf.addPage(pageSize)
+        let y = pageSize[1] - margin
+        const nextPage = () => { page = pdf.addPage(pageSize); y = pageSize[1] - margin }
+        paragraphs.forEach((paragraph) => {
+          const words = paragraph.split(/\s+/).filter(Boolean)
+          if (!words.length) { y -= lineHeight; if (y < margin) nextPage(); return }
+          let line = ''
+          words.forEach((word) => {
+            const candidate = line ? `${line} ${word}` : word
+            if (font.widthOfTextAtSize(candidate, size) > maxWidth && line) {
+              page.drawText(line, { x: margin, y, size, font, color: rgb(.08, .08, .08) })
+              y -= lineHeight
+              if (y < margin) nextPage()
+              line = word
+            } else line = candidate
+          })
+          if (line) { page.drawText(line, { x: margin, y, size, font, color: rgb(.08, .08, .08) }); y -= lineHeight }
+          y -= 4
+          if (y < margin) nextPage()
+        })
+      }
+      const convertToPdf = async (doc, sourceName, isMedia) => {
+        const output = await PDFDocument.create()
+        const font = await output.embedFont(StandardFonts.Helvetica)
+        const bold = await output.embedFont(StandardFonts.HelveticaBold)
+        if (isMedia) {
+          const page = output.addPage(pageSize)
+          page.drawText('NATIVE AUDIO/VIDEO FILE', { x: 54, y: 700, size: 18, font: bold, color: rgb(.08, .08, .08) })
+          page.drawText('The referenced native media file is produced separately.', { x: 54, y: 666, size: 11, font, color: rgb(.15, .15, .15) })
+          page.drawText(`Original filename: ${String(sourceName).slice(0, 90)}`, { x: 54, y: 638, size: 10, font, color: rgb(.15, .15, .15), maxWidth: 500 })
+          page.drawText(`Media type: ${doc.file_type || doc.mime_type || 'audio/video'}`, { x: 54, y: 616, size: 10, font, color: rgb(.15, .15, .15) })
+          return output
+        }
+        const dataUrl = await loadDocumentFileDataUrl(doc)
+        const mime = String(doc.file_type || doc.mime_type || (String(dataUrl).match(/^data:([^;,]+)/)?.[1]) || '').toLowerCase()
+        if (dataUrl && (/image\/png/.test(mime) || /\.png$/i.test(sourceName))) {
+          const image = await output.embedPng(dataUrlToUint8Array(dataUrl))
+          const page = output.addPage(pageSize)
+          const scale = Math.min((pageSize[0] - 72) / image.width, (pageSize[1] - 72) / image.height, 1)
+          page.drawImage(image, { x: (pageSize[0] - image.width * scale) / 2, y: (pageSize[1] - image.height * scale) / 2, width: image.width * scale, height: image.height * scale })
+          return output
+        }
+        if (dataUrl && (/image\/(jpeg|jpg)/.test(mime) || /\.jpe?g$/i.test(sourceName))) {
+          const image = await output.embedJpg(dataUrlToUint8Array(dataUrl))
+          const page = output.addPage(pageSize)
+          const scale = Math.min((pageSize[0] - 72) / image.width, (pageSize[1] - 72) / image.height, 1)
+          page.drawImage(image, { x: (pageSize[0] - image.width * scale) / 2, y: (pageSize[1] - image.height * scale) / 2, width: image.width * scale, height: image.height * scale })
+          return output
+        }
+        const extraction = await extractDocumentTextForAi(doc)
+        const extractedText = String(extraction?.extracted_text || '').trim()
+        if (!extractedText) throw new Error('No readable text was available for PDF conversion.')
+        addWrappedText(output, font, `Converted PDF rendition of: ${sourceName}\n\n${extractedText}`)
+        return output
+      }
       let pageNumber = Math.max(1, Number(set.bates_start) || 1)
       const batesByDocument = { ...(set.bates_by_document || {}) }
       const createdRows = []
@@ -10254,11 +10331,18 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       for (const row of rows) {
         const doc = row.doc
         const sourceName = doc.file_name || doc.original_file_name || doc.name || 'document'
-        if (!/\.pdf$/i.test(sourceName) && !/pdf/i.test(String(doc.file_type || doc.mime_type || ''))) { skipped.push(sourceName); continue }
-        const dataUrl = await loadDocumentFileDataUrl(doc)
-        if (!dataUrl) { skipped.push(sourceName); continue }
+        const isPdf = /\.pdf$/i.test(sourceName) || /pdf/i.test(String(doc.file_type || doc.mime_type || ''))
+        const isMedia = mediaRows.includes(row)
+        if (!isPdf && isMedia && !createMediaSlips) { skipped.push(sourceName); continue }
+        if (!isPdf && !isMedia && !convertNonPdf) { skipped.push(sourceName); continue }
         let source
-        try { source = await PDFDocument.load(dataUrlToUint8Array(dataUrl), { ignoreEncryption: true }) }
+        try {
+          if (isPdf) {
+            const dataUrl = await loadDocumentFileDataUrl(doc)
+            if (!dataUrl) throw new Error('File content is unavailable.')
+            source = await PDFDocument.load(dataUrlToUint8Array(dataUrl), { ignoreEncryption: true })
+          } else source = await convertToPdf(doc, sourceName, isMedia)
+        }
         catch { skipped.push(sourceName); continue }
         const output = await PDFDocument.create()
         const font = await output.embedFont(StandardFonts.Helvetica)
@@ -10275,13 +10359,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         })
         const end = pageNumber - 1
         const bytes = await output.save()
-        const baseName = sourceName.replace(/\.pdf$/i, '').replace(/[^a-z0-9._-]+/gi, '_')
+        const baseName = sourceName.replace(/\.[^.]+$/i, '').replace(/[^a-z0-9._-]+/gi, '_')
         const fileName = `${baseName}_BATES_${start}-${end}.pdf`
         const file = new File([bytes], fileName, { type: 'application/pdf' })
         const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
         const temporary = await readFileAsDataUrl(file)
         const stored = await uploadMioDocumentFile(file, docId, set.matter_id)
-        createdRows.push({ id: docId, matter_id: set.matter_id, name: `${doc.name || baseName} - Bates copy`, date: doc.date || '', description: `Bates-stamped production copy of ${sourceName}. Original preserved.`, status: doc.status || 'Neither', tag_ids: [...(doc.tag_ids || [])], document_field_values: { ...(doc.document_field_values || {}) }, upload_date: dateToInputValue(new Date()), bates_copy_of: doc.id, bates_start: start, bates_end: end, request_numbers: row.request_numbers, ...emptyDocumentAiReview, ...temporary, ...stored })
+        createdRows.push({ id: docId, matter_id: set.matter_id, name: `${doc.name || baseName} - Bates copy`, date: doc.date || '', description: `${isMedia ? 'Bates-stamped native-media placeholder' : isPdf ? 'Bates-stamped production copy' : 'Converted and Bates-stamped PDF rendition'} of ${sourceName}. Original preserved.`, status: doc.status || 'Neither', tag_ids: [...(doc.tag_ids || [])], document_field_values: { ...(doc.document_field_values || {}) }, upload_date: dateToInputValue(new Date()), bates_copy_of: doc.id, bates_start: start, bates_end: end, request_numbers: row.request_numbers, native_media_placeholder: isMedia, converted_to_pdf: !isPdf, ...emptyDocumentAiReview, ...temporary, ...stored })
         batesByDocument[String(doc.id)] = { start, end, prefix: set.bates_prefix || 'Original-RFP', stamped_document_id: docId, stamped_file_name: fileName }
       }
       if (createdRows.length) setDocuments((current) => [...(current || []), ...createdRows])
@@ -10412,6 +10496,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const assignments = [...requestAssignments, ...specialAssignments]
     const assignedCount = assignments.reduce((sum, row) => sum + row.documentIds.length, 0)
     if (!assignedCount) return alert('Assign documents to at least one request or special folder before downloading.')
+    const prefixWithBates = window.confirm('Prefix downloaded filenames with their Bates name/number so Windows sorts them in production order?\n\nExample: Original-RFP-000001-000013_Enforcement_Bills.pdf\n\nClick OK to add Bates prefixes. Click Cancel to keep the existing filenames.')
 
     setManualRfpBusy('Preparing request folders and downloading their files...')
     setManualRfpNotice(null)
@@ -10438,9 +10523,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           const rawName = source.file_name || source.original_file_name || source.name || `Document-${documentId}`
           const extension = String(rawName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
           const baseName = manualRfpZipSafeName(extension ? rawName.slice(0, -extension.length) : rawName, 'Document')
-          let fileName = `${baseName}${extension}`
+          const bates = set.bates_by_document?.[String(documentId)]
+          const batesPrefix = prefixWithBates && bates
+            ? `${manualRfpZipSafeName(bates.prefix || set.bates_prefix || 'BATES', 'BATES')}-${String(bates.start).padStart(6, '0')}-${String(bates.end).padStart(6, '0')}_`
+            : ''
+          let fileName = `${batesPrefix}${baseName}${extension}`
           let suffix = 2
-          while (usedNames.has(fileName.toLowerCase())) fileName = `${baseName}_${suffix++}${extension}`
+          while (usedNames.has(fileName.toLowerCase())) fileName = `${batesPrefix}${baseName}_${suffix++}${extension}`
           usedNames.add(fileName.toLowerCase())
           folder.file(fileName, dataUrlToUint8Array(dataUrl))
           exported.push(`${assignment.folderName}/${fileName}`)
@@ -10586,7 +10675,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         </div>
 
         <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
-          <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Document List / Production Log</strong><div style={{ color: '#64748b', fontSize: 12 }}>Unique documents are produced once even when linked to more than one request. Use the arrows to set Bates order.</div></div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><label>Prefix <input value={set.bates_prefix || 'Original-RFP'} onChange={(event) => updateManualRfpSet(set.id, { bates_prefix: event.target.value })} style={{ width: 130 }} /></label><label>Start <input type="number" min="1" value={set.bates_start || 1} onChange={(event) => updateManualRfpSet(set.id, { bates_start: Math.max(1, Number(event.target.value) || 1) })} style={{ width: 70 }} /></label><button type="button" onClick={() => createManualRfpBatesCopies(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#7c3aed', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Add Bates Stamps</button></div></div>
+          <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Document List / Production Log</strong><div style={{ color: '#64748b', fontSize: 12 }}>Unique documents are produced once even when linked to more than one request. Use the arrows to set Bates order.</div></div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" onClick={() => { setManualRfpGeneratedResponseOpen(true); window.setTimeout(() => Array.from(document.querySelectorAll('h3')).find((node) => node.textContent === 'Generated Response')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }} style={{ background: '#0f766e', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Responses &amp; Objections</button><label>Prefix <input value={set.bates_prefix || 'Original-RFP'} onChange={(event) => updateManualRfpSet(set.id, { bates_prefix: event.target.value })} style={{ width: 130 }} /></label><label>Start <input type="number" min="1" value={set.bates_start || 1} onChange={(event) => updateManualRfpSet(set.id, { bates_start: Math.max(1, Number(event.target.value) || 1) })} style={{ width: 70 }} /></label><button type="button" onClick={() => createManualRfpBatesCopies(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#7c3aed', color: '#fff', border: 0, borderRadius: 8, padding: '8px 11px', fontWeight: 800 }}>Add Bates Stamps</button></div></div>
           <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Request folder(s)</th><th style={{ textAlign: 'left', padding: 7 }}>Short request name(s)</th><th style={{ textAlign: 'left', padding: 7 }}>File name</th><th style={{ textAlign: 'left', padding: 7 }}>Document name</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th></tr></thead><tbody>{productionRows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, -1, matterDocs)} disabled={index === 0}>↑</button><button type="button" onClick={() => moveManualRfpProductionDocument(set.id, row.document_id, 1, matterDocs)} disabled={index === productionRows.length - 1}>↓</button> {index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.request_numbers.map((number) => `Request ${number}`).join(', ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{(set.requests || []).filter((request, requestIndex) => row.request_numbers.includes(String(request.request_number || requestIndex + 1))).map((request, requestIndex) => manualRfpShortName(request, requestIndex)).join('; ')}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{fileLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(row.doc)}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.bates ? `${row.bates.prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td></tr>)}{!productionRows.length && <tr><td colSpan="6" style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>No documents have been assigned to a request folder.</td></tr>}</tbody></table></div>
         </section>
 
