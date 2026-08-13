@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V225'
+const MIO_APP_VERSION = 'Mio V226'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-07-24'
@@ -10640,10 +10640,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!ids.size) return alert('Assign documents to at least one request or special folder before downloading.')
     const productionOrder = manualRfpProductionRows(set, matterDocs).map((row) => String(row.document_id))
     const orderedIds = [...productionOrder, ...Array.from(ids).filter((id) => !productionOrder.includes(id))]
+    const useBates = set.final_output_mode !== 'folder_original' && set.final_use_bates !== false
     const rows = orderedIds.map((documentId) => {
       const original = matterDocs.find((doc) => String(doc.id) === documentId)
       const bates = set.bates_by_document?.[documentId] || null
-      const stamped = bates?.stamped_document_id ? documents.find((doc) => String(doc.id) === String(bates.stamped_document_id)) : null
+      const stamped = useBates && bates?.stamped_document_id ? documents.find((doc) => String(doc.id) === String(bates.stamped_document_id)) : null
       const source = stamped || original
       return {
         document_id: documentId,
@@ -10653,7 +10654,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         bates
       }
     }).filter((row) => row.original_name)
-    setManualRfpDownloadReview({ open: true, prefix_bates: set.export_prefix_bates !== false, rows })
+    setManualRfpDownloadReview({ open: true, prefix_bates: useBates && set.export_prefix_bates !== false, rows })
     window.setTimeout(() => document.getElementById('manual-rfp-download-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
@@ -10668,33 +10669,208 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return `${batesPrefix}${baseName}${extension}`
   }
 
-  async function downloadManualRfpRequestFolders(set, matterDocs, review = null) {
-    if (!set) return
-    const requestAssignments = (set.requests || []).map((request, index) => ({
-      folderName: `Request ${request.request_number || index + 1} - ${manualRfpShortName(request, index)}`,
-      documentIds: manualRfpRequestDocumentIds(request)
-    }))
-    const specialAssignments = [
+  function manualRfpAssignments(set) {
+    return [
+      ...(set.requests || []).map((request, index) => ({ folderName: `Request ${request.request_number || index + 1} - ${manualRfpShortName(request, index)}`, documentIds: manualRfpRequestDocumentIds(request) })),
       { folderName: 'Privilege Log', documentIds: set.special_folders?.privilege_log || [] },
       { folderName: 'Responsive but not responding', documentIds: set.special_folders?.responsive_not_responding || [] }
     ]
-    const assignments = [...requestAssignments, ...specialAssignments]
+  }
+
+  function manualRfpIsMediaDocument(doc = {}) {
+    return /^(audio|video)\//i.test(String(doc.file_type || doc.mime_type || '')) || /\.(mp3|wav|m4a|aac|ogg|mp4|mov|avi|wmv|mkv|webm)$/i.test(String(doc.file_name || doc.original_file_name || doc.name || ''))
+  }
+
+  async function manualRfpLoadPdf(set, original, useBates) {
+    await ensureBillingPdfLibrary()
+    const { PDFDocument, StandardFonts, rgb } = window.PDFLib
+    const stampedId = useBates ? set.bates_by_document?.[String(original.id)]?.stamped_document_id : null
+    const stamped = stampedId ? documents.find((doc) => String(doc.id) === String(stampedId)) : null
+    const source = stamped || original
+    const sourceName = source.file_name || source.original_file_name || source.name || 'document'
+    const dataUrl = await loadDocumentFileDataUrl(source)
+    const mime = String(source.file_type || source.mime_type || (String(dataUrl || '').match(/^data:([^;,]+)/)?.[1]) || '').toLowerCase()
+    const isPdf = /\.pdf$/i.test(sourceName) || /pdf/i.test(mime)
+    if (isPdf && dataUrl) return PDFDocument.load(dataUrlToUint8Array(dataUrl), { ignoreEncryption: true })
+    const output = await PDFDocument.create()
+    const regular = await output.embedFont(StandardFonts.Helvetica)
+    const bold = await output.embedFont(StandardFonts.HelveticaBold)
+    const pageSize = [612, 792]
+    if (manualRfpIsMediaDocument(source)) {
+      const page = output.addPage(pageSize)
+      page.drawText('NATIVE AUDIO/VIDEO FILE', { x: 54, y: 700, size: 18, font: bold, color: rgb(.08, .08, .08) })
+      page.drawText('This PDF identifies a native media file that cannot be converted to viewable PDF pages.', { x: 54, y: 666, size: 10, font: regular, color: rgb(.15, .15, .15), maxWidth: 500 })
+      page.drawText(`Original filename: ${String(sourceName).slice(0, 90)}`, { x: 54, y: 638, size: 10, font: regular, color: rgb(.15, .15, .15), maxWidth: 500 })
+      page.drawText(`Media type: ${source.file_type || source.mime_type || 'audio/video'}`, { x: 54, y: 616, size: 10, font: regular, color: rgb(.15, .15, .15) })
+      return output
+    }
+    if (dataUrl && (/image\/png/.test(mime) || /\.png$/i.test(sourceName))) {
+      const image = await output.embedPng(dataUrlToUint8Array(dataUrl))
+      const page = output.addPage(pageSize)
+      const scale = Math.min((pageSize[0] - 72) / image.width, (pageSize[1] - 72) / image.height, 1)
+      page.drawImage(image, { x: (pageSize[0] - image.width * scale) / 2, y: (pageSize[1] - image.height * scale) / 2, width: image.width * scale, height: image.height * scale })
+      return output
+    }
+    if (dataUrl && (/image\/(jpeg|jpg)/.test(mime) || /\.jpe?g$/i.test(sourceName))) {
+      const image = await output.embedJpg(dataUrlToUint8Array(dataUrl))
+      const page = output.addPage(pageSize)
+      const scale = Math.min((pageSize[0] - 72) / image.width, (pageSize[1] - 72) / image.height, 1)
+      page.drawImage(image, { x: (pageSize[0] - image.width * scale) / 2, y: (pageSize[1] - image.height * scale) / 2, width: image.width * scale, height: image.height * scale })
+      return output
+    }
+    const extraction = await extractDocumentTextForAi(source)
+    const text = String(extraction?.extracted_text || '').trim()
+    if (!text) throw new Error(`${sourceName} could not be converted to PDF because no readable text or supported image content was available.`)
+    let page = output.addPage(pageSize)
+    let y = 738
+    const margin = 54
+    const size = 10
+    const lineHeight = 14
+    const maxWidth = pageSize[0] - margin * 2
+    const drawWords = (paragraph) => {
+      let line = ''
+      String(paragraph || '').split(/\s+/).filter(Boolean).forEach((word) => {
+        const candidate = line ? `${line} ${word}` : word
+        if (regular.widthOfTextAtSize(candidate, size) > maxWidth && line) {
+          page.drawText(line, { x: margin, y, size, font: regular, color: rgb(.08, .08, .08) })
+          y -= lineHeight
+          if (y < 54) { page = output.addPage(pageSize); y = 738 }
+          line = word
+        } else line = candidate
+      })
+      if (line) { page.drawText(line, { x: margin, y, size, font: regular, color: rgb(.08, .08, .08) }); y -= lineHeight }
+      y -= 5
+      if (y < 54) { page = output.addPage(pageSize); y = 738 }
+    }
+    drawWords(`Converted PDF rendition of: ${sourceName}`)
+    String(text).replace(/\r/g, '').split('\n').forEach(drawWords)
+    return output
+  }
+
+  function manualRfpAddBookmarks(pdf, bookmarks) {
+    if (!bookmarks.length) return
+    try {
+      const { PDFName, PDFNumber, PDFHexString } = window.PDFLib
+      const context = pdf.context
+      const outlineRef = context.nextRef()
+      const itemRefs = bookmarks.map(() => context.nextRef())
+      bookmarks.forEach((bookmark, index) => {
+        const page = pdf.getPage(Math.max(0, Math.min(pdf.getPageCount() - 1, bookmark.pageIndex)))
+        const item = {
+          Title: PDFHexString.fromText(String(bookmark.title || `Document ${index + 1}`).slice(0, 240)),
+          Parent: outlineRef,
+          Dest: context.obj([page.ref, PDFName.of('Fit')])
+        }
+        if (index) item.Prev = itemRefs[index - 1]
+        if (index < itemRefs.length - 1) item.Next = itemRefs[index + 1]
+        context.assign(itemRefs[index], context.obj(item))
+      })
+      context.assign(outlineRef, context.obj({ Type: PDFName.of('Outlines'), First: itemRefs[0], Last: itemRefs[itemRefs.length - 1], Count: PDFNumber.of(itemRefs.length) }))
+      pdf.catalog.set(PDFName.of('Outlines'), outlineRef)
+      pdf.catalog.set(PDFName.of('PageMode'), PDFName.of('UseOutlines'))
+    } catch (error) {
+      console.warn('Could not add PDF bookmarks:', error)
+    }
+  }
+
+  async function manualRfpCombinedPdfBytes(set, rows, reviewedById, useBates) {
+    await ensureBillingPdfLibrary()
+    const { PDFDocument } = window.PDFLib
+    const combined = await PDFDocument.create()
+    const bookmarks = []
+    const skipped = []
+    for (const row of rows) {
+      const original = row.doc
+      if (!original) continue
+      try {
+        const sourcePdf = await manualRfpLoadPdf(set, original, useBates)
+        const pageIndex = combined.getPageCount()
+        const copied = await combined.copyPages(sourcePdf, sourcePdf.getPageIndices())
+        copied.forEach((page) => combined.addPage(page))
+        const reviewed = reviewedById.get(String(original.id))
+        const baseName = reviewed?.export_name || original.file_name || original.original_file_name || original.name || `Document-${original.id}`
+        bookmarks.push({ title: manualRfpReviewedExportName(set, { document_id: original.id, export_name: baseName, bates: set.bates_by_document?.[String(original.id)] }, useBates && set.export_prefix_bates !== false), pageIndex })
+      } catch (error) { skipped.push(`${original.file_name || original.name || original.id}: ${error?.message || error}`) }
+    }
+    if (!combined.getPageCount()) throw new Error('None of the selected documents could be converted to PDF.')
+    manualRfpAddBookmarks(combined, bookmarks)
+    return { bytes: await combined.save(), skipped }
+  }
+
+  function manualRfpTriggerDownload(data, fileName, mime) {
+    const blob = data instanceof Blob ? data : new Blob([data], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000)
+  }
+
+  async function downloadManualRfpRequestFolders(set, matterDocs, review = null) {
+    if (!set) return
+    const assignments = manualRfpAssignments(set)
     const assignedCount = assignments.reduce((sum, row) => sum + row.documentIds.length, 0)
     if (!assignedCount) return alert('Assign documents to at least one request or special folder before downloading.')
-    const prefixWithBates = review ? review.prefix_bates !== false : true
+    const outputMode = set.final_output_mode || 'folder_original'
+    const useBates = outputMode === 'folder_original' ? false : set.final_use_bates !== false
+    const prefixWithBates = useBates && (review ? review.prefix_bates !== false : true)
     const reviewedById = new Map((review?.rows || []).map((row) => [String(row.document_id), row]))
     if (review && !(review.rows || []).some((row) => row.include !== false)) return alert('Select at least one document to include in the ZIP.')
     const exportNames = Object.fromEntries((review?.rows || []).map((row) => [String(row.document_id), row.export_name]))
     if (review) updateManualRfpSet(set.id, { export_file_names: exportNames, export_prefix_bates: prefixWithBates })
     const effectiveSet = review ? { ...set, export_file_names: exportNames, export_prefix_bates: prefixWithBates } : set
+    if (useBates) {
+      const selectedIds = Array.from(new Set(assignments.flatMap((assignment) => assignment.documentIds.map(String)))).filter((documentId) => !review || reviewedById.get(documentId)?.include !== false)
+      const unstamped = selectedIds.filter((documentId) => !effectiveSet.bates_by_document?.[documentId]?.stamped_document_id)
+      if (unstamped.length && !window.confirm(`${unstamped.length} selected document${unstamped.length === 1 ? ' does' : 's do'} not yet have a Bates-stamped PDF copy.\n\nContinue and use unstamped PDF renditions for those documents?`)) return
+    }
 
-    setManualRfpBusy('Preparing request folders and downloading their files...')
+    setManualRfpBusy(outputMode === 'combined_pdf' ? 'Combining all production documents into one bookmarked PDF...' : outputMode === 'grouped_pdf' ? 'Creating a bookmarked PDF for each response folder...' : 'Preparing request folders and downloading their files...')
     setManualRfpNotice(null)
     try {
+      if (outputMode === 'combined_pdf') {
+        const rows = manualRfpProductionRows(effectiveSet, matterDocs).filter((row) => !review || reviewedById.get(String(row.document_id))?.include !== false)
+        const combined = await manualRfpCombinedPdfBytes(effectiveSet, rows, reviewedById, useBates)
+        const suffix = useBates ? 'Bates' : 'No-Bates'
+        manualRfpTriggerDownload(combined.bytes, `${manualRfpZipSafeName(effectiveSet.job_name || effectiveSet.title || 'RFP-Production')}-Combined-${suffix}.pdf`, 'application/pdf')
+        setManualRfpNotice({ type: 'success', text: `Downloaded one combined PDF with ${rows.length} document bookmark${rows.length === 1 ? '' : 's'}.${combined.skipped.length ? ` ${combined.skipped.length} file(s) could not be converted.` : ''}` })
+        setManualRfpDownloadReview((current) => ({ ...current, open: false }))
+        return
+      }
       await ensureManualRfpZipLibrary()
       const zip = new window.JSZip()
       const missing = []
       const exported = []
+      if (outputMode === 'grouped_pdf') {
+        for (const assignment of assignments) {
+          const rows = assignment.documentIds
+            .filter((documentId) => !review || reviewedById.get(String(documentId))?.include !== false)
+            .map((documentId) => ({ document_id: String(documentId), doc: matterDocs.find((doc) => String(doc.id) === String(documentId)) }))
+            .filter((row) => row.doc)
+          if (!rows.length) continue
+          try {
+            const combined = await manualRfpCombinedPdfBytes(effectiveSet, rows, reviewedById, useBates)
+            const pdfName = `${manualRfpZipSafeName(assignment.folderName)}${useBates ? '-Bates' : '-No-Bates'}.pdf`
+            zip.file(pdfName, combined.bytes)
+            exported.push(pdfName)
+            missing.push(...combined.skipped.map((entry) => `${assignment.folderName}: ${entry}`))
+          } catch (error) { missing.push(`${assignment.folderName}: ${error?.message || error}`) }
+        }
+        if (!exported.length) throw new Error('No grouped response PDFs could be created.')
+        if (effectiveSet.include_production_log_in_zip !== false) {
+          const productionLog = await buildManualRfpProductionLogFile(effectiveSet, matterDocs, effectiveSet.production_log_zip_format || 'xlsx')
+          zip.file(productionLog.fileName, productionLog.data)
+        }
+        if (missing.length) zip.file('MISSING_OR_UNCONVERTED_FILES.txt', missing.join('\n'))
+        const groupedBlob = await zip.generateAsync({ type: 'blob' })
+        manualRfpTriggerDownload(groupedBlob, `${manualRfpZipSafeName(effectiveSet.job_name || effectiveSet.title || 'RFP-Production')}-Grouped-PDFs.zip`, 'application/zip')
+        setManualRfpNotice({ type: 'success', text: `Downloaded ${exported.length} bookmarked response-folder PDF${exported.length === 1 ? '' : 's'} in one ZIP.${missing.length ? ` ${missing.length} conversion issue(s) are listed inside the ZIP.` : ''}` })
+        setManualRfpDownloadReview((current) => ({ ...current, open: false }))
+        return
+      }
       for (const assignment of assignments) {
         const folder = zip.folder(manualRfpZipSafeName(assignment.folderName))
         if (!assignment.documentIds.length) {
@@ -10707,21 +10883,32 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           if (review && reviewed?.include === false) continue
           const original = matterDocs.find((doc) => String(doc.id) === String(documentId))
           if (!original) { missing.push(`${assignment.folderName}: missing document record ${documentId}`); continue }
-          const stampedId = set.bates_by_document?.[String(documentId)]?.stamped_document_id
+          const stampedId = useBates ? set.bates_by_document?.[String(documentId)]?.stamped_document_id : null
           const stamped = stampedId ? documents.find((doc) => String(doc.id) === String(stampedId)) : null
-          const source = stamped || original
-          const dataUrl = await loadDocumentFileDataUrl(source)
-          if (!dataUrl) { missing.push(`${assignment.folderName}: ${source.file_name || source.original_file_name || source.name || documentId}`); continue }
+          const source = useBates ? (stamped || original) : original
           const bates = set.bates_by_document?.[String(documentId)]
           const rawName = reviewed?.export_name || source.file_name || source.original_file_name || source.name || `Document-${documentId}`
           const reviewedRow = { document_id: documentId, export_name: rawName, original_name: rawName, bates }
-          let fileName = manualRfpReviewedExportName(effectiveSet, reviewedRow, prefixWithBates)
+          let fileName = manualRfpReviewedExportName(effectiveSet, reviewedRow, prefixWithBates && useBates)
+          let fileData
+          if (outputMode === 'folder_pdf') {
+            try {
+              const pdf = await manualRfpLoadPdf(effectiveSet, original, useBates)
+              manualRfpAddBookmarks(pdf, [{ title: fileName.replace(/\.[^.]+$/, ''), pageIndex: 0 }])
+              fileData = await pdf.save()
+              fileName = `${fileName.replace(/\.[^.]+$/, '')}.pdf`
+            } catch (error) { missing.push(`${assignment.folderName}: ${rawName} (${error?.message || error})`); continue }
+          } else {
+            const dataUrl = await loadDocumentFileDataUrl(source)
+            if (!dataUrl) { missing.push(`${assignment.folderName}: ${source.file_name || source.original_file_name || source.name || documentId}`); continue }
+            fileData = dataUrlToUint8Array(dataUrl)
+          }
           const extension = String(fileName).match(/\.[a-z0-9]{1,8}$/i)?.[0] || ''
           const baseName = extension ? fileName.slice(0, -extension.length) : fileName
           let suffix = 2
           while (usedNames.has(fileName.toLowerCase())) fileName = `${baseName}_${suffix++}${extension}`
           usedNames.add(fileName.toLowerCase())
-          folder.file(fileName, dataUrlToUint8Array(dataUrl))
+          folder.file(fileName, fileData)
           exported.push(`${assignment.folderName}/${fileName}`)
         }
       }
@@ -10735,7 +10922,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${manualRfpZipSafeName(set.title || 'RFP-Request-Folders', 'RFP-Request-Folders')}.zip`
+      link.download = `${manualRfpZipSafeName(set.title || 'RFP-Request-Folders', 'RFP-Request-Folders')}${outputMode === 'folder_pdf' ? '-All-PDF' : '-Original-Formats'}.zip`
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -10812,7 +10999,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     }
 
     return <div style={{ display: 'grid', gap: 12 }}>
-      {manualRfpDownloadReview.open && <section id="manual-rfp-download-review" style={{ order: 8, border: '2px solid #2563eb', borderRadius: 14, background: '#eff6ff', overflow: 'hidden' }}><div style={{ padding: 12, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#dbeafe' }}><div><h3 style={{ margin: 0 }}>Review Production Names &amp; Download Folders</h3><div style={{ color: '#475569', fontSize: 12 }}>Edit the base name below and confirm the exact final ZIP filename before downloading.</div></div><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, open: false }))}>Close</button></div><div style={{ padding: 12 }}><label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 800 }}><input type="checkbox" checked={manualRfpDownloadReview.prefix_bates !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, prefix_bates: event.target.checked }))} /> Add Bates name and range at the beginning of each filename for sorting</label><div style={{ overflowX: 'auto', maxHeight: 520, marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050, background: '#fff' }}><thead><tr><th style={{ padding: 7 }}>Include</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th><th style={{ textAlign: 'left', padding: 7 }}>Original filename</th><th style={{ textAlign: 'left', padding: 7 }}>Editable base filename</th><th style={{ textAlign: 'left', padding: 7 }}>Final ZIP / production-log filename</th></tr></thead><tbody>{manualRfpDownloadReview.rows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', textAlign: 'center' }}><input type="checkbox" checked={row.include !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, include: event.target.checked } : item) }))} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{row.bates ? `${row.bates.prefix || set.bates_prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.original_name}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={row.export_name} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, export_name: event.target.value } : item) }))} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', fontWeight: 700 }}>{manualRfpReviewedExportName(set, row, manualRfpDownloadReview.prefix_bates !== false)}</td></tr>)}</tbody></table></div><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: true })) }))}>Select all</button><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: false })) }))}>Select none</button><button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs, manualRfpDownloadReview)} disabled={Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 13px', fontWeight: 900 }}>Create &amp; Download ZIP</button></div></div></section>}
+      {manualRfpDownloadReview.open && <section id="manual-rfp-download-review" style={{ order: 8, border: '2px solid #2563eb', borderRadius: 14, background: '#eff6ff', overflow: 'hidden' }}><div style={{ padding: 12, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#dbeafe' }}><div><h3 style={{ margin: 0 }}>Review Production Names &amp; Download</h3><div style={{ color: '#475569', fontSize: 12 }}>Edit the base name and confirm the exact produced filename or PDF bookmark before downloading.</div></div><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, open: false }))}>Close</button></div><div style={{ padding: 12 }}><label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 800 }}><input type="checkbox" checked={(set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false && manualRfpDownloadReview.prefix_bates !== false} disabled={!((set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false)} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, prefix_bates: event.target.checked }))} /> Add Bates name and range at the beginning of each filename for sorting</label><div style={{ overflowX: 'auto', maxHeight: 520, marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050, background: '#fff' }}><thead><tr><th style={{ padding: 7 }}>Include</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th><th style={{ textAlign: 'left', padding: 7 }}>Original filename</th><th style={{ textAlign: 'left', padding: 7 }}>Editable base filename</th><th style={{ textAlign: 'left', padding: 7 }}>Final produced filename / PDF bookmark</th></tr></thead><tbody>{manualRfpDownloadReview.rows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', textAlign: 'center' }}><input type="checkbox" checked={row.include !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, include: event.target.checked } : item) }))} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{row.bates ? `${row.bates.prefix || set.bates_prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.original_name}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={row.export_name} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, export_name: event.target.value } : item) }))} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', fontWeight: 700 }}>{manualRfpReviewedExportName(set, row, (set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false && manualRfpDownloadReview.prefix_bates !== false)}</td></tr>)}</tbody></table></div><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: true })) }))}>Select all</button><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: false })) }))}>Select none</button><button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs, manualRfpDownloadReview)} disabled={Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 13px', fontWeight: 900 }}>Create &amp; Download Production</button></div></div></section>}
 
       {manualRfpViewer.open && <div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.62)', display: 'grid', placeItems: 'center', padding: 24 }} onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}><section style={{ width: 'min(1180px,96vw)', height: 'min(850px,92vh)', background: '#fff', borderRadius: 14, overflow: 'hidden', boxShadow: '0 24px 70px rgba(0,0,0,.35)', display: 'grid', gridTemplateRows: 'auto 1fr' }} onClick={(event) => event.stopPropagation()}><div style={{ padding: 10, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><strong>{manualRfpViewer.name}</strong><button type="button" onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}>Close Viewer</button></div>{manualRfpViewer.loading ? <div style={{ display: 'grid', placeItems: 'center', color: '#475569' }}>Loading document…</div> : manualRfpViewer.url ? <iframe title={`Document viewer - ${manualRfpViewer.name}`} src={manualRfpViewer.url} style={{ width: '100%', height: '100%', border: 0 }} /> : <div style={{ display: 'grid', placeItems: 'center', color: '#991b1b' }}>No saved file content is available for this document.</div>}</section></div>}
       <div style={{ order: 1, border: '1px solid #bfdbfe', borderRadius: 14, background: 'linear-gradient(135deg,#eff6ff,#fff)', padding: 14 }}>
@@ -10905,10 +11092,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
         <section style={{ order: 7, border: '2px solid #2563eb', borderRadius: 14, background: '#eff6ff', padding: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div><strong style={{ color: '#1e40af' }}>7. Review filenames and generate the final folders</strong><div style={{ color: '#475569', fontSize: 12, marginTop: 3 }}>This final step opens the filename review immediately below, then creates the request-folder ZIP.</div></div>
+            <div><strong style={{ color: '#1e40af' }}>7. Choose the production package and download</strong><div style={{ color: '#475569', fontSize: 12, marginTop: 3 }}>Choose original files, all-PDF folders, one combined bookmarked PDF, or bookmarked PDFs grouped by response folder.</div></div>
             <button type="button" onClick={() => openManualRfpDownloadReview(set, matterDocs)} disabled={Boolean(manualRfpBusy) || !productionRows.length} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>Review &amp; Download Folders</button>
           </div>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}><label><input type="checkbox" checked={set.include_production_log_in_zip !== false} onChange={(event) => updateManualRfpSet(set.id, { include_production_log_in_zip: event.target.checked })} /> Include the production log in the final ZIP</label><label>Production-log format in ZIP <select value={set.production_log_zip_format || 'xlsx'} onChange={(event) => updateManualRfpSet(set.id, { production_log_zip_format: event.target.value })} disabled={set.include_production_log_in_zip === false}><option value="xlsx">Excel (.xlsx)</option><option value="pdf">PDF</option><option value="doc">Word (.doc)</option></select></label></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px,1.4fr) minmax(210px,.8fr) minmax(280px,1fr)', gap: 10, alignItems: 'end', marginTop: 10 }}><label><strong>Download format</strong><select value={set.final_output_mode || 'folder_original'} onChange={(event) => updateManualRfpSet(set.id, { final_output_mode: event.target.value })} style={{ width: '100%', marginTop: 4 }}><option value="folder_original">Request folders — keep original file formats</option><option value="folder_pdf">Request folders — convert every file to PDF</option><option value="combined_pdf">One combined PDF — bookmarks for every document</option><option value="grouped_pdf">One bookmarked PDF per response/folder</option></select></label><label><input type="checkbox" checked={set.final_use_bates !== false} disabled={(set.final_output_mode || 'folder_original') === 'folder_original'} onChange={(event) => updateManualRfpSet(set.id, { final_use_bates: event.target.checked })} /> Use Bates-stamped PDFs when available</label><div><label><input type="checkbox" checked={set.include_production_log_in_zip !== false} disabled={(set.final_output_mode || 'folder_original') === 'combined_pdf'} onChange={(event) => updateManualRfpSet(set.id, { include_production_log_in_zip: event.target.checked })} /> Include production log in ZIP</label><label style={{ display: 'block', marginTop: 4 }}>Log format <select value={set.production_log_zip_format || 'xlsx'} onChange={(event) => updateManualRfpSet(set.id, { production_log_zip_format: event.target.value })} disabled={set.include_production_log_in_zip === false || (set.final_output_mode || 'folder_original') === 'combined_pdf'}><option value="xlsx">Excel (.xlsx)</option><option value="pdf">PDF</option><option value="doc">Word (.doc)</option></select></label></div></div>
         </section>
 
         <section style={{ order: 5, border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
