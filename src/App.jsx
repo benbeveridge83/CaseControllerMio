@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V233'
+const MIO_APP_VERSION = 'Mio V234'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -6568,8 +6568,27 @@ function App() {
   }
 
   function openNeedToSetEventForSetting(event = {}) {
-    const sourceEvent = events.find((item) => item.id === (event.id || event.checklist_source_id)) || event
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const sourceEvent = events.find((item) => String(item.id) === String(eventId)) || event
     editEvent(sourceEvent)
+  }
+
+  function deleteNeedToSetEvent(event = {}) {
+    const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
+    const sourceEvent = events.find((item) => String(item.id) === String(eventId)) || event
+    const sourceEventId = sourceEvent?.id || eventId
+    if (!sourceEventId) {
+      alert('This Need to Set row is not linked to a calendar event, so it cannot be deleted from here.')
+      return
+    }
+    deleteRow('calendar_events', sourceEventId, () => {
+      const rowId = checklistNeedToSetRowId(event)
+      setNeedToSetSetRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+      setNeedToSetFinalizedRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+      setNeedToSetPausedRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
+      setChecklistStepsExpandedByRow((current) => { const next = { ...current }; delete next[String(eventId)]; return next })
+      fetchEvents()
+    }, 'event')
   }
 
   function markNeedToSetAlreadySet(event = {}) {
@@ -32936,7 +32955,38 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const eventId = event?.id || event?.checklist_source_id || event?.checklist_id || ''
     if (checklistStepsExpandedByRow[String(eventId)] === false) return null
     const steps = checklistStepsForEvent(event)
-    if (!steps.length) return null
+    if (!steps.length) {
+      const matter = checklistMatterForEvent(event)
+      const actionButton = (label,onClick,tone='default') => <button type="button" onClick={onClick} style={{padding:'7px 10px',borderRadius:6,border:`1px solid ${tone==='danger'?'#fecaca':'#cbd5e1'}`,background:tone==='primary'?'#eff6ff':tone==='danger'?'#fff1f2':'#fff',color:tone==='danger'?'#b91c1c':'#0f172a',fontSize:11,fontWeight:750}}>{label}</button>
+      return <div style={{borderTop:'2px solid #94a3b8',background:'#f8fafc',padding:10}}>
+        <div style={{padding:'8px 10px',border:'1px solid #fde68a',borderRadius:8,background:'#fffbeb',color:'#92400e',fontSize:12,marginBottom:8}}>
+          <strong>No checklist steps are configured for this event type.</strong> The row is still fully manageable below. Use <strong>Edit Event</strong> to assign a category, or cancel/delete it without changing its category first.
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'minmax(260px,1fr) minmax(260px,1fr)',gap:8}}>
+          <section style={{border:'1px solid #dbe4ee',borderRadius:8,background:'#fff',padding:10}}>
+            <strong style={{fontSize:12}}>Event Overview</strong>
+            <div style={{marginTop:7,fontSize:12,lineHeight:1.5,color:'#334155'}}>
+              <div><b>Type:</b> {checklistEventCategoryLabel(event)}</div>
+              <div><b>Title:</b> {needToSetEventTitle(event)}</div>
+              <div><b>Matter:</b> {checklistMatterLabel(event)}</div>
+              <div><b>Court:</b> {checklistCourtName(event)||'No court'}</div>
+              <div><b>Created:</b> {needToSetShortDate(needToSetCreatedAt(event))}</div>
+            </div>
+          </section>
+          <section style={{border:'1px solid #dbe4ee',borderRadius:8,background:'#fff',padding:10}}>
+            <strong style={{fontSize:12}}>Event Actions</strong>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
+              {actionButton('Edit Event',()=>openNeedToSetEventForSetting(event),'primary')}
+              {actionButton('Cancel Setting',()=>cancelNeedToSetSetting(event),'danger')}
+              {actionButton('Delete Event',()=>deleteNeedToSetEvent(event),'danger')}
+              {actionButton('Pause / Resume',()=>toggleNeedToSetPaused(event))}
+              {actionButton('Already Set',()=>markNeedToSetAlreadySet(event))}
+              {actionButton('Open Matter',()=>matter&&openMatterDashboardInNewWindow(matter))}
+            </div>
+          </section>
+        </div>
+      </div>
+    }
     const status = currentNeedToSetStatus(event)
     const stepIndex = Math.max(0, steps.findIndex((candidate) => candidate.name === status.stepName))
     const step = steps[stepIndex] || steps[0]
