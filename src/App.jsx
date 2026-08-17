@@ -3,11 +3,12 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V231'
+const MIO_APP_VERSION = 'Mio V233'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
 const MIO_ONLY_FINANCE_MODE = true
+const BILLING_EXPENSE_CATEGORIES = ['Service fee', 'Mediation fee', 'Filing fee', 'Court reporter', 'Expert / witness fee', 'Process server', 'Travel', 'Copies / postage', 'Other expense']
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
@@ -269,6 +270,14 @@ const DEFAULT_EVENT_CHECKLIST_TEMPLATES = {
   Other: [
     { id: 'other-review', name: 'Review Event', icon: 'checklist', color: '#64748b', required: true }
   ]
+}
+
+const DEFAULT_EVENT_CHECKLIST_COLORS = {
+  Trial: '#2563eb',
+  Hearing: '#f97316',
+  Mediation: '#16a34a',
+  Deposition: '#7c3aed',
+  Other: '#64748b'
 }
 
 
@@ -2245,7 +2254,7 @@ function App() {
   const [showPriorBillingWindow, setShowPriorBillingWindow] = useState(false)
   const [priorBillingMatterId, setPriorBillingMatterId] = useState('')
   const [billingTableSort, setBillingTableSort] = useState({ field: 'date', direction: 'desc' })
-  const [billingForm, setBillingForm] = useState({ matter_id: '', task_id: '', user_id: '', date: new Date().toISOString().slice(0, 10), description: '', rate: '', billing_time: '', matter_status: '', matter_step: '', private_note: '', do_not_bill: false })
+  const [billingForm, setBillingForm] = useState({ entry_type: 'time', matter_id: '', task_id: '', user_id: '', date: new Date().toISOString().slice(0, 10), description: '', rate: '', billing_time: '', expense_category: 'Service fee', expense_amount: '', matter_status: '', matter_step: '', private_note: '', do_not_bill: false })
   const [billingFilters, setBillingFilters] = useState({ matter_id: 'all', client_id: 'all', client_search: '', user_id: 'all', date_from: '', date_to: '' })
   const [matterBillingReviewId, setMatterBillingReviewId] = useState('')
   const [billingSettingsDraft, setBillingSettingsDraft] = useState({ user_id: '', rate: '' })
@@ -2689,7 +2698,7 @@ function App() {
   const [checklistOpenClosedFilter, setChecklistOpenClosedFilter] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('caseMioChecklistOpenClosedFilter') || '["open","closed"]')
-      return Array.isArray(parsed) && parsed.length ? parsed : ['open', 'closed']
+      return Array.isArray(parsed) ? parsed : ['open', 'closed']
     } catch { return ['open', 'closed'] }
   })
   const [checklistShowBlankDays, setChecklistShowBlankDays] = useState(() => localStorage.getItem('caseMioChecklistShowBlankDays') === 'true')
@@ -2701,6 +2710,11 @@ function App() {
   const [checklistTimelineSelectedEventId, setChecklistTimelineSelectedEventId] = useState('')
   const [checklistTimelineTemplateType, setChecklistTimelineTemplateType] = useState('Trial')
   const [checklistTimelineFilterOpen, setChecklistTimelineFilterOpen] = useState(false)
+  const [checklistFilterSectionOpen, setChecklistFilterSectionOpen] = useState(() => ({
+    case: localStorage.getItem('caseMioNeedToSetFilterOpen_case') !== 'false',
+    matter: localStorage.getItem('caseMioNeedToSetFilterOpen_matter') !== 'false',
+    category: localStorage.getItem('caseMioNeedToSetFilterOpen_category') !== 'false'
+  }))
   const [checklistTimelineVisibleSettings, setChecklistTimelineVisibleSettings] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioChecklistTimelineVisibleSettings') || '{}') }
     catch { return {} }
@@ -2710,6 +2724,12 @@ function App() {
       const parsed = JSON.parse(localStorage.getItem('caseMioEventChecklistTemplates') || 'null')
       return parsed && typeof parsed === 'object' ? parsed : DEFAULT_EVENT_CHECKLIST_TEMPLATES
     } catch { return DEFAULT_EVENT_CHECKLIST_TEMPLATES }
+  })
+  const [eventChecklistColors, setEventChecklistColors] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioEventChecklistColors') || 'null')
+      return parsed && typeof parsed === 'object' ? { ...DEFAULT_EVENT_CHECKLIST_COLORS, ...parsed } : DEFAULT_EVENT_CHECKLIST_COLORS
+    } catch { return DEFAULT_EVENT_CHECKLIST_COLORS }
   })
   const [eventChecklistCompletions, setEventChecklistCompletions] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioEventChecklistCompletions') || '{}') || {} } catch { return {} }
@@ -3339,9 +3359,12 @@ function App() {
     const payload = row?.payload && typeof row.payload === 'object' ? row.payload : {}
     const id = String(row?.id || payload.id || '')
     const doNotBill = Boolean(row?.do_not_bill || payload.do_not_bill || payload.non_billable)
+    const entryType = payload.entry_type === 'expense' ? 'expense' : 'time'
     return {
       ...payload,
       id,
+      entry_type: entryType,
+      expense_category: entryType === 'expense' ? (payload.expense_category || 'Other expense') : '',
       matter_id: row?.matter_id ?? payload.matter_id ?? '',
       client_id: row?.client_id ?? payload.client_id ?? '',
       task_id: row?.task_id ?? payload.task_id ?? '',
@@ -3363,6 +3386,7 @@ function App() {
   function billingEntryToRelationalRow(entry, privateNoteValue = '') {
     if (!session?.user?.id || !entry?.id) return null
     const doNotBill = Boolean(entry.non_billable || entry.do_not_bill)
+    const isExpense = entry.entry_type === 'expense'
     const matterId = entry.matter_id || ''
     return {
       user_id: session.user.id,
@@ -3375,8 +3399,8 @@ function App() {
       description: entry.description || '',
       matter_status: entry.matter_status || billingMatterStatus(entry) || null,
       matter_step: entry.matter_step || null,
-      billing_time: Number.isFinite(Number(entry.billing_time)) ? Number(entry.billing_time) : null,
-      rate: Number.isFinite(Number(entry.rate)) ? Number(entry.rate) : null,
+      billing_time: isExpense ? 0 : (Number.isFinite(Number(entry.billing_time)) ? Number(entry.billing_time) : null),
+      rate: isExpense ? 0 : (Number.isFinite(Number(entry.rate)) ? Number(entry.rate) : null),
       amount: doNotBill ? 0 : (Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : null),
       do_not_bill: doNotBill,
       private_note: privateNoteValue || null,
@@ -3399,7 +3423,7 @@ function App() {
 
   function billingEntryCompletenessScore(entry) {
     if (!entry || typeof entry !== 'object') return 0
-    return ['id', 'matter_id', 'client_id', 'user_id', 'date', 'description', 'matter_status', 'matter_step', 'billing_time', 'rate', 'amount', 'created_at']
+    return ['id', 'entry_type', 'matter_id', 'client_id', 'user_id', 'date', 'description', 'expense_category', 'matter_status', 'matter_step', 'billing_time', 'rate', 'amount', 'created_at']
       .reduce((score, field) => {
         const value = entry[field]
         return score + (value !== undefined && value !== null && String(value).trim() !== '' ? 1 : 0)
@@ -3416,6 +3440,8 @@ function App() {
     normalized.cause_number = normalized.cause_number || billingMatterCauseNumber(normalized.matter_id) || ''
     normalized.client_name = normalized.client_name || billingMatterClientName(normalized.matter_id) || ''
     normalized.description = normalized.description || ''
+    normalized.entry_type = normalized.entry_type === 'expense' ? 'expense' : 'time'
+    normalized.expense_category = normalized.entry_type === 'expense' ? (normalized.expense_category || 'Other expense') : ''
     normalized.matter_status = normalized.matter_status || billingMatterStatus(normalized.matter_id) || ''
     normalized.matter_step = normalized.matter_step || ''
     normalized.billing_time = Number.isFinite(Number(normalized.billing_time)) ? Number(normalized.billing_time) : (normalized.billing_time || '')
@@ -3424,6 +3450,7 @@ function App() {
     normalized.non_billable = doNotBill
     normalized.do_not_bill = doNotBill
     if (doNotBill) normalized.amount = 0
+    else if (normalized.entry_type === 'expense' && Number.isFinite(Number(normalized.amount))) normalized.amount = Math.max(0, Number(normalized.amount))
     else if (Number.isFinite(Number(normalized.amount))) normalized.amount = Number(normalized.amount)
     else if (Number.isFinite(Number(normalized.billing_time)) && Number.isFinite(Number(normalized.rate))) normalized.amount = Number((Number(normalized.billing_time) * Number(normalized.rate)).toFixed(2))
     else normalized.amount = normalized.amount || 0
@@ -4583,6 +4610,7 @@ function App() {
   useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineDetailsOpen', checklistTimelineDetailsOpen ? 'true' : 'false') }, [checklistTimelineDetailsOpen])
   useEffect(() => { safeSetLocalStorage('caseMioChecklistTimelineVisibleSettings', JSON.stringify(checklistTimelineVisibleSettings || {})) }, [checklistTimelineVisibleSettings])
   useEffect(() => { safeSetLocalStorage('caseMioEventChecklistTemplates', JSON.stringify(eventChecklistTemplates || DEFAULT_EVENT_CHECKLIST_TEMPLATES)) }, [eventChecklistTemplates])
+  useEffect(() => { safeSetLocalStorage('caseMioEventChecklistColors', JSON.stringify(eventChecklistColors || DEFAULT_EVENT_CHECKLIST_COLORS)) }, [eventChecklistColors])
   useEffect(() => { safeSetLocalStorage('caseMioEventChecklistCompletions', JSON.stringify(eventChecklistCompletions || {})) }, [eventChecklistCompletions])
 
 
@@ -6035,11 +6063,16 @@ function App() {
     const opts = checklistFilterOptions(kind)
     const selected = checklistSelectedFilterValues(kind)
     const storageKey = `caseMioNeedToSetFilterOpen_${kind}`
-    const defaultOpen = localStorage.getItem(storageKey) !== 'false'
+    const sectionOpen = checklistFilterSectionOpen[kind] !== false
     return (
       <details
-        defaultOpen={defaultOpen}
-        onToggle={(event) => safeSetLocalStorage(storageKey, event.currentTarget.open ? 'true' : 'false')}
+        open={sectionOpen}
+        onToggle={(event) => {
+          const nextOpen = event.currentTarget.open
+          if (nextOpen === sectionOpen) return
+          setChecklistFilterSectionOpen((current) => ({ ...(current || {}), [kind]: nextOpen }))
+          safeSetLocalStorage(storageKey, nextOpen ? 'true' : 'false')
+        }}
         style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 230 }}
       >
         <summary style={{ cursor: 'pointer', fontWeight: 'bold', userSelect: 'none' }}>
@@ -6076,6 +6109,16 @@ function App() {
 
   function checklistEventCategoryLabel(event) {
     return [event.checklist_category || event.event_category, event.checklist_subcategory || event.event_subcategory].filter(Boolean).join(' / ') || 'Uncategorized'
+  }
+
+  function checklistCategoryFilterKey(value) {
+    const raw = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ')
+    if (/mediat/.test(raw)) return 'mediation'
+    if (/deposition|\bdepo\b/.test(raw)) return 'deposition'
+    if (/\btrial\b/.test(raw)) return 'trial'
+    if (/hearing|setting/.test(raw)) return 'hearing'
+    if (/conference|consult/.test(raw)) return 'conference'
+    return raw || 'uncategorized'
   }
 
   function checklistMatterLabel(event) {
@@ -6117,15 +6160,26 @@ function App() {
     const selectedCase = checklistSelectedFilterValues('case')
     const selectedMatter = checklistSelectedFilterValues('matter')
     const selectedCategories = checklistSelectedFilterValues('category')
-    const selectedOpenClosed = Array.isArray(checklistOpenClosedFilter) && checklistOpenClosedFilter.length ? checklistOpenClosedFilter : ['open', 'closed']
+    const selectedOpenClosed = Array.isArray(checklistOpenClosedFilter) ? checklistOpenClosedFilter : ['open', 'closed']
+    const allCaseValues = checklistFilterOptions('case').map((option) => option.value)
+    const allMatterValues = checklistFilterOptions('matter').map((option) => option.value)
+    const selectedCategoryKeys = new Set(selectedCategories.map(checklistCategoryFilterKey))
+    const caseFilterConfigured = Array.isArray(checklistCaseStatusFilter)
+    const matterFilterConfigured = Array.isArray(checklistMatterStatusFilter)
+    const categoryFilterConfigured = Array.isArray(checklistEventCategoryFilter)
 
     return checklistRows()
       .filter((event) => {
         const matter = checklistMatterForEvent(event)
+        if (!selectedOpenClosed.length) return false
         if (matter && !selectedOpenClosed.includes(checklistMatterOpenClosedValue(matter))) return false
-        if (matter && selectedCase.length > 0 && !selectedCase.includes(matter.case_status || '')) return false
-        if (matter && selectedMatter.length > 0 && !selectedMatter.includes(matter.matter_status || '')) return false
-        if (selectedCategories.length > 0 && !selectedCategories.includes(event.checklist_category || event.event_category || '')) return false
+        if (caseFilterConfigured && !selectedCase.length) return false
+        if (matterFilterConfigured && !selectedMatter.length) return false
+        // When every configured status is selected, blank/new status values should not silently hide events.
+        if (matter && selectedCase.length < allCaseValues.length && !selectedCase.includes(matter.case_status || '')) return false
+        if (matter && selectedMatter.length < allMatterValues.length && !selectedMatter.includes(matter.matter_status || '')) return false
+        if (categoryFilterConfigured && !selectedCategories.length) return false
+        if (categoryFilterConfigured && !selectedCategoryKeys.has(checklistCategoryFilterKey(event.checklist_category || event.event_category || ''))) return false
         const isComplete = event.is_active === false || event.completed === true || event.status === 'completed'
         const rowId = checklistNeedToSetRowId(event)
         const isSetRow = Boolean(needToSetSetRows[rowId])
@@ -6703,12 +6757,14 @@ function App() {
     if (raw.includes('hearing')) return 'Hearing'
     if (raw.includes('mediat')) return 'Mediation'
     if (raw.includes('deposition') || raw.includes('depo')) return 'Deposition'
+    const configuredType = Object.keys(eventChecklistTemplates || {}).find((type) => type !== 'Other' && raw.includes(String(type).toLowerCase()))
+    if (configuredType) return configuredType
     return 'Other'
   }
 
   function checklistTimelineEventColor(event = {}) {
     const type = checklistTimelineEventType(event)
-    return ({ Trial: '#2563eb', Hearing: '#f97316', Mediation: '#16a34a', Deposition: '#7c3aed', Other: '#64748b' })[type]
+    return eventChecklistColors[type] || DEFAULT_EVENT_CHECKLIST_COLORS[type] || DEFAULT_EVENT_CHECKLIST_COLORS.Other
   }
 
   function checklistTimelineTemplateForEvent(event = {}) {
@@ -6877,7 +6933,7 @@ function App() {
             {!checklistTimelineDetailsOpen ? <button type="button" onClick={() => setChecklistTimelineDetailsOpen(true)} title="Open event details" style={{ width: 42, height: 48, border: 0, background: '#fff', fontSize: 20 }}>›</button> : selectedEvent ? <div style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><div><span style={{ display: 'inline-block', padding: '3px 7px', borderRadius: 5, color: '#fff', background: checklistTimelineEventColor(selectedEvent), fontSize: 11, fontWeight: 900 }}>{checklistTimelineEventType(selectedEvent).toUpperCase()}</span><h2 style={{ margin: '8px 0 2px', fontSize: 18 }}>{selectedEvent.checklist_title || selectedEvent.title || 'Event'}</h2><div style={{ color: '#475569', fontSize: 13 }}>{checklistMatterLabel(selectedEvent)}</div></div><button type="button" onClick={() => setChecklistTimelineDetailsOpen(false)} style={{ border: 0, background: 'transparent', fontSize: 20 }}>×</button></div><div style={{ marginTop: 12, fontSize: 13, display: 'grid', gap: 6 }}><div>📅 {formatChecklistDate(selectedEvent)}</div>{selectedEvent.start_time && <div>🕘 {formatEventTime(selectedEvent.start_time)}</div>}<div>🏛 {checklistCourtName(selectedEvent) || 'No court listed'}</div></div><div style={{ marginTop: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: 13 }}><span>Checklist progress</span><span>{selectedDone} of {selectedItems.length}</span></div><div style={{ height: 7, background: '#e2e8f0', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}><div style={{ width: `${selectedItems.length ? selectedDone / selectedItems.length * 100 : 0}%`, height: '100%', background: '#16a34a' }} /></div></div><div style={{ marginTop: 14, display: 'grid', gap: 7 }}>{selectedItems.map((item) => { const completion = eventChecklistCompletions[checklistTimelineCompletionKey(selectedEvent, item)]; return <button key={item.id} type="button" onClick={() => toggleChecklistTimelineCompletion(selectedEvent, item)} style={{ display: 'grid', gridTemplateColumns: '30px 1fr auto', alignItems: 'center', gap: 8, textAlign: 'left', padding: 8, border: '1px solid #e2e8f0', borderRadius: 7, background: completion?.completed ? '#f0fdf4' : '#fff' }}><span style={{ width: 28, height: 28, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}` }}><ChecklistTimelineIcon name={item.icon} size={16} color={completion?.completed ? '#fff' : item.color} /></span><span><strong>{item.name}</strong>{completion?.completed && <small style={{ display: 'block', color: '#64748b' }}>Completed {new Date(completion.completed_at).toLocaleDateString()} by {completion.completed_by}</small>}</span><span style={{ color: completion?.completed ? '#16a34a' : '#94a3b8', fontSize: 18 }}>{completion?.completed ? '✓' : '○'}</span></button> })}</div><button type="button" onClick={() => editEvent(events.find((item) => item.id === (selectedEvent.id || selectedEvent.checklist_source_id)) || selectedEvent)} style={{ width: '100%', marginTop: 14, background: '#2563eb', color: '#fff', border: 0, borderRadius: 7, padding: 9, fontWeight: 800 }}>Open Event</button></div> : <div style={{ padding: 16, color: '#64748b' }}>Select an event icon stack to see its details.</div>}
           </aside>
         </div>
-        {checklistTimelineSettingsOpen && <div style={{ borderTop: '1px solid #cbd5e1', background: '#fff', overflowX: 'auto', maxWidth: '100%' }}><div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e2e8f0' }}><div><strong>Event Checklist Settings</strong><div style={{ color: '#64748b', fontSize: 12 }}>Configure the detailed icon, color, requirement, and order for each event type.</div></div><button type="button" onClick={() => setChecklistTimelineSettingsOpen(false)}>Collapse settings⌄</button></div><div style={{ display: 'grid', gridTemplateColumns: '190px minmax(700px,1fr)', minHeight: 250, minWidth: 890 }}><div style={{ borderRight: '1px solid #e2e8f0', padding: 10 }}>{Object.keys(eventChecklistTemplates).map((type) => <button key={type} type="button" onClick={() => setChecklistTimelineTemplateType(type)} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 6, marginBottom: 4, background: checklistTimelineTemplateType === type ? '#dbeafe' : 'transparent', color: checklistTimelineTemplateType === type ? '#1d4ed8' : '#334155', fontWeight: 800 }}>{type} <span style={{ float: 'right' }}>{(eventChecklistTemplates[type] || []).length}</span></button>)}<button type="button" onClick={() => { const name = window.prompt('New event type name'); if (name?.trim()) { setEventChecklistTemplates((current) => ({ ...current, [name.trim()]: [] })); setChecklistTimelineTemplateType(name.trim()) } }} style={{ width: '100%', marginTop: 8 }}>+ Add event type</button></div><div style={{ padding: 10, overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left', padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Checklist item</th><th style={{ textAlign: 'left', padding: 7 }}>Detailed icon</th><th style={{ textAlign: 'left', padding: 7 }}>Color</th><th style={{ textAlign: 'left', padding: 7 }}>Required</th><th style={{ padding: 7 }}></th></tr></thead><tbody>{(eventChecklistTemplates[checklistTimelineTemplateType] || []).map((item, index) => <tr key={item.id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={item.name} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { name: e.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><label style={{ display: 'flex', alignItems: 'center', gap: 7 }}><ChecklistTimelineIcon name={item.icon} size={19} color={item.color} /><select value={item.icon} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { icon: e.target.value })}>{CHECKLIST_TIMELINE_ICON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="color" value={item.color} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { color: e.target.value })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={Boolean(item.required)} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { required: e.target.checked })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeEventChecklistTemplateItem(checklistTimelineTemplateType, item.id)} title="Delete item">🗑</button></td></tr>)}</tbody></table><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}><button type="button" onClick={() => addEventChecklistTemplateItem(checklistTimelineTemplateType)}>+ Add checklist item</button><button type="button" onClick={() => setEventChecklistTemplates(DEFAULT_EVENT_CHECKLIST_TEMPLATES)}>Reset all defaults</button></div></div></div></div>}
+        {checklistTimelineSettingsOpen && <div style={{ borderTop: '1px solid #cbd5e1', background: '#fff', overflowX: 'auto', maxWidth: '100%' }}><div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #e2e8f0' }}><div><strong>Event Checklist Settings</strong><div style={{ color: '#64748b', fontSize: 12 }}>Configure the bottom event circle, detailed icons, colors, requirements, and order for each event type.</div></div><button type="button" onClick={() => setChecklistTimelineSettingsOpen(false)}>Collapse settings⌄</button></div><div style={{ display: 'grid', gridTemplateColumns: '190px minmax(700px,1fr)', minHeight: 250, minWidth: 890 }}><div style={{ borderRight: '1px solid #e2e8f0', padding: 10 }}>{Object.keys(eventChecklistTemplates).map((type) => <button key={type} type="button" onClick={() => setChecklistTimelineTemplateType(type)} style={{ width: '100%', textAlign: 'left', padding: '8px 10px', border: 0, borderRadius: 6, marginBottom: 4, background: checklistTimelineTemplateType === type ? '#dbeafe' : 'transparent', color: checklistTimelineTemplateType === type ? '#1d4ed8' : '#334155', fontWeight: 800 }}>{type} <span style={{ float: 'right' }}>{(eventChecklistTemplates[type] || []).length}</span></button>)}<button type="button" onClick={() => { const name = window.prompt('New event type name'); if (name?.trim()) { setEventChecklistTemplates((current) => ({ ...current, [name.trim()]: [] })); setEventChecklistColors((current) => ({ ...(current || {}), [name.trim()]: DEFAULT_EVENT_CHECKLIST_COLORS.Other })); setChecklistTimelineTemplateType(name.trim()) } }} style={{ width: '100%', marginTop: 8 }}>+ Add event type</button></div><div style={{ padding: 10, overflowX: 'auto' }}><div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, marginBottom: 10, border: '1px solid #bfdbfe', borderRadius: 8, background: '#eff6ff' }}><strong>Bottom event circle color</strong><input type="color" value={eventChecklistColors[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS.Other} onChange={(event) => setEventChecklistColors((current) => ({ ...(current || {}), [checklistTimelineTemplateType]: event.target.value }))} /><span style={{ width: 18, height: 18, borderRadius: 999, background: eventChecklistColors[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS.Other, border: '3px solid #fff', boxShadow: `0 0 0 2px ${eventChecklistColors[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS[checklistTimelineTemplateType] || DEFAULT_EVENT_CHECKLIST_COLORS.Other}` }} /><span style={{ color: '#475569', fontSize: 12 }}>Used for the circle at the bottom of every {checklistTimelineTemplateType} stack.</span></div><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}><thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left', padding: 7 }}>Order</th><th style={{ textAlign: 'left', padding: 7 }}>Checklist item</th><th style={{ textAlign: 'left', padding: 7 }}>Detailed icon</th><th style={{ textAlign: 'left', padding: 7 }}>Color</th><th style={{ textAlign: 'left', padding: 7 }}>Required</th><th style={{ padding: 7 }}></th></tr></thead><tbody>{(eventChecklistTemplates[checklistTimelineTemplateType] || []).map((item, index) => <tr key={item.id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{index + 1}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={item.name} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { name: e.target.value })} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><label style={{ display: 'flex', alignItems: 'center', gap: 7 }}><ChecklistTimelineIcon name={item.icon} size={19} color={item.color} /><select value={item.icon} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { icon: e.target.value })}>{CHECKLIST_TIMELINE_ICON_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="color" value={item.color} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { color: e.target.value })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={Boolean(item.required)} onChange={(e) => updateEventChecklistTemplate(checklistTimelineTemplateType, item.id, { required: e.target.checked })} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => removeEventChecklistTemplateItem(checklistTimelineTemplateType, item.id)} title="Delete item">🗑</button></td></tr>)}</tbody></table><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}><button type="button" onClick={() => addEventChecklistTemplateItem(checklistTimelineTemplateType)}>+ Add checklist item</button><button type="button" onClick={() => { setEventChecklistTemplates(DEFAULT_EVENT_CHECKLIST_TEMPLATES); setEventChecklistColors(DEFAULT_EVENT_CHECKLIST_COLORS) }}>Reset all defaults</button></div></div></div></div>}
       </div>
     )
   }
@@ -17351,6 +17407,26 @@ async function updateTeamCell(memberId, field, value) {
     return Number.isFinite(amount) ? amount : fallback
   }
 
+  function billingEntryInvoiceLine(entry = {}) {
+    const isExpense = entry.entry_type === 'expense'
+    const expenseCategory = entry.expense_category || 'Other expense'
+    const description = isExpense
+      ? `${expenseCategory}${entry.description && entry.description !== expenseCategory ? ` — ${entry.description}` : ''}`
+      : (entry.description || entry.matter_step || 'Professional services')
+    return {
+      billing_entry_id: entry.id,
+      source_kind: isExpense ? 'expense' : 'time',
+      entry_type: isExpense ? 'expense' : 'time',
+      expense_category: isExpense ? expenseCategory : '',
+      date: entry.date || '',
+      description,
+      professional: isExpense ? 'Expense' : billingUserName(entry.user_id),
+      hours: isExpense ? '' : financeNumber(entry.billing_time),
+      rate: isExpense ? '' : financeNumber(entry.rate),
+      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
+    }
+  }
+
   function financeDateOnly(value) {
     const raw = String(value || '').trim()
     if (!raw) return ''
@@ -18139,7 +18215,7 @@ async function updateTeamCell(memberId, field, value) {
     const currentIds = new Set((invoiceEditDraft?.line_items || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
     const additions = clientFinanceNumbers(matter).uninvoicedEntries
       .filter((entry) => !currentIds.has(String(entry.id)))
-      .map((entry, index) => invoiceEditLine({ billing_entry_id: entry.id, date: entry.date || '', description: entry.description || entry.matter_step || 'Professional services', professional: billingUserName(entry.user_id), hours: financeNumber(entry.billing_time), rate: financeNumber(entry.rate), amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate)) }, index))
+      .map((entry, index) => invoiceEditLine(billingEntryInvoiceLine(entry), index))
     if (!additions.length) return alert('There are no additional uninvoiced billing entries for this matter.')
     setInvoiceEditDraft((current) => ({ ...(current || {}), line_items: [...(current?.line_items || []), ...additions] }))
   }
@@ -18437,15 +18513,7 @@ async function updateTeamCell(memberId, field, value) {
     const finance = clientFinanceNumbers(matter)
     const amount = Number(finance.wip.toFixed(2))
     if (amount <= 0) return alert('There is no work in progress available to invoice for this matter.')
-    const entryLines = finance.uninvoicedEntries.map((entry) => ({
-      billing_entry_id: entry.id,
-      date: entry.date || '',
-      description: entry.description || entry.matter_step || 'Professional services',
-      professional: billingUserName(entry.user_id),
-      hours: financeNumber(entry.billing_time),
-      rate: financeNumber(entry.rate),
-      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
-    }))
+    const entryLines = finance.uninvoicedEntries.map(billingEntryInvoiceLine)
     const entryTotal = entryLines.reduce((sum, line) => sum + financeNumber(line.amount), 0)
     const snapshotPortion = Math.max(0, Number((amount - entryTotal).toFixed(2)))
     const lineItems = snapshotPortion > 0.005
@@ -18523,16 +18591,7 @@ async function updateTeamCell(memberId, field, value) {
 
   function wipReviewLinesForMatter(matter, preparedFinance = null) {
     const finance = preparedFinance || bulkFinanceByMatterId.get(String(matter?.id || '')) || clientFinanceNumbers(matter)
-    const itemized = finance.uninvoicedEntries.map((entry) => ({
-      id: String(entry.id),
-      billing_entry_id: entry.id,
-      date: entry.date || '',
-      description: entry.description || entry.matter_step || 'Professional services',
-      professional: billingUserName(entry.user_id),
-      hours: financeNumber(entry.billing_time),
-      rate: financeNumber(entry.rate),
-      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
-    }))
+    const itemized = finance.uninvoicedEntries.map((entry) => ({ id: String(entry.id), ...billingEntryInvoiceLine(entry) }))
     const itemizedTotal = itemized.reduce((sum, line) => sum + financeNumber(line.amount), 0)
     const snapshotPortion = Math.max(0, Number((finance.wip - itemizedTotal).toFixed(2)))
     return snapshotPortion > 0.005
@@ -19576,7 +19635,7 @@ async function updateTeamCell(memberId, field, value) {
     const totals = billingTotals(finance.uninvoicedEntries)
     return <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Work in progress</h3><div className="hint">Billable work completed but not yet placed on an invoice</div></div><button type="button" className="btnPrimary" onClick={() => createInvoiceFromClientWip(matter)} disabled={finance.wip <= 0.005}>Convert WIP to invoice</button></div>
       {finance.snapshot && <div style={{ margin: '12px 0', padding: 10, borderRadius: 8, background: '#eff6ff', color: '#1e3a8a' }}>Frozen opening WIP as of {finance.snapshot.snapshot_date}: <strong>{money(finance.clioBaselineWip)}</strong>. Mio adds <strong>{money(finance.mioPostCutoverWip)}</strong> from still-uninvoiced Mio billing entries dated after {finance.billingCutoverDate}. Later Clio snapshots are ignored.</div>}
-      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || 'Professional services'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>)}{!finance.uninvoicedEntries.length && <tr><td colSpan="6" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the frozen opening balance.</td></tr>}</tbody><tfoot><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Frozen opening WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="5" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
+      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse' }}><thead><tr>{['Date','Type','Professional / entered by','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead><tbody>{finance.uninvoicedEntries.map((entry) => { const isExpense = entry.entry_type === 'expense'; return <tr key={entry.id}><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.date}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800, color: isExpense ? '#9a3412' : '#1d4ed8' }}>{isExpense ? `Expense · ${entry.expense_category || 'Other'}` : 'Time'}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.description || entry.matter_step || (isExpense ? entry.expense_category : 'Professional services')}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{isExpense ? '—' : financeNumber(entry.billing_time).toFixed(2)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{isExpense ? '—' : money(entry.rate)}</td><td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(entry.amount)}</td></tr>})}{!finance.uninvoicedEntries.length && <tr><td colSpan="7" className="empty">No uninvoiced Mio billing entries after the cutover date. Any WIP above comes from the frozen opening balance.</td></tr>}</tbody><tfoot><tr><td colSpan="6" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Frozen opening WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.clioBaselineWip)}</td></tr><tr><td colSpan="6" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Mio WIP after {finance.billingCutoverDate}</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(totals.amount)}</td></tr><tr><td colSpan="6" style={{ padding: 9, textAlign: 'right', fontWeight: 800 }}>Current total WIP</td><td style={{ padding: 9, textAlign: 'right', fontWeight: 900 }}>{money(finance.wip)}</td></tr></tfoot></table></div>
     </section>
   }
 
@@ -19638,15 +19697,7 @@ async function updateTeamCell(memberId, field, value) {
   function reviewBrokenBillingActivities(matter, entries = brokenBillingEntriesForMatter(matter)) {
     const recoverableEntries = (entries || []).filter((entry) => invoiceLinkProblemForBillingActivity(entry))
     if (!recoverableEntries.length) return alert('There are no broken invoice links to recover for this matter.')
-    const lineItems = recoverableEntries.map((entry) => ({
-      billing_entry_id: entry.id,
-      date: entry.date || '',
-      description: entry.description || entry.matter_step || 'Professional services',
-      professional: billingUserName(entry.user_id),
-      hours: financeNumber(entry.billing_time),
-      rate: financeNumber(entry.rate),
-      amount: financeNumber(entry.amount, financeNumber(entry.billing_time) * financeNumber(entry.rate))
-    }))
+    const lineItems = recoverableEntries.map(billingEntryInvoiceLine)
     const amount = Number(lineItems.reduce((sum, line) => sum + financeNumber(line.amount), 0).toFixed(2))
     if (amount <= 0.005) return alert('The linked activities do not contain a billable amount.')
     const now = new Date()
@@ -19724,7 +19775,7 @@ async function updateTeamCell(memberId, field, value) {
     return <section className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'end', gap: 10, flexWrap: 'wrap' }}>
         <div><h2 style={{ margin: 0 }}>Billing Activities</h2><div className="hint">All time and billing activity for {matterClientName(matter) || matter.name}, including whether each entry has been invoiced.</div></div>
-        <button type="button" onClick={() => openBillingWindow({ matter_id: matter.id, matter_status: matter.matter_status || '' })}>+ Add Billing Time</button>
+        <button type="button" onClick={() => openBillingWindow({ matter_id: matter.id, matter_status: matter.matter_status || '' })}>+ Add Billing Entry</button>
       </div>
       {!!brokenRows.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}>
         <strong>Invoice-link problem: {brokenRows.length} {brokenRows.length === 1 ? 'activity is' : 'activities are'} tied to an invoice that does not contain them</strong>
@@ -19732,18 +19783,20 @@ async function updateTeamCell(memberId, field, value) {
         <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{brokenGroups.map((group) => <div key={group.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff' }}><div><strong>{group.reference}</strong> — {group.entries.length} {group.entries.length === 1 ? 'activity' : 'activities'}, {money(group.totals.amount)}<div style={{ fontSize: 11, marginTop: 3 }}>{group.problem?.label || 'Invalid invoice link'}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => reviewBrokenBillingActivities(matter, group.entries)} disabled={invoiceDocumentBusy}>Review as new invoice</button><button type="button" onClick={() => releaseBrokenBillingActivitiesToWip(matter, group.entries)} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Repairing…' : 'Release to WIP'}</button></div></div>)}</div>
       </section>}
       <div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', minWidth: 1180, borderCollapse: 'collapse' }}>
-        <thead><tr>{['Date','Professional','Step','Description','Hours','Rate','Amount','Invoice status'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', minWidth: label === 'Description' ? 360 : undefined, padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
+        <thead><tr>{['Date','Type','Professional / entered by','Step','Description','Hours','Rate','Amount','Invoice status'].map((label) => <th key={label} style={{ textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', minWidth: label === 'Description' ? 360 : undefined, padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
         <tbody>{rows.map((entry) => {
           const invoice = invoiceForBillingActivity(entry)
           const invoiceNumber = invoice?.invoice_number || entry.invoice_number || ''
           const linkProblem = invoiceLinkProblemForBillingActivity(entry)
+          const isExpense = entry.entry_type === 'expense'
           return <tr key={entry.id}>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}>{entry.date || '—'}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800, color: isExpense ? '#9a3412' : '#1d4ed8' }}>{isExpense ? `Expense · ${entry.expense_category || 'Other'}` : 'Time'}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{billingUserName(entry.user_id)}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{entry.matter_step || '—'}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', minWidth: 360, whiteSpace: 'normal' }}>{entry.description || '—'}</td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{financeNumber(entry.billing_time).toFixed(2)}</td>
-            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(entry.rate)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{isExpense ? '—' : financeNumber(entry.billing_time).toFixed(2)}</td>
+            <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{isExpense ? '—' : money(entry.rate)}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{entry.non_billable || entry.do_not_bill ? '$0.00' : money(entry.amount)}</td>
             <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice
               ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#dcfce7', color: '#166534', fontWeight: 800 }}>Invoiced</span><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ display: 'block', border: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', padding: '4px 0 0', cursor: 'pointer', fontWeight: 700 }}>{invoiceNumber || 'Open invoice'} · {invoiceStatusLabel(invoice)}</button></div>
@@ -19751,8 +19804,8 @@ async function updateTeamCell(memberId, field, value) {
                 ? <div><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fee2e2', color: '#991b1b', fontWeight: 800 }}>Invoice link problem</span><div style={{ marginTop: 4, color: '#991b1b', fontSize: 11 }}>{invoiceNumber || 'Unknown invoice'}: {linkProblem.label}</div></div>
                 : <span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 9px', background: '#fef3c7', color: '#92400e', fontWeight: 800 }}>Not invoiced</span>}</td>
           </tr>
-        })}{!rows.length && <tr><td colSpan="8" className="empty">No billing activities have been recorded for this matter.</td></tr>}</tbody>
-        {!!rows.length && <tfoot><tr style={{ background: '#f8fafc', fontWeight: 900 }}><td colSpan="4" style={{ padding: 9, textAlign: 'right' }}>Total</td><td style={{ padding: 9, textAlign: 'right' }}>{totals.hours.toFixed(2)}</td><td></td><td style={{ padding: 9, textAlign: 'right' }}>{money(totals.amount)}</td><td></td></tr></tfoot>}
+        })}{!rows.length && <tr><td colSpan="9" className="empty">No billing activities have been recorded for this matter.</td></tr>}</tbody>
+        {!!rows.length && <tfoot><tr style={{ background: '#f8fafc', fontWeight: 900 }}><td colSpan="5" style={{ padding: 9, textAlign: 'right' }}>Total</td><td style={{ padding: 9, textAlign: 'right' }}>{totals.hours.toFixed(2)}</td><td></td><td style={{ padding: 9, textAlign: 'right' }}>{money(totals.amount)}</td><td></td></tr></tfoot>}
       </table></div>
       {renderInvoiceDocumentModal()}
     </section>
@@ -28967,6 +29020,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
   function billingSortValue(entry, field) {
+    if (field === 'entry_type') return entry.entry_type === 'expense' ? 'Expense' : 'Time'
     if (field === 'matter') return billingMatterName(entry.matter_id)
     if (field === 'user') return billingUserName(entry.user_id)
     if (field === 'matter_status') return billingMatterStatus(entry)
@@ -29078,10 +29132,21 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   function updateBillingForm(field, value) {
     setBillingForm((current) => {
       const next = { ...current, [field]: value }
+      if (field === 'entry_type') {
+        if (value === 'expense') {
+          next.billing_time = ''
+          next.rate = ''
+          next.do_not_bill = false
+          next.expense_category = next.expense_category || 'Service fee'
+        } else {
+          next.expense_amount = ''
+          next.rate = String(rateForBilling(next.user_id, next.matter_id))
+        }
+      }
       if (field === 'matter_id' || field === 'user_id') {
         const nextMatter = field === 'matter_id' ? value : next.matter_id
         const nextUser = field === 'user_id' ? value : next.user_id
-        next.rate = String(rateForBilling(nextUser, nextMatter))
+        if (next.entry_type !== 'expense') next.rate = String(rateForBilling(nextUser, nextMatter))
         if (field === 'matter_id') next.matter_status = billingMatterStatus(nextMatter)
       }
       return next
@@ -29092,14 +29157,18 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     const userId = context.user_id || currentBillingUserId()
     const matterId = context.matter_id || ''
     const matterStatus = context.matter_status || billingMatterStatus(matterId)
+    const entryType = context.entry_type === 'expense' ? 'expense' : 'time'
     setBillingForm({
+      entry_type: entryType,
       matter_id: matterId,
       task_id: context.task_id || '',
       user_id: userId,
       date: context.date || new Date().toISOString().slice(0, 10),
       description: context.description || '',
-      rate: String(rateForBilling(userId, matterId)),
-      billing_time: context.billing_time !== undefined ? String(context.billing_time) : '',
+      rate: entryType === 'expense' ? '' : String(rateForBilling(userId, matterId)),
+      billing_time: entryType === 'expense' ? '' : (context.billing_time !== undefined ? String(context.billing_time) : ''),
+      expense_category: context.expense_category || 'Service fee',
+      expense_amount: entryType === 'expense' && context.amount !== undefined ? String(context.amount) : '',
       matter_status: matterStatus || '',
       matter_step: context.matter_step || '',
       private_note: context.private_note || '',
@@ -29111,13 +29180,19 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   function saveBillingEntry(e) {
     e.preventDefault()
     if (!billingForm.matter_id) return alert('Please select a matter for this billing entry.')
-    const hours = parseBillingTimeToHours(billingForm.billing_time)
-    const rate = Number(billingForm.rate)
-    if (!Number.isFinite(hours) || hours <= 0) return alert('Please enter billing time as hours, tenths, minutes, or hours/minutes. Examples: .1, 6m, 66 min, 1h 6 min, 1.1.')
-    if (!Number.isFinite(rate) || rate < 0) return alert('Please enter a valid hourly rate.')
-    const doNotBill = Boolean(billingForm.do_not_bill)
+    const isExpense = billingForm.entry_type === 'expense'
+    const hours = isExpense ? 0 : parseBillingTimeToHours(billingForm.billing_time)
+    const rate = isExpense ? 0 : Number(billingForm.rate)
+    const expenseAmount = isExpense ? Number(String(billingForm.expense_amount || '').replace(/[$,]/g, '')) : 0
+    if (!isExpense && (!Number.isFinite(hours) || hours <= 0)) return alert('Please enter billing time as hours, tenths, minutes, or hours/minutes. Examples: .1, 6m, 66 min, 1h 6 min, 1.1.')
+    if (!isExpense && (!Number.isFinite(rate) || rate < 0)) return alert('Please enter a valid hourly rate.')
+    if (isExpense && (!Number.isFinite(expenseAmount) || expenseAmount <= 0)) return alert('Please enter an expense amount greater than $0.')
+    const doNotBill = isExpense ? false : Boolean(billingForm.do_not_bill)
+    const expenseCategory = isExpense ? (billingForm.expense_category || 'Other expense') : ''
     const entry = {
       id: crypto?.randomUUID ? crypto.randomUUID() : `billing-${Date.now()}`,
+      entry_type: isExpense ? 'expense' : 'time',
+      expense_category: expenseCategory,
       matter_id: billingForm.matter_id,
       client_id: billingMatterClientId(billingForm.matter_id),
       client_name: billingMatterClientName(billingForm.matter_id),
@@ -29125,14 +29200,14 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       task_id: billingForm.task_id || '',
       user_id: billingForm.user_id || currentBillingUserId(),
       date: billingForm.date || new Date().toISOString().slice(0, 10),
-      description: billingForm.description || '',
+      description: billingForm.description || (isExpense ? expenseCategory : ''),
       matter_status: billingForm.matter_status || billingMatterStatus(billingForm.matter_id),
       matter_step: billingForm.matter_step || '',
       rate,
       billing_time: hours,
       non_billable: doNotBill,
       do_not_bill: doNotBill,
-      amount: doNotBill ? 0 : Number((hours * rate).toFixed(2)),
+      amount: isExpense ? Number(expenseAmount.toFixed(2)) : (doNotBill ? 0 : Number((hours * rate).toFixed(2))),
       created_at: new Date().toISOString()
     }
     setBillingEntries((current) => [entry, ...current])
@@ -29168,7 +29243,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
 
   function billingTotals(entries) {
     return entries.reduce((total, entry) => ({
-      hours: total.hours + Number(entry.billing_time || 0),
+      hours: total.hours + (entry.entry_type === 'expense' ? 0 : Number(entry.billing_time || 0)),
       amount: total.amount + (entry.non_billable || entry.do_not_bill ? 0 : Number(entry.amount || (Number(entry.billing_time || 0) * Number(entry.rate || 0))))
     }), { hours: 0, amount: 0 })
   }
@@ -29180,11 +29255,13 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       Client: entry.client_name || billingMatterClientName(entry.matter_id),
       'Cause #': entry.cause_number || billingMatterCauseNumber(entry.matter_id),
       User: billingUserName(entry.user_id),
+      Type: entry.entry_type === 'expense' ? 'Expense' : 'Time',
+      'Expense Category': entry.entry_type === 'expense' ? (entry.expense_category || 'Other expense') : '',
       'Matter Status': billingMatterStatus(entry),
       Step: entry.matter_step || '',
       Description: entry.description || '',
-      Hours: Number(entry.billing_time || 0),
-      Rate: Number(entry.rate || 0),
+      Hours: entry.entry_type === 'expense' ? '' : Number(entry.billing_time || 0),
+      Rate: entry.entry_type === 'expense' ? '' : Number(entry.rate || 0),
       Amount: entry.non_billable || entry.do_not_bill ? 0 : Number(entry.amount || 0),
       'Do Not Bill': entry.non_billable || entry.do_not_bill ? 'Yes' : ''
     }))
@@ -29821,6 +29898,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function clioCsvActivityDescription(entry) {
+    if (entry.entry_type === 'expense') return entry.expense_category || 'Other expense'
     return entry.matter_step || entry.matter_status || 'Time entry'
   }
 
@@ -29846,20 +29924,23 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function clioCsvRows(entries) {
     const headers = ['matter', 'date', 'activity_description', 'note', 'price', 'quantity', 'type', 'activity_user', 'non_billable', 'utbms_activity_code', 'utbms_task_code', 'utbms_expense_code']
-    const rows = entries.map((entry) => ({
-      matter: clioCsvMatterName(entry),
-      date: formatDateForClioCsv(entry.date),
-      activity_description: clioCsvActivityDescription(entry),
-      note: clioCsvNote(entry),
-      price: clioCsvEntryRate(entry).toFixed(2),
-      quantity: Number(entry.billing_time || 0).toString(),
-      type: 'TimeEntry',
-      activity_user: billingUserName(entry.user_id),
-      non_billable: entry.non_billable ? '1' : '',
-      utbms_activity_code: entry.utbms_activity_code || '',
-      utbms_task_code: entry.utbms_task_code || '',
-      utbms_expense_code: entry.utbms_expense_code || ''
-    }))
+    const rows = entries.map((entry) => {
+      const isExpense = entry.entry_type === 'expense'
+      return {
+        matter: clioCsvMatterName(entry),
+        date: formatDateForClioCsv(entry.date),
+        activity_description: clioCsvActivityDescription(entry),
+        note: clioCsvNote(entry),
+        price: isExpense ? Number(entry.amount || 0).toFixed(2) : clioCsvEntryRate(entry).toFixed(2),
+        quantity: isExpense ? '1' : Number(entry.billing_time || 0).toString(),
+        type: isExpense ? 'ExpenseEntry' : 'TimeEntry',
+        activity_user: billingUserName(entry.user_id),
+        non_billable: entry.non_billable ? '1' : '',
+        utbms_activity_code: entry.utbms_activity_code || '',
+        utbms_task_code: entry.utbms_task_code || '',
+        utbms_expense_code: entry.utbms_expense_code || ''
+      }
+    })
     return [headers, ...rows.map((row) => headers.map((header) => row[header]))]
   }
 
@@ -29918,6 +29999,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const userId = currentBillingUserId()
     setDailyBillingDate(chosenDate)
     setBillingForm({
+      entry_type: 'time',
       matter_id: '',
       task_id: '',
       user_id: userId,
@@ -29925,8 +30007,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       description: '',
       rate: String(rateForBilling(userId, '')),
       billing_time: '',
+      expense_category: 'Service fee',
+      expense_amount: '',
       matter_status: '',
-      matter_step: ''
+      matter_step: '',
+      private_note: '',
+      do_not_bill: false
     })
     setShowBillingWindow(false)
     setShowDailyBillingWindow(true)
@@ -29946,15 +30032,16 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     )
     return (
       <div style={{ overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 6 }}>
-        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 1780, width: '100%' }}>
+        <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', minWidth: 1880, width: '100%' }}>
           <thead>
             <tr>
-              {header('Date', 'date')}{header('Matter', 'matter')}<th>Client</th><th>Cause #</th>{header('User', 'user')}{header('Matter Status', 'matter_status')}{header('Step', 'matter_step')}<th style={{ minWidth: 380, width: '32%' }}>Description</th>{header('Hours', 'hours')}{header('Rate', 'rate')}<th>Do not bill</th>{header('Amount', 'amount')}<th>Private notes</th>{allowDelete && <th>Action</th>}
+              {header('Date', 'date')}{header('Matter', 'matter')}<th>Client</th><th>Cause #</th>{header('User', 'user')}{header('Matter Status', 'matter_status')}{header('Step', 'matter_step')}{header('Type', 'entry_type')}<th style={{ minWidth: 380, width: '32%' }}>Description</th>{header('Hours', 'hours')}{header('Rate', 'rate')}<th>Do not bill</th>{header('Amount', 'amount')}<th>Private notes</th>{allowDelete && <th>Action</th>}
             </tr>
           </thead>
           <tbody>
-            {shownEntries.map((entry) => (
-              <tr key={entry.id}>
+            {shownEntries.map((entry) => {
+              const isExpense = entry.entry_type === 'expense'
+              return <tr key={entry.id}>
                 <td>{editable ? <input type="date" value={entry.date || ''} onChange={(e) => updateBillingEntryInline(entry.id, { date: e.target.value })} style={{ width: 130 }} /> : entry.date}</td>
                 <td>{billingMatterName(entry.matter_id)}</td>
                 <td>{entry.client_name || billingMatterClientName(entry.matter_id) || '—'}</td>
@@ -29962,18 +30049,19 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <td>{billingUserName(entry.user_id)}</td>
                 <td>{billingMatterStatus(entry) || '—'}</td>
                 <td>{entry.matter_step || '—'}</td>
+                <td><span style={{ display: 'inline-block', borderRadius: 999, padding: '3px 8px', fontWeight: 800, background: isExpense ? '#ffedd5' : '#dbeafe', color: isExpense ? '#9a3412' : '#1d4ed8' }}>{isExpense ? `Expense · ${entry.expense_category || 'Other'}` : 'Time'}</span></td>
                 <td style={{ minWidth: 380, width: '32%' }}>{editable ? <textarea value={entry.description || ''} onChange={(e) => updateBillingEntryInline(entry.id, { description: e.target.value })} style={{ width: '100%', minHeight: 52, resize: 'vertical' }} /> : entry.description}</td>
-                <td>{editable ? <input type="text" value={entry.billing_time || ''} onChange={(e) => updateBillingEntryInline(entry.id, { billing_time: e.target.value })} placeholder=".1, 6m, 1h 6m" style={{ width: 90 }} /> : Number(entry.billing_time || 0).toFixed(2)}</td>
-                <td>{editable ? <input type="number" step="0.01" value={entry.rate || ''} onChange={(e) => updateBillingEntryInline(entry.id, { rate: e.target.value })} style={{ width: 90 }} /> : `$${Number(entry.rate || 0).toFixed(2)}`}</td>
-                <td style={{ textAlign: 'center' }}>{editable ? <input type="checkbox" checked={Boolean(entry.non_billable || entry.do_not_bill)} onChange={(e) => updateBillingEntryInline(entry.id, { non_billable: e.target.checked, do_not_bill: e.target.checked })} /> : (entry.non_billable || entry.do_not_bill ? 'Yes' : '')}</td>
-                <td>{entry.non_billable || entry.do_not_bill ? '$0.00 (No charge)' : `$${Number(entry.amount || 0).toFixed(2)}`}</td>
+                <td>{isExpense ? '—' : (editable ? <input type="text" value={entry.billing_time || ''} onChange={(e) => updateBillingEntryInline(entry.id, { billing_time: e.target.value })} placeholder=".1, 6m, 1h 6m" style={{ width: 90 }} /> : Number(entry.billing_time || 0).toFixed(2))}</td>
+                <td>{isExpense ? '—' : (editable ? <input type="number" step="0.01" value={entry.rate || ''} onChange={(e) => updateBillingEntryInline(entry.id, { rate: e.target.value })} style={{ width: 90 }} /> : `$${Number(entry.rate || 0).toFixed(2)}`)}</td>
+                <td style={{ textAlign: 'center' }}>{isExpense ? '—' : (editable ? <input type="checkbox" checked={Boolean(entry.non_billable || entry.do_not_bill)} onChange={(e) => updateBillingEntryInline(entry.id, { non_billable: e.target.checked, do_not_bill: e.target.checked })} /> : (entry.non_billable || entry.do_not_bill ? 'Yes' : ''))}</td>
+                <td>{isExpense && editable ? <input type="number" min="0.01" step="0.01" value={entry.amount || ''} onChange={(e) => updateBillingEntryInline(entry.id, { amount: e.target.value })} style={{ width: 100 }} /> : (entry.non_billable || entry.do_not_bill ? '$0.00 (No charge)' : `$${Number(entry.amount || 0).toFixed(2)}`)}</td>
                 <td>{editable ? <textarea value={billingPrivateNotes[entry.id] || ''} onChange={(e) => saveBillingPrivateNote(entry.id, e.target.value)} placeholder="Internal note only - not included in bills or exports" style={{ width: 210, minHeight: 44 }} /> : (billingPrivateNotes[entry.id] ? 'Internal note saved' : '')}</td>
                 {allowDelete && <td><button type="button" onClick={() => deleteBillingEntry(entry.id)}>Delete</button></td>}
               </tr>
-            ))}
-            {shownEntries.length === 0 && <tr><td colSpan={allowDelete ? 14 : 13} style={{ textAlign: 'center', fontStyle: 'italic' }}>No billing entries match this view.</td></tr>}
+            })}
+            {shownEntries.length === 0 && <tr><td colSpan={allowDelete ? 15 : 14} style={{ textAlign: 'center', fontStyle: 'italic' }}>No billing entries match this view.</td></tr>}
             <tr style={{ fontWeight: 'bold', background: '#f8fafc' }}>
-              <td colSpan={8}>Total</td><td>{totals.hours.toFixed(2)}</td><td></td><td></td><td>${totals.amount.toFixed(2)}</td><td></td>{allowDelete && <td></td>}
+              <td colSpan={9}>Total</td><td>{totals.hours.toFixed(2)}</td><td></td><td></td><td>${totals.amount.toFixed(2)}</td><td></td>{allowDelete && <td></td>}
             </tr>
           </tbody>
         </table>
@@ -31764,7 +31852,9 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         const parsed = parseBillingTimeToHours(patch.billing_time)
         if (Number.isFinite(parsed)) next.billing_time = parsed
       }
-      if (patch.billing_time !== undefined || patch.rate !== undefined || patch.non_billable !== undefined || patch.do_not_bill !== undefined) {
+      if (next.entry_type === 'expense' && patch.amount !== undefined) {
+        next.amount = Math.max(0, Number(patch.amount) || 0)
+      } else if (patch.billing_time !== undefined || patch.rate !== undefined || patch.non_billable !== undefined || patch.do_not_bill !== undefined) {
         const doNotBill = Boolean(next.non_billable || next.do_not_bill)
         next.non_billable = doNotBill
         next.do_not_bill = doNotBill
@@ -33946,6 +34036,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     if (!showDailyBillingWindow) return null
     const entries = billingEntriesForDate(dailyBillingDate)
     const totals = billingTotals(entries)
+    const isExpense = billingForm.entry_type === 'expense'
     const shiftDailyBillingDate = (amount) => {
       setDailyBillingDate((current) => {
         const d = new Date(current || new Date().toISOString().slice(0, 10))
@@ -33970,8 +34061,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
           <strong>Total amount: ${totals.amount.toFixed(2)}</strong>
         </div>
         <section style={{ border: '3px solid #111827', borderRadius: 10, padding: 12, marginBottom: 14, background: '#f8fafc' }}>
-          <h3 style={{ margin: '0 0 10px 0' }}>Add billing time</h3>
+          <h3 style={{ margin: '0 0 10px 0' }}>Add billing entry</h3>
           <form onSubmit={saveBillingEntry}>
+            <div role="tablist" aria-label="Billing entry type" style={{ display: 'inline-flex', gap: 4, padding: 4, marginBottom: 12, border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff' }}>
+              <button type="button" role="tab" aria-selected={!isExpense} onClick={() => updateBillingForm('entry_type', 'time')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: !isExpense ? '#1d4ed8' : 'transparent', color: !isExpense ? '#fff' : '#334155', fontWeight: 800 }}>◷ Time</button>
+              <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
+            </div>
+            {isExpense && <div style={{ marginBottom: 12, padding: 9, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>The expense will remain in WIP until it is included on an invoice.</div>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
               <LabeledField label="Matter *">
                 <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Search open matters only" style={billingImportantFieldStyle} />
@@ -33983,9 +34079,14 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 </select>
               </LabeledField>
               <LabeledField label="Date"><input type="date" value={billingForm.date || dailyBillingDate} onChange={(e) => updateBillingForm('date', e.target.value)} /></LabeledField>
-              <LabeledField label="Billing time / hours *"><input type="text" placeholder=".1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} /></LabeledField>
-              <LabeledField label="Hourly rate"><input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} /></LabeledField>
-              <LabeledField label="Do not bill"><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time, but charge $0</label></LabeledField>
+              {isExpense ? <Fragment>
+                <LabeledField label="Expense type *"><select value={billingForm.expense_category || 'Service fee'} onChange={(e) => updateBillingForm('expense_category', e.target.value)} style={billingImportantFieldStyle}>{BILLING_EXPENSE_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}</select></LabeledField>
+                <LabeledField label="Expense amount *"><input type="number" step="0.01" min="0.01" value={billingForm.expense_amount || ''} onChange={(e) => updateBillingForm('expense_amount', e.target.value)} placeholder="0.00" style={billingImportantFieldStyle} /></LabeledField>
+              </Fragment> : <Fragment>
+                <LabeledField label="Billing time / hours *"><input type="text" placeholder=".1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} /></LabeledField>
+                <LabeledField label="Hourly rate"><input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} /></LabeledField>
+                <LabeledField label="Do not bill"><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time, but charge $0</label></LabeledField>
+              </Fragment>}
               <LabeledField label="Linked task">
                 <select value={billingForm.task_id} onChange={(e) => updateBillingForm('task_id', e.target.value)}>
                   <option value="">No linked task</option>
@@ -33994,10 +34095,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               </LabeledField>
               <LabeledField label="Matter status noted"><input value={billingForm.matter_status || ''} onChange={(e) => updateBillingForm('matter_status', e.target.value)} placeholder="Matter status" /></LabeledField>
               <LabeledField label="Matter step noted"><input value={billingForm.matter_step || ''} onChange={(e) => updateBillingForm('matter_step', e.target.value)} placeholder="Matter step" /></LabeledField>
-              <LabeledField label="Description"><textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ ...billingImportantFieldStyle, minHeight: 70 }} /></LabeledField>
+              <LabeledField label={isExpense ? 'Expense description' : 'Description'}><textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder={isExpense ? 'What the expense was for' : 'Work performed'} style={{ ...billingImportantFieldStyle, minHeight: 70 }} /></LabeledField>
               <LabeledField label="Private notes (internal only)"><textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 70 }} /></LabeledField>
             </div>
-            <div style={{ marginTop: 12 }}><button type="submit">Save Billing Entry</button></div>
+            <div style={{ marginTop: 12 }}><button type="submit" className="btnPrimary">{isExpense ? 'Add Expense to WIP' : 'Save Time Entry'}</button></div>
           </form>
         </section>
         <h3 style={{ margin: '0 0 8px 0' }}>Billing entries for this day</h3>
@@ -34013,7 +34114,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <Modal title={`Billing Entries - ${billingMatterName(priorBillingMatterId)}`} onClose={() => setShowPriorBillingWindow(false)}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-          <button type="button" onClick={() => openBillingWindow({ matter_id: priorBillingMatterId })}>Add time for this matter</button>
+          <button type="button" onClick={() => openBillingWindow({ matter_id: priorBillingMatterId })}>Add billing entry for this matter</button>
           <button type="button" onClick={() => downloadBillingExcel(entries, prefix)} disabled={!entries.length}>Excel report</button>
           <button type="button" onClick={() => downloadBillingWord(entries, prefix)} disabled={!entries.length}>Word report</button>
         </div>
@@ -34024,9 +34125,15 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function renderBillingModal() {
     if (!showBillingWindow) return null
+    const isExpense = billingForm.entry_type === 'expense'
     return (
-      <Modal title="Add Billing Time" onClose={() => setShowBillingWindow(false)}>
+      <Modal title="Add Billing Entry" onClose={() => setShowBillingWindow(false)}>
         <form onSubmit={saveBillingEntry}>
+          <div role="tablist" aria-label="Billing entry type" style={{ display: 'inline-flex', gap: 4, padding: 4, marginBottom: 14, border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc' }}>
+            <button type="button" role="tab" aria-selected={!isExpense} onClick={() => updateBillingForm('entry_type', 'time')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: !isExpense ? '#1d4ed8' : 'transparent', color: !isExpense ? '#fff' : '#334155', fontWeight: 800 }}>◷ Time</button>
+            <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
+          </div>
+          {isExpense && <div style={{ marginBottom: 14, padding: 10, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>This expense will be added to the matter’s WIP now and included on its next invoice.</div>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
             <LabeledField label="Matter *">
               <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Select open matter" style={billingImportantFieldStyle} />
@@ -34037,15 +34144,24 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <LabeledField label="Date">
               <input type="date" value={billingForm.date} onChange={(e) => updateBillingForm('date', e.target.value)} />
             </LabeledField>
-            <LabeledField label="Billing time / hours *">
-              <input type="text" placeholder="Examples: .1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} />
-            </LabeledField>
-            <LabeledField label="Hourly rate">
-              <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
-            </LabeledField>
-            <LabeledField label="Do not bill">
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time on bill, but charge $0</label>
-            </LabeledField>
+            {isExpense ? <Fragment>
+              <LabeledField label="Expense type *">
+                <select value={billingForm.expense_category || 'Service fee'} onChange={(e) => updateBillingForm('expense_category', e.target.value)} style={billingImportantFieldStyle}>{BILLING_EXPENSE_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}</select>
+              </LabeledField>
+              <LabeledField label="Expense amount *">
+                <input type="number" step="0.01" min="0.01" value={billingForm.expense_amount || ''} onChange={(e) => updateBillingForm('expense_amount', e.target.value)} placeholder="0.00" style={billingImportantFieldStyle} />
+              </LabeledField>
+            </Fragment> : <Fragment>
+              <LabeledField label="Billing time / hours *">
+                <input type="text" placeholder="Examples: .1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} />
+              </LabeledField>
+              <LabeledField label="Hourly rate">
+                <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
+              </LabeledField>
+              <LabeledField label="Do not bill">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time on bill, but charge $0</label>
+              </LabeledField>
+            </Fragment>}
             <LabeledField label="Linked task">
               <select value={billingForm.task_id} onChange={(e) => updateBillingForm('task_id', e.target.value)}>
                 <option value="">No linked task</option>
@@ -34061,15 +34177,15 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <LabeledField label="Prior billing">
               <button type="button" onClick={() => openPriorBillingWindow(billingForm.matter_id)} disabled={!billingForm.matter_id}>View prior entries for this matter</button>
             </LabeledField>
-            <LabeledField label="Description">
-              <textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder="Work performed" style={{ ...billingImportantFieldStyle, minHeight: 90 }} />
+            <LabeledField label={isExpense ? 'Expense description' : 'Description'}>
+              <textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder={isExpense ? 'What the expense was for' : 'Work performed'} style={{ ...billingImportantFieldStyle, minHeight: 90 }} />
             </LabeledField>
             <LabeledField label="Private notes (internal only)">
               <textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 90 }} />
             </LabeledField>
           </div>
           <div style={{ marginTop: 18 }}>
-            <button type="submit">Save Billing Entry</button>
+            <button type="submit" className="btnPrimary">{isExpense ? 'Add Expense to WIP' : 'Save Time Entry'}</button>
             <button type="button" onClick={() => setShowBillingWindow(false)} style={{ marginLeft: 8 }}>Cancel</button>
           </div>
         </form>
@@ -34086,7 +34202,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}>Matter Billing Review</h2>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => openBillingWindow({ matter_id: selectedMatterId })} disabled={!selectedMatterId}>Add time for this matter</button>
+            <button type="button" onClick={() => openBillingWindow({ matter_id: selectedMatterId })} disabled={!selectedMatterId}>Add billing entry for this matter</button>
             <button type="button" onClick={() => downloadBillingExcel(entries, prefix)} disabled={!entries.length}>Excel report</button>
             <button type="button" onClick={() => downloadBillingWord(entries, prefix)} disabled={!entries.length}>Word report</button>
           </div>
@@ -42395,7 +42511,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         ) : (
           <>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end', marginBottom: 14 }}>
-              <button type="button" onClick={() => openBillingWindow()}>Add Billing Time</button>
+              <button type="button" onClick={() => openBillingWindow()}>Add Billing Entry</button>
               <LabeledField label="Matter">
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <SmartMatterSelect
@@ -42774,7 +42890,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {!isClientPortalMember() && <button
           type="button"
           onClick={() => openDailyBillingWindow()}
-          title="Show today's billing entries"
+          title="Add time or an expense and review today's billing entries"
           style={{ position: 'fixed', top: 14, right: 68, zIndex: 60, width: 42, height: 42, borderRadius: '50%', border: '1px solid #86efac', background: '#ecfdf5', color: '#166534', fontSize: 22, fontWeight: 'bold', boxShadow: '0 6px 18px rgba(22, 101, 52, 0.18)', cursor: 'pointer' }}
         >
           🕒
@@ -44043,7 +44159,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <TaskModal title={selectedTask.title} onClose={closeTaskDetail}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
                   <div>
-                    <p><strong>Matter:</strong> {selectedTask.matters?.name} {selectedTask.matter_id && <button type="button" onClick={() => openMatterInfoWindow(selectedTask.matter_id)} style={{ marginLeft: 8 }}>Open Matter Info</button>} {selectedTask.matter_id && <button type="button" onClick={() => openBillingWindow({ matter_id: selectedTask.matter_id, task_id: selectedTask.id, description: selectedTask.title || '' })} style={{ marginLeft: 8 }}>Add Billing Time</button>}</p>
+                    <p><strong>Matter:</strong> {selectedTask.matters?.name} {selectedTask.matter_id && <button type="button" onClick={() => openMatterInfoWindow(selectedTask.matter_id)} style={{ marginLeft: 8 }}>Open Matter Info</button>} {selectedTask.matter_id && <button type="button" onClick={() => openBillingWindow({ matter_id: selectedTask.matter_id, task_id: selectedTask.id, description: selectedTask.title || '' })} style={{ marginLeft: 8 }}>Add Billing Entry</button>}</p>
                     <p><strong>Client:</strong> {matterClientName(selectedTask)}</p>
                     <p><strong>Category:</strong> {selectedTask.task_category}{selectedTask.task_subcategory ? ` / ${selectedTask.task_subcategory}` : ''}</p>
                     <p><strong>Assigned:</strong> {assignedNames(selectedTask.id)}</p>
