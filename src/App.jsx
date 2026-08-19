@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V234'
+const MIO_APP_VERSION = 'Mio V235'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -2364,6 +2364,7 @@ function App() {
   const [needToSetCompanions, setNeedToSetCompanions] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetCompanions') || '{}') } catch { return {} } })
   const [needToSetStepData, setNeedToSetStepData] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepData') || '{}') } catch { return {} } })
   const [orderRows, setOrderRows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderRows') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
+  const [deletedOrderRowIds, setDeletedOrderRowIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioDeletedOrderRowIds') || '[]'); return Array.isArray(saved) ? saved.map(String) : [] } catch { return [] } })
   const [orderExpandedIds, setOrderExpandedIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderExpandedIds') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
   const [orderFilters, setOrderFilters] = useState(() => { try { return { type: 'all', holder: 'all', search: '', completed: 'open', ...(JSON.parse(localStorage.getItem('caseMioOrderFilters') || '{}') || {}) } } catch { return { type: 'all', holder: 'all', search: '', completed: 'open' } } })
   const [orderAutomationToday, setOrderAutomationToday] = useState(() => dateToInputValue(new Date()))
@@ -3171,7 +3172,11 @@ function App() {
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
       caseMioNeedToSetStepBillingNotes: { setter: setNeedToSetStepBillingNotes, kind: 'object', fallback: {} },
-      caseMioOrderRows: { setter: (value) => setOrderRows((current) => mergeMioArraysById(Array.isArray(value) ? value : [], current)), kind: 'array', fallback: [] },
+      caseMioOrderRows: { setter: (value) => setOrderRows((current) => {
+        const deletedIds = new Set((deletedOrderRowIds || []).map(String))
+        return mergeMioArraysById(Array.isArray(value) ? value : [], current).filter((row) => !deletedIds.has(String(row?.id || '')))
+      }), kind: 'array', fallback: [] },
+      caseMioDeletedOrderRowIds: { setter: (value) => setDeletedOrderRowIds((current) => Array.from(new Set([...(Array.isArray(value) ? value : []), ...(current || [])].map(String).filter(Boolean)))), kind: 'array', fallback: [] },
       caseMioOrderExpandedIds: { setter: setOrderExpandedIds, kind: 'array', fallback: [] },
       caseMioOrderFilters: { setter: (value) => setOrderFilters({ type: 'all', holder: 'all', search: '', completed: 'open', ...(value || {}) }), kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
@@ -3955,6 +3960,12 @@ function App() {
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetCompanions', JSON.stringify(needToSetCompanions || {})) } catch {} }, [needToSetCompanions])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetStepData', JSON.stringify(needToSetStepData || {})) } catch {} }, [needToSetStepData])
   useEffect(() => { try { saveMioStateKey('caseMioOrderRows', JSON.stringify(orderRows || [])) } catch {} }, [orderRows])
+  useEffect(() => { try { saveMioStateKey('caseMioDeletedOrderRowIds', JSON.stringify(deletedOrderRowIds || [])) } catch {} }, [deletedOrderRowIds])
+  useEffect(() => {
+    if (!deletedOrderRowIds.length) return
+    const deletedIds = new Set(deletedOrderRowIds.map(String))
+    setOrderRows((current) => current.some((row) => deletedIds.has(String(row?.id || ''))) ? current.filter((row) => !deletedIds.has(String(row?.id || ''))) : current)
+  }, [deletedOrderRowIds])
   useEffect(() => { try { saveMioStateKey('caseMioOrderExpandedIds', JSON.stringify(orderExpandedIds || [])) } catch {} }, [orderExpandedIds])
   useEffect(() => { try { saveMioStateKey('caseMioOrderFilters', JSON.stringify(orderFilters || {})) } catch {} }, [orderFilters])
 
@@ -3971,7 +3982,8 @@ function App() {
     if (!eligible.length) return
     setOrderRows((current) => {
       const existingIds = new Set((current || []).map((row) => String(row.id || '')))
-      const additions = eligible.filter((matter) => !existingIds.has(`final-order-${matter.id}`)).map((matter) => {
+      const deletedIds = new Set((deletedOrderRowIds || []).map(String))
+      const additions = eligible.filter((matter) => !existingIds.has(`final-order-${matter.id}`) && !deletedIds.has(`final-order-${matter.id}`)).map((matter) => {
         const finalizationDate = String(matter.finalization_date || matter.trial_date || matter.hearing_date || matter.mediation_date || matter.matter_status_changed_at || '').slice(0, 10)
         return {
           id: `final-order-${matter.id}`,
@@ -3992,7 +4004,7 @@ function App() {
       })
       return additions.length ? [...current, ...additions] : current
     })
-  }, [matters])
+  }, [matters, deletedOrderRowIds])
 
   useEffect(() => {
     if (!Array.isArray(events) || !events.length || !Array.isArray(settings) || !settings.length) return
@@ -4008,12 +4020,13 @@ function App() {
     if (!qualifyingEvents.length) return
     setOrderRows((current) => {
       const existingIds = new Set((current || []).map((row) => String(row.id || '')))
+      const deletedIds = new Set((deletedOrderRowIds || []).map(String))
       const additions = qualifyingEvents
-        .filter((event) => !existingIds.has(`calendar-event-order-${event.id}`))
+        .filter((event) => !existingIds.has(`calendar-event-order-${event.id}`) && !deletedIds.has(`calendar-event-order-${event.id}`))
         .map((event) => buildOrderRowFromCalendarEvent(event))
       return additions.length ? [...current, ...additions] : current
     })
-  }, [events, settings, orderAutomationToday])
+  }, [events, settings, orderAutomationToday, deletedOrderRowIds])
 
   useEffect(() => {
     if (page !== 'orders') {
@@ -33872,6 +33885,26 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     setOrderRows((current) => current.map((row) => String(row.id) === String(rowId) ? { ...row, transactions: (row.transactions || []).filter((transaction) => String(transaction.id) !== String(transactionId)), updated_at: new Date().toISOString() } : row))
   }
 
+  async function deleteOrderRow(row) {
+    if (!row?.id) return
+    const matter = orderMatter(row)
+    const label = `${matterClientName(matter) || matter?.name || 'this matter'} — ${row.title || orderTypeLabel(row.order_type)}`
+    if (!window.confirm(`Delete ${label} from the Orders page?\n\nThis removes the Orders tracking row and prevents an automatic calendar-event or matter-status row from being recreated. It does not delete the underlying matter, calendar event, documents, emails, or billing entries.`)) return
+
+    const rowId = String(row.id)
+    const nextDeletedIds = Array.from(new Set([...(deletedOrderRowIds || []).map(String), rowId]))
+    const nextRows = (orderRows || []).filter((item) => String(item.id) !== rowId)
+    setDeletedOrderRowIds(nextDeletedIds)
+    setOrderRows(nextRows)
+    setOrderExpandedIds((current) => current.filter((id) => String(id) !== rowId))
+
+    const deletedSaved = await saveMioStateKeyNow('caseMioDeletedOrderRowIds', JSON.stringify(nextDeletedIds))
+    const rowsSaved = await saveMioStateKeyNow('caseMioOrderRows', JSON.stringify(nextRows))
+    if (!deletedSaved || !rowsSaved) {
+      alert('The order was removed in this tab, but Mio could not confirm the cloud save. Check your connection and try again before refreshing.')
+    }
+  }
+
   function toggleOrderExpanded(rowId) {
     setOrderExpandedIds((current) => current.includes(rowId) ? current.filter((id) => id !== rowId) : [...current, rowId])
   }
@@ -34045,6 +34078,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                     <td style={{ padding: 8, textAlign: 'center', verticalAlign: 'middle' }}><button type="button" onClick={() => toggleOrderCompleted(row)} style={{ border: `1px solid ${row.completed ? '#94a3b8' : '#86efac'}`, borderRadius: 7, background: row.completed ? '#f8fafc' : '#dcfce7', color: row.completed ? '#475569' : '#166534', padding: 7, fontWeight: 900 }}>{row.completed ? 'Recall' : 'Complete'}</button></td>
                   </tr>
                   {expanded && <tr style={{ borderLeft: `7px solid ${drafterColor}` }}><td colSpan="6" style={{ padding: 0, background: '#f8fafc' }}><div style={{ padding: 14, borderTop: '3px solid #cbd5e1' }}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}><button type="button" onClick={() => deleteOrderRow(row)} style={{ color: '#991b1b', background: '#fff1f2', border: '1px solid #fecaca', borderRadius: 7, padding: '7px 10px', fontWeight: 850 }}>Delete order from page</button></div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 9, marginBottom: 12 }}>
                       <LabeledField label="Order title"><input value={row.title || ''} onChange={(event) => patchOrderRow(row.id, { title: event.target.value })} /></LabeledField>
                       <LabeledField label="Document type"><select value={row.order_type || 'other'} onChange={(event) => patchOrderRow(row.id, { order_type: event.target.value })}>{ORDER_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
