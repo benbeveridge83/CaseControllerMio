@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V235'
+const MIO_APP_VERSION = 'Mio V236'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -1590,7 +1590,7 @@ function App() {
   const [clioBalanceError, setClioBalanceError] = useState('')
   const [clioBalanceLastLoaded, setClioBalanceLastLoaded] = useState(null)
   const [clioMioRosetta, setClioMioRosetta] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioMioRosetta') || '{}') } catch { return {} } })
-  const [clioGraphCaseTypeFilters, setClioGraphCaseTypeFilters] = useState(() => { try { const raw = JSON.parse(localStorage.getItem('caseMioClioGraphCaseTypeFilters') || 'null'); return Array.isArray(raw) && raw.length ? raw : ['all'] } catch { return ['all'] } })
+  const [clioGraphCaseTypeFilters, setClioGraphCaseTypeFilters] = useState(() => { try { const raw = JSON.parse(localStorage.getItem('caseMioClioGraphCaseTypeFilters') || 'null'); return Array.isArray(raw) ? raw : ['all'] } catch { return ['all'] } })
   const [clioGraphMappingFilter, setClioGraphMappingFilter] = useState(() => localStorage.getItem('caseMioClioGraphMappingFilter') || 'all')
   const [clioGraphDatePreset, setClioGraphDatePreset] = useState(() => localStorage.getItem('caseMioClioGraphDatePreset') || 'past_3_months')
   const [clioGraphCaseStatusFilter, setClioGraphCaseStatusFilter] = useState(() => localStorage.getItem('caseMioClioGraphCaseStatusFilter') || 'all')
@@ -2271,7 +2271,7 @@ function App() {
     try { return localStorage.getItem('caseMioChecklistNeedToSetSortMode') || 'manual' }
     catch { return 'manual' }
   })
-  const [checklistNewEmailOnly, setChecklistNewEmailOnly] = useState(false)
+  const [checklistNewEmailOnly, setChecklistNewEmailOnly] = useState(() => localStorage.getItem('caseMioChecklistNewEmailOnly') === 'true')
   const [settingCenterExpandedId, setSettingCenterExpandedId] = useState('')
   const [settingCenterFilter, setSettingCenterFilter] = useState('all')
   const [settingCenterSearch, setSettingCenterSearch] = useState('')
@@ -2363,6 +2363,10 @@ function App() {
   const [needToSetTocDock, setNeedToSetTocDock] = useState(() => localStorage.getItem('caseMioNeedToSetTocDock') || 'left')
   const [needToSetCompanions, setNeedToSetCompanions] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetCompanions') || '{}') } catch { return {} } })
   const [needToSetStepData, setNeedToSetStepData] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioNeedToSetStepData') || '{}') } catch { return {} } })
+  const [needToSetPageTab, setNeedToSetPageTab] = useState(() => localStorage.getItem('caseMioNeedToSetPageTab') || 'current')
+  const [needToSetActivities, setNeedToSetActivities] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioNeedToSetActivities') || '{}'); return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {} } catch { return {} } })
+  const [needToSetActivityDrafts, setNeedToSetActivityDrafts] = useState({})
+  const [needToSetActivityExpandedIds, setNeedToSetActivityExpandedIds] = useState([])
   const [orderRows, setOrderRows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderRows') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
   const [deletedOrderRowIds, setDeletedOrderRowIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioDeletedOrderRowIds') || '[]'); return Array.isArray(saved) ? saved.map(String) : [] } catch { return [] } })
   const [orderExpandedIds, setOrderExpandedIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderExpandedIds') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
@@ -3172,6 +3176,8 @@ function App() {
       caseMioNeedToSetSetRows: { setter: setNeedToSetSetRows, kind: 'object', fallback: {} },
       caseMioNeedToSetPausedRows: { setter: setNeedToSetPausedRows, kind: 'object', fallback: {} },
       caseMioNeedToSetStepBillingNotes: { setter: setNeedToSetStepBillingNotes, kind: 'object', fallback: {} },
+      caseMioNeedToSetPageTab: { setter: (value) => setNeedToSetPageTab(value === 'activities' ? 'activities' : 'current'), kind: 'string', fallback: 'current' },
+      caseMioNeedToSetActivities: { setter: (value) => setNeedToSetActivities(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseMioOrderRows: { setter: (value) => setOrderRows((current) => {
         const deletedIds = new Set((deletedOrderRowIds || []).map(String))
         return mergeMioArraysById(Array.isArray(value) ? value : [], current).filter((row) => !deletedIds.has(String(row?.id || '')))
@@ -3206,6 +3212,8 @@ function App() {
       caseMioChecklistCaseStatusFilter: { setter: setChecklistCaseStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistMatterStatusFilter: { setter: setChecklistMatterStatusFilter, kind: 'object', fallback: null },
       caseMioChecklistEventCategoryFilter: { setter: setChecklistEventCategoryFilter, kind: 'object', fallback: null },
+      caseMioChecklistOpenClosedFilter: { setter: (value) => setChecklistOpenClosedFilter(Array.isArray(value) ? value : ['open', 'closed']), kind: 'array', fallback: ['open', 'closed'] },
+      caseMioChecklistNewEmailOnly: { setter: setChecklistNewEmailOnly, kind: 'boolean', fallback: false },
       caseMioChecklistShowBlankDays: { setter: setChecklistShowBlankDays, kind: 'boolean', fallback: false },
       caseMioChecklistViewMode: { setter: setChecklistViewMode, kind: 'string', fallback: 'table' },
       caseMioShowNeedToSetSteps: { setter: setShowNeedToSetSteps, kind: 'boolean', fallback: true },
@@ -3226,6 +3234,7 @@ function App() {
       caseMioMatterTimelineOptions: { setter: (value) => setMatterTimelineOptions({ ...defaultMatterTimelineOptions, ...(value || {}) }), kind: 'object', fallback: defaultMatterTimelineOptions },
       caseMioClioGraphCaseStatusFiltersV120: { setter: setClioGraphCaseStatusFilters, kind: 'array', fallback: [] },
       caseMioClioGraphMatterStatusFiltersV120: { setter: setClioGraphMatterStatusFilters, kind: 'array', fallback: [] },
+      caseMioClioGraphCaseTypeFilters: { setter: (value) => setClioGraphCaseTypeFilters(Array.isArray(value) ? value : ['all']), kind: 'array', fallback: ['all'] },
       caseMioClioGraphGroupingModeV120: { setter: setClioGraphGroupingMode, kind: 'string', fallback: 'matter' },
       caseMioFinancialGraphShowZeroLineV120: { setter: setFinancialGraphShowZeroLine, kind: 'boolean', fallback: true },
       caseMioWithdrawingFinancialSeriesV120: { setter: setWithdrawingFinancialSeries, kind: 'array', fallback: [] },
@@ -3341,6 +3350,7 @@ function App() {
   useEffect(() => { saveMioStateKey('caseMioCalendarMatterStatusFilter', JSON.stringify(calendarMatterStatusFilter)) }, [calendarMatterStatusFilter])
   useEffect(() => { saveMioStateKey('caseMioClioGraphCaseStatusFiltersV120', JSON.stringify(clioGraphCaseStatusFilters || [])) }, [clioGraphCaseStatusFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphMatterStatusFiltersV120', JSON.stringify(clioGraphMatterStatusFilters || [])) }, [clioGraphMatterStatusFilters])
+  useEffect(() => { saveMioStateKey('caseMioClioGraphCaseTypeFilters', JSON.stringify(clioGraphCaseTypeFilters || [])) }, [clioGraphCaseTypeFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphGroupingModeV120', clioGraphGroupingMode) }, [clioGraphGroupingMode])
   useEffect(() => { saveMioStateKey('caseMioFinancialGraphShowZeroLineV120', String(financialGraphShowZeroLine)) }, [financialGraphShowZeroLine])
   useEffect(() => { saveMioStateKey('caseMioWithdrawingFinancialSeriesV120', JSON.stringify(withdrawingFinancialSeries || [])) }, [withdrawingFinancialSeries])
@@ -3959,6 +3969,8 @@ function App() {
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetTocDock', needToSetTocDock || 'left') } catch {} }, [needToSetTocDock])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetCompanions', JSON.stringify(needToSetCompanions || {})) } catch {} }, [needToSetCompanions])
   useEffect(() => { try { localStorage.setItem('caseMioNeedToSetStepData', JSON.stringify(needToSetStepData || {})) } catch {} }, [needToSetStepData])
+  useEffect(() => { try { saveMioStateKey('caseMioNeedToSetPageTab', needToSetPageTab || 'current') } catch {} }, [needToSetPageTab])
+  useEffect(() => { try { saveMioStateKey('caseMioNeedToSetActivities', JSON.stringify(needToSetActivities || {})) } catch {} }, [needToSetActivities])
   useEffect(() => { try { saveMioStateKey('caseMioOrderRows', JSON.stringify(orderRows || [])) } catch {} }, [orderRows])
   useEffect(() => { try { saveMioStateKey('caseMioDeletedOrderRowIds', JSON.stringify(deletedOrderRowIds || [])) } catch {} }, [deletedOrderRowIds])
   useEffect(() => {
@@ -4213,11 +4225,11 @@ function App() {
   }, [matterTimelineOptions])
 
   useEffect(() => {
-    if (matterTimelineCaseStatusFilters) saveMioStateKey('caseMioMatterTimelineCaseStatusFilters', JSON.stringify(matterTimelineCaseStatusFilters))
+    saveMioStateKey('caseMioMatterTimelineCaseStatusFilters', JSON.stringify(matterTimelineCaseStatusFilters))
   }, [matterTimelineCaseStatusFilters])
 
   useEffect(() => {
-    if (matterTimelineMatterStatusFilters) saveMioStateKey('caseMioMatterTimelineMatterStatusFilters', JSON.stringify(matterTimelineMatterStatusFilters))
+    saveMioStateKey('caseMioMatterTimelineMatterStatusFilters', JSON.stringify(matterTimelineMatterStatusFilters))
   }, [matterTimelineMatterStatusFilters])
 
   useEffect(() => {
@@ -4588,26 +4600,36 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseMioDiscoveryMatterStatusFilter', JSON.stringify(discoveryMatterStatusFilter))
+    try { saveMioStateKey('caseMioDiscoveryMatterStatusFilter', JSON.stringify(discoveryMatterStatusFilter)) } catch {}
   }, [discoveryMatterStatusFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioDiscoveryCaseStatusFilter', JSON.stringify(discoveryCaseStatusFilter))
+    try { saveMioStateKey('caseMioDiscoveryCaseStatusFilter', JSON.stringify(discoveryCaseStatusFilter)) } catch {}
   }, [discoveryCaseStatusFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistCaseStatusFilter', JSON.stringify(checklistCaseStatusFilter))
+    try { saveMioStateKey('caseMioChecklistCaseStatusFilter', JSON.stringify(checklistCaseStatusFilter)) } catch {}
   }, [checklistCaseStatusFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistMatterStatusFilter', JSON.stringify(checklistMatterStatusFilter))
+    try { saveMioStateKey('caseMioChecklistMatterStatusFilter', JSON.stringify(checklistMatterStatusFilter)) } catch {}
   }, [checklistMatterStatusFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistEventCategoryFilter', JSON.stringify(checklistEventCategoryFilter))
+    try { saveMioStateKey('caseMioChecklistEventCategoryFilter', JSON.stringify(checklistEventCategoryFilter)) } catch {}
   }, [checklistEventCategoryFilter])
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistOpenClosedFilter', JSON.stringify(checklistOpenClosedFilter))
+    try { saveMioStateKey('caseMioChecklistOpenClosedFilter', JSON.stringify(checklistOpenClosedFilter)) } catch {}
   }, [checklistOpenClosedFilter])
+  useEffect(() => {
+    safeSetLocalStorage('caseMioChecklistNewEmailOnly', checklistNewEmailOnly ? 'true' : 'false')
+    try { saveMioStateKey('caseMioChecklistNewEmailOnly', checklistNewEmailOnly ? 'true' : 'false') } catch {}
+  }, [checklistNewEmailOnly])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistShowBlankDays', checklistShowBlankDays ? 'true' : 'false')
@@ -4637,10 +4659,12 @@ function App() {
 
   useEffect(() => {
     safeSetLocalStorage('caseMioShowNeedToSetSteps', showNeedToSetSteps ? 'true' : 'false')
+    try { saveMioStateKey('caseMioShowNeedToSetSteps', showNeedToSetSteps ? 'true' : 'false') } catch {}
   }, [showNeedToSetSteps])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistStepCompletions', JSON.stringify(checklistStepCompletions))
+    try { saveMioStateKey('caseMioChecklistStepCompletions', JSON.stringify(checklistStepCompletions)) } catch {}
   }, [checklistStepCompletions])
 
   useEffect(() => {
@@ -33115,6 +33139,99 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       {items.map(({event,steps})=>{ const eventId=event.id||event.checklist_source_id||event.checklist_id; const visible=checklistStepsRowVisible(eventId); const unread=needToSetEventHasNewEmail(event); return <div key={eventId} style={{ borderTop:'1px solid #e2e8f0', padding:'7px 0', background:unread?'#fff1f2':'transparent' }}><button onClick={()=>{ document.getElementById(needToSetRowDomId(event))?.scrollIntoView({behavior:'smooth',block:'start'}) }} style={{ width:'100%', textAlign:'left', border:0, background:'transparent', fontWeight:800, color:'#1d4ed8' }}>{checklistMatterLabel(event)} {unread?'✉':''}</button><button onClick={()=>toggleChecklistStepsRow(eventId)} style={{ fontSize:10 }}>{visible?'Hide steps':'Show steps'}</button>{visible&&<div style={{ marginTop:5 }}>{steps.map((step,index)=>{ const complete=checklistStepCompletion(eventId,step.id)?.completed; const unreadStep=needToSetEmailsForStep(event,step,index).some((email)=>email.new_email_notice||workspaceEmailHasUnreadActivity(email)); return <div key={step.id} style={{ display:'flex', gap:6, alignItems:'center', fontSize:11, padding:'3px 4px', color:complete?'#15803d':unreadStep?'#b91c1c':'#475569' }}><span>{complete?'✓':unreadStep?'✉':'○'}</span><span>{step.name}</span></div>})}</div>}</div>})}
     </aside>
   }
+
+  function needToSetActivityEventId(event = {}) {
+    return String(event?.id || event?.checklist_source_id || event?.checklist_id || '')
+  }
+
+  function needToSetActivitiesForEvent(event = {}) {
+    const eventId = needToSetActivityEventId(event)
+    return Array.isArray(needToSetActivities[eventId]) ? needToSetActivities[eventId] : []
+  }
+
+  function needToSetActivityDefinition(event = {}, activity = {}) {
+    if (activity.type === 'step') {
+      const index = Math.max(0, Number(activity.step_index) || 0)
+      return { icon: String(index + 1), label: activity.step_name || `Step ${index + 1}`, color: '#1d4ed8', background: '#eff6ff' }
+    }
+    if (activity.type === 'email') return { icon: '✉', label: 'Email activity', color: '#7c3aed', background: '#f5f3ff' }
+    return { icon: '•', label: activity.label || 'Other activity', color: '#475569', background: '#f8fafc' }
+  }
+
+  function addNeedToSetActivity(event = {}) {
+    const eventId = needToSetActivityEventId(event)
+    const selected = needToSetActivityDrafts[eventId] || ''
+    if (!eventId || !selected) return
+    const steps = checklistStepsForEvent(event)
+    const now = new Date().toISOString()
+    let activity = { id: crypto?.randomUUID ? crypto.randomUUID() : `need-activity-${Date.now()}-${Math.random().toString(36).slice(2)}`, type: selected, date: now.slice(0, 10), note: '', created_at: now }
+
+    if (selected.startsWith('step:')) {
+      const stepId = selected.slice(5)
+      const stepIndex = steps.findIndex((step) => String(step.id) === String(stepId))
+      const step = steps[stepIndex]
+      if (!step || stepIndex < 0) return
+      activity = { ...activity, type: 'step', step_id: step.id, step_index: stepIndex, step_name: step.name, label: `Moved to Step ${stepIndex + 1}: ${step.name}` }
+      setChecklistStepCompletions((current) => {
+        const next = { ...current }
+        steps.forEach((candidate, index) => {
+          const key = checklistStepCompletionKey(eventId, candidate.id)
+          if (index < stepIndex) next[key] = next[key]?.completed ? next[key] : { completed: true, completed_at: now, completed_by_activity_id: activity.id }
+          else if (index >= stepIndex && next[key]?.completed) next[key] = { ...next[key], completed: false, completed_at: '' }
+        })
+        return next
+      })
+    } else {
+      activity = { ...activity, type: selected, label: selected === 'email' ? 'Email activity' : 'Other activity' }
+    }
+
+    setNeedToSetActivities((current) => ({ ...current, [eventId]: [...(Array.isArray(current[eventId]) ? current[eventId] : []), activity] }))
+    setNeedToSetActivityDrafts((current) => ({ ...current, [eventId]: '' }))
+  }
+
+  function patchNeedToSetActivity(event = {}, activityId, patch = {}) {
+    const eventId = needToSetActivityEventId(event)
+    setNeedToSetActivities((current) => ({ ...current, [eventId]: (Array.isArray(current[eventId]) ? current[eventId] : []).map((activity) => String(activity.id) === String(activityId) ? { ...activity, ...patch, updated_at: new Date().toISOString() } : activity) }))
+  }
+
+  function removeNeedToSetActivity(event = {}, activityId) {
+    if (!window.confirm('Remove this activity from the Need to Set history? The row will remain on its current step.')) return
+    const eventId = needToSetActivityEventId(event)
+    setNeedToSetActivities((current) => ({ ...current, [eventId]: (Array.isArray(current[eventId]) ? current[eventId] : []).filter((activity) => String(activity.id) !== String(activityId)) }))
+  }
+
+  function openNeedToSetActivityBilling(event = {}, activity = {}) {
+    const definition = needToSetActivityDefinition(event, activity)
+    openChecklistStepBilling(event, activity.step_name || definition.label)
+  }
+
+  function renderNeedToSetActivitiesPage() {
+    const rows = checklistDisplayRows('need_date').filter((row) => row.event)
+    return <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ padding: 10, border: '1px solid #bfdbfe', borderRadius: 9, background: '#eff6ff', color: '#1e3a8a' }}>This trial view keeps the current Need to Set page intact. Add an activity to create a chronological icon history. Choosing a numbered step completes the earlier steps and moves the event to that selected step.</div>
+      {rows.map(({ event }) => {
+        const eventId = needToSetActivityEventId(event)
+        const matter = checklistMatterForEvent(event)
+        const steps = checklistStepsForEvent(event)
+        const status = currentNeedToSetStatus(event)
+        const activities = needToSetActivitiesForEvent(event)
+        const expanded = needToSetActivityExpandedIds.includes(eventId)
+        const startActivity = { id: `start-${eventId}`, type: 'other', label: 'Entered Need to Set', date: String(needToSetCreatedAt(event) || '').slice(0, 10), virtual: true }
+        const timeline = [startActivity, ...activities]
+        return <section key={eventId} style={{ border: '1px solid #dbe4ee', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
+          <div onClick={() => setNeedToSetActivityExpandedIds((current) => current.includes(eventId) ? current.filter((id) => id !== eventId) : [...current, eventId])} style={{ display: 'grid', gridTemplateColumns: 'minmax(250px,1.1fr) minmax(360px,2fr) 170px 150px', gap: 10, alignItems: 'center', padding: 10, cursor: 'pointer' }}>
+            <div><strong style={{ color: '#1d4ed8' }}>{expanded ? '▾' : '▸'} {checklistMatterLabel(event)}</strong><div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{matterClientName(matter)} · {checklistEventCategoryLabel(event)}</div></div>
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center', overflowX: 'auto', padding: '3px 0' }}>{timeline.map((activity, index) => { const definition = needToSetActivityDefinition(event, activity); return <Fragment key={activity.id}>{index > 0 && <span style={{ color: '#94a3b8', fontWeight: 900 }}>→</span>}<span title={`${definition.label}${activity.note ? ` — ${activity.note}` : ''}`} style={{ minWidth: 54, minHeight: 54, display: 'grid', placeItems: 'center', alignContent: 'center', border: `1px solid ${definition.color}`, borderRadius: 8, background: definition.background, color: definition.color, fontWeight: 900, fontSize: 9, textAlign: 'center', padding: 4 }}><span style={{ fontSize: 18 }}>{definition.icon}</span><span>{definition.label}</span><small style={{ color: '#64748b', fontSize: 8 }}>{activity.date ? new Date(`${activity.date}T12:00:00`).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }) : ''}</small></span></Fragment> })}</div>
+            <div><strong>Current step</strong><div style={{ color: '#1d4ed8', marginTop: 3 }}>{status.stepName}</div></div>
+            <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 5 }}><select value={needToSetActivityDrafts[eventId] || ''} onChange={(e) => setNeedToSetActivityDrafts((current) => ({ ...current, [eventId]: e.target.value }))} style={{ minWidth: 105 }}><option value="">Add activity...</option>{steps.map((step, index) => <option key={step.id} value={`step:${step.id}`}>Step {index + 1}: {step.name}</option>)}<option value="email">Email activity</option><option value="other">Other activity</option></select><button type="button" disabled={!needToSetActivityDrafts[eventId]} onClick={() => addNeedToSetActivity(event)}>Add</button></div>
+          </div>
+          {expanded && <div style={{ padding: 12, borderTop: '2px solid #cbd5e1', background: '#f8fafc' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={{ textAlign: 'left', padding: 6 }}>#</th><th style={{ textAlign: 'left', padding: 6 }}>Activity</th><th style={{ textAlign: 'left', padding: 6 }}>Date</th><th style={{ textAlign: 'left', padding: 6 }}>Notes</th><th style={{ padding: 6 }}>Billing</th><th style={{ padding: 6 }}></th></tr></thead><tbody>{timeline.map((activity, index) => { const definition = needToSetActivityDefinition(event, activity); return <tr key={activity.id} style={{ borderTop: '1px solid #e2e8f0' }}><td style={{ padding: 6 }}>{index + 1}</td><td style={{ padding: 6, color: definition.color, fontWeight: 900 }}><span style={{ display: 'inline-grid', placeItems: 'center', width: 28, height: 28, marginRight: 7, border: `1px solid ${definition.color}`, borderRadius: 7, background: definition.background }}>{definition.icon}</span>{definition.label}</td><td style={{ padding: 6 }}>{activity.virtual ? activity.date : <input type="date" value={activity.date || ''} onChange={(e) => patchNeedToSetActivity(event, activity.id, { date: e.target.value })} />}</td><td style={{ padding: 6 }}>{activity.virtual ? 'Automatically shown from the date this event entered Need to Set.' : <input value={activity.note || ''} onChange={(e) => patchNeedToSetActivity(event, activity.id, { note: e.target.value })} placeholder="Optional activity details" style={{ width: '100%' }} />}</td><td style={{ padding: 6, textAlign: 'center' }}>{!activity.virtual && <button type="button" onClick={() => openNeedToSetActivityBilling(event, activity)}>◷ Add time</button>}</td><td style={{ padding: 6, textAlign: 'center' }}>{!activity.virtual && <button type="button" onClick={() => removeNeedToSetActivity(event, activity.id)} style={{ color: '#b91c1c' }}>×</button>}</td></tr> })}</tbody></table></div>}
+        </section>
+      })}
+      {!rows.length && <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>No Need to Set events match the saved filters.</div>}
+    </div>
+  }
+
   function renderNeedToSetCardDashboard() {
     // This page must use the exact same source rows as Checklist > Need to Set.
     // Passing need_date here prevents ordinary dated calendar events from appearing.
@@ -39123,7 +39240,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       setClioGraphCaseTypeFilters(next)
       return
     }
-    try { localStorage.setItem('caseMioClioGraphCaseTypeFilters', JSON.stringify(next.length ? next : ['all'])) } catch {}
+    try { localStorage.setItem('caseMioClioGraphCaseTypeFilters', JSON.stringify(next)) } catch {}
   }, [clioGraphCaseTypeFilters])
   useEffect(() => { try { localStorage.setItem('caseMioClioGraphMappingFilter', clioGraphMappingFilter) } catch {} }, [clioGraphMappingFilter])
   useEffect(() => { try { localStorage.setItem('caseMioClioGraphCaseStatusFilter', clioGraphCaseStatusFilter) } catch {} }, [clioGraphCaseStatusFilter])
@@ -45108,7 +45225,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed. Connected Outlook threads refresh automatically when this page opens.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
             <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-start',margin:'10px 0 14px'}}><ChecklistCheckboxFilter kind="case" title="Case Status"/><ChecklistCheckboxFilter kind="matter" title="Matter Status"/><ChecklistCheckboxFilter kind="category" title="Case Type / Event Category"/></div>
-            {renderNeedToSetCardDashboard()}
+            <div style={{ display:'flex', gap:6, marginBottom:12, borderBottom:'1px solid #cbd5e1' }}><button type="button" onClick={()=>setNeedToSetPageTab('current')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='current'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='current'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='current'?900:700}}>Current View</button><button type="button" onClick={()=>setNeedToSetPageTab('activities')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='activities'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='activities'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='activities'?900:700}}>Activities (Trial)</button></div>
+            {needToSetPageTab==='activities' ? renderNeedToSetActivitiesPage() : renderNeedToSetCardDashboard()}
           </>
         )}
 
