@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V236'
+const MIO_APP_VERSION = 'Mio V237'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -17574,8 +17574,8 @@ async function updateTeamCell(memberId, field, value) {
     ).trim()
   }
 
-  function lawPayRequestForTransaction(transaction) {
-    return (lawPayPaymentRequests || []).find((request) => {
+  function lawPayRequestForTransaction(transaction, requestSource = lawPayPaymentRequests) {
+    return (requestSource || []).find((request) => {
       const linkedRequestId = lawPayTransactionRequestId(transaction)
       if (linkedRequestId && String(request.id) === String(linkedRequestId)) return true
       const gatewayId = transaction?.gateway_transaction_id || transaction?.transaction_id || ''
@@ -17585,18 +17585,18 @@ async function updateTeamCell(memberId, field, value) {
     }) || null
   }
 
-  function lawPayTransactionMatterId(transaction) {
+  function lawPayTransactionMatterId(transaction, requestSource = lawPayPaymentRequests, invoiceSource = mioInvoices) {
     const raw = lawPayRawObject(transaction)
-    const request = lawPayRequestForTransaction(transaction)
+    const request = lawPayRequestForTransaction(transaction, requestSource)
     const invoiceNumber = lawPayTransactionInvoiceNumber(transaction) || String(request?.invoice_number || '').trim()
-    const invoice = invoiceNumber ? (mioInvoices || []).find((row) => String(row.invoice_number || '').trim() === invoiceNumber) : null
+    const invoice = invoiceNumber ? (invoiceSource || []).find((row) => String(row.invoice_number || '').trim() === invoiceNumber) : null
     return transaction?.matter_id || raw.mio_matter_id || raw.matter_id || raw.data?.mio_matter_id || request?.matter_id || invoice?.matter_id || ''
   }
 
-  function lawPayTransactionsForMatter(matter) {
+  function lawPayTransactionsForMatter(matter, transactionSource = lawPayTransactions, requestSource = lawPayPaymentRequests, invoiceSource = mioInvoices) {
     const matterId = String(matter?.id || '')
-    return (lawPayTransactions || []).filter((transaction) => {
-      const linkedMatterId = lawPayTransactionMatterId(transaction)
+    return (transactionSource || []).filter((transaction) => {
+      const linkedMatterId = lawPayTransactionMatterId(transaction, requestSource, invoiceSource)
       return !!matterId && String(linkedMatterId) === matterId
     })
   }
@@ -17627,7 +17627,7 @@ async function updateTeamCell(memberId, field, value) {
     return pendingLawPayPaymentsForMatter(matter).reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
   }
 
-  function clientFinanceLedgerRows(matter, trustTransactionSource = mioTrustTransactions) {
+  function clientFinanceLedgerRows(matter, trustTransactionSource = mioTrustTransactions, lawPayTransactionSource = lawPayTransactions, lawPayRequestSource = lawPayPaymentRequests, invoiceSource = mioInvoices) {
     const matterId = String(matter?.id || '')
     const manualRows = (trustTransactionSource || [])
       .filter((transaction) => String(transaction?.matter_id || '') === matterId)
@@ -17637,9 +17637,9 @@ async function updateTeamCell(memberId, field, value) {
         amount: Math.abs(financeNumber(transaction.amount)),
         direction: transaction.direction === 'out' ? 'out' : 'in'
       }))
-    const lawPayRows = (lawPayTransactions || []).map((transaction) => {
-      const request = lawPayRequestForTransaction(transaction)
-      const linkedMatterId = lawPayTransactionMatterId(transaction)
+    const lawPayRows = (lawPayTransactionSource || []).map((transaction) => {
+      const request = lawPayRequestForTransaction(transaction, lawPayRequestSource)
+      const linkedMatterId = lawPayTransactionMatterId(transaction, lawPayRequestSource, invoiceSource)
       const accountKey = String(transaction.account_key || request?.account_key || '').toLowerCase()
       const status = String(transaction.status || '').toLowerCase()
       if (String(linkedMatterId) !== matterId || !accountKey.includes('trust')) return null
@@ -18866,8 +18866,21 @@ async function updateTeamCell(memberId, field, value) {
   async function persistOutstandingTrustPaymentPlans(plans = []) {
     if (!session?.user?.id) throw new Error('Sign in before applying trust funds.')
     const usablePlans = plans.filter((plan) => financeNumber(plan?.paid) > 0.005 && Array.isArray(plan?.transactions) && plan.transactions.length)
-    const { data: latestFinanceStates, error: latestTrustError } = await supabase.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id', session.user.id).in('key', ['caseMioTrustTransactions', 'caseMioFinanceOpeningBalances'])
+    const [financeStateResult, lawPayRequestResult, lawPayTransactionResult, invoiceLinkResult] = await Promise.all([
+      supabase.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id', session.user.id).in('key', ['caseMioTrustTransactions', 'caseMioFinanceOpeningBalances']),
+      supabase.from('lawpay_payment_requests').select('*').order('created_at', { ascending: false }).limit(1000),
+      supabase.from('lawpay_transactions').select('*').order('occurred_at', { ascending: false }).limit(1000),
+      supabase.from('mio_invoices').select('id,invoice_number,matter_id').eq('user_id', session.user.id)
+    ])
+    const { data: latestFinanceStates, error: latestTrustError } = financeStateResult
     if (latestTrustError) throw new Error(`Mio could not verify the current trust ledger before paying. ${latestTrustError.message || latestTrustError}`)
+    if (lawPayRequestResult.error || lawPayTransactionResult.error || invoiceLinkResult.error) {
+      const cause = lawPayRequestResult.error || lawPayTransactionResult.error || invoiceLinkResult.error
+      throw new Error(`Mio could not verify completed LawPay trust deposits before paying. ${cause?.message || cause}`)
+    }
+    const latestLawPayRequests = lawPayRequestResult.data || []
+    const latestLawPayTransactions = lawPayTransactionResult.data || []
+    const latestInvoiceLinks = invoiceLinkResult.data || []
     const financeStateValue = (key, fallback) => {
       const state = (latestFinanceStates || []).find((row) => row.key === key)
       if (state?.json_value !== null && state?.json_value !== undefined) return state.json_value
@@ -18896,9 +18909,19 @@ async function updateTeamCell(memberId, field, value) {
     const currentSnapshotPaidByMatter = new Map()
     const currentTrustByMatter = new Map()
     const touchedMatterIds = new Set(usablePlans.flatMap((plan) => plan.transactions || []).map((transaction) => String(transaction.matter_id || '')).filter(Boolean))
+    const matterById = new Map(usablePlans.map((plan) => [String(plan?.matter?.id || ''), plan.matter]).filter(([matterId]) => !!matterId))
     touchedMatterIds.forEach((matterId) => {
-      const openingTrust = financeNumber(latestOpeningBalances?.[matterId]?.matter_trust_funds)
-      const ledgerDelta = priorTrustRows.filter((row) => String(row.matter_id || '') === matterId).reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
+      const openingRecord = latestOpeningBalances?.[matterId] || null
+      const openingTrust = financeNumber(openingRecord?.matter_trust_funds ?? openingRecord?.trust_running_balance)
+      const verifiedLedgerRows = clientFinanceLedgerRows(
+        matterById.get(matterId) || { id: matterId },
+        priorTrustRows,
+        latestLawPayTransactions,
+        latestLawPayRequests,
+        latestInvoiceLinks
+      )
+      const currentLedgerRows = openingRecord ? verifiedLedgerRows.filter((row) => financeRowAfterSnapshot(row, openingRecord)) : verifiedLedgerRows
+      const ledgerDelta = currentLedgerRows.reduce((sum, row) => sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount)), 0)
       currentTrustByMatter.set(matterId, Math.max(0, openingTrust + ledgerDelta))
       currentSnapshotPaidByMatter.set(matterId, activeSnapshotOutstandingPayments(priorTrustRows, matterId).reduce((sum, row) => sum + financeNumber(row.amount), 0))
     })
@@ -18972,7 +18995,7 @@ async function updateTeamCell(memberId, field, value) {
     if (replacements.size) setMioInvoices((current) => (current || []).map((invoice) => replacements.get(String(invoice.id)) || invoice))
     setMioTrustTransactions(nextTrustRows)
     const occurredAt = new Date().toISOString()
-    const events = invoiceUpdates.map((update) => ({ invoice_id: update.after.id, user_id: session.user.id, event_type: update.amount > 0.005 ? 'trust_applied' : 'trust_payment_reconciled', amount: update.amount, details: { source: 'bulk_billing', persisted_before_ui_update: true }, occurred_at: occurredAt }))
+    const events = invoiceUpdates.map((update) => ({ invoice_id: update.after.id, user_id: session.user.id, event_type: update.amount > 0.005 ? 'trust_applied' : 'trust_payment_reconciled', amount: update.amount, details: { source: 'bulk_billing', persisted_before_ui_update: true, trust_balance_verified_from: 'opening_balance_plus_saved_ledger_plus_completed_lawpay' }, occurred_at: occurredAt }))
     if (events.length) {
       const { data: savedEvents, error: eventError } = await supabase.from('mio_invoice_events').insert(events).select('*')
       if (!eventError && savedEvents?.length) setMioInvoiceEvents((current) => [...savedEvents, ...(current || [])])
