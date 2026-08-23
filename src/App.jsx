@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V239'
+const MIO_APP_VERSION = 'Mio V240'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -357,6 +357,27 @@ const DISCOVERY_TRACK_SIDES = [
 const LITIGATION_TRACK_TABS = [
   { id: 'litigation', label: 'Litigation' },
   { id: 'discovery', label: 'Discovery' }
+]
+
+const LITIGATION_ORGANIZATION_OPTIONS = [
+  { value: 'chronological', label: 'Chronological' },
+  { value: 'grouped_tags', label: 'Group by document tag' }
+]
+
+const DOCUMENT_TAG_ICON_OPTIONS = [
+  { value: '', label: 'Automatic', glyph: '🏷' },
+  { value: 'pleading', label: 'Pleading / Petition / Answer', glyph: '📄' },
+  { value: 'motion', label: 'Motion', glyph: '⚖' },
+  { value: 'notice', label: 'Notice / Setting', glyph: '🔔' },
+  { value: 'order', label: 'Order / Judgment', glyph: '🏛' },
+  { value: 'discovery', label: 'Discovery', glyph: '🔎' },
+  { value: 'service', label: 'Service document', glyph: '✉' },
+  { value: 'exhibit', label: 'Exhibit / Attachment', glyph: '📎' },
+  { value: 'calendar', label: 'Calendar / Deadline', glyph: '📅' },
+  { value: 'correspondence', label: 'Correspondence', glyph: '💬' },
+  { value: 'financial', label: 'Financial', glyph: '＄' },
+  { value: 'evidence', label: 'Evidence', glyph: '🔬' },
+  { value: 'other', label: 'Other', glyph: '🏷' }
 ]
 
 const LITIGATION_DOCUMENT_KIND_STYLES = {
@@ -1855,7 +1876,7 @@ function App() {
   const [showArchivedLitigationTracks, setShowArchivedLitigationTracks] = useState(false)
   const [litigationTrackModal, setLitigationTrackModal] = useState(null)
   const [litigationDocumentModal, setLitigationDocumentModal] = useState(null)
-  const [litigationDocumentDraft, setLitigationDocumentDraft] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+  const [litigationDocumentDraft, setLitigationDocumentDraft] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
 
   const [litigationPlacements, setLitigationPlacements] = useState(() => {
     try {
@@ -1869,6 +1890,8 @@ function App() {
     catch { return {} }
   })
   const [litigationDateMode, setLitigationDateMode] = useState(() => localStorage.getItem('caseMioLitigationDateMode') || 'all_dates')
+  const [litigationOrganizationMode, setLitigationOrganizationMode] = useState(() => localStorage.getItem('caseMioLitigationOrganizationMode') || 'chronological')
+  const pendingLitigationTrackAssignmentRef = useRef(null)
   const [litigationPartyFilter, setLitigationPartyFilter] = useState('all')
   const [litigationTimelineZoom, setLitigationTimelineZoom] = useState(1)
   const [litigationTrackFilterOpen, setLitigationTrackFilterOpen] = useState(false)
@@ -1948,6 +1971,18 @@ function App() {
   const matterEfileFolderHandlesRef = useRef({})
   const serviceEmailRowFolderHandlesRef = useRef({})
   const lastServiceEfileFolderHandleRef = useRef(null)
+  const canonicalEfileTagMigrationRef = useRef(false)
+  const benAttorneyBackfillRef = useRef(false)
+  const [matterEfileFolderPicker, setMatterEfileFolderPicker] = useState({
+    open: false,
+    matterId: '',
+    rowId: '',
+    path: '/',
+    current: null,
+    items: [],
+    busy: false,
+    error: ''
+  })
 
   function rememberServiceEfileFolderHandle(matterId, rowId, handle) {
     if (!handle) return
@@ -2014,10 +2049,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseControllerTags') || '[]') }
     catch { return [] }
   })
-  const [documentForm, setDocumentForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+  const [documentForm, setDocumentForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   const [editingDocumentId, setEditingDocumentId] = useState(null)
   const [showDocumentWindow, setShowDocumentWindow] = useState(false)
-  const [documentEditForm, setDocumentEditForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+  const [documentEditForm, setDocumentEditForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   const [bulkDocumentRows, setBulkDocumentRows] = useState([])
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([])
   const [documentSearchText, setDocumentSearchText] = useState('')
@@ -4677,6 +4712,12 @@ function App() {
   }, [tags])
 
   useEffect(() => {
+    if (!tags.length || canonicalEfileTagMigrationRef.current) return
+    canonicalEfileTagMigrationRef.current = true
+    ensureAcceptedServiceTags({ migrateLegacy: true })
+  }, [tags.length])
+
+  useEffect(() => {
     const normalized = (litigationTracks || []).map(ensureLitigationTrackShape)
     safeSetLocalStorage('caseMioLitigationTracks', JSON.stringify(normalized))
     try { saveMioStateKey('caseMioLitigationTracks', JSON.stringify(normalized)) } catch {}
@@ -4696,6 +4737,7 @@ function App() {
 
   useEffect(() => { safeSetLocalStorage('caseMioLitigationActiveTab', litigationActiveTab || 'litigation') }, [litigationActiveTab])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDateMode', litigationDateMode || 'all_dates') }, [litigationDateMode])
+  useEffect(() => { safeSetLocalStorage('caseMioLitigationOrganizationMode', litigationOrganizationMode || 'chronological') }, [litigationOrganizationMode])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneOpen', litigationDocumentPaneOpen ? 'true' : 'false') }, [litigationDocumentPaneOpen])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPanePosition', JSON.stringify(litigationDocumentPanePosition || {})) }, [litigationDocumentPanePosition])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneFilters', JSON.stringify(litigationDocumentPaneFilters || {})) }, [litigationDocumentPaneFilters])
@@ -4763,8 +4805,8 @@ function App() {
           matter_id: doc.matter_id || '',
           document_id: doc.id,
           track_id: trackId,
-          party_id: doc.litigation_party_id || '',
-          row_id: doc.litigation_row_id || '',
+          party_id: litigationDocumentPartyId(doc, doc.matter_id || '') || doc.litigation_party_id || '',
+          row_id: '',
           discovery_side: doc.discovery_side || '',
           discovery_type: doc.discovery_type || '',
           is_primary: true,
@@ -4878,6 +4920,30 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseControllerMatterExtraInfo', JSON.stringify(matterExtraInfoById))
   }, [matterExtraInfoById])
+
+  useEffect(() => {
+    if (benAttorneyBackfillRef.current || !matters.length) return
+    const ben = benBeveridgeTeamMember()
+    if (!ben?.id) return
+    benAttorneyBackfillRef.current = true
+    setMatterExtraInfoById((current) => {
+      let changed = false
+      const next = { ...(current || {}) }
+      matters.forEach((matter) => {
+        const matterId = String(matter.id || '')
+        if (!matterId) return
+        const existing = cloneMatterExtraInfo(next[matterId] || {})
+        if (String(existing.assigned_attorney_id || '') !== String(ben.id)) {
+          next[matterId] = { ...existing, assigned_attorney_id: ben.id }
+          changed = true
+        }
+      })
+      return changed ? next : current
+    })
+    setServiceEmailRows((rows) => (rows || []).map((row) => serviceEmailRowCategory(row) === 'accepted' && !row.filed_by_person_id
+      ? { ...row, filed_by_person_id: String(ben.id) }
+      : row))
+  }, [team, currentTeamMember, matters])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerElements', JSON.stringify(elements))
@@ -12184,15 +12250,60 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return Number.isNaN(date.getTime()) ? null : date
   }
 
+  function benBeveridgeTeamMember() {
+    const rows = [currentTeamMember, ...(team || [])].filter(Boolean)
+    const byEmail = rows.find((member) => String(member.email || member.user_email || '').trim().toLowerCase() === 'ben@beveridgelawfirm.com')
+    if (byEmail) return byEmail
+    const byName = rows.find((member) => /\bben(?:jamin)?\b.*\bbeveridge\b/i.test([member.first_name, member.last_name, member.name].filter(Boolean).join(' ')))
+    return byName || null
+  }
+
+  function defaultFirmAttorneyOption() {
+    const member = benBeveridgeTeamMember()
+    const name = [member?.first_name, member?.last_name].filter(Boolean).join(' ').trim() || member?.name || 'Ben Beveridge'
+    return {
+      id: String(member?.id || 'attorney-ben-beveridge'),
+      name,
+      email: member?.email || member?.user_email || 'ben@beveridgelawfirm.com',
+      type: 'Attorney for client',
+      source: 'attorney'
+    }
+  }
+
   function litigationDocumentPartyId(doc = {}, matterId = '') {
-    if (doc.litigation_party_id !== undefined && doc.litigation_party_id !== null && String(doc.litigation_party_id) !== '') return String(doc.litigation_party_id)
     const options = litigationTrackPartyOptions(matterId, { includeCourt: true })
-    const filedBy = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
-    if (filedBy && options.some((option) => option.id === filedBy)) return filedBy
+    const clientLane = options.find((option) => option.source === 'client')
+    const opposingLanes = options.filter((option) => option.source === 'opposing')
+    const courtLane = options.find((option) => option.source === 'court')
+    const filedBy = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '').trim()
+
+    if (filedBy) {
+      const directLane = options.find((option) => String(option.id) === filedBy)
+      if (directLane) return String(directLane.id)
+
+      const filerOptions = serviceReviewFilerOptions({ ...doc, suggested_matter_id: matterId, matter_id: matterId })
+      const filer = filerOptions.find((option) => String(option.id) === filedBy) || null
+      if (filer?.source === 'attorney' || filer?.source === 'client' || filer?.source === 'co_counsel' || filer?.source === 'prior_counsel') return String(clientLane?.id || '')
+      if (filer?.source === 'court') return String(courtLane?.id || '')
+      if (filer?.source === 'party' || filer?.source === 'counsel') {
+        const indexed = filedBy.match(/(?:party|party-counsel)-(\d+)/)
+        if (indexed && opposingLanes[Number(indexed[1])]) return String(opposingLanes[Number(indexed[1])].id)
+        const identity = `${filer.name || ''} ${filer.email || ''}`.trim().toLowerCase()
+        const matched = opposingLanes.find((lane) => identity && `${lane.name || ''} ${lane.email || ''} ${lane.attorney_name || ''} ${lane.attorney_email || ''}`.toLowerCase().includes(identity))
+        return String(matched?.id || opposingLanes[0]?.id || '')
+      }
+
+      const ben = defaultFirmAttorneyOption()
+      if (filedBy === String(ben.id) || filedBy.toLowerCase() === ben.email.toLowerCase()) return String(clientLane?.id || '')
+      if (/court|clerk|judge/.test(filedBy.toLowerCase())) return String(courtLane?.id || '')
+      if (/party|oppos|respondent|counsel/.test(filedBy.toLowerCase())) return String(opposingLanes[0]?.id || '')
+    }
+
+    if (doc.litigation_party_id !== undefined && doc.litigation_party_id !== null && String(doc.litigation_party_id) !== '') return String(doc.litigation_party_id)
     const status = String(doc.notice_service_source || doc.status || '').toLowerCase()
-    if (/court|clerk|judge/.test(status)) return options.find((option) => option.source === 'court')?.id || ''
-    if (/ours|our exhibit|client|petitioner/.test(status)) return options.find((option) => option.source === 'client')?.id || ''
-    if (/their|oppos|respondent/.test(status)) return options.find((option) => option.source === 'opposing')?.id || ''
+    if (/court|clerk|judge/.test(status)) return String(courtLane?.id || '')
+    if (/ours|our exhibit|client|petitioner/.test(status)) return String(clientLane?.id || '')
+    if (/their|oppos|respondent/.test(status)) return String(opposingLanes[0]?.id || '')
     return ''
   }
 
@@ -12260,7 +12371,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       document_id: documentId,
       track_id: trackId,
       party_id: track.type === 'discovery' ? '' : partyId,
-      row_id: track.type === 'discovery' ? '' : (rowId || doc.litigation_row_id || 'pleadings'),
+      row_id: '',
       discovery_side: track.type === 'discovery' ? discoverySide : '',
       discovery_type: track.type === 'discovery' ? discoveryType : '',
       is_primary: false,
@@ -12323,17 +12434,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       next.litigation_track_id = ''
     }
     const cleanTags = (Array.isArray(next.tag_ids) ? next.tag_ids : Array.isArray(next.document_tag_ids) ? next.document_tag_ids : []).filter((tagId) => !isLitigationTrackTagId(tagId))
-    if (trackId && track) {
+    if (trackId) {
       const nextTags = tagAndParentIds([...cleanTags, LITIGATION_TRACK_ROOT_TAG_ID, litigationTrackTagId(trackId)])
       if (Array.isArray(next.document_tag_ids)) next.document_tag_ids = nextTags
       next.tag_ids = nextTags
       next.litigation_track_id = trackId
-      if (track.type === 'discovery') {
-        next.litigation_row_id = ''
+      next.litigation_row_id = ''
+      if (track?.type === 'discovery') {
         next.discovery_type = next.discovery_type || inferDiscoveryTypeFromDocument(next)
-      } else {
-        const validRows = litigationTrackRows(track)
-        if (!validRows.some((rowItem) => String(rowItem.id) === String(next.litigation_row_id || ''))) next.litigation_row_id = validRows[0]?.id || 'pleadings'
+      } else if (track) {
         next.discovery_side = ''
         next.discovery_type = ''
       }
@@ -12367,27 +12476,25 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const matterTracks = selectedTrack?.is_archived && String(selectedTrack.matter_id || '') === String(matterId) && !activeMatterTracks.some((track) => String(track.id) === String(selectedTrack.id))
       ? [...activeMatterTracks, selectedTrack]
       : activeMatterTracks
-    const partyOptions = litigationTrackPartyOptions(matterId, { includeCourt: true, includeUnassigned: true })
-    const wrapperStyle = { display: 'grid', gridTemplateColumns: compact ? 'repeat(auto-fit, minmax(145px, 1fr))' : 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8, alignItems: 'end' }
+    const wrapperStyle = { display: 'grid', gridTemplateColumns: compact ? 'repeat(auto-fit, minmax(170px, 1fr))' : 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8, alignItems: 'end' }
     if (!matterId) return <div style={{ color: '#64748b', fontSize: 12 }}>Select a matter before assigning a Litigation Track.</div>
+    const createAndAssign = () => openNewLitigationTrackModal(matterId, (trackId) => onPatch({ litigation_track_id: trackId, litigation_row_id: '' }))
     return (
       <div style={wrapperStyle}>
         <LabeledField label="Litigation Track">
           <div style={{ display: 'flex', gap: 5 }}>
-            <select value={row.litigation_track_id || ''} onChange={(event) => onPatch({ litigation_track_id: event.target.value })} style={{ flex: 1, minWidth: 0 }}>
+            <select value={row.litigation_track_id || ''} onChange={(event) => {
+              const value = event.target.value
+              if (value === '__new_track__') { createAndAssign(); return }
+              onPatch({ litigation_track_id: value, litigation_row_id: '' })
+            }} style={{ flex: 1, minWidth: 0 }}>
               <option value="">Unassigned</option>
               {matterTracks.map((track) => <option key={track.id} value={track.id}>{track.name}{track.type === 'discovery' ? ' (Discovery)' : ''}{track.is_archived ? ' (Archived)' : ''}</option>)}
+              {showCreate && <option value="__new_track__">+ New track…</option>}
             </select>
-            {showCreate && <button type="button" onClick={() => openNewLitigationTrackModal(matterId)} title="Create a track">+</button>}
+            {showCreate && <button type="button" onClick={createAndAssign} title="Create a new track and assign this document">+ New</button>}
           </div>
         </LabeledField>
-        {selectedTrack?.type !== 'discovery' && selectedTrack && (
-          <LabeledField label="Section">
-            <select value={row.litigation_row_id || 'pleadings'} onChange={(event) => onPatch({ litigation_row_id: event.target.value })}>
-              {litigationTrackRows(selectedTrack).map((trackRow) => <option key={trackRow.id} value={trackRow.id}>{trackRow.name}</option>)}
-            </select>
-          </LabeledField>
-        )}
         {selectedTrack?.type === 'discovery' && (
           <>
             <LabeledField label="Request group (responses stay with the request)">
@@ -12404,25 +12511,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
             </LabeledField>
           </>
         )}
-        {selectedTrack && (
-          <LabeledField label="Filed by / document owner">
-            <select value={row.litigation_party_id || litigationDocumentPartyId(row, matterId) || ''} onChange={(event) => onPatch({ litigation_party_id: event.target.value })}>
-              {partyOptions.map((party, index) => <option key={party.id || `unassigned-${index}`} value={party.id}>{litigationPartyDisplay(party)}</option>)}
-            </select>
-          </LabeledField>
-        )}
       </div>
     )
   }
 
-  function openNewLitigationTrackModal(matterId = '') {
+  function openNewLitigationTrackModal(matterId = '', onCreated = null) {
     if (!matterId) return alert('Select a matter first.')
+    pendingLitigationTrackAssignmentRef.current = typeof onCreated === 'function' ? onCreated : null
     const count = litigationTracksForMatter(matterId, { includeArchived: true }).length
     setLitigationTrackModal({ mode: 'new', id: '', matter_id: matterId, name: '', type: 'general', color: LITIGATION_TRACK_COLORS[count % LITIGATION_TRACK_COLORS.length], view_mode: 'filings_timeline', event_id: '' })
   }
 
   function openEditLitigationTrackModal(track) {
     if (!track) return
+    pendingLitigationTrackAssignmentRef.current = null
     setLitigationTrackModal({ mode: 'edit', ...ensureLitigationTrackShape(track) })
   }
 
@@ -12431,15 +12533,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!litigationTrackModal?.matter_id) return alert('Select the matter for this track.')
     const name = String(litigationTrackModal.name || '').trim()
     if (!name) return alert('Name the Litigation Track.')
+    let createdTrackId = ''
     if (litigationTrackModal.mode === 'edit' && litigationTrackModal.id) {
       setLitigationTracks((current) => current.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track))
     } else {
       const matterTracks = litigationTracksForMatter(litigationTrackModal.matter_id, { includeArchived: true })
       const id = crypto?.randomUUID ? `lit-track-${crypto.randomUUID()}` : `lit-track-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: litigationTrackModal.type === 'discovery' ? [] : LITIGATION_TRACK_DEFAULT_ROWS, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
+      createdTrackId = id
+      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: litigationTrackModal.type === 'discovery' ? [] : [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
       setLitigationTracks((current) => [...current, nextTrack])
     }
+    const assignAfterCreate = pendingLitigationTrackAssignmentRef.current
+    pendingLitigationTrackAssignmentRef.current = null
     setLitigationTrackModal(null)
+    if (createdTrackId && typeof assignAfterCreate === 'function') window.setTimeout(() => assignAfterCreate(createdTrackId), 0)
   }
 
   function updateLitigationTrack(trackId, patch) {
@@ -12534,14 +12641,13 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     updateLitigationTrack(track.id, { rows: litigationTrackRows(track).filter((item) => item.id !== row.id) })
   }
 
-  function openLitigationDocumentModal({ matterId = '', trackId = '', rowId = '', partyId = '', discoverySide = '', discoveryType = '' } = {}) {
-    const track = litigationTrackForId(trackId)
-    const draft = withLitigationAssignment({ matter_id: matterId, name: '', date: dateToInputValue(new Date()), description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: trackId, litigation_row_id: rowId || (track?.type === 'discovery' ? '' : litigationTrackRows(track)[0]?.id || 'pleadings'), litigation_party_id: partyId, discovery_side: discoverySide, discovery_type: discoveryType }, {})
+  function openLitigationDocumentModal({ matterId = '', trackId = '', partyId = '', discoverySide = '', discoveryType = '', tagId = '' } = {}) {
+    const draft = withLitigationAssignment({ matter_id: matterId, name: '', date: dateToInputValue(new Date()), description: '', status: 'Neither', tag_ids: tagId ? tagAndParentIds([tagId]) : [], document_field_values: {}, file: null, litigation_track_id: trackId, litigation_row_id: '', litigation_party_id: partyId, discovery_side: discoverySide, discovery_type: discoveryType }, {})
     setLitigationDocumentDraft(draft)
     setLitigationDocumentModal({ matterId, trackId })
   }
 
-  async function saveLitigationDocument(event) {
+async function saveLitigationDocument(event) {
     event?.preventDefault?.()
     const draft = withLitigationAssignment(litigationDocumentDraft, {})
     if (!draft.matter_id) return alert('Select a matter.')
@@ -12564,7 +12670,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const { file, ...safeDoc } = nextDoc
     setDocuments((current) => [safeDoc, ...current])
     setLitigationDocumentModal(null)
-    setLitigationDocumentDraft({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+    setLitigationDocumentDraft({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   }
 
   function litigationDocumentsForTrack(trackId) {
@@ -12576,27 +12682,67 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     })
   }
 
-  function renderLitigationDocumentItem(doc, { compact = false, forceDate = false } = {}) {
+  function litigationDocumentPrimaryTag(doc = {}) {
+    const selectedIds = Array.isArray(doc.tag_ids) ? doc.tag_ids : Array.isArray(doc.document_tag_ids) ? doc.document_tag_ids : []
+    const candidates = selectedTerminalTagIds(selectedIds)
+      .filter((tagId) => !isLitigationTrackTagId(tagId))
+      .map((tagId) => tags.find((tag) => String(tag.id) === String(tagId)))
+      .filter(Boolean)
+    if (!candidates.length) return null
+    const canonical = candidates.find((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >'))
+    return canonical || candidates.sort((a, b) => tagDepth(b.id) - tagDepth(a.id) || String(a.name || '').localeCompare(String(b.name || '')))[0]
+  }
+
+  function litigationTagFallbackGlyph(tag = null, doc = {}) {
+    const selected = DOCUMENT_TAG_ICON_OPTIONS.find((option) => option.value && option.value === String(tag?.icon_name || '').toLowerCase())
+    if (selected) return selected.glyph
+    const text = `${tag?.icon_name || ''} ${tag?.name || ''} ${tag ? tagFullName(tag.id) : ''} ${doc.name || ''}`.toLowerCase()
+    if (/order|decree|judgment/.test(text)) return '🏛'
+    if (/notice|setting|hearing/.test(text)) return '🔔'
+    if (/motion/.test(text)) return '⚖'
+    if (/discovery|request for|response to|interrogator|production|admission|disclosure/.test(text)) return '🔎'
+    if (/service|citation|waiver|return/.test(text)) return '✉'
+    if (/petition|answer|pleading/.test(text)) return '📄'
+    if (/exhibit|attachment/.test(text)) return '📎'
+    if (/calendar|deadline/.test(text)) return '📅'
+    if (/correspond|letter|email/.test(text)) return '💬'
+    if (/financial|bank|account|invoice|payment/.test(text)) return '＄'
+    if (/evidence|expert|report|testing/.test(text)) return '🔬'
+    return '🏷'
+  }
+
+  function litigationDocumentTagVisual(doc = {}) {
+    const tag = litigationDocumentPrimaryTag(doc)
+    const color = tag?.color || '#64748b'
+    return {
+      tag,
+      color,
+      iconData: tag?.icon_data || '',
+      glyph: litigationTagFallbackGlyph(tag, doc),
+      label: tag ? (tagFullName(tag.id) || tag.name || 'Tagged document') : 'Untagged',
+      shortLabel: tag?.name || 'Untagged'
+    }
+  }
+
+  function renderLitigationTagIcon(visual, size = 18) {
+    if (visual?.iconData) return <img src={visual.iconData} alt="" style={{ width: size, height: size, objectFit: 'cover', borderRadius: 3 }} />
+    return <span style={{ fontSize: size, lineHeight: 1 }}>{visual?.glyph || '🏷'}</span>
+  }
+
+  function renderLitigationDocumentItem(doc, { compact = false, forceDate = false, showTag = true } = {}) {
     const dateValue = litigationDocumentDateValue(doc)
+    const visual = litigationDocumentTagVisual(doc)
     return (
-      <div key={doc.id} style={{ border: '1px solid #dbe3ea', borderRadius: 7, padding: compact ? '6px 7px' : '7px 8px', background: '#fff', boxShadow: '0 1px 2px rgba(15,23,42,.04)', minWidth: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'start' }}>
+      <div key={doc.id} style={{ border: '1px solid #dbe3ea', borderLeft: `4px solid ${visual.color}`, borderRadius: 7, padding: compact ? '6px 7px' : '7px 8px', background: litigationHexToRgba(visual.color, .045), boxShadow: '0 1px 2px rgba(15,23,42,.04)', minWidth: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '20px minmax(0,1fr) auto', gap: 6, alignItems: 'start' }}>
+          <span title={visual.label}>{renderLitigationTagIcon(visual, 17)}</span>
           <button type="button" onClick={() => viewDocument(doc)} title="Open document" style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', color: '#1d4ed8', fontWeight: 750, lineHeight: 1.25, overflowWrap: 'anywhere' }}>{doc.name || doc.file_name || 'Document'}</button>
           <button type="button" onClick={() => openDocumentEditWindow(doc)} title="Edit document and track" style={{ border: 0, background: 'transparent', padding: 0, color: '#64748b' }}>✎</button>
         </div>
+        {showTag && <div style={{ color: visual.color, fontSize: 9.5, marginTop: 3, fontWeight: 750, overflowWrap: 'anywhere' }}>{visual.shortLabel}</div>}
         {(litigationShowDates || forceDate) && dateValue && <div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{litigationDocumentDateObject(doc)?.toLocaleDateString() || dateValue}</div>}
       </div>
     )
-  }
-
-  function litigationTrackPartiesForDisplay(track, docs) {
-    const base = litigationTrackPartyOptions(track.matter_id, { includeCourt: false })
-    const all = [...base]
-    const knownIds = new Set(all.map((party) => party.id))
-    const courtId = `court-${track.matter_id}`
-    if (docs.some((doc) => litigationDocumentPartyId(doc, track.matter_id) === courtId)) all.push({ id: courtId, label: 'Court / Clerk', name: '', source: 'court' })
-    if (docs.some((doc) => !litigationDocumentPartyId(doc, track.matter_id))) all.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
-    return all.filter((party, index, arr) => arr.findIndex((other) => other.id === party.id) === index)
   }
 
   function renderGeneralTrackSections(track, docs) {
@@ -12912,27 +13058,28 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   function renderLitigationTimelineDocumentNode(entry, top) {
     const { placement, doc } = entry
-    const kind = litigationDocumentKindKey(doc, placement)
-    const style = LITIGATION_DOCUMENT_KIND_STYLES[kind] || LITIGATION_DOCUMENT_KIND_STYLES.other
+    const visual = litigationDocumentTagVisual(doc)
     return (
-      <div key={placement.id} title={`${doc.name || doc.file_name || 'Document'}\n${litigationPlacementSummary(placement)}`} style={{ position: 'absolute', top, left: 7, right: 4, minHeight: 34, zIndex: 3, display: 'grid', gridTemplateColumns: '22px minmax(0,1fr) 14px', gap: 3, alignItems: 'start' }}>
-        <button type="button" onClick={() => viewDocument(doc)} title="Open document" style={{ border: 0, background: 'transparent', padding: 0, color: style.color, fontSize: 18, lineHeight: 1 }}>{style.icon}</button>
+      <div key={placement.id} title={`${doc.name || doc.file_name || 'Document'}\n${visual.label}\n${litigationPlacementSummary(placement)}`} style={{ position: 'absolute', top, left: 5, right: 3, minHeight: 36, zIndex: 3, display: 'grid', gridTemplateColumns: '22px minmax(0,1fr) 14px', gap: 3, alignItems: 'start', borderLeft: `3px solid ${visual.color}`, borderRadius: 4, paddingLeft: 2, background: litigationHexToRgba(visual.color, .05) }}>
+        <button type="button" onClick={() => viewDocument(doc)} title={visual.label} style={{ border: 0, background: 'transparent', padding: 0, color: visual.color, lineHeight: 1 }}>{renderLitigationTagIcon(visual, 17)}</button>
         <button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', minWidth: 0, color: '#334155' }}>
           <span style={{ display: 'block', fontSize: 10.5, fontWeight: 750, lineHeight: 1.18, overflowWrap: 'anywhere' }}>{doc.name || doc.file_name || 'Document'}</span>
+          <span style={{ display: 'block', fontSize: 8.5, color: visual.color, marginTop: 1, overflowWrap: 'anywhere' }}>{visual.shortLabel}</span>
           {litigationShowDates && litigationDocumentDateValue(doc) && <span style={{ display: 'block', fontSize: 9.5, color: '#64748b', marginTop: 2 }}>{litigationDocumentDateObject(doc)?.toLocaleDateString() || litigationDocumentDateValue(doc)}</span>}
         </button>
-        <button type="button" onClick={() => removeLitigationPlacement(placement.id)} title="Remove from this column only" style={{ border: 0, background: 'transparent', padding: 0, color: '#94a3b8', fontSize: 11 }}>×</button>
+        <button type="button" onClick={() => removeLitigationPlacement(placement.id)} title="Remove from this track only" style={{ border: 0, background: 'transparent', padding: 0, color: '#94a3b8', fontSize: 11 }}>×</button>
       </div>
     )
   }
 
   function renderGeneralTimelineTrack(track, entries, layout) {
     const trackEntries = entries.filter((entry) => String(entry.track.id) === String(track.id))
+    const entryPartyId = (entry) => litigationDocumentPartyId(entry.doc, track.matter_id) || String(entry.placement.party_id || '')
     const baseParties = litigationTrackPartyOptions(track.matter_id, { includeCourt: false })
-    const extraPartyIds = Array.from(new Set(trackEntries.map((entry) => String(entry.placement.party_id || '')).filter((id) => id && !baseParties.some((party) => String(party.id) === id))))
+    const extraPartyIds = Array.from(new Set(trackEntries.map((entry) => String(entryPartyId(entry) || '')).filter((id) => id && !baseParties.some((party) => String(party.id) === id))))
     const extras = extraPartyIds.map((id) => ({ id, label: 'Party', name: '', source: 'other' }))
     let parties = [...baseParties, ...extras]
-    if (trackEntries.some((entry) => !entry.placement.party_id)) parties.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
+    if (trackEntries.some((entry) => !entryPartyId(entry))) parties.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
     if (litigationPartyFilter !== 'all') parties = parties.filter((party) => String(party.id) === String(litigationPartyFilter))
     if (!parties.length) parties = [{ id: '', label: 'Unassigned', name: '', source: 'unassigned' }]
     const linkedEvent = litigationTrackLinkedEventLabel(track)
@@ -12946,7 +13093,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         </div>
         <div style={{ display: 'flex' }}>
           {parties.map((party, partyIndex) => {
-            const laneEntries = positionedLitigationEntries(trackEntries.filter((entry) => String(entry.placement.party_id || '') === String(party.id || '')), layout)
+            const laneEntries = positionedLitigationEntries(trackEntries.filter((entry) => String(entryPartyId(entry) || '') === String(party.id || '')), layout)
             const reliefRows = reliefsForTrackParty(track.id, party.id)
             const dropKey = `${track.id}|${party.id || 'unassigned'}`
             return <div key={party.id || `unassigned-${partyIndex}`} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setLitigationDropTargetKey(dropKey) }} onDragLeave={() => setLitigationDropTargetKey((current) => current === dropKey ? '' : current)} onDrop={(event) => { event.preventDefault(); const documentId = documentIdFromLitigationDrop(event); setLitigationDropTargetKey(''); addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, partyId: party.id || '' }) }} style={{ width: 142, flex: '0 0 142px', borderLeft: partyIndex ? '1px solid rgba(148,163,184,.38)' : 0, background: litigationDropTargetKey === dropKey ? '#dbeafe' : 'transparent' }}>
@@ -13044,10 +13191,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         <div style={{ overflowY: 'auto', maxHeight: 'calc(72vh - 190px)', padding: 7, display: 'grid', gap: 6 }}>
           {filtered.map((doc) => {
             const placements = litigationPlacementRowsForDocument(doc.id)
-            const kind = litigationDocumentKindKey(doc, placements[0] || {})
-            const style = LITIGATION_DOCUMENT_KIND_STYLES[kind] || LITIGATION_DOCUMENT_KIND_STYLES.other
-            return <div key={doc.id} draggable onDragStart={(event) => startLitigationDocumentDrag(event, doc.id)} title={documentLitigationPlacementSummary(doc.id)} style={{ border: placements.length ? '1.5px solid #22c55e' : '1px solid #dbe3ea', borderRadius: 8, background: placements.length ? '#f0fdf4' : '#fff', padding: 7, cursor: 'grab', display: 'grid', gridTemplateColumns: '24px minmax(0,1fr) auto', gap: 6, alignItems: 'start' }}>
-              <span style={{ color: style.color, fontSize: 19 }}>{style.icon}</span><div style={{ minWidth: 0 }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', fontWeight: 750, color: '#1e293b', overflowWrap: 'anywhere' }}>{doc.name || doc.file_name || 'Document'}</button>{litigationDocumentDateValue(doc) && <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{litigationDocumentDateObject(doc)?.toLocaleDateString() || litigationDocumentDateValue(doc)}</div>}{placements.length > 0 && <div style={{ fontSize: 9.5, color: '#15803d', marginTop: 3 }}>{placements.length} placement{placements.length === 1 ? '' : 's'} · hover for locations</div>}</div><span style={{ color: placements.length ? '#16a34a' : '#94a3b8', fontWeight: 900 }}>{placements.length ? '✓' : '⋮⋮'}</span>
+            const visual = litigationDocumentTagVisual(doc)
+            return <div key={doc.id} draggable onDragStart={(event) => startLitigationDocumentDrag(event, doc.id)} title={`${visual.label}
+${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.length ? '1.5px solid #22c55e' : '1px solid #dbe3ea', borderLeft: `4px solid ${visual.color}`, borderRadius: 8, background: placements.length ? '#f0fdf4' : litigationHexToRgba(visual.color, .04), padding: 7, cursor: 'grab', display: 'grid', gridTemplateColumns: '24px minmax(0,1fr) auto', gap: 6, alignItems: 'start' }}>
+              <span title={visual.label}>{renderLitigationTagIcon(visual, 18)}</span><div style={{ minWidth: 0 }}><button type="button" onClick={() => viewDocument(doc)} style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', fontWeight: 750, color: '#1e293b', overflowWrap: 'anywhere' }}>{doc.name || doc.file_name || 'Document'}</button><div style={{ fontSize: 9.5, color: visual.color, fontWeight: 750, marginTop: 2 }}>{visual.shortLabel}</div>{litigationDocumentDateValue(doc) && <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{litigationDocumentDateObject(doc)?.toLocaleDateString() || litigationDocumentDateValue(doc)}</div>}{placements.length > 0 && <div style={{ fontSize: 9.5, color: '#15803d', marginTop: 3 }}>{placements.length} placement{placements.length === 1 ? '' : 's'} · hover for locations</div>}</div><span style={{ color: placements.length ? '#16a34a' : '#94a3b8', fontWeight: 900 }}>{placements.length ? '✓' : '⋮⋮'}</span>
             </div>
           })}
           {!filtered.length && <div style={{ padding: 18, textAlign: 'center', color: '#64748b' }}>No documents match these filters.</div>}
@@ -13078,6 +13225,81 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     )
   }
 
+  function uniqueLitigationEntriesByDocument(entries = []) {
+    const seen = new Set()
+    return entries.filter((entry) => {
+      const key = `${entry.track?.id || ''}|${entry.doc?.id || ''}|${entry.placement?.party_id || ''}|${entry.placement?.discovery_side || ''}|${entry.placement?.discovery_type || ''}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }
+
+  function renderLitigationGroupedTrack(track, allEntries) {
+    const trackEntries = uniqueLitigationEntriesByDocument(allEntries.filter((entry) => String(entry.track.id) === String(track.id)))
+    let columns = []
+    let columnIdForEntry = () => ''
+    if (track.type === 'discovery') {
+      columns = discoveryTrackLanes().map((lane) => ({ id: lane.id, label: `${lane.side.name} · ${lane.type.short}`, side: lane.side.id, type: lane.type.id }))
+      columnIdForEntry = (entry) => `${entry.placement.discovery_side || ''}:${entry.placement.discovery_type || ''}`
+    } else {
+      const base = litigationTrackPartyOptions(track.matter_id, { includeCourt: false })
+      columnIdForEntry = (entry) => litigationDocumentPartyId(entry.doc, track.matter_id) || String(entry.placement.party_id || '')
+      const extraIds = Array.from(new Set(trackEntries.map(columnIdForEntry).filter((id) => id && !base.some((party) => String(party.id) === String(id)))))
+      columns = [...base, ...extraIds.map((id) => ({ id, label: 'Party', name: '', source: 'other' }))]
+      if (trackEntries.some((entry) => !columnIdForEntry(entry))) columns.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
+      if (litigationPartyFilter !== 'all') columns = columns.filter((column) => String(column.id) === String(litigationPartyFilter))
+      if (!columns.length) columns = [{ id: '', label: 'Unassigned', name: '', source: 'unassigned' }]
+    }
+
+    const groupMap = new Map()
+    trackEntries.forEach((entry) => {
+      const visual = litigationDocumentTagVisual(entry.doc)
+      const id = visual.tag?.id || '__untagged__'
+      if (!groupMap.has(id)) groupMap.set(id, { id, visual, entries: [] })
+      groupMap.get(id).entries.push(entry)
+    })
+    if (!groupMap.size) groupMap.set('__untagged__', { id: '__untagged__', visual: { tag: null, color: '#94a3b8', iconData: '', glyph: '🏷', label: 'Untagged', shortLabel: 'Untagged' }, entries: [] })
+    const groups = Array.from(groupMap.values()).sort((a, b) => a.id === '__untagged__' ? 1 : b.id === '__untagged__' ? -1 : String(a.visual.label).localeCompare(String(b.visual.label)))
+    const accent = litigationTrackAccentColor(track.color)
+    return (
+      <section key={track.id} style={{ border: `2px solid ${accent}`, borderRadius: 9, overflow: 'hidden', minWidth: Math.max(540, 230 + columns.length * 240), background: '#fff' }}>
+        <div style={{ padding: '9px 10px', background: litigationHexToRgba(track.color, .3), borderBottom: `1px solid ${accent}`, display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+          <strong style={{ color: accent }}>{track.name}</strong>
+          <div style={{ display: 'flex', gap: 6 }}><button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id })}>+ Document</button><button type="button" onClick={() => openEditLitigationTrackModal(track)}>Edit track</button></div>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 230 + columns.length * 240 }}>
+            <thead><tr><th style={{ width: 230, minWidth: 230, textAlign: 'left', padding: 8, background: '#f8fafc', borderBottom: '1px solid #cbd5e1', position: 'sticky', left: 0, zIndex: 3 }}>Document tag</th>{columns.map((column, index) => <th key={column.id || `unassigned-${index}`} style={{ minWidth: 240, padding: 8, background: '#f8fafc', borderBottom: '1px solid #cbd5e1', borderLeft: '1px solid #e2e8f0' }}>{track.type === 'discovery' ? column.label : litigationPartyDisplay(column)}</th>)}</tr></thead>
+            <tbody>{groups.map((group) => <tr key={group.id}>
+              <td style={{ padding: 9, verticalAlign: 'top', borderBottom: '1px solid #e2e8f0', background: litigationHexToRgba(group.visual.color, .07), position: 'sticky', left: 0, zIndex: 2 }}><div style={{ display: 'flex', gap: 7, alignItems: 'center', color: group.visual.color, fontWeight: 800 }}>{renderLitigationTagIcon(group.visual, 20)}<span style={{ overflowWrap: 'anywhere' }}>{group.visual.label}</span></div></td>
+              {columns.map((column, index) => {
+                const cellEntries = group.entries.filter((entry) => String(columnIdForEntry(entry) || '') === String(column.id || ''))
+                const docs = Array.from(new Map(cellEntries.map((entry) => [String(entry.doc.id), entry.doc])).values())
+                const dropKey = `grouped|${track.id}|${column.id || 'unassigned'}|${group.id}`
+                return <td key={column.id || `unassigned-${index}`} onDragOver={(event) => { event.preventDefault(); setLitigationDropTargetKey(dropKey) }} onDragLeave={() => setLitigationDropTargetKey((current) => current === dropKey ? '' : current)} onDrop={(event) => { event.preventDefault(); const documentId = documentIdFromLitigationDrop(event); setLitigationDropTargetKey(''); if (group.id !== '__untagged__') setDocuments((current) => current.map((doc) => String(doc.id) === String(documentId) ? { ...doc, tag_ids: tagAndParentIds([...(doc.tag_ids || []).filter((tagId) => !isLitigationTrackTagId(tagId)), group.id]) } : doc)); if (track.type === 'discovery') addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, discoverySide: column.side, discoveryType: column.type }); else addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, partyId: column.id || '' }) }} style={{ padding: 7, verticalAlign: 'top', borderBottom: '1px solid #e2e8f0', borderLeft: '1px solid #e2e8f0', background: litigationDropTargetKey === dropKey ? '#dbeafe' : '#fff' }}><div style={{ display: 'grid', gap: 6 }}>{docs.map((doc) => renderLitigationDocumentItem(doc, { compact: true, showTag: false }))}{!docs.length && <div style={{ color: '#94a3b8', fontSize: 11, textAlign: 'center', padding: 8 }}>Drop documents here</div>}<button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, partyId: track.type === 'discovery' ? '' : column.id || '', discoverySide: track.type === 'discovery' ? column.side : '', discoveryType: track.type === 'discovery' ? column.type : '', tagId: group.id === '__untagged__' ? '' : group.id })} style={{ fontSize: 10 }}>+ Document</button></div></td>
+              })}
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  function renderLitigationTrackTagWorkspace(matterId, activeTracks) {
+    const selectedIds = new Set(litigationSelectedTrackIdsForTab(matterId, litigationActiveTab))
+    const visibleTracks = activeTracks.filter((track) => selectedIds.has(String(track.id)))
+    const allEntries = litigationTimelineEntriesForTracks(visibleTracks)
+    return (
+      <div style={{ border: '1px solid #dbe3ea', borderRadius: 9, overflowX: 'auto', background: '#fff', padding: 10 }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', minWidth: 'max-content' }}>
+          {visibleTracks.map((track) => renderLitigationGroupedTrack(track, allEntries))}
+          {!visibleTracks.length && <div style={{ width: 520, padding: 40, color: '#64748b', textAlign: 'center' }}>No tracks are selected for this tab.</div>}
+        </div>
+      </div>
+    )
+  }
+
   function renderLitigationTracksPanel(matterId, { embedded = false } = {}) {
     const matter = matters.find((item) => String(item.id) === String(matterId)) || null
     const activeTracks = litigationTracksForMatter(matterId)
@@ -13089,22 +13311,23 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return (
       <div style={{ border: embedded ? '1px solid #d5dce3' : 0, borderRadius: 10, padding: embedded ? 12 : 0, background: '#fff' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'end', flexWrap: 'wrap', marginBottom: 10 }}>
-          <div><h2 style={{ margin: 0 }}>Litigation Tracks</h2><div style={{ color: '#64748b', fontSize: 12 }}>Drag case filings into event/track columns. Each track keeps a separate lane for each party.</div></div>
+          <div><h2 style={{ margin: 0 }}>Litigation Tracks</h2><div style={{ color: '#64748b', fontSize: 12 }}>Filed by determines the party lane. View documents chronologically or group them by their colored document tags.</div></div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}><button type="button" onClick={() => setLitigationDocumentPaneOpen((open) => !open)} style={{ fontWeight: 800 }}>{litigationDocumentPaneOpen ? 'Hide Documents' : 'Show Documents'}</button><button type="button" onClick={() => openNewLitigationTrackModal(matterId)} style={{ background: '#2563eb', color: '#fff', border: 0 }}>+ Add Track</button>{archivedTracks.length > 0 && <button type="button" onClick={() => setShowArchivedLitigationTracks((show) => !show)}>{showArchivedLitigationTracks ? 'Hide archived' : `Archived (${archivedTracks.length})`}</button>}</div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginBottom: 10, background: '#f8fafc' }}>
           <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 7, overflow: 'hidden', background: '#fff' }}>{LITIGATION_TRACK_TABS.map((tab) => <button key={tab.id} type="button" onClick={() => setLitigationActiveTab(tab.id)} style={{ border: 0, borderRight: tab.id === 'litigation' ? '1px solid #cbd5e1' : 0, borderRadius: 0, background: litigationActiveTab === tab.id ? '#1d4ed8' : '#fff', color: litigationActiveTab === tab.id ? '#fff' : '#334155', fontWeight: 850, padding: '7px 18px' }}>{tab.label}</button>)}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 6, overflow: 'hidden', background: '#fff' }}><button type="button" onClick={() => setLitigationDateMode('all_dates')} style={{ border: 0, borderRadius: 0, background: litigationDateMode === 'all_dates' ? '#1e3a8a' : '#fff', color: litigationDateMode === 'all_dates' ? '#fff' : '#334155' }}>Show All Dates</button><button type="button" onClick={() => setLitigationDateMode('filing_dates')} style={{ border: 0, borderLeft: '1px solid #cbd5e1', borderRadius: 0, background: litigationDateMode === 'filing_dates' ? '#1e3a8a' : '#fff', color: litigationDateMode === 'filing_dates' ? '#fff' : '#334155' }}>Filing Dates Only</button></div>
+            <select value={litigationOrganizationMode} onChange={(event) => setLitigationOrganizationMode(event.target.value)} title="Choose how documents are arranged">{LITIGATION_ORGANIZATION_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+            {litigationOrganizationMode === 'chronological' && <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 6, overflow: 'hidden', background: '#fff' }}><button type="button" onClick={() => setLitigationDateMode('all_dates')} style={{ border: 0, borderRadius: 0, background: litigationDateMode === 'all_dates' ? '#1e3a8a' : '#fff', color: litigationDateMode === 'all_dates' ? '#fff' : '#334155' }}>Show All Dates</button><button type="button" onClick={() => setLitigationDateMode('filing_dates')} style={{ border: 0, borderLeft: '1px solid #cbd5e1', borderRadius: 0, background: litigationDateMode === 'filing_dates' ? '#1e3a8a' : '#fff', color: litigationDateMode === 'filing_dates' ? '#fff' : '#334155' }}>Filing Dates Only</button></div>}
             <select value={litigationPartyFilter} onChange={(event) => setLitigationPartyFilter(event.target.value)}><option value="all">All parties</option>{partyOptions.map((party) => <option key={party.id} value={party.id}>{litigationPartyDisplay(party)}</option>)}</select>
             <details open={litigationTrackFilterOpen} onToggle={(event) => setLitigationTrackFilterOpen(event.currentTarget.open)} style={{ position: 'relative' }}><summary style={{ listStyle: 'none', cursor: 'pointer', border: '1px solid #94a3b8', borderRadius: 6, background: '#fff', padding: '6px 9px', fontWeight: 800 }}>Tracks on this tab ({selectedTrackIds.length})</summary><div style={{ position: 'absolute', right: 0, top: '105%', zIndex: 50, minWidth: 270, padding: 9, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 10px 26px rgba(15,23,42,.18)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 7 }}><button type="button" onClick={() => setAllLitigationTracksOnTab(matterId, litigationActiveTab, true)}>All</button><button type="button" onClick={() => setAllLitigationTracksOnTab(matterId, litigationActiveTab, false)}>None</button></div>{activeTracks.map((track) => <label key={track.id} style={{ display: 'flex', gap: 7, alignItems: 'center', padding: '5px 2px' }}><input type="checkbox" checked={selectedTrackIds.includes(String(track.id))} onChange={(event) => setLitigationTrackVisibleOnTab(matterId, litigationActiveTab, track.id, event.target.checked)} /><span style={{ width: 9, height: 9, borderRadius: 2, background: track.color || '#cbd5e1' }} /><span>{track.name}</span><small style={{ marginLeft: 'auto', color: '#64748b' }}>{track.type === 'discovery' ? 'Discovery' : 'Litigation'}</small></label>)}</div></details>
             <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 11 }}><input type="checkbox" checked={litigationShowDates} onChange={(event) => setLitigationShowDates(event.target.checked)} /> Filing labels show dates</label>
-            <button type="button" onClick={() => setLitigationTimelineZoom((value) => Math.max(.65, Number((value - .1).toFixed(2))))}>−</button><span style={{ fontSize: 11 }}>{Math.round(litigationTimelineZoom * 100)}%</span><button type="button" onClick={() => setLitigationTimelineZoom((value) => Math.min(1.8, Number((value + .1).toFixed(2))))}>+</button>
+            {litigationOrganizationMode === 'chronological' && <><button type="button" onClick={() => setLitigationTimelineZoom((value) => Math.max(.65, Number((value - .1).toFixed(2))))}>−</button><span style={{ fontSize: 11 }}>{Math.round(litigationTimelineZoom * 100)}%</span><button type="button" onClick={() => setLitigationTimelineZoom((value) => Math.min(1.8, Number((value + .1).toFixed(2))))}>+</button></>}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', margin: '0 0 9px', fontSize: 10.5 }}>{Object.entries(LITIGATION_DOCUMENT_KIND_STYLES).map(([key, value]) => <span key={key} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', color: value.color }}><span style={{ fontSize: 15 }}>{value.icon}</span>{value.label}</span>)}<button type="button" onClick={() => { setPage('settings'); setSettingsTab('litigation_parties') }} style={{ marginLeft: 'auto' }}>Manage matter parties</button></div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', margin: '0 0 9px', fontSize: 10.5 }}><span style={{ color: '#475569' }}>Document icons and colors come from each document's most specific tag.</span><button type="button" onClick={() => { setPage('settings'); setSettingsTab('tags') }} >Manage tag colors/icons</button><button type="button" onClick={() => { setPage('settings'); setSettingsTab('litigation_parties') }} style={{ marginLeft: 'auto' }}>Manage matter parties</button></div>
         {unassignedCount > 0 && <div style={{ marginBottom: 9, padding: '7px 9px', border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 7, fontSize: 11 }}><strong>{unassignedCount}</strong> matter document{unassignedCount === 1 ? '' : 's'} are not in any track yet. Open the Documents pane and drag them into a column.</div>}
-        {renderLitigationTrackTimelineWorkspace(matterId, activeTracks)}
+        {litigationOrganizationMode === 'grouped_tags' ? renderLitigationTrackTagWorkspace(matterId, activeTracks) : renderLitigationTrackTimelineWorkspace(matterId, activeTracks)}
         {showArchivedLitigationTracks && archivedTracks.length > 0 && <details open style={{ marginTop: 10 }}><summary><strong>Archived Litigation Tracks</strong></summary><div style={{ display: 'grid', gap: 7, marginTop: 8 }}>{archivedTracks.map((track) => <div key={track.id} style={{ border: '1px solid #d5dce3', borderRadius: 7, padding: 9, display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><span><strong>{track.name}</strong> · {litigationDocumentsForTrack(track.id).length} documents</span><button type="button" onClick={() => restoreLitigationTrack(track)}>Restore</button></div>)}</div></details>}
         {renderFloatingLitigationDocumentPane(matterId, activeTracks)}
       </div>
@@ -13149,7 +13372,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   function renderLitigationTrackModal() {
     if (!litigationTrackModal) return null
     return (
-      <Modal title={litigationTrackModal.mode === 'edit' ? 'Edit Litigation Track' : 'New Litigation Track'} onClose={() => setLitigationTrackModal(null)}>
+      <Modal title={litigationTrackModal.mode === 'edit' ? 'Edit Litigation Track' : 'New Litigation Track'} onClose={() => { pendingLitigationTrackAssignmentRef.current = null; setLitigationTrackModal(null) }}>
         <form onSubmit={saveLitigationTrackModal} style={{ display: 'grid', gap: 12 }}>
           <LabeledField label="Matter"><div style={{ fontWeight: 700 }}>{matterName(litigationTrackModal.matter_id) || matterLabel(litigationTrackModal.matter_id)}</div></LabeledField>
           <LabeledField label="Track / event name *"><input autoFocus value={litigationTrackModal.name || ''} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, name: event.target.value })} placeholder="Example: Temporary Orders Hearing" /></LabeledField>
@@ -13165,7 +13388,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
             </select>
           </LabeledField>
           <LabeledField label="Header color"><input type="color" value={litigationTrackModal.color || '#dbeafe'} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, color: event.target.value })} /></LabeledField>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><button type="button" onClick={() => setLitigationTrackModal(null)}>Cancel</button><button type="submit" style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save Track</button></div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><button type="button" onClick={() => { pendingLitigationTrackAssignmentRef.current = null; setLitigationTrackModal(null) }}>Cancel</button><button type="submit" style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save Track</button></div>
         </form>
       </Modal>
     )
@@ -13178,7 +13401,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         <form onSubmit={saveLitigationDocument} style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px,1fr) 180px', gap: 10 }}><LabeledField label="Document name *"><input autoFocus value={litigationDocumentDraft.name || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, name: event.target.value })} /></LabeledField><LabeledField label="Filing / document date"><input type="date" value={litigationDocumentDraft.date || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, date: event.target.value })} /></LabeledField></div>
           <LabeledField label="Description"><textarea value={litigationDocumentDraft.description || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, description: event.target.value })} /></LabeledField>
-          {renderLitigationAssignmentFields(litigationDocumentDraft, (patch) => setLitigationDocumentDraft((current) => withLitigationAssignment(current, patch)), { forcedMatterId: litigationDocumentDraft.matter_id, showCreate: false })}
+          {renderLitigationAssignmentFields(litigationDocumentDraft, (patch) => setLitigationDocumentDraft((current) => withLitigationAssignment(current, patch)), { forcedMatterId: litigationDocumentDraft.matter_id, showCreate: true })}
           <LabeledField label="File"><input type="file" onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, file: event.target.files?.[0] || null })} /></LabeledField>
           <div><strong>Other tags</strong>{renderTagPicker(litigationDocumentDraft.tag_ids || [], (tagId) => { if (isLitigationTrackTagId(tagId)) return; setLitigationDocumentDraft((current) => withLitigationAssignment({ ...current, tag_ids: normalizeTagSelectionForToggle(current.tag_ids || [], tagId) }, {})) }, litigationDocumentDraft.matter_id)}</div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><button type="button" onClick={() => setLitigationDocumentModal(null)}>Cancel</button><button type="submit" style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save Document</button></div>
@@ -14578,7 +14801,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   function closeDocumentEditWindow() {
     setEditingDocumentId(null)
-    setDocumentEditForm({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+    setDocumentEditForm({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
     setShowDocumentWindow(false)
   }
 
@@ -14722,7 +14945,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return
     }
     setDocuments((current) => [...current, nextDocument])
-    setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+    setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   }
 
 
@@ -15748,7 +15971,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       }))
   }
 
-  async function analyzeDocumentWithAi(row, updateRow, { lockedMatterId = '', extraAiFeedbackRecords = [] } = {}) {
+  async function analyzeDocumentWithAi(row, updateRow, { lockedMatterId = '', extraAiFeedbackRecords = [], canonicalEfileTagging = false } = {}) {
     if (!row) return
     const lockMatter = Boolean(lockedMatterId)
     const matterIdForAi = lockedMatterId || row.matter_id || ''
@@ -15788,10 +16011,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     }
 
     const matterForAi = matters.find((matter) => matter.id === matterIdForAi)
-    const existingTagsForAi = tags.map((tag) => ({
+    const isEfileDocument = canonicalEfileTagging
+      || /efile|filing-import|service-email/i.test(String(row.source_type || row.id || ''))
+      || (Array.isArray(row.tag_ids) && row.tag_ids.some((tagId) => isEfileClassificationTagId(tagId)))
+    const workingAiTags = isEfileDocument ? ensureAcceptedServiceTags() : tags
+    const existingTagsForAi = workingAiTags.filter((tag) => !isEfileDocument || normalizeTagLookupValue(tagPathFromWorkingTags(workingAiTags, tag.id)).startsWith('efiled > filing')).map((tag) => ({
       id: tag.id,
       name: tag.name || '',
-      tag_path: tagFullName(tag.id),
+      tag_path: tagPathFromWorkingTags(workingAiTags, tag.id),
       parent_id: tag.parent_id || null
     }))
     const mattersForAi = matters.map((matter) => ({
@@ -15810,6 +16037,9 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         document_id: row.id || null,
         matter_id: matterIdForAi,
         matter_locked: lockMatter,
+        is_efile_document: isEfileDocument,
+        required_tag_root: isEfileDocument ? 'efiled > filing' : '',
+        efile_tag_rule: isEfileDocument ? 'Choose exactly one most-specific document-type leaf under efiled > filing. Never use Ours, Theirs, Opposing Party, or Court as document tags. Filer identity is stored separately in filed_by_person_id and controls the Litigation Track party lane.' : '',
         matter_name: matterForAi ? formatMatterOption(matterForAi) : '',
         name: row.name || row.file_name || '',
         document_name: row.name || row.file_name || '',
@@ -15836,7 +16066,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         tag_analysis_report_rule: 'For every tag you apply or seriously consider, return a tag_analysis item showing which recognition rules fired, which did not fire, which exclusions were considered, and the reason for the final decision.',
         ai_feedback_examples: recentAiFeedbackForAi(extraAiFeedbackRecords),
         field_references: fieldReferenceContextForAi(matterIdForAi, row),
-        tag_hierarchy_rule: 'Only apply a child tag if the AI also finds that every parent tag in its path applies under that parent tag\'s recognition rules. If a child tag is selected, include its qualifying parent tags in suggested_tags. IMPORTANT: If a tag has child tags, the AI must not stop at that parent tag as the final classification. The AI must continue down the tag tree and choose the most specific applicable child/leaf tag. For example, do not return Discovery > Our if Discovery > Our > Requests and Discovery > Our > Responses exist; choose Requests or Responses. If no child tag can be chosen with confidence, omit that branch and add a warning instead of returning the parent-only tag.',
+        tag_hierarchy_rule: isEfileDocument ? 'For this e-filed document, return one most-specific leaf under efiled > filing and include its parents. Do not return source/side tags such as Ours, Theirs, Opposing Party, or Court.' : 'Only apply a child tag if the AI also finds that every parent tag in its path applies under that parent tag\'s recognition rules. If a child tag is selected, include its qualifying parent tags in suggested_tags. IMPORTANT: If a tag has child tags, the AI must not stop at that parent tag as the final classification. The AI must continue down the tag tree and choose the most specific applicable child/leaf tag. If no child tag can be chosen with confidence, omit that branch and add a warning instead of returning the parent-only tag.',
         required_discovery_service_date_rule: 'For every document tagged anywhere under Discovery, Service Date is required if a Service Date field exists. Look first in the Certificate of Service section near the end of the document for a sentence like I certify that a true copy was served on [date], or similar service language. Do not confuse service date with response due date, filing date, hearing date, or setting date. If no service date can be found, return a warning saying Service Date could not be found.',
         signature_source_rule: 'Do not treat a To:, served on, certificate of service recipient, e-service recipient, or service-list line as a signature block. For Ours vs Opposing Party, rely primarily on the true signature block and Attorney for line near the end of the document.',
         tag_exclusivity_rule: 'Exclusivity rules are mandatory. If a tag conflicts with another tag under tag_exclusivity_rules, do not return both. Choose the tag supported by the strongest evidence, usually the signature block/source evidence. If uncertain, omit both conflicting source tags and add a warning.'
@@ -15852,15 +16082,26 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return
     }
 
-    const aiPatch = {
-      ...normalizeAiSuggestionResponse(data, matterIdForAi),
+    const normalizedAi = normalizeAiSuggestionResponse(data, matterIdForAi)
+    let aiPatch = {
+      ...normalizedAi,
       extracted_text: textExtraction.extracted_text,
       extraction_method: textExtraction.extraction_method,
       text_quality: textExtraction.text_quality,
       needs_ocr: false,
-      ai_warnings: [...extractionWarnings, ...((normalizeAiSuggestionResponse(data, matterIdForAi).ai_warnings) || [])]
+      ai_warnings: [...extractionWarnings, ...(normalizedAi.ai_warnings || [])]
     }
-    updateRow((currentRow) => applyAiResultToEditableRow(currentRow, aiPatch, { lockMatter }))
+    if (isEfileDocument) {
+      const canonicalRow = { ...row, extracted_text: textExtraction.extracted_text, subject: `${row.subject || ''} ${normalizedAi.ai_summary || ''} ${(normalizedAi.suggested_tags || []).map((tag) => tag.tag_path || tag.name || '').join(' ')}` }
+      const canonicalPath = acceptedServiceTagPathForRow(canonicalRow)
+      const canonicalIds = tagIdsForPathFromWorkingTags(workingAiTags, canonicalPath)
+      const leafId = canonicalIds[canonicalIds.length - 1] || ''
+      if (leafId) aiPatch = { ...aiPatch, suggested_tags: [{ tag_id: leafId, tag_path: canonicalPath, confidence: 1, reason: 'Canonical e-file document-type classification under efiled > filing.' }], ai_warnings: [...(aiPatch.ai_warnings || []), `Canonical e-file tag enforced: ${canonicalPath}.`] }
+    }
+    updateRow((currentRow) => {
+      const cleanCurrent = isEfileDocument ? { ...currentRow, tag_ids: (currentRow.tag_ids || []).filter((tagId) => !isEfileClassificationTagId(tagId)) } : currentRow
+      return applyAiResultToEditableRow(cleanCurrent, aiPatch, { lockMatter })
+    })
   }
 
   function analyzeAiForBulkRow(rowId, lockedMatterId = '', options = {}) {
@@ -26193,7 +26434,9 @@ useEffect(() => {
   async function importSelectedOneDriveEfileDocuments() {
     const rows = oneDriveMatterImportRows.filter((row) => row.selected && !row.alreadyImported)
     if (!rows.length) { alert('Select at least one new OneDrive document link to import.'); return }
-    const requiredTagId = efiledTagId()
+    const canonicalWorkingTags = ensureAcceptedServiceTags()
+    const requiredTagIds = tagIdsForPathFromWorkingTags(canonicalWorkingTags, 'efiled > filing > Other')
+    const requiredTagId = requiredTagIds[requiredTagIds.length - 1] || efiledTagId()
     if (!requiredTagId) { alert('Mio could not find the top-level “efiled” tag. Create that tag first, then import.'); return }
     setOneDriveBusy(true)
     const grouped = new Map()
@@ -26244,7 +26487,7 @@ useEffect(() => {
       }
       setOneDriveMatterImportRows((current) => current.map((row) => rows.some((picked) => picked.id === row.id) ? { ...row, selected: false, alreadyImported: true } : row))
       setOneDriveImportStep(4)
-      setOneDriveMatterImportStatus(`Imported ${savedRows.length} document-to-matter record(s). Every imported document received the required “efiled” tag. Detailed tagging was left for later review.`)
+      setOneDriveMatterImportStatus(`Imported ${savedRows.length} document-to-matter record(s). Every imported document received the required “efiled > filing” tag. Detailed tagging was left for later review.`)
     } catch (error) {
       setOneDriveMatterImportStatus(`Import stopped: ${error.message || error}. ${savedRows.length} record(s) were prepared before the error.`)
       if (savedRows.length) setDocuments((current) => [...savedRows, ...current])
@@ -26902,145 +27145,52 @@ useEffect(() => {
   function acceptedServiceRequiredTagPaths() {
     return [
       'efiled',
-      'efiled > Ours',
-      'efiled > Ours > filing',
-      'efiled > Ours > filing > Pleading/Petition/Answer',
-      'efiled > Ours > filing > Motion',
-      'efiled > Ours > filing > Notice',
-      'efiled > Ours > filing > Proposed Order',
-      'efiled > Ours > Discovery',
-      'efiled > Ours > Discovery > Request',
-      'efiled > Ours > Discovery > Request > RFP',
-      'efiled > Ours > Discovery > Request > RFD',
-      'efiled > Ours > Discovery > Request > RFA',
-      'efiled > Ours > Discovery > Request > Roggs',
-      'efiled > Ours > Discovery > Response',
-      'efiled > Ours > Discovery > Response > RFP',
-      'efiled > Ours > Discovery > Response > RFD',
-      'efiled > Ours > Discovery > Response > RFA',
-      'efiled > Ours > Discovery > Response > Roggs',
-      'efiled > Ours > Proposed Order',
-      'efiled > Ours > Other'
+      'efiled > filing',
+      'efiled > filing > Pleading/Petition/Answer',
+      'efiled > filing > Motion',
+      'efiled > filing > Notice',
+      'efiled > filing > Order',
+      'efiled > filing > Proposed Order',
+      'efiled > filing > Discovery',
+      'efiled > filing > Discovery > Request',
+      'efiled > filing > Discovery > Request > RFP',
+      'efiled > filing > Discovery > Request > RFD',
+      'efiled > filing > Discovery > Request > RFA',
+      'efiled > filing > Discovery > Request > Roggs',
+      'efiled > filing > Discovery > Response',
+      'efiled > filing > Discovery > Response > RFP',
+      'efiled > filing > Discovery > Response > RFD',
+      'efiled > filing > Discovery > Response > RFA',
+      'efiled > filing > Discovery > Response > Roggs',
+      'efiled > filing > Discovery > Other',
+      'efiled > filing > Service Document',
+      'efiled > filing > Other'
     ]
+  }
+
+  function canonicalEfileTagStyle(path = '') {
+    const value = String(path || '').toLowerCase()
+    if (/proposed order|> order$/.test(value)) return { color: '#334155', icon_name: 'order' }
+    if (/notice/.test(value)) return { color: '#16a34a', icon_name: 'notice' }
+    if (/motion/.test(value)) return { color: '#d97706', icon_name: 'motion' }
+    if (/discovery/.test(value)) return { color: '#0891b2', icon_name: 'discovery' }
+    if (/service document/.test(value)) return { color: '#7c3aed', icon_name: 'service' }
+    if (/pleading|petition|answer/.test(value)) return { color: '#2563eb', icon_name: 'pleading' }
+    return { color: '#64748b', icon_name: 'tag' }
   }
 
   function safeAcceptedTagId(path = '') {
-    return `tag-accepted-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
-  }
-
-  function ensureAcceptedServiceTags() {
-    let working = [...tags]
-    let changed = false
-    const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
-    acceptedServiceRequiredTagPaths().forEach((path) => {
-      if (findPath(path)) return
-      const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
-      let parentId = ''
-      const built = []
-      parts.forEach((part) => {
-        built.push(part)
-        const currentPath = built.join(' > ')
-        let existing = findPath(currentPath)
-        if (!existing) {
-          existing = {
-            id: safeAcceptedTagId(currentPath),
-            name: part,
-            parent_id: parentId,
-            scope: 'all',
-            matter_ids: [],
-            color: '#334155',
-            icon_data: '',
-            icon_name: ''
-          }
-          working.push(existing)
-          changed = true
-        }
-        parentId = existing.id
-      })
-    })
-    if (changed) {
-      setTags(working)
-      try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
-    }
-    return working
-  }
-
-  function acceptedServiceDocumentType(row = {}) {
-    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''}`.toLowerCase()
-    if (/proposed order|proposed/.test(text)) return 'Proposed Order'
-    if (/order/.test(text)) return 'Proposed Order'
-    if (/interrogator|rogg/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > Roggs'
-    if (/request for production|rfp/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFP'
-    if (/request for disclosure|disclosure|rfd/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFD'
-    if (/request for admission|admission|rfa/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFA'
-    if (/request for production|rfp|production/.test(text)) return 'Discovery > Request > RFP'
-    if (/request for disclosure|disclosure|rfd/.test(text)) return 'Discovery > Request > RFD'
-    if (/request for admission|admission|rfa/.test(text)) return 'Discovery > Request > RFA'
-    if (/interrogator|rogg/.test(text)) return 'Discovery > Request > Roggs'
-    if (/notice|hearing|trial|setting|conference/.test(text)) return 'filing > Notice'
-    if (/motion|temporary order|compel|enforce|withdraw|continuance|sanction|petition to enforce/.test(text)) return 'filing > Motion'
-    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition/.test(text)) return 'filing > Pleading/Petition/Answer'
-    return 'Other'
-  }
-
-  function acceptedServiceTagPathForRow(row = {}) {
-    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
-    if (String(type).startsWith('filing >')) return `efiled > Ours > ${type}`
-    if (String(type).startsWith('Discovery >')) return `efiled > Ours > ${type}`
-    if (type === 'Proposed Order') return 'efiled > Ours > filing > Proposed Order'
-    return `efiled > Ours > ${type}`
-  }
-
-  function serviceEmailFilingTagIds(row = null, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
-    const typed = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row || {}))
-    if (typed.length) return typed
-    const normalized = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()
-    const exact = tags.find((tag) => normalized(tagFullName(tag.id)) === 'filings > ours')
-    if (exact) return tagAndParentIds([exact.id])
-    const oursUnderFilings = tags.find((tag) => normalized(tag.name) === 'ours' && normalized(tagFullName(tag.parent_id)).endsWith('filings'))
-    if (oursUnderFilings) return tagAndParentIds([oursUnderFilings.id])
-    const ours = tags.find((tag) => normalized(tag.name) === 'ours')
-    return ours ? tagAndParentIds([ours.id]) : []
-  }
-
-  function noticeServiceRequiredTagPaths() {
-    return [
-      'Opposing Party',
-      'Opposing Party > Petition / Answer',
-      'Opposing Party > Notice',
-      'Opposing Party > Motion',
-      'Opposing Party > Discovery',
-      'Opposing Party > Discovery > Requests',
-      'Opposing Party > Discovery > Requests > Request for Production',
-      'Opposing Party > Discovery > Requests > Request for Disclosure',
-      'Opposing Party > Discovery > Requests > Request for Admission',
-      'Opposing Party > Discovery > Requests > Interrogatories',
-      'Opposing Party > Discovery > Responses',
-      'Opposing Party > Discovery > Responses > Response to Request for Production',
-      'Opposing Party > Discovery > Responses > Response to Request for Disclosure',
-      'Opposing Party > Discovery > Responses > Response to Request for Admission',
-      'Opposing Party > Discovery > Responses > Answers to Interrogatories',
-      'Opposing Party > Third Party Discovery',
-      'Opposing Party > Third Party Discovery > Subpoena',
-      'Opposing Party > Third Party Discovery > Deposition',
-      'Opposing Party > Third Party Discovery > Records',
-      'Court',
-      'Court > Notice',
-      'Court > Order',
-      'Court > Setting',
-      'Court > Other'
-    ]
+    return `tag-efile-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
   }
 
   function tagPathFromWorkingTags(workingTags, tagId) {
-    const tag = workingTags.find((item) => item.id === tagId)
+    const tag = workingTags.find((item) => String(item.id) === String(tagId))
     if (!tag) return ''
     const parents = []
     let current = tag
     let guard = 0
     while (current?.parent_id && guard < 25) {
-      const parent = workingTags.find((item) => item.id === current.parent_id)
+      const parent = workingTags.find((item) => String(item.id) === String(current.parent_id))
       if (!parent) break
       parents.unshift(parent.name)
       current = parent
@@ -27049,16 +27199,60 @@ useEffect(() => {
     return [...parents, tag.name].join(' > ')
   }
 
-  function safeNoticeTagId(path = '') {
-    return `tag-notice-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
+  function tagAndParentIdsFromWorkingTags(workingTags, selectedIds = []) {
+    const output = []
+    ;(selectedIds || []).filter(Boolean).forEach((tagId) => {
+      const chain = []
+      let current = workingTags.find((tag) => String(tag.id) === String(tagId))
+      let guard = 0
+      while (current && guard < 25) {
+        chain.unshift(current.id)
+        current = current.parent_id ? workingTags.find((tag) => String(tag.id) === String(current.parent_id)) : null
+        guard += 1
+      }
+      chain.forEach((id) => { if (!output.includes(id)) output.push(id) })
+    })
+    return output
   }
 
-  function ensureNoticeServiceTags() {
-    let working = [...tags]
+  function canonicalEfilePathFromLegacyPath(path = '') {
+    const value = normalizeTagLookupValue(path)
+    if (/proposed order/.test(value)) return 'efiled > filing > Proposed Order'
+    if (/response/.test(value) && /production|rfp/.test(value)) return 'efiled > filing > Discovery > Response > RFP'
+    if (/response|answer/.test(value) && /disclosure|rfd/.test(value)) return 'efiled > filing > Discovery > Response > RFD'
+    if (/response|answer/.test(value) && /admission|rfa/.test(value)) return 'efiled > filing > Discovery > Response > RFA'
+    if (/response|answer/.test(value) && /interrogator|rogg/.test(value)) return 'efiled > filing > Discovery > Response > Roggs'
+    if (/request/.test(value) && /production|rfp/.test(value)) return 'efiled > filing > Discovery > Request > RFP'
+    if (/request/.test(value) && /disclosure|rfd/.test(value)) return 'efiled > filing > Discovery > Request > RFD'
+    if (/request/.test(value) && /admission|rfa/.test(value)) return 'efiled > filing > Discovery > Request > RFA'
+    if (/request/.test(value) && /interrogator|rogg/.test(value)) return 'efiled > filing > Discovery > Request > Roggs'
+    if (/discovery|subpoena|deposition|records/.test(value)) return 'efiled > filing > Discovery > Other'
+    if (/service|citation|precept|waiver|return of service/.test(value)) return 'efiled > filing > Service Document'
+    if (/\border\b|decree|judgment|ruling/.test(value)) return 'efiled > filing > Order'
+    if (/notice|setting|hearing|trial/.test(value)) return 'efiled > filing > Notice'
+    if (/motion|application|compel|enforce|continuance|sanction/.test(value)) return 'efiled > filing > Motion'
+    if (/petition|answer|pleading|counterpetition|complaint/.test(value)) return 'efiled > filing > Pleading/Petition/Answer'
+    return 'efiled > filing > Other'
+  }
+
+  function isLegacyEfileClassificationTag(tag = {}, workingTags = tags) {
+    const path = normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag?.id))
+    return path.startsWith('efiled > ours') || path.startsWith('efiled > theirs') || (String(tag?.id || '').startsWith('tag-notice-') && (path.startsWith('opposing party') || path.startsWith('court')))
+  }
+
+  function isEfileClassificationTagId(tagId = '', workingTags = tags) {
+    const tag = workingTags.find((item) => String(item.id) === String(tagId))
+    if (!tag) return false
+    const path = normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag.id))
+    return path === 'efiled' || path.startsWith('efiled > ') || isLegacyEfileClassificationTag(tag, workingTags)
+  }
+
+  function ensureAcceptedServiceTags({ migrateLegacy = true } = {}) {
+    const original = [...tags]
+    let working = [...original]
     let changed = false
     const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
-    noticeServiceRequiredTagPaths().forEach((path) => {
-      if (findPath(path)) return
+    acceptedServiceRequiredTagPaths().forEach((path) => {
       const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
       let parentId = ''
       const built = []
@@ -27067,27 +27261,108 @@ useEffect(() => {
         const currentPath = built.join(' > ')
         let existing = findPath(currentPath)
         if (!existing) {
-          existing = {
-            id: safeNoticeTagId(currentPath),
-            name: part,
-            parent_id: parentId,
-            scope: 'all',
-            matter_ids: [],
-            color: built[0] === 'Court' ? '#7c3aed' : '#dc2626',
-            icon_data: '',
-            icon_name: ''
-          }
+          const style = canonicalEfileTagStyle(currentPath)
+          existing = { id: safeAcceptedTagId(currentPath), name: part, parent_id: parentId, scope: 'all', matter_ids: [], color: style.color, icon_data: '', icon_name: style.icon_name, system_type: 'efile_document_type' }
           working.push(existing)
           changed = true
         }
         parentId = existing.id
       })
     })
+
+    const legacyTags = migrateLegacy ? original.filter((tag) => isLegacyEfileClassificationTag(tag, original)) : []
+    if (legacyTags.length) {
+      const legacyIds = new Set(legacyTags.map((tag) => String(tag.id)))
+      const targetByLegacyId = new Map()
+      legacyTags.forEach((tag) => {
+        const targetPath = canonicalEfilePathFromLegacyPath(tagPathFromWorkingTags(original, tag.id))
+        const target = findPath(targetPath)
+        if (target) targetByLegacyId.set(String(tag.id), String(target.id))
+      })
+      const isAncestorInOriginal = (ancestorId, childId) => {
+        let current = original.find((tag) => String(tag.id) === String(childId))
+        let guard = 0
+        while (current?.parent_id && guard < 25) {
+          if (String(current.parent_id) === String(ancestorId)) return true
+          current = original.find((tag) => String(tag.id) === String(current.parent_id))
+          guard += 1
+        }
+        return false
+      }
+      working = working.filter((tag) => !legacyIds.has(String(tag.id)))
+      const remapIds = (ids = []) => {
+        const selected = Array.from(new Set((ids || []).filter(Boolean).map(String)))
+        const legacySelected = selected.filter((id) => legacyIds.has(id))
+        const legacyTerminal = legacySelected.filter((id) => !legacySelected.some((other) => other !== id && isAncestorInOriginal(id, other)))
+        const preserved = selected.filter((id) => !legacyIds.has(id) && working.some((tag) => String(tag.id) === id))
+        const mapped = legacyTerminal.map((id) => targetByLegacyId.get(id)).filter(Boolean)
+        return tagAndParentIdsFromWorkingTags(working, [...preserved, ...mapped])
+      }
+      const remapRows = (rows, tagKeys = ['tag_ids', 'document_tag_ids']) => (rows || []).map((row) => {
+        let next = row
+        tagKeys.forEach((key) => {
+          if (!Array.isArray(next?.[key])) return
+          const remapped = remapIds(next[key])
+          if (JSON.stringify(remapped) !== JSON.stringify(next[key])) next = { ...next, [key]: remapped }
+        })
+        return next
+      })
+      setDocuments((rows) => remapRows(rows))
+      setServiceEmailRows((rows) => remapRows(rows))
+      setMatterFilingImportRows((rows) => remapRows(rows))
+      setBulkDocumentRows((rows) => remapRows(rows))
+      changed = true
+    }
+
     if (changed) {
       setTags(working)
       try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
     }
     return working
+  }
+
+  function acceptedServiceDocumentType(row = {}) {
+    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''} ${row.efile_filing_description || ''} ${row.extracted_text || ''}`.toLowerCase()
+    if (/proposed order/.test(text)) return 'Proposed Order'
+    if (/interrogator|rogg/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > Roggs'
+    if (/request for production|\brfp\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFP'
+    if (/request for disclosure|disclosure|\brfd\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFD'
+    if (/request for admission|admission|\brfa\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFA'
+    if (/request for production|\brfp\b|production/.test(text)) return 'Discovery > Request > RFP'
+    if (/request for disclosure|disclosure|\brfd\b/.test(text)) return 'Discovery > Request > RFD'
+    if (/request for admission|admission|\brfa\b/.test(text)) return 'Discovery > Request > RFA'
+    if (/interrogator|rogg/.test(text)) return 'Discovery > Request > Roggs'
+    if (/subpoena|third[- ]party discovery|deposition notice|business records/.test(text)) return 'Discovery > Other'
+    if (/citation|precept|waiver of service|return of service|service request/.test(text)) return 'Service Document'
+    if (/\border\b|decree|judgment|ruling/.test(text)) return 'Order'
+    if (/notice|hearing|trial|setting|conference/.test(text)) return 'Notice'
+    if (/motion|temporary order|compel|enforce|withdraw|continuance|sanction|petition to enforce/.test(text)) return 'Motion'
+    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition|pleading/.test(text)) return 'Pleading/Petition/Answer'
+    return 'Other'
+  }
+
+  function acceptedServiceTagPathForRow(row = {}) {
+    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
+    return canonicalEfilePathFromLegacyPath(type)
+  }
+
+  function serviceEmailFilingTagIds(row = null, options = {}) {
+    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
+    const typed = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row || {}))
+    if (typed.length) return typed
+    return tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing > Other')
+  }
+
+  function noticeServiceRequiredTagPaths() {
+    return acceptedServiceRequiredTagPaths()
+  }
+
+  function safeNoticeTagId(path = '') {
+    return safeAcceptedTagId(path)
+  }
+
+  function ensureNoticeServiceTags(options = {}) {
+    return ensureAcceptedServiceTags(options)
   }
 
   function noticeServiceDocumentSource(row = {}) {
@@ -27116,18 +27391,20 @@ useEffect(() => {
   }
 
   function noticeServiceTagPathForRow(row = {}) {
-    const source = noticeServiceDocumentSource(row)
     const type = noticeServiceDocumentType(row)
-    if (source === 'Court') {
-      if (type === 'Notice') return 'Court > Notice'
-      if (type === 'Order') return 'Court > Order'
-      if (type === 'Other') return 'Court > Other'
-      return 'Court > Setting'
-    }
-    if (type.startsWith('Requests >')) return `Opposing Party > Discovery > ${type}`
-    if (type.startsWith('Responses >')) return `Opposing Party > Discovery > ${type}`
-    if (type.startsWith('Third Party Discovery')) return `Opposing Party > ${type}`
-    return `Opposing Party > ${type}`
+    const mapped = type === 'Responses > Answers to Interrogatories' ? 'Discovery > Response > Roggs'
+      : type === 'Responses > Response to Request for Production' ? 'Discovery > Response > RFP'
+        : type === 'Responses > Response to Request for Disclosure' ? 'Discovery > Response > RFD'
+          : type === 'Responses > Response to Request for Admission' ? 'Discovery > Response > RFA'
+            : type === 'Requests > Request for Production' ? 'Discovery > Request > RFP'
+              : type === 'Requests > Request for Disclosure' ? 'Discovery > Request > RFD'
+                : type === 'Requests > Request for Admission' ? 'Discovery > Request > RFA'
+                  : type === 'Requests > Interrogatories' ? 'Discovery > Request > Roggs'
+                    : type.startsWith('Third Party Discovery') ? 'Discovery > Other'
+                      : type === 'Petition / Answer' ? 'Pleading/Petition/Answer'
+                        : ['Notice', 'Motion', 'Order'].includes(type) ? type
+                          : acceptedServiceDocumentType(row)
+    return `efiled > filing > ${mapped}`
   }
 
   function tagIdsForPathFromWorkingTags(workingTags, path = '') {
@@ -27145,12 +27422,14 @@ useEffect(() => {
   }
 
   function noticeServiceTagIdsForRow(row = {}, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureNoticeServiceTags()
+    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
     return tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
   }
 
   function serviceEmailDocumentTagIds(row = null) {
-    if (Array.isArray(row?.document_tag_ids) && row.document_tag_ids.length) return row.document_tag_ids
+    const explicit = Array.isArray(row?.document_tag_ids) ? row.document_tag_ids : []
+    const explicitLeaf = selectedTerminalTagIds(explicit).find((tagId) => normalizeTagLookupValue(tagFullName(tagId)).startsWith('efiled > filing >'))
+    if (explicitLeaf) return tagAndParentIds([explicitLeaf])
     if (serviceEmailRowCategory(row) === 'notification_service') return noticeServiceTagIdsForRow(row, { ensure: false })
     return serviceEmailFilingTagIds(row, { ensure: false })
   }
@@ -27161,6 +27440,10 @@ useEffect(() => {
   }
 
   function updateServiceEmailDocumentTag(rowId, tagId) {
+    if (tagId && !normalizeTagLookupValue(tagFullName(tagId)).startsWith('efiled > filing >')) {
+      alert('E-filed documents must use a document-type tag under efiled > filing.')
+      return
+    }
     const tagIds = tagId ? tagAndParentIds([tagId]) : []
     setServiceEmailRows((rows) => rows.map((row) => row.id === rowId ? { ...row, document_tag_ids: tagIds } : row))
   }
@@ -27224,7 +27507,7 @@ useEffect(() => {
       source_mailbox_email: row.mailbox_email || serviceEmailMailboxAddress(row.source_id) || '',
       litigation_track_id: row.litigation_track_id || '',
       litigation_row_id: row.litigation_row_id || '',
-      litigation_party_id: row.litigation_party_id || row.filed_by_person_id || guessServiceReviewFiler(row) || '',
+      litigation_party_id: row.litigation_party_id || '',
       discovery_side: row.discovery_side || '',
       discovery_type: row.discovery_type || '',
       ...emptyDocumentAiReview
@@ -28118,49 +28401,102 @@ useEffect(() => {
     return { ok: true, fileName: savedFileName, savedPath: result.savedPath || `${targetDir}\\${savedFileName}`, documentTagLabel: serviceEmailDocumentTagLabel(currentRow), size: result.size || blob.size || 0 }
   }
 
-  async function promptForMatterEfileFolder(rowId) {
-    const row = serviceEmailRows.find((item) => item.id === rowId)
-    if (!row) return
-    const matterId = resolveServiceEmailMatterId(row)
-    if (!matterId) {
-      alert('Pick the matter first, then choose its efile folder path.')
-      return
-    }
-    const current = serviceEmailSavePath(row) || `C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\${matterLabel(matterId)}\\efile`
-    let next = ''
+  function matterEfilePickerCurrentPath(picker = matterEfileFolderPicker) {
+    if (picker?.current) return `${oneDriveParentPathFromItem(picker.current) || ''}/${picker.current.name || ''}`.replace(/\/+/g, '/') || '/'
+    return picker?.path || '/'
+  }
 
-    let selectedDirectoryHandle = null
-    if (window.showDirectoryPicker) {
-      try {
-        selectedDirectoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
-        next = window.prompt(`Chrome confirmed you selected folder: ${selectedDirectoryHandle?.name || 'folder'}.\n\nFor security, Chrome does not reveal the full Windows path automatically. Paste or confirm the full OneDrive efile folder path for display/logging only. The app will save PDFs to the folder you just selected.\n\nMatter:\n${matterLabel(matterId)}`, current) || current
-      } catch (error) {
-        if (error?.name === 'AbortError') return
-      }
+  async function loadMatterEfileFolderPicker({ matterId = '', rowId = '', itemId = '', pathValue = '', open = true } = {}) {
+    const fallbackPath = oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(matterId)) || pathValue || defaultOpenCaseFolderPath()
+    setMatterEfileFolderPicker((current) => ({ ...current, open, matterId: matterId || current.matterId, rowId: rowId || current.rowId, busy: true, error: '' }))
+    try {
+      const encodedPath = oneDriveEncodePath(pathValue || fallbackPath)
+      const folderEndpoint = itemId ? `/me/drive/items/${encodeURIComponent(itemId)}` : (encodedPath ? `/me/drive/root:/${encodedPath}` : '/me/drive/root')
+      const childrenEndpoint = itemId ? `/me/drive/items/${encodeURIComponent(itemId)}/children?$top=200` : (encodedPath ? `/me/drive/root:/${encodedPath}:/children?$top=200` : '/me/drive/root/children?$top=200')
+      const [folder, children] = await Promise.all([
+        graphFetch(folderEndpoint, { allowInteractive: true }),
+        graphFetch(childrenEndpoint, { allowInteractive: true })
+      ])
+      const folders = (Array.isArray(children?.value) ? children.value : []).filter((item) => item.folder).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true }))
+      const resolvedPath = folder ? `${oneDriveParentPathFromItem(folder) || ''}/${folder.name || ''}`.replace(/\/+/g, '/') || '/' : (pathValue || fallbackPath)
+      setMatterEfileFolderPicker({ open: true, matterId, rowId, path: resolvedPath, current: folder || null, items: folders, busy: false, error: '' })
+    } catch (error) {
+      setMatterEfileFolderPicker((current) => ({ ...current, open: true, matterId: matterId || current.matterId, rowId: rowId || current.rowId, busy: false, error: error.message || String(error) }))
     }
+  }
 
-    if (!next) {
-      next = window.prompt(`Paste or type the OneDrive efile folder path for:\n${matterLabel(matterId)}`, current) || ''
-    }
-    next = sanitizeServiceEfilePath(next, { ...row, suggested_matter_id: matterId })
-    if (!next) return
-    setMatterEfileFolders((folders) => ({ ...folders, [matterId]: next }))
-    if (selectedDirectoryHandle) {
-      rememberServiceEfileFolderHandle(matterId, rowId, selectedDirectoryHandle)
-    }
+  function openMatterEfileFolderPickerForMatter(matterId, rowId = '') {
+    if (!matterId) return alert('Select a matter first.')
+    loadMatterEfileFolderPicker({ matterId: String(matterId), rowId: String(rowId || ''), pathValue: oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(matterId)) || defaultOpenCaseFolderPath(), open: true })
+  }
+
+  async function saveMatterEfileFolderSelection(matterId, rowId, value, handle = null) {
+    const next = sanitizeServiceEfilePath(value, { suggested_matter_id: matterId })
+    if (!matterId || !next) return ''
+    setMatterEfileFolders((folders) => ({ ...(folders || {}), [matterId]: next }))
+    if (handle) rememberServiceEfileFolderHandle(matterId, rowId, handle)
     const { error: folderSaveError } = await supabase.from('matters').update({ efile_folder: next }).eq('id', matterId)
     if (folderSaveError) {
       console.error('Could not save matter efile folder:', folderSaveError)
-      alert(`Chrome opened the selected folder, but Mio could not save the path to the Matter Table: ${folderSaveError.message || folderSaveError}`)
+      alert(`Mio selected the folder, but could not save it to the Matter Table: ${folderSaveError.message || folderSaveError}`)
       return ''
     }
     setMatters((current) => current.map((matter) => String(matter.id) === String(matterId) ? { ...matter, efile_folder: next } : matter))
-    setServiceEmailRows((rows) => rows.map((item) => item.id === rowId ? { ...item, suggested_matter_id: matterId, suggested_save_path: next } : item))
-    setServiceEmailScanNote(`Saved efile folder for ${matterLabel(matterId)} in the Matter Table. Accepted efile PDFs and notification-of-service PDFs for this matter will use that folder.`)
+    setServiceEmailRows((rows) => rows.map((item) => String(item.id) === String(rowId) || String(resolveServiceEmailMatterId(item)) === String(matterId) ? { ...item, suggested_matter_id: resolveServiceEmailMatterId(item) || matterId, suggested_save_path: next } : item))
+    setServiceEmailScanNote(`Saved efile folder for ${matterLabel(matterId)} in the Matter Table.`)
     return next
   }
 
-  async function chooseAndSaveMatterEfileFolder(row) {
+  async function useCurrentMatterEfilePickerFolder() {
+    const matterId = matterEfileFolderPicker.matterId
+    const rowId = matterEfileFolderPicker.rowId
+    const pathValue = matterEfilePickerCurrentPath()
+    const saved = await saveMatterEfileFolderSelection(matterId, rowId, pathValue)
+    if (saved) setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })
+  }
+
+  async function chooseLocalMatterEfileFolder() {
+    if (!window.showDirectoryPicker) return alert('Use Chrome or Edge to choose a local/OneDrive-synced folder.')
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+      const matterId = matterEfileFolderPicker.matterId
+      const rowId = matterEfileFolderPicker.rowId
+      const displayPath = `[Browser-selected folder] ${handle.name || 'efile'}`
+      const saved = await saveMatterEfileFolderSelection(matterId, rowId, displayPath, handle)
+      if (saved) setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })
+    } catch (error) {
+      if (error?.name !== 'AbortError') setMatterEfileFolderPicker((current) => ({ ...current, error: error.message || String(error) }))
+    }
+  }
+
+  function renderMatterEfileFolderPicker() {
+    if (!matterEfileFolderPicker.open) return null
+    const currentPath = matterEfilePickerCurrentPath()
+    const parentId = matterEfileFolderPicker.current?.parentReference?.id || ''
+    return (
+      <Modal title={`Choose efile folder — ${matterLabel(matterEfileFolderPicker.matterId)}`} onClose={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })} wide>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}><button type="button" disabled={matterEfileFolderPicker.busy || !parentId} onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: parentId })}>↑ Up</button><input value={currentPath} readOnly style={{ flex: 1 }} /><button type="button" disabled={matterEfileFolderPicker.busy} onClick={useCurrentMatterEfilePickerFolder} style={{ background: '#2563eb', color: '#fff', border: 0 }}>Use this folder</button></div>
+          {matterEfileFolderPicker.error && <div style={{ padding: 9, border: '1px solid #f59e0b', background: '#fffbeb', color: '#92400e', borderRadius: 7 }}>{matterEfileFolderPicker.error}</div>}
+          <div style={{ minHeight: 300, maxHeight: '58vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+            {matterEfileFolderPicker.busy ? <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>Loading OneDrive folders…</div> : matterEfileFolderPicker.items.map((folder) => <button key={folder.id} type="button" onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: folder.id })} style={{ width: '100%', display: 'flex', gap: 9, alignItems: 'center', textAlign: 'left', padding: '10px 12px', border: 0, borderBottom: '1px solid #e2e8f0', borderRadius: 0, background: '#fff' }}><span>📁</span><strong>{folder.name}</strong></button>)}
+            {!matterEfileFolderPicker.busy && !matterEfileFolderPicker.items.length && <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>No child folders. Use this folder, go up, or choose a local/OneDrive-synced folder.</div>}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><button type="button" onClick={chooseLocalMatterEfileFolder}>Choose local / synced folder</button><button type="button" onClick={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })}>Cancel</button></div>
+        </div>
+      </Modal>
+    )
+  }
+
+  async function promptForMatterEfileFolder(rowId) {
+    const row = serviceEmailRows.find((item) => String(item.id) === String(rowId))
+    if (!row) return
+    const matterId = resolveServiceEmailMatterId(row)
+    if (!matterId) return alert('Pick the matter first, then choose its efile folder.')
+    openMatterEfileFolderPickerForMatter(matterId, rowId)
+  }
+
+async function chooseAndSaveMatterEfileFolder(row) {
     if (!row?.id) return
     return await promptForMatterEfileFolder(row.id)
   }
@@ -28403,22 +28739,9 @@ useEffect(() => {
     const displayPath = serviceEmailSavePath(row)
     if (!resolvedMatterIdForSave) throw new Error('Select the matching matter before saving this filing.')
     if (!displayPath) throw new Error('This matter has no efile folder set in the Matter Table. Set the efile folder on the matter first; Mio will not create or guess one.')
-    const shouldPick = window.confirm(`Choose the exact matter efile folder already recorded in the Matter Table.\n\nMatter:\n${matterLabel(resolvedMatterIdForSave)}\n\nMatter Table efile folder:\n${displayPath}`)
-    if (!shouldPick) throw new Error('No matter efile folder was selected.')
     directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
     rememberServiceEfileFolderHandle(resolvedMatterIdForSave, row?.id, directoryHandle)
-
-    if (resolvedMatterIdForSave) {
-      const nextPath = window.prompt(
-        `Chrome allowed Case Controller to write to the selected folder: ${directoryHandle?.name || 'selected folder'}.\n\nFor the row display, settings, and log, paste or confirm the full Windows path for this matter efile folder. This text does not control where Chrome writes; the selected folder permission does.`,
-        displayPath
-      ) || displayPath
-      const cleanPath = sanitizeServiceEfilePath(nextPath, { ...row, suggested_matter_id: resolvedMatterIdForSave })
-      if (cleanPath) {
-        setMatterEfileFolders((folders) => ({ ...folders, [resolvedMatterIdForSave]: cleanPath }))
-        setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? { ...item, suggested_matter_id: resolvedMatterIdForSave, suggested_save_path: cleanPath } : item))
-      }
-    }
+    if (!displayPath) await saveMatterEfileFolderSelection(resolvedMatterIdForSave, row?.id || '', `[Browser-selected folder] ${directoryHandle?.name || 'efile'}`, directoryHandle)
     return directoryHandle
   }
 
@@ -29378,14 +29701,14 @@ Ben`) : (row.draft_response || '') })
                 <LabeledField label="Document name"><input value={row.suggested_document_name || ''} placeholder="yy.mm.dd PDF name" onChange={(e) => updateServiceEmailRow(row.id, { suggested_document_name: e.target.value })} /></LabeledField>
                 <LabeledField label="Matter efile folder">
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <input value={serviceEmailSavePath(row)} placeholder="Set matter efile folder" onChange={(e) => updateServiceEmailRowSavePath(row.id, e.target.value)} style={{ flex: 1, minWidth: 900 }} />
-                    <button type="button" onClick={() => promptForMatterEfileFolder(row.id)}>Browse/set</button>
+                    <input value={serviceEmailSavePath(row)} placeholder="No matter efile folder selected" readOnly style={{ flex: 1, minWidth: 900 }} />
+                    <button type="button" onClick={() => promptForMatterEfileFolder(row.id)}>{serviceEmailSavePath(row) ? 'Change folder' : 'Choose folder'}</button>
                   </div>
                 </LabeledField>
                 <LabeledField label="Document tag">
                   <select value={serviceEmailDocumentLeafTagId(row)} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
                     <option value="">No tag</option>
-                    {tags.map((tag) => <option key={tag.id} value={tag.id}>{tagFullName(tag.id)}</option>)}
+                    {tags.filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >')).map((tag) => <option key={tag.id} value={tag.id}>{tagFullName(tag.id)}</option>)}
                   </select>
                 </LabeledField>
                 {normalizedGroup === 'notification_service' && <LabeledField label="Discovery response date"><input placeholder="mm/dd/yyyy" value={row.discovery_response_date || ''} onChange={(e) => updateServiceEmailRow(row.id, { discovery_response_date: e.target.value })} /></LabeledField>}
@@ -29582,20 +29905,8 @@ Ben`) : (row.draft_response || '') })
       if (row.id !== rowId) return row
       const next = { ...row, ...patch }
       if (patch.notice_service_source || patch.notice_service_type) {
-        const source = patch.notice_service_source || next.notice_service_source || noticeServiceDocumentSource(next)
-        const type = patch.notice_service_type || next.notice_service_type || noticeServiceDocumentType(next)
-        let path = source === 'Court' ? 'Court > Other' : 'Opposing Party > Other'
-        if (source === 'Court') {
-          path = type === 'Notice' ? 'Court > Notice' : type === 'Order' ? 'Court > Order' : type === 'Setting' ? 'Court > Setting' : 'Court > Other'
-        } else if (String(type).startsWith('Requests >') || String(type).startsWith('Responses >')) {
-          path = `Opposing Party > Discovery > ${type}`
-        } else if (String(type).startsWith('Third Party Discovery')) {
-          path = `Opposing Party > ${type}`
-        } else {
-          path = `Opposing Party > ${type}`
-        }
-        const workingTags = ensureNoticeServiceTags()
-        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, path)
+        const workingTags = ensureAcceptedServiceTags()
+        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(next))
       }
       return next
     }))
@@ -29701,25 +30012,39 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
   function createAndAttachServiceReviewTag(row) {
+    const workingTags = ensureAcceptedServiceTags()
+    const filingRootIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing')
+    const filingRootId = filingRootIds[filingRootIds.length - 1] || ''
+    const currentLeaf = serviceEmailDocumentLeafTagId(row)
+    const currentPath = normalizeTagLookupValue(tagFullName(currentLeaf))
+    const parentId = currentPath.startsWith('efiled > filing') ? currentLeaf : filingRootId
     setServiceTagPicker({ open: false, rowId: '', search: '' })
-    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId: serviceEmailDocumentLeafTagId(row) || '' })
+    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId })
   }
 
   function saveServiceReviewTag() {
     const name = String(serviceTagBuilder.name || '').trim()
     if (!name || !serviceTagBuilder.rowId) return
-    const parent = tags.find((tag) => tag.id === serviceTagBuilder.parentId) || null
+    const workingTags = ensureAcceptedServiceTags()
+    const filingRootIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing')
+    const filingRootId = filingRootIds[filingRootIds.length - 1] || ''
+    let parent = workingTags.find((tag) => tag.id === serviceTagBuilder.parentId) || workingTags.find((tag) => tag.id === filingRootId) || null
+    if (!parent || !normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, parent.id)).startsWith('efiled > filing')) {
+      parent = workingTags.find((tag) => tag.id === filingRootId) || null
+    }
+    if (!parent) return alert('Mio could not find the efiled > filing tag. Reload and try again.')
     const newTag = {
       id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
-      parent_id: parent?.id || '',
+      parent_id: parent.id,
       color: '#4c6783',
-      sort_order: tags.filter((tag) => String(tag.parent_id || '') === String(parent?.id || '')).length + 1
+      icon_name: 'other',
+      sort_order: workingTags.filter((tag) => String(tag.parent_id || '') === String(parent.id)).length + 1
     }
     setTags((current) => [...current, newTag])
-    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIds([newTag.id]) } : row))
+    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIdsFromWorkingTags([...workingTags, newTag], [newTag.id]) } : row))
     setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })
-    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${tagFullName(parent.id)} > ` : ''}${name}`)
+    setServiceEmailScanNote(`Created and attached e-file tag: ${tagPathFromWorkingTags([...workingTags, newTag], newTag.id)}`)
   }
 
   function updateServiceReviewField(rowId, fieldKey, value) {
@@ -29731,42 +30056,44 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
 
   function serviceReviewFilerOptions(row = {}) {
     const matterId = resolveServiceEmailMatterId(row)
-    if (!matterId) return []
+    if (!matterId) return [defaultFirmAttorneyOption()]
     const matter = matters.find((item) => String(item.id) === String(matterId)) || {}
     const extra = matterExtraFor(matterId)
     const options = []
-    const add = (id, name, type, source = 'person') => {
+    const add = (id, name, type, source = 'person', email = '') => {
       const clean = String(name || '').trim()
       if (!clean || options.some((item) => item.name.toLowerCase() === clean.toLowerCase())) return
-      options.push({ id: String(id || `${source}-${clean}`), name: clean, type: String(type || '').trim(), source })
+      options.push({ id: String(id || `${source}-${clean}`), name: clean, type: String(type || '').trim(), source, email: String(email || '') })
     }
+    const attorney = defaultFirmAttorneyOption()
+    add(attorney.id, attorney.name, attorney.type, 'attorney', attorney.email)
     const client = clients.find((item) => String(item.id) === String(matter.client_id))
-    add(client?.id || 'client', [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || client?.name || client?.email || '', matter.client_status || 'Client', 'client')
+    add(client?.id || 'client', [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || client?.name || client?.email || '', matter.client_status || 'Client', 'client', client?.email)
     ;(extra.opposing_parties || []).forEach((party, index) => {
-      add(party.id || `party-${index}`, party.name, `${party.party_type || 'Party'}${party.name ? '' : ''}`, 'party')
+      add(party.id || `party-${index}`, party.name, party.party_type || 'Party', 'party', party.email)
       const counsel = party.counsel || {}
-      add(`party-counsel-${index}`, counsel.name, counsel.title || `Counsel for ${party.name || `Party ${index + 1}`}`, 'counsel')
+      add(`party-counsel-${index}`, counsel.name, counsel.title || `Counsel for ${party.name || `Party ${index + 1}`}`, 'counsel', counsel.email)
     })
-    ;(extra.prior_counsels || []).forEach((person, index) => add(`prior-counsel-${index}`, person.name, person.title || 'Prior Counsel', 'counsel'))
-    ;(extra.co_counsels || []).forEach((person, index) => add(`co-counsel-${index}`, person.name, person.title || 'Co-Counsel', 'counsel'))
-    ;(extra.court_people || []).forEach((person, index) => add(`court-person-${index}`, person.name, person.title || 'Court', 'court'))
-    ;(extra.third_parties || []).forEach((person, index) => add(`third-party-${index}`, person.name, person.title || '3rd Party', 'person'))
-    matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || person.title || '3rd Party', 'person'))
+    ;(extra.prior_counsels || []).forEach((person, index) => add(`prior-counsel-${index}`, person.name, person.title || 'Prior Counsel', 'prior_counsel', person.email))
+    ;(extra.co_counsels || []).forEach((person, index) => add(`co-counsel-${index}`, person.name, person.title || 'Co-Counsel', 'co_counsel', person.email))
+    ;(extra.court_people || []).forEach((person, index) => add(`court-person-${index}`, person.name, person.title || 'Court', 'court', person.email))
+    ;(extra.third_parties || []).forEach((person, index) => add(`third-party-${index}`, person.name, person.title || '3rd Party', 'person', person.email))
+    matterPeople.filter((person) => String(person.matter_id) === String(matterId)).forEach((person) => add(person.id, person.name, person.designation || person.party_type || person.title || '3rd Party', 'person', person.email))
     const court = courts.find((item) => String(item.id) === String(matter.court_id))
     add(court?.id || 'court', court?.court_name || court?.name || matter.court_name, 'Court', 'court')
-    return options.sort((a, b) => a.name.localeCompare(b.name))
+    return options.sort((a, b) => (a.source === 'attorney' ? -1 : b.source === 'attorney' ? 1 : a.name.localeCompare(b.name)))
   }
 
   function guessServiceReviewFiler(row = {}) {
     const options = serviceReviewFilerOptions(row)
     if (!options.length) return ''
-    if (serviceEmailRowCategory(row) === 'accepted') return options.find((item) => item.source === 'client')?.id || options[0]?.id || ''
+    if (serviceEmailRowCategory(row) === 'accepted') return options.find((item) => item.source === 'attorney')?.id || defaultFirmAttorneyOption().id
     const text = serviceReviewText(row).toLowerCase()
-    const direct = options.find((item) => text.includes(item.name.toLowerCase()))
+    const direct = options.find((item) => item.name && text.includes(item.name.toLowerCase()))
     if (direct) return direct.id
     if (/filed by the court|court clerk|district clerk|county clerk/.test(text)) return options.find((item) => item.source === 'court')?.id || ''
     const opposingParty = options.find((item) => item.source === 'party')
-    return opposingParty?.id || options.find((item) => item.source !== 'client')?.id || options[0]?.id || ''
+    return opposingParty?.id || options.find((item) => !['client', 'attorney'].includes(item.source))?.id || options[0]?.id || ''
   }
 
   function renderFilingServiceReviewWindow(kind = 'accepted') {
@@ -29834,7 +30161,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="Matter">
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
-                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} />{!showSavedFilingReviewRows && !saveFolder && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>Open folder</button>}</div></LabeledField>
+                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} />{!showSavedFilingReviewRows && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>{saveFolder ? 'Change folder' : 'Choose folder'}</button>}</div></LabeledField>
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { extracted_pdf_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
@@ -29877,7 +30204,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search all tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
               <div style={{ maxHeight: '65vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, padding: 8 }}>
                 <button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, ''); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', marginBottom: 6 }}>No tag</button>
-                {allTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
+                {allTagsIndented().filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >') && (!serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase()))).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
               </div>
             </div>
           </Modal>
@@ -29889,8 +30216,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <LabeledField label="New tag name"><input autoFocus value={serviceTagBuilder.name} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, name: e.target.value }))} placeholder="Enter the new tag name" /></LabeledField>
               <LabeledField label="Place under this tag">
                 <select value={serviceTagBuilder.parentId} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, parentId: e.target.value }))}>
-                  <option value="">Top-level tag</option>
-                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                  {allTagsIndented().filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing')).map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(Math.max(0, (tag.level || 0) - 1))}${tag.name}`}</option>)}
                 </select>
               </LabeledField>
               <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}><strong>New location:</strong> {serviceTagBuilder.parentId ? `${tagFullName(serviceTagBuilder.parentId)} > ` : ''}{serviceTagBuilder.name || 'New tag'}</div>
@@ -29953,9 +30279,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       return
     }
     const workingTags = ensureAcceptedServiceTags()
-    const defaultIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours').length
-      ? tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours')
-      : []
+    const defaultIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing > Other')
     const rows = []
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index]
@@ -29969,6 +30293,8 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
         file_name: file.name,
         date: inferFilingDateForDocument({ file_name: file.name }),
         description: 'Imported from matter efile folder for filing review.',
+        source_type: 'matter-efile-import',
+        is_efile_document: true,
         status: 'Neither',
         tag_ids: tagAndParentIds(defaultIds),
         document_field_values: {},
@@ -30497,7 +30823,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                 {matters.map((matter) => (
                   <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
                     <td style={{ width: '35%' }}>{formatMatterOption(matter)}</td>
-                    <td><input value={matterEfileFolders[matter.id] || ''} onChange={(e) => setMatterEfileFolders((folders) => ({ ...folders, [matter.id]: e.target.value }))} placeholder={'C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\{Matter}\\efile'} style={{ width: '100%' }} /></td>
+                    <td><div style={{ display: 'flex', gap: 6 }}><input value={matterEfileFolderForId(matter.id)} readOnly placeholder="No folder selected" style={{ width: '100%' }} /><button type="button" onClick={() => openMatterEfileFolderPickerForMatter(matter.id)} style={{ whiteSpace: 'nowrap' }}>{matterEfileFolderForId(matter.id) ? 'Change' : 'Choose'}</button></div></td>
                   </tr>
                 ))}
                 {!matters.length && <tr><td colSpan="2" style={{ padding: 12, color: '#64748b', textAlign: 'center' }}>No matters found yet.</td></tr>}
@@ -45013,6 +45339,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {renderBillingModal()}
         {renderLitigationTrackModal()}
         {renderLitigationDocumentModal()}
+        {renderMatterEfileFolderPicker()}
 
         {page === 'screensaver' && canOpenPage('screensaver') && renderScreensaverPage()}
 
@@ -48295,8 +48622,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <input type="color" value={tagForm.color || '#4c6783'} onChange={(e) => setTagForm({ ...tagForm, color: e.target.value })} />
                   <span>{tagForm.color || '#4c6783'}</span>
                 </label>
-                <label>
-                  Icon/image:{' '}
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  Icon:{' '}
+                  <select value={tagForm.icon_name || ''} onChange={(e) => setTagForm({ ...tagForm, icon_name: e.target.value, icon_data: e.target.value ? '' : tagForm.icon_data })}>{DOCUMENT_TAG_ICON_OPTIONS.map((option) => <option key={option.value || 'auto'} value={option.value}>{option.glyph} {option.label}</option>)}</select>
+                  Custom image:{' '}
                   <input type="file" accept="image/*" onChange={async (e) => {
                     const file = e.target.files?.[0]
                     if (!file) return
@@ -48346,7 +48675,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <button type="button" onClick={() => toggleTagLibraryCollapsed(tag.id)} disabled={!hasChildren} title={hasChildren ? (collapsed ? 'Expand family' : 'Collapse family') : 'No child tags'} style={{ width: 26 }}>
                             {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
                           </button>
-                          {tag.icon_data ? <img src={tag.icon_data} alt="" style={{ width: 22, height: 22, objectFit: 'cover' }} /> : <span style={{ width: 22 }}>🏷️</span>}
+                          {tag.icon_data ? <img src={tag.icon_data} alt="" style={{ width: 22, height: 22, objectFit: 'cover', borderRadius: 3 }} /> : <span style={{ width: 22 }}>{litigationTagFallbackGlyph(tag)}</span>}
+                          <select value={tag.icon_data ? '' : (DOCUMENT_TAG_ICON_OPTIONS.some((option) => option.value === tag.icon_name) ? tag.icon_name : '')} onChange={(e) => updateTag(tag.id, { icon_name: e.target.value, icon_data: '' })} title="Tag icon" style={{ maxWidth: 128, fontSize: 11 }}>{DOCUMENT_TAG_ICON_OPTIONS.map((option) => <option key={option.value || 'auto'} value={option.value}>{option.glyph} {option.label}</option>)}</select>
+                          <label title="Upload a custom icon/image for this tag" style={{ fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>Custom<input type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; const data = await readFileAsDataUrl(file); updateTag(tag.id, { icon_data: data.file_data, icon_name: data.file_name }) }} /></label>
+                          {tag.icon_data && <button type="button" onClick={() => updateTag(tag.id, { icon_data: '', icon_name: '' })} title="Remove tag icon">× icon</button>}
                           <input value={tag.name || ''} onChange={(e) => updateTag(tag.id, { name: e.target.value })} style={{ fontWeight: 800, minWidth: 180, flex: '1 1 220px' }} title="Edit tag name" />
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
                             <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: tag.color || '#4c6783', display: 'inline-block' }} />
@@ -49215,12 +49547,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           </td>
 
                           <td>
-                            <input
-                              value={matterEfileFolders[matter.id] || ''}
-                              onChange={(e) => setMatterEfileFolders((folders) => ({ ...(folders || {}), [matter.id]: e.target.value }))}
-                              placeholder={'C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\{Matter}\\efile'}
-                              style={{ width: 300, border: '1px solid #ccc', padding: 4 }}
-                            />
+                            <div style={{ display: 'flex', gap: 5, minWidth: 340 }}><input value={matterEfileFolderForId(matter.id)} readOnly placeholder="No efile folder selected" style={{ width: 280, border: '1px solid #ccc', padding: 4 }} /><button type="button" onClick={() => openMatterEfileFolderPickerForMatter(matter.id)}>{matterEfileFolderForId(matter.id) ? 'Change' : 'Choose'}</button></div>
                           </td>
 
                           <td>
