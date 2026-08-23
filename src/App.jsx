@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V237'
+const MIO_APP_VERSION = 'Mio V238'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -325,6 +325,67 @@ const ORDER_RENDITION_TYPES = [
   { value: 'other', label: 'Other rendition' }
 ]
 
+const LITIGATION_TRACK_ROOT_TAG_ID = 'tag-litigation-tracks-root'
+const LITIGATION_TRACK_ROOT_TAG_NAME = 'Litigation Tracks'
+const LITIGATION_TRACK_DEFAULT_ROWS = [
+  { id: 'pleadings', name: 'Pleadings / Requests / Answers', icon: '📄', sort_order: 1, system: true },
+  { id: 'service', name: 'Service Documents', icon: '✉', sort_order: 2, system: true },
+  { id: 'notices', name: 'Notices', icon: '🔔', sort_order: 3, system: true },
+  { id: 'hearings', name: 'Hearings / Trials', icon: '⚖', sort_order: 4, system: true },
+  { id: 'orders', name: 'Orders', icon: '🏛', sort_order: 5, system: true },
+  { id: 'final_documents', name: 'Final / Associated Documents', icon: '📁', sort_order: 6, system: true },
+  { id: 'other', name: 'Other', icon: '•', sort_order: 7, system: true }
+]
+const LITIGATION_TRACK_VIEW_OPTIONS = [
+  { value: 'sections', label: 'Sections' },
+  { value: 'filings_equal', label: 'Filings — equal spacing' },
+  { value: 'filings_timeline', label: 'Filings — true timeline' }
+]
+const LITIGATION_TRACK_COLORS = ['#dbeafe', '#dcfce7', '#f3e8ff', '#ffedd5', '#fef3c7', '#e0f2fe', '#fce7f3', '#e2e8f0']
+const DISCOVERY_TRACK_TYPES = [
+  { id: 'rfd', short: 'RFD', name: 'Requests for Disclosure' },
+  { id: 'rfp', short: 'RFP', name: 'Requests for Production' },
+  { id: 'roggs', short: 'ROGGS', name: 'Interrogatories' },
+  { id: 'rfa', short: 'RFA', name: 'Requests for Admission' }
+]
+const DISCOVERY_TRACK_SIDES = [
+  { id: 'ours', name: 'Our Requests' },
+  { id: 'theirs', name: 'Their Requests' }
+]
+
+function litigationTrackTagId(trackId = '') {
+  return trackId ? `tag-litigation-track-${String(trackId).replace(/[^a-zA-Z0-9_-]/g, '_')}` : ''
+}
+
+function cloneLitigationTrackRows(rows = []) {
+  const source = Array.isArray(rows) && rows.length ? rows : LITIGATION_TRACK_DEFAULT_ROWS
+  return source.map((row, index) => ({
+    id: row?.id || `row-${index + 1}`,
+    name: row?.name || `Section ${index + 1}`,
+    icon: row?.icon || '•',
+    sort_order: Number(row?.sort_order || index + 1),
+    system: row?.system !== false
+  }))
+}
+
+function ensureLitigationTrackShape(track = {}, index = 0) {
+  const type = track?.type === 'discovery' ? 'discovery' : 'general'
+  return {
+    id: track?.id || `lit-track-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+    matter_id: track?.matter_id || '',
+    name: track?.name || (type === 'discovery' ? 'Discovery' : 'Final Relief'),
+    type,
+    color: track?.color || LITIGATION_TRACK_COLORS[index % LITIGATION_TRACK_COLORS.length],
+    sort_order: Number(track?.sort_order || index + 1),
+    view_mode: LITIGATION_TRACK_VIEW_OPTIONS.some((option) => option.value === track?.view_mode) ? track.view_mode : (type === 'discovery' ? 'filings_equal' : 'sections'),
+    rows: type === 'discovery' ? [] : cloneLitigationTrackRows(track?.rows),
+    is_archived: Boolean(track?.is_archived),
+    is_default: Boolean(track?.is_default),
+    created_at: track?.created_at || new Date().toISOString(),
+    updated_at: track?.updated_at || new Date().toISOString()
+  }
+}
+
 const appPages = [
   { value: 'team', label: 'Team' },
   { value: 'clients', label: 'Clients' },
@@ -338,6 +399,7 @@ const appPages = [
   { value: 'efile', label: 'eFile' },
   { value: 'banking', label: 'Accounts' },
   { value: 'service_inbox', label: 'Service Inbox' },
+  { value: 'litigation_tracks', label: 'Litigation Tracks' },
   { value: 'requested_relief', label: 'Requested Relief' },
   { value: 'enforcement', label: 'Enforcement' },
   { value: 'calendar', label: 'Calendar' },
@@ -361,6 +423,7 @@ const appPages = [
 const CLIENT_PAGE_TAB_OPTIONS = {
   inventory: [],
   matter_timelines: [],
+  litigation_tracks: [],
   requested_relief: [],
   enforcement: [
     { value: 'violations', label: 'Violations' },
@@ -390,6 +453,7 @@ const screenSaverBasePages = [
   { value: 'billing', label: 'Billing', page: 'billing' },
   { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
+  { value: 'litigation_tracks', label: 'Litigation Tracks', page: 'litigation_tracks' },
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
   { value: 'enforcement', label: 'Enforcement', page: 'enforcement' },
   { value: 'calendar', label: 'Calendar', page: 'calendar' },
@@ -969,6 +1033,7 @@ const emptyDiscoveryForm = {
 
 const emptyDiscoveryRequestRow = {
   matter_id: '',
+  discovery_type: '',
   name: '',
   date: '',
   description: '',
@@ -1704,6 +1769,19 @@ function App() {
     catch { return [] }
   })
 
+  const [litigationTracks, setLitigationTracks] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioLitigationTracks') || '[]')
+      return Array.isArray(parsed) ? parsed.map(ensureLitigationTrackShape) : []
+    } catch { return [] }
+  })
+  const [litigationTrackMatterId, setLitigationTrackMatterId] = useState(() => hashParamValue('matter', ''))
+  const [litigationShowDates, setLitigationShowDates] = useState(() => localStorage.getItem('caseMioLitigationShowDates') !== 'false')
+  const [showArchivedLitigationTracks, setShowArchivedLitigationTracks] = useState(false)
+  const [litigationTrackModal, setLitigationTrackModal] = useState(null)
+  const [litigationDocumentModal, setLitigationDocumentModal] = useState(null)
+  const [litigationDocumentDraft, setLitigationDocumentDraft] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+
   const [draftingTemplates, setDraftingTemplates] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioDraftingTemplates') || '[]')
@@ -1830,10 +1908,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseControllerTags') || '[]') }
     catch { return [] }
   })
-  const [documentForm, setDocumentForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
+  const [documentForm, setDocumentForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   const [editingDocumentId, setEditingDocumentId] = useState(null)
   const [showDocumentWindow, setShowDocumentWindow] = useState(false)
-  const [documentEditForm, setDocumentEditForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {} })
+  const [documentEditForm, setDocumentEditForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   const [bulkDocumentRows, setBulkDocumentRows] = useState([])
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([])
   const [documentSearchText, setDocumentSearchText] = useState('')
@@ -3039,6 +3117,11 @@ function App() {
       caseMioLawFirmProfile: { setter: (value) => setLawFirmProfile({ firm_name: '', address: '', email: '', phone: '', ...(value || {}) }), kind: 'object', fallback: {} },
       caseMioWebsiteIdeas: { setter: setWebsiteIdeas, kind: 'array', fallback: [] },
       caseControllerDocuments: { setter: setDocuments, kind: 'array', fallback: [] },
+      caseMioLitigationTracks: { setter: (value) => setLitigationTracks((current) => {
+        const browser = browserJsonArray('caseMioLitigationTracks').map(ensureLitigationTrackShape)
+        const cloud = (Array.isArray(value) ? value : []).map(ensureLitigationTrackShape)
+        return mergeMioArraysById(browser, current, cloud).map(ensureLitigationTrackShape)
+      }), kind: 'array', fallback: [] },
       caseMioDraftingTemplates: { setter: (value) => setDraftingTemplates(Array.isArray(value) ? value.map(cleanDraftingTemplate) : []), kind: 'array', fallback: [] },
       caseMioServiceEmailSources: { setter: setServiceEmailSources, kind: 'array', fallback: defaultServiceEmailSources },
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
@@ -4480,6 +4563,134 @@ function App() {
     safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
     try { saveMioStateKey('caseControllerTags', JSON.stringify(tags)) } catch {}
   }, [tags])
+
+  useEffect(() => {
+    const normalized = (litigationTracks || []).map(ensureLitigationTrackShape)
+    safeSetLocalStorage('caseMioLitigationTracks', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioLitigationTracks', JSON.stringify(normalized)) } catch {}
+  }, [litigationTracks])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioLitigationShowDates', litigationShowDates ? 'true' : 'false')
+  }, [litigationShowDates])
+
+  useEffect(() => {
+    if (!matters.length) return
+    setLitigationTracks((current) => {
+      const next = (Array.isArray(current) ? current : []).map(ensureLitigationTrackShape)
+      let changed = false
+      matters.forEach((matter, matterIndex) => {
+        const matterId = String(matter.id || '')
+        if (!matterId) return
+        const matterTracks = next.filter((track) => String(track.matter_id) === matterId)
+        if (!matterTracks.some((track) => track.type !== 'discovery' && track.is_default)) {
+          const matterText = `${matter.name || ''} ${matter.matter_type || ''} ${matter.matter_subtype || ''}`
+          next.push(ensureLitigationTrackShape({
+            id: `lit-track-final-${matterId}`,
+            matter_id: matterId,
+            name: /divorce/i.test(matterText) ? 'Final Relief (Divorce)' : 'Final Relief',
+            type: 'general',
+            color: LITIGATION_TRACK_COLORS[matterIndex % LITIGATION_TRACK_COLORS.length],
+            sort_order: 1,
+            view_mode: 'sections',
+            rows: LITIGATION_TRACK_DEFAULT_ROWS,
+            is_default: true
+          }, next.length))
+          changed = true
+        }
+        if (!matterTracks.some((track) => track.type === 'discovery')) {
+          next.push(ensureLitigationTrackShape({
+            id: `lit-track-discovery-${matterId}`,
+            matter_id: matterId,
+            name: 'Discovery',
+            type: 'discovery',
+            color: '#e0f2fe',
+            sort_order: 999,
+            view_mode: 'filings_equal',
+            rows: [],
+            is_default: true
+          }, next.length))
+          changed = true
+        }
+      })
+      return changed ? next : current
+    })
+  }, [matters])
+
+  useEffect(() => {
+    if (!litigationTracks.length) return
+    setTags((current) => {
+      const next = Array.isArray(current) ? current.map((tag) => ({ ...tag })) : []
+      let changed = false
+      let rootIndex = next.findIndex((tag) => String(tag.id) === LITIGATION_TRACK_ROOT_TAG_ID)
+      const rootTag = {
+        id: LITIGATION_TRACK_ROOT_TAG_ID,
+        name: LITIGATION_TRACK_ROOT_TAG_NAME,
+        parent_id: '',
+        scope: 'all',
+        matter_ids: [],
+        icon_data: '',
+        icon_name: 'tracks',
+        color: '#4f46e5',
+        sort_order: 9000,
+        system_type: 'litigation_tracks_root'
+      }
+      if (rootIndex < 0) {
+        next.push(rootTag)
+        rootIndex = next.length - 1
+        changed = true
+      } else {
+        const merged = { ...next[rootIndex], ...rootTag }
+        if (JSON.stringify(merged) !== JSON.stringify(next[rootIndex])) {
+          next[rootIndex] = merged
+          changed = true
+        }
+      }
+      litigationTracks.forEach((rawTrack, index) => {
+        const track = ensureLitigationTrackShape(rawTrack, index)
+        const tagId = litigationTrackTagId(track.id)
+        const tagRow = {
+          id: tagId,
+          name: track.name,
+          parent_id: LITIGATION_TRACK_ROOT_TAG_ID,
+          scope: 'specific',
+          matter_ids: track.matter_id ? [track.matter_id] : [],
+          icon_data: '',
+          icon_name: track.type === 'discovery' ? 'discovery' : 'track',
+          color: track.color || '#4c6783',
+          sort_order: Number(track.sort_order || index + 1),
+          system_type: 'litigation_track',
+          litigation_track_id: track.id,
+          is_archived: Boolean(track.is_archived)
+        }
+        const tagIndex = next.findIndex((tag) => String(tag.id) === tagId || String(tag.litigation_track_id || '') === String(track.id))
+        if (tagIndex < 0) {
+          next.push(tagRow)
+          changed = true
+        } else {
+          const merged = { ...next[tagIndex], ...tagRow, id: next[tagIndex].id || tagId }
+          if (JSON.stringify(merged) !== JSON.stringify(next[tagIndex])) {
+            next[tagIndex] = merged
+            changed = true
+          }
+        }
+      })
+      return changed ? next : current
+    })
+  }, [litigationTracks])
+
+  useEffect(() => {
+    if (page === 'litigation_tracks') {
+      const requestedMatterId = hashParamValue('matter', '')
+      if (requestedMatterId && matters.some((matter) => String(matter.id) === String(requestedMatterId))) {
+        if (String(litigationTrackMatterId || '') !== String(requestedMatterId)) setLitigationTrackMatterId(String(requestedMatterId))
+        return
+      }
+    }
+    if (litigationTrackMatterId && matters.some((matter) => String(matter.id) === String(litigationTrackMatterId))) return
+    const nextMatter = matters.find((matter) => matter.is_active !== false) || matters[0]
+    if (nextMatter?.id) setLitigationTrackMatterId(String(nextMatter.id))
+  }, [page, matters, litigationTrackMatterId])
 
   useEffect(() => {
     const normalized = normalizeWorkflowItems(workflowItems)
@@ -8868,7 +9079,8 @@ function App() {
     const id = existing?.id || discoveryDocRequestId(doc)
     const base = existing || {
       id,
-      side: discoverySideFilter,
+      side: doc.discovery_side === 'ours' ? 'our' : doc.discovery_side === 'theirs' ? 'their' : discoverySideFilter,
+      discovery_type: doc.discovery_type || inferDiscoveryTypeFromDocument(doc),
       matter_id: doc.matter_id || '',
       document_id: doc.id,
       file_name: doc.file_name || doc.name || '',
@@ -9052,6 +9264,8 @@ function App() {
   }
 
   function discoveryTypeForDoc(doc) {
+    const explicitType = DISCOVERY_TRACK_TYPES.find((type) => type.id === String(doc?.discovery_type || '').toLowerCase())
+    if (explicitType) return explicitType.short === 'ROGGS' ? 'Roggs' : explicitType.short
     const paths = (doc?.tag_ids || []).map((tagId) => tagFullName(tagId)).filter(Boolean)
     const matchingPath = paths.find((path) => {
       const normalized = normalizeDiscoveryTagPath(path)
@@ -9073,7 +9287,14 @@ function App() {
 
   function discoveryRequestById(requestId) {
     const existing = discoveryRequests.find((request) => request.id === requestId)
-    if (existing) return existing
+    if (existing) {
+      const linkedDoc = existing.document_id ? documents.find((item) => String(item.id) === String(existing.document_id)) || null : null
+      return {
+        ...existing,
+        side: existing.side || (linkedDoc?.discovery_side === 'ours' ? 'our' : linkedDoc?.discovery_side === 'theirs' ? 'their' : discoverySideFilter),
+        discovery_type: existing.discovery_type || linkedDoc?.discovery_type || inferDiscoveryTypeFromDocument(linkedDoc || existing)
+      }
+    }
     const docId = String(requestId || '').replace(/^doc-/, '')
     const doc = documents.find((item) => item.id === docId)
     if (!doc) return null
@@ -9395,6 +9616,27 @@ function App() {
     return {}
   }
 
+  function discoveryTrackSideId(side = '') {
+    const normalized = String(side || '').toLowerCase()
+    return normalized === 'our' || normalized === 'ours' ? 'ours' : 'theirs'
+  }
+
+  function discoveryTrackForMatterId(matterId = '') {
+    return litigationTracksForMatter(matterId).find((track) => track.type === 'discovery') || null
+  }
+
+  function discoveryTrackTypeId(request = null, requestDoc = null) {
+    const direct = String(request?.discovery_type || requestDoc?.discovery_type || '').toLowerCase()
+    if (DISCOVERY_TRACK_TYPES.some((type) => type.id === direct)) return direct
+    return inferDiscoveryTypeFromDocument(requestDoc || request || {})
+  }
+
+  function discoveryTrackPartyId(matterId = '', requestSide = '', response = false) {
+    const side = discoveryTrackSideId(requestSide)
+    const desiredSource = response ? (side === 'ours' ? 'opposing' : 'client') : (side === 'ours' ? 'client' : 'opposing')
+    return litigationTrackPartyOptions(matterId, { includeCourt: false }).find((party) => party.source === desiredSource)?.id || ''
+  }
+
   function discoveryRequestBaseTagLabel(side = discoverySideFilter) {
     return side === 'our' ? 'Discovery > Ours > Requests' : "Discovery > Opposing Party's > Requests"
   }
@@ -9420,7 +9662,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const files = Array.from(fileList || [])
     if (files.length === 0) return
     const requestTagIds = discoveryRequestBaseTagIdsForSide(discoverySideFilter)
-    await prepareBulkDocuments(files, '', { defaultTagIds: requestTagIds })
+    await prepareBulkDocuments(files, '', { defaultTagIds: requestTagIds, defaultTrackType: 'discovery', defaultDiscoverySide: discoveryTrackSideId(discoverySideFilter) })
     setBulkSelectedTagIds(requestTagIds)
     setPage('documents')
   }
@@ -9433,6 +9675,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const baseTagIds = discoveryRequestTagIdsForSide(side)
     return {
       ...emptyDiscoveryRequestRow,
+      discovery_side: discoveryTrackSideId(side),
       tag_ids: baseTagIds.length ? tagAndParentIds([baseTagIds[0]]) : [],
       document_field_values: {}
     }
@@ -9493,15 +9736,28 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert('Enter a document name for every new request.')
       return
     }
+    const missingType = rowsToSave.find((row) => !(row.discovery_type || inferDiscoveryTypeFromDocument(row)))
+    if (missingType) {
+      alert(`Select RFD, RFP, ROGGS, or RFA for “${missingType.name || 'the request document'}”.`)
+      return
+    }
 
     const createdDocs = []
     const createdRequests = []
     for (const row of rowsToSave) {
-      const filePayload = row.file ? await readFileAsDataUrl(row.file) : {}
       const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const filePayload = row.file ? await readFileAsDataUrl(row.file) : {}
+      const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, row.matter_id) : {}
       const fields = documentFieldsForTags(row.tag_ids || [])
       const fieldValues = applyCalculatedDocumentFieldValues(fields, row.document_field_values || {})
-      createdDocs.push({
+      const side = discoveryTrackSideId(discoveryForm.side || discoverySideFilter)
+      const discoveryType = row.discovery_type || inferDiscoveryTypeFromDocument(row)
+      const track = discoveryTrackForMatterId(row.matter_id)
+      if (!track) {
+        alert(`The Discovery Litigation Track is not available for ${matterName(row.matter_id) || 'this matter'}. Open Litigation Tracks once and try again.`)
+        return
+      }
+      const createdDocument = withEmptyDocumentAiReview(withLitigationAssignment({
         id: docId,
         matter_id: row.matter_id,
         name: row.name.trim(),
@@ -9511,12 +9767,19 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         tag_ids: row.tag_ids || [],
         document_field_values: fieldValues,
         upload_date: dateToInputValue(new Date()),
-        ...emptyDocumentAiReview,
-        ...filePayload
-      })
+        ...filePayload,
+        ...storedFilePayload
+      }, {
+        litigation_track_id: track.id,
+        discovery_side: side,
+        discovery_type: discoveryType,
+        litigation_party_id: discoveryTrackPartyId(row.matter_id, side, false)
+      }))
+      createdDocs.push(createdDocument)
       createdRequests.push({
         id: `doc-${docId}`,
-        side: discoveryForm.side || discoverySideFilter,
+        side: side === 'ours' ? 'our' : 'their',
+        discovery_type: discoveryType,
         matter_id: row.matter_id,
         document_id: docId,
         file_name: row.name.trim(),
@@ -9525,8 +9788,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       })
     }
 
-    setDocuments([...documents, ...createdDocs])
-    setDiscoveryRequests([...discoveryRequests, ...createdRequests])
+    setDocuments((current) => [...current, ...createdDocs])
+    setDiscoveryRequests((current) => [...current, ...createdRequests])
     setShowDiscoveryWindow(false)
     setDiscoveryForm(emptyDiscoveryForm)
     setDiscoveryRequestRows([{ ...emptyDiscoveryRequestRow }])
@@ -9553,27 +9816,90 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   async function saveDiscoveryResponse(e) {
     e.preventDefault()
-    const filePayload = await buildDiscoveryDocumentPayload(discoveryResponseForm.document_mode, discoveryResponseForm.document_id, discoveryResponseForm.file)
-    const selectedDoc = discoveryResponseForm.document_id ? documents.find((doc) => doc.id === discoveryResponseForm.document_id) : null
     const baseRequest = discoveryRequestById(discoveryResponseForm.request_id)
+    const requestDoc = baseRequest?.document_id ? documents.find((doc) => String(doc.id) === String(baseRequest.document_id)) || null : null
+    const selectedDoc = discoveryResponseForm.document_id ? documents.find((doc) => String(doc.id) === String(discoveryResponseForm.document_id)) || null : null
+    const matterId = baseRequest?.matter_id || requestDoc?.matter_id || selectedDoc?.matter_id || ''
+    if (!matterId) return alert('The response must be connected to a matter.')
+    const track = discoveryTrackForMatterId(matterId)
+    if (!track) return alert('This matter does not yet have its Discovery Litigation Track. Open Litigation Tracks once and try again.')
+    const side = discoveryTrackSideId(baseRequest?.side || requestDoc?.discovery_side || discoverySideFilter)
+    const discoveryType = discoveryTrackTypeId(baseRequest, requestDoc)
+    if (!discoveryType) return alert('Assign RFD, RFP, ROGGS, or RFA to the request before adding its response.')
+    const responsePartyId = discoveryTrackPartyId(matterId, side, true)
+    let filePayload = {}
+
+    if (discoveryResponseForm.document_mode === 'existing') {
+      if (!selectedDoc) return alert('Choose the response document.')
+      filePayload = {
+        document_id: selectedDoc.id,
+        file_name: selectedDoc.file_name || selectedDoc.name || '',
+        file_type: selectedDoc.file_type || '',
+        file_size: selectedDoc.file_size || ''
+      }
+      setDocuments((current) => current.map((doc) => String(doc.id) === String(selectedDoc.id)
+        ? withLitigationAssignment(doc, {
+            litigation_track_id: track.id,
+            discovery_side: side,
+            discovery_type: discoveryType,
+            litigation_party_id: doc.litigation_party_id || responsePartyId
+          })
+        : doc))
+    } else if (discoveryResponseForm.file) {
+      const file = discoveryResponseForm.file
+      const docId = `doc-disc-response-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const temporaryPayload = await readFileAsDataUrl(file)
+      const storedPayload = await uploadMioDocumentFile(file, docId, matterId)
+      const baseName = String(file.name || discoveryResponseForm.filing_type || 'Discovery Response').replace(/\.[^/.]+$/, '')
+      const newDocument = withEmptyDocumentAiReview(withLitigationAssignment({
+        id: docId,
+        matter_id: matterId,
+        name: baseName,
+        date: discoveryResponseForm.served_date || '',
+        description: `${discoveryResponseForm.filing_type || 'Discovery response'} to ${requestDoc?.name || baseRequest?.file_name || 'discovery requests'}`,
+        status: 'Neither',
+        tag_ids: [],
+        document_field_values: {},
+        upload_date: dateToInputValue(new Date()),
+        ...temporaryPayload,
+        ...storedPayload
+      }, {
+        litigation_track_id: track.id,
+        discovery_side: side,
+        discovery_type: discoveryType,
+        litigation_party_id: responsePartyId
+      }))
+      setDocuments((current) => [newDocument, ...current])
+      filePayload = {
+        document_id: docId,
+        file_name: newDocument.file_name || file.name || baseName,
+        file_type: newDocument.file_type || file.type || '',
+        file_size: newDocument.file_size || file.size || ''
+      }
+    }
+
     const responsePayload = {
       id: discoveryResponseForm.response_id || `disc-resp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       served_date: discoveryResponseForm.served_date || discoveryDocServiceDate(selectedDoc),
       service_status: discoveryResponseForm.service_status,
       filing_type: discoveryResponseForm.filing_type,
+      discovery_type: discoveryType,
+      discovery_side: side,
       ...filePayload
     }
     setDiscoveryRequests((current) => {
       const found = current.some((request) => request.id === discoveryResponseForm.request_id)
       if (!found) {
         const responses = [responsePayload]
-        return [...current, { ...(baseRequest || {}), id: discoveryResponseForm.request_id, responses }]
+        return [...current, { ...(baseRequest || {}), id: discoveryResponseForm.request_id, side: side === 'ours' ? 'our' : 'their', discovery_type: discoveryType, matter_id: matterId, responses }]
       }
       return current.map((request) => {
         if (request.id !== discoveryResponseForm.request_id) return request
         const responses = Array.isArray(request.responses) ? request.responses : []
         return {
           ...request,
+          side: request.side || (side === 'ours' ? 'our' : 'their'),
+          discovery_type: request.discovery_type || discoveryType,
           responses: discoveryResponseForm.response_id
             ? responses.map((response) => response.id === discoveryResponseForm.response_id ? { ...response, ...responsePayload } : response)
             : [...responses, responsePayload]
@@ -11580,6 +11906,636 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     )
   }
 
+  function litigationTracksForMatter(matterId, { includeArchived = false } = {}) {
+    return (litigationTracks || [])
+      .map(ensureLitigationTrackShape)
+      .filter((track) => String(track.matter_id || '') === String(matterId || '') && (includeArchived || !track.is_archived))
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.name || '').localeCompare(String(b.name || '')))
+  }
+
+  function litigationTrackForId(trackId) {
+    return (litigationTracks || []).map(ensureLitigationTrackShape).find((track) => String(track.id) === String(trackId)) || null
+  }
+
+  function litigationTrackRows(track) {
+    if (!track || track.type === 'discovery') return []
+    return cloneLitigationTrackRows(track.rows).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+  }
+
+  function litigationTrackPartyOptions(matterId, { includeCourt = false, includeUnassigned = false } = {}) {
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || null
+    if (!matter) return includeUnassigned ? [{ id: '', label: 'Unassigned', name: '', source: 'unassigned' }] : []
+    const extra = matterExtraFor(matterId)
+    const rows = []
+    const add = (id, label, name = '', source = 'party') => {
+      const cleanId = String(id || '').trim()
+      const cleanLabel = String(label || '').trim() || 'Party'
+      const cleanName = String(name || '').trim()
+      if (!cleanId || rows.some((row) => row.id === cleanId)) return
+      rows.push({ id: cleanId, label: cleanLabel, name: cleanName, source })
+    }
+    const client = clients.find((item) => String(item.id) === String(matter.client_id)) || matter.clients || null
+    const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(' ').trim() || client?.name || client?.email || matter.matter_client_name || 'Client'
+    add(client?.id || `client-${matterId}`, matter.client_status || 'Client', clientName, 'client')
+    ;(extra.opposing_parties || []).forEach((party, index) => {
+      if (!party?.name && !party?.party_type && index > 0) return
+      add(party?.id || `opposing-${matterId}-${index}`, party?.party_type || `Opposing Party${index ? ` ${index + 1}` : ''}`, party?.name || '', 'opposing')
+    })
+    if (!rows.some((row) => row.source === 'opposing')) add(`opposing-${matterId}-0`, 'Opposing Party', '', 'opposing')
+    if (includeCourt) add(`court-${matterId}`, 'Court / Clerk', '', 'court')
+    if (includeUnassigned) rows.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
+    return rows
+  }
+
+  function litigationPartyDisplay(option = {}) {
+    return option.name ? `${option.label} — ${option.name}` : option.label || 'Party'
+  }
+
+  function litigationDocumentDateValue(doc = {}) {
+    return doc.date || doc.filing_date || doc.document_field_values?.filing_date || doc.doc_date || doc.upload_date || doc.created_at || ''
+  }
+
+  function litigationDocumentDateObject(doc = {}) {
+    const value = litigationDocumentDateValue(doc)
+    if (!value) return null
+    const date = new Date(String(value).length <= 10 ? `${value}T12:00:00` : value)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+
+  function litigationDocumentPartyId(doc = {}, matterId = '') {
+    if (doc.litigation_party_id !== undefined && doc.litigation_party_id !== null && String(doc.litigation_party_id) !== '') return String(doc.litigation_party_id)
+    const options = litigationTrackPartyOptions(matterId, { includeCourt: true })
+    const filedBy = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
+    if (filedBy && options.some((option) => option.id === filedBy)) return filedBy
+    const status = String(doc.notice_service_source || doc.status || '').toLowerCase()
+    if (/court|clerk|judge/.test(status)) return options.find((option) => option.source === 'court')?.id || ''
+    if (/ours|our exhibit|client|petitioner/.test(status)) return options.find((option) => option.source === 'client')?.id || ''
+    if (/their|oppos|respondent/.test(status)) return options.find((option) => option.source === 'opposing')?.id || ''
+    return ''
+  }
+
+  function inferDiscoveryTypeFromDocument(row = {}) {
+    const text = `${row.name || ''} ${row.file_name || ''} ${row.description || ''} ${row.notice_service_type || ''}`.toLowerCase()
+    if (/admission|\brfa\b/.test(text)) return 'rfa'
+    if (/interrogator|\broggs?\b/.test(text)) return 'roggs'
+    if (/production|\brfp\b/.test(text)) return 'rfp'
+    if (/disclosure|\brfd\b/.test(text)) return 'rfd'
+    return ''
+  }
+
+  function isLitigationTrackTagId(tagId = '') {
+    return String(tagId) === LITIGATION_TRACK_ROOT_TAG_ID || String(tagId).startsWith('tag-litigation-track-')
+  }
+
+  function withLitigationAssignment(row = {}, patch = {}) {
+    const next = { ...row, ...patch }
+    const matterId = String(next.matter_id || next.suggested_matter_id || '')
+    let trackId = String(next.litigation_track_id || '')
+    let track = litigationTrackForId(trackId)
+    if (track && matterId && String(track.matter_id) !== matterId) {
+      trackId = ''
+      track = null
+      next.litigation_track_id = ''
+    }
+    const cleanTags = (Array.isArray(next.tag_ids) ? next.tag_ids : Array.isArray(next.document_tag_ids) ? next.document_tag_ids : []).filter((tagId) => !isLitigationTrackTagId(tagId))
+    if (trackId && track) {
+      const nextTags = tagAndParentIds([...cleanTags, LITIGATION_TRACK_ROOT_TAG_ID, litigationTrackTagId(trackId)])
+      if (Array.isArray(next.document_tag_ids)) next.document_tag_ids = nextTags
+      next.tag_ids = nextTags
+      next.litigation_track_id = trackId
+      if (track.type === 'discovery') {
+        next.litigation_row_id = ''
+        next.discovery_type = next.discovery_type || inferDiscoveryTypeFromDocument(next)
+      } else {
+        const validRows = litigationTrackRows(track)
+        if (!validRows.some((rowItem) => String(rowItem.id) === String(next.litigation_row_id || ''))) next.litigation_row_id = validRows[0]?.id || 'pleadings'
+        next.discovery_side = ''
+        next.discovery_type = ''
+      }
+    } else {
+      next.litigation_track_id = ''
+      next.litigation_row_id = ''
+      next.discovery_side = ''
+      next.discovery_type = ''
+      if (Array.isArray(next.document_tag_ids)) next.document_tag_ids = cleanTags
+      next.tag_ids = cleanTags
+    }
+    return next
+  }
+
+  function updateSavedDocumentLitigation(docId, patch) {
+    setDocuments((current) => current.map((doc) => String(doc.id) === String(docId) ? withLitigationAssignment(doc, patch) : doc))
+  }
+
+  function updateBulkDocumentLitigation(rowId, patch) {
+    setBulkDocumentRows((current) => current.map((row) => String(row.id) === String(rowId) ? withLitigationAssignment(row, patch) : row))
+  }
+
+  function updateServiceEmailLitigation(rowId, patch) {
+    setServiceEmailRows((current) => current.map((row) => String(row.id) === String(rowId) ? withLitigationAssignment(row, patch) : row))
+  }
+
+  function renderLitigationAssignmentFields(row = {}, onPatch = () => {}, { compact = false, forcedMatterId = '', showCreate = true } = {}) {
+    const matterId = forcedMatterId || row.matter_id || row.suggested_matter_id || ''
+    const selectedTrack = litigationTrackForId(row.litigation_track_id)
+    const activeMatterTracks = litigationTracksForMatter(matterId)
+    const matterTracks = selectedTrack?.is_archived && String(selectedTrack.matter_id || '') === String(matterId) && !activeMatterTracks.some((track) => String(track.id) === String(selectedTrack.id))
+      ? [...activeMatterTracks, selectedTrack]
+      : activeMatterTracks
+    const partyOptions = litigationTrackPartyOptions(matterId, { includeCourt: true, includeUnassigned: true })
+    const wrapperStyle = { display: 'grid', gridTemplateColumns: compact ? 'repeat(auto-fit, minmax(145px, 1fr))' : 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8, alignItems: 'end' }
+    if (!matterId) return <div style={{ color: '#64748b', fontSize: 12 }}>Select a matter before assigning a Litigation Track.</div>
+    return (
+      <div style={wrapperStyle}>
+        <LabeledField label="Litigation Track">
+          <div style={{ display: 'flex', gap: 5 }}>
+            <select value={row.litigation_track_id || ''} onChange={(event) => onPatch({ litigation_track_id: event.target.value })} style={{ flex: 1, minWidth: 0 }}>
+              <option value="">Unassigned</option>
+              {matterTracks.map((track) => <option key={track.id} value={track.id}>{track.name}{track.type === 'discovery' ? ' (Discovery)' : ''}{track.is_archived ? ' (Archived)' : ''}</option>)}
+            </select>
+            {showCreate && <button type="button" onClick={() => openNewLitigationTrackModal(matterId)} title="Create a track">+</button>}
+          </div>
+        </LabeledField>
+        {selectedTrack?.type !== 'discovery' && selectedTrack && (
+          <LabeledField label="Section">
+            <select value={row.litigation_row_id || 'pleadings'} onChange={(event) => onPatch({ litigation_row_id: event.target.value })}>
+              {litigationTrackRows(selectedTrack).map((trackRow) => <option key={trackRow.id} value={trackRow.id}>{trackRow.name}</option>)}
+            </select>
+          </LabeledField>
+        )}
+        {selectedTrack?.type === 'discovery' && (
+          <>
+            <LabeledField label="Request group (responses stay with the request)">
+              <select value={row.discovery_side || ''} onChange={(event) => onPatch({ discovery_side: event.target.value })}>
+                <option value="">Choose whose requests...</option>
+                {DISCOVERY_TRACK_SIDES.map((side) => <option key={side.id} value={side.id}>{side.name}</option>)}
+              </select>
+            </LabeledField>
+            <LabeledField label="Discovery type">
+              <select value={row.discovery_type || ''} onChange={(event) => onPatch({ discovery_type: event.target.value })}>
+                <option value="">Choose type...</option>
+                {DISCOVERY_TRACK_TYPES.map((type) => <option key={type.id} value={type.id}>{type.short} — {type.name}</option>)}
+              </select>
+            </LabeledField>
+          </>
+        )}
+        {selectedTrack && (
+          <LabeledField label="Filed by / document owner">
+            <select value={row.litigation_party_id || litigationDocumentPartyId(row, matterId) || ''} onChange={(event) => onPatch({ litigation_party_id: event.target.value })}>
+              {partyOptions.map((party, index) => <option key={party.id || `unassigned-${index}`} value={party.id}>{litigationPartyDisplay(party)}</option>)}
+            </select>
+          </LabeledField>
+        )}
+      </div>
+    )
+  }
+
+  function openNewLitigationTrackModal(matterId = '') {
+    if (!matterId) return alert('Select a matter first.')
+    const count = litigationTracksForMatter(matterId, { includeArchived: true }).length
+    setLitigationTrackModal({ mode: 'new', id: '', matter_id: matterId, name: '', type: 'general', color: LITIGATION_TRACK_COLORS[count % LITIGATION_TRACK_COLORS.length], view_mode: 'sections' })
+  }
+
+  function openEditLitigationTrackModal(track) {
+    if (!track) return
+    setLitigationTrackModal({ mode: 'edit', ...ensureLitigationTrackShape(track) })
+  }
+
+  function saveLitigationTrackModal(event) {
+    event?.preventDefault?.()
+    if (!litigationTrackModal?.matter_id) return alert('Select the matter for this track.')
+    const name = String(litigationTrackModal.name || '').trim()
+    if (!name) return alert('Name the Litigation Track.')
+    if (litigationTrackModal.mode === 'edit' && litigationTrackModal.id) {
+      setLitigationTracks((current) => current.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track))
+    } else {
+      const matterTracks = litigationTracksForMatter(litigationTrackModal.matter_id, { includeArchived: true })
+      const id = crypto?.randomUUID ? `lit-track-${crypto.randomUUID()}` : `lit-track-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_equal' : litigationTrackModal.view_mode, sort_order: matterTracks.length + 1, rows: litigationTrackModal.type === 'discovery' ? [] : LITIGATION_TRACK_DEFAULT_ROWS, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
+      setLitigationTracks((current) => [...current, nextTrack])
+    }
+    setLitigationTrackModal(null)
+  }
+
+  function updateLitigationTrack(trackId, patch) {
+    setLitigationTracks((current) => current.map((track) => String(track.id) === String(trackId) ? ensureLitigationTrackShape({ ...track, ...patch, updated_at: new Date().toISOString() }) : track))
+  }
+
+  function moveLitigationTrack(trackId, direction) {
+    const track = litigationTrackForId(trackId)
+    if (!track) return
+    const rows = litigationTracksForMatter(track.matter_id)
+    const index = rows.findIndex((item) => String(item.id) === String(trackId))
+    const targetIndex = index + direction
+    if (index < 0 || targetIndex < 0 || targetIndex >= rows.length) return
+    const target = rows[targetIndex]
+    const currentOrder = Number(track.sort_order || index + 1)
+    const targetOrder = Number(target.sort_order || targetIndex + 1)
+    setLitigationTracks((current) => current.map((item) => String(item.id) === String(track.id) ? { ...item, sort_order: targetOrder } : String(item.id) === String(target.id) ? { ...item, sort_order: currentOrder } : item))
+  }
+
+  function duplicateLitigationTrack(track) {
+    if (!track) return
+    if (track.type === 'discovery') return alert('Each matter uses one Discovery track. Add discovery documents to the existing track instead of duplicating it.')
+    const matterTracks = litigationTracksForMatter(track.matter_id, { includeArchived: true })
+    const id = crypto?.randomUUID ? `lit-track-${crypto.randomUUID()}` : `lit-track-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const maxOrder = matterTracks.reduce((max, item) => Math.max(max, Number(item.sort_order || 0)), 0)
+    const copy = ensureLitigationTrackShape({
+      ...track,
+      id,
+      name: `${track.name || 'Litigation Track'} Copy`,
+      sort_order: maxOrder + 1,
+      rows: track.type === 'discovery' ? [] : cloneLitigationTrackRows(track.rows),
+      is_default: false,
+      is_archived: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, matterTracks.length)
+    setLitigationTracks((current) => [...current, copy])
+  }
+
+  function deleteEmptyLitigationTrack(track) {
+    if (!track) return
+    if (track.is_default) return alert('Default tracks should be archived instead of deleted so their history and system role remain intact.')
+    const documentCount = documents.filter((doc) => String(doc.litigation_track_id || '') === String(track.id)).length
+    const reliefCount = requestedReliefs.filter((relief) => String(relief.litigation_track_id || '') === String(track.id)).length
+    if (documentCount || reliefCount) return alert(`This track still has ${documentCount} document(s) and ${reliefCount} requested-relief set(s). Reassign them or archive the track.`)
+    if (!confirm(`Permanently delete the empty “${track.name}” track?`)) return
+    setLitigationTracks((current) => current.filter((item) => String(item.id) !== String(track.id)))
+    const tagId = litigationTrackTagId(track.id)
+    setTags((current) => current.filter((tag) => String(tag.id) !== String(tagId) && String(tag.litigation_track_id || '') !== String(track.id)))
+  }
+
+  function archiveLitigationTrack(track) {
+    if (!track) return
+    const documentCount = documents.filter((doc) => String(doc.litigation_track_id || '') === String(track.id)).length
+    if (!confirm(`Archive “${track.name}”?${documentCount ? ` ${documentCount} document(s) will remain associated and can be restored with the track.` : ''}`)) return
+    updateLitigationTrack(track.id, { is_archived: true })
+  }
+
+  function restoreLitigationTrack(track) {
+    updateLitigationTrack(track.id, { is_archived: false })
+  }
+
+  function addLitigationTrackRow(track) {
+    const name = String(window.prompt('Name the new section:', 'New Section') || '').trim()
+    if (!name) return
+    const rows = litigationTrackRows(track)
+    const id = `track-row-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    updateLitigationTrack(track.id, { rows: [...rows, { id, name, icon: '•', sort_order: rows.length + 1, system: false }] })
+  }
+
+  function moveLitigationTrackRow(track, rowId, direction) {
+    const rows = litigationTrackRows(track)
+    const index = rows.findIndex((row) => String(row.id) === String(rowId))
+    const targetIndex = index + direction
+    if (index < 0 || targetIndex < 0 || targetIndex >= rows.length) return
+    const reordered = rows.slice()
+    const [moved] = reordered.splice(index, 1)
+    reordered.splice(targetIndex, 0, moved)
+    updateLitigationTrack(track.id, { rows: reordered.map((row, rowIndex) => ({ ...row, sort_order: rowIndex + 1 })) })
+  }
+
+  function renameLitigationTrackRow(track, row) {
+    const name = String(window.prompt('Rename this section:', row.name || '') || '').trim()
+    if (!name) return
+    updateLitigationTrack(track.id, { rows: litigationTrackRows(track).map((item) => item.id === row.id ? { ...item, name } : item) })
+  }
+
+  function deleteLitigationTrackRow(track, row) {
+    const used = documents.some((doc) => String(doc.litigation_track_id || '') === String(track.id) && String(doc.litigation_row_id || 'pleadings') === String(row.id))
+    if (used) return alert('Move the documents out of this section before deleting it.')
+    if (!confirm(`Delete the “${row.name}” section?`)) return
+    updateLitigationTrack(track.id, { rows: litigationTrackRows(track).filter((item) => item.id !== row.id) })
+  }
+
+  function openLitigationDocumentModal({ matterId = '', trackId = '', rowId = '', partyId = '', discoverySide = '', discoveryType = '' } = {}) {
+    const track = litigationTrackForId(trackId)
+    const draft = withLitigationAssignment({ matter_id: matterId, name: '', date: dateToInputValue(new Date()), description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: trackId, litigation_row_id: rowId || (track?.type === 'discovery' ? '' : litigationTrackRows(track)[0]?.id || 'pleadings'), litigation_party_id: partyId, discovery_side: discoverySide, discovery_type: discoveryType }, {})
+    setLitigationDocumentDraft(draft)
+    setLitigationDocumentModal({ matterId, trackId })
+  }
+
+  async function saveLitigationDocument(event) {
+    event?.preventDefault?.()
+    const draft = withLitigationAssignment(litigationDocumentDraft, {})
+    if (!draft.matter_id) return alert('Select a matter.')
+    if (!String(draft.name || '').trim()) return alert('Document name is required.')
+    if (!draft.litigation_track_id) return alert('Select a Litigation Track.')
+    const track = litigationTrackForId(draft.litigation_track_id)
+    if (track?.type === 'discovery' && (!draft.discovery_side || !draft.discovery_type)) return alert('Choose whose discovery requests and the discovery type.')
+    const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const tempFilePayload = draft.file ? await readFileAsDataUrl(draft.file) : {}
+    const storedFilePayload = draft.file ? await uploadMioDocumentFile(draft.file, docId, draft.matter_id) : {}
+    const nextDoc = withEmptyDocumentAiReview(withLitigationAssignment({
+      ...draft,
+      id: docId,
+      name: String(draft.name || '').trim(),
+      date: draft.date || '',
+      upload_date: dateToInputValue(new Date()),
+      ...tempFilePayload,
+      ...storedFilePayload
+    }, {}))
+    const { file, ...safeDoc } = nextDoc
+    setDocuments((current) => [safeDoc, ...current])
+    setLitigationDocumentModal(null)
+    setLitigationDocumentDraft({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
+  }
+
+  function litigationDocumentsForTrack(trackId) {
+    return documents
+      .filter((doc) => String(doc.litigation_track_id || '') === String(trackId))
+      .sort((a, b) => {
+        const ad = litigationDocumentDateObject(a)?.getTime() || 0
+        const bd = litigationDocumentDateObject(b)?.getTime() || 0
+        return ad - bd || String(a.name || '').localeCompare(String(b.name || ''))
+      })
+  }
+
+  function renderLitigationDocumentItem(doc, { compact = false, forceDate = false } = {}) {
+    const dateValue = litigationDocumentDateValue(doc)
+    return (
+      <div key={doc.id} style={{ border: '1px solid #dbe3ea', borderRadius: 7, padding: compact ? '6px 7px' : '7px 8px', background: '#fff', boxShadow: '0 1px 2px rgba(15,23,42,.04)', minWidth: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'start' }}>
+          <button type="button" onClick={() => viewDocument(doc)} title="Open document" style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', color: '#1d4ed8', fontWeight: 750, lineHeight: 1.25, overflowWrap: 'anywhere' }}>{doc.name || doc.file_name || 'Document'}</button>
+          <button type="button" onClick={() => openDocumentEditWindow(doc)} title="Edit document and track" style={{ border: 0, background: 'transparent', padding: 0, color: '#64748b' }}>✎</button>
+        </div>
+        {(litigationShowDates || forceDate) && dateValue && <div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{litigationDocumentDateObject(doc)?.toLocaleDateString() || dateValue}</div>}
+      </div>
+    )
+  }
+
+  function litigationTrackPartiesForDisplay(track, docs) {
+    const base = litigationTrackPartyOptions(track.matter_id, { includeCourt: false })
+    const all = [...base]
+    const knownIds = new Set(all.map((party) => party.id))
+    const courtId = `court-${track.matter_id}`
+    if (docs.some((doc) => litigationDocumentPartyId(doc, track.matter_id) === courtId)) all.push({ id: courtId, label: 'Court / Clerk', name: '', source: 'court' })
+    if (docs.some((doc) => !litigationDocumentPartyId(doc, track.matter_id))) all.push({ id: '', label: 'Unassigned', name: '', source: 'unassigned' })
+    return all.filter((party, index, arr) => arr.findIndex((other) => other.id === party.id) === index)
+  }
+
+  function renderGeneralTrackSections(track, docs) {
+    const parties = litigationTrackPartiesForDisplay(track, docs)
+    const rows = litigationTrackRows(track)
+    const gridColumns = `minmax(150px, .82fr) repeat(${Math.max(1, parties.length)}, minmax(170px, 1fr))`
+    return (
+      <div style={{ borderTop: '1px solid #cbd5e1' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: gridColumns, background: '#f8fafc', borderBottom: '1px solid #cbd5e1' }}>
+          <div style={{ padding: 8, fontWeight: 800, fontSize: 12 }}>Section</div>
+          {parties.map((party, index) => <div key={party.id || `party-${index}`} style={{ padding: 8, fontWeight: 800, fontSize: 12, textAlign: 'center', borderLeft: '1px solid #e2e8f0' }}>{litigationPartyDisplay(party)}</div>)}
+        </div>
+        {rows.map((row) => (
+          <div key={row.id} style={{ display: 'grid', gridTemplateColumns: gridColumns, borderBottom: '1px solid #e2e8f0', minHeight: 82 }}>
+            <div style={{ padding: 8, background: '#fbfdff', display: 'flex', gap: 7, alignItems: 'start' }}>
+              <span>{row.icon || '•'}</span>
+              <div style={{ minWidth: 0, flex: 1, display: 'flex', justifyContent: 'space-between', gap: 5, alignItems: 'start' }}>
+                <strong style={{ fontSize: 12 }}>{row.name}</strong>
+                <details style={{ position: 'relative', flex: '0 0 auto' }}>
+                  <summary title="Section options" style={{ listStyle: 'none', cursor: 'pointer', border: 0, background: 'transparent', padding: '0 3px', color: '#64748b', fontWeight: 900 }}>⋯</summary>
+                  <div style={{ position: 'absolute', left: 0, top: '100%', zIndex: 18, width: 130, display: 'grid', gap: 4, padding: 6, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 7, boxShadow: '0 7px 18px rgba(15,23,42,.14)' }}>
+                    <button type="button" onClick={() => moveLitigationTrackRow(track, row.id, -1)}>Move up</button>
+                    <button type="button" onClick={() => moveLitigationTrackRow(track, row.id, 1)}>Move down</button>
+                    <button type="button" onClick={() => renameLitigationTrackRow(track, row)}>Rename</button>
+                    {!row.system && <button type="button" onClick={() => deleteLitigationTrackRow(track, row)} style={{ color: '#991b1b' }}>Delete</button>}
+                  </div>
+                </details>
+              </div>
+            </div>
+            {parties.map((party, index) => {
+              const cellDocs = docs.filter((doc) => String(doc.litigation_row_id || 'pleadings') === String(row.id) && String(litigationDocumentPartyId(doc, track.matter_id) || '') === String(party.id || ''))
+              return <div key={`${row.id}-${party.id || index}`} style={{ padding: 7, borderLeft: '1px solid #e2e8f0', display: 'grid', alignContent: 'start', gap: 6 }}>
+                {cellDocs.map((doc) => renderLitigationDocumentItem(doc, { compact: true }))}
+                <button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, rowId: row.id, partyId: party.id })} style={{ border: '1px dashed #cbd5e1', background: '#fff', borderRadius: 6, padding: 5, color: '#475569', fontSize: 11 }}>+ Document</button>
+              </div>
+            })}
+          </div>
+        ))}
+        <div style={{ padding: 7, background: '#f8fafc' }}><button type="button" onClick={() => addLitigationTrackRow(track)} style={{ width: '100%', borderStyle: 'dashed' }}>+ Add Section</button></div>
+      </div>
+    )
+  }
+
+  function renderTrackEqualFilings(track, docs, lanes, laneForDoc, openForLane) {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, lanes.length)}, minmax(175px, 1fr))`, borderTop: '1px solid #cbd5e1' }}>
+        {lanes.map((lane, index) => {
+          const laneDocs = docs.filter((doc) => laneForDoc(doc) === lane.id)
+          return <div key={lane.id || index} style={{ borderLeft: index ? '1px solid #e2e8f0' : 0, minWidth: 0 }}>
+            <div style={{ padding: 8, fontSize: 12, fontWeight: 800, textAlign: 'center', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>{lane.label}</div>
+            <div style={{ display: 'grid', gridAutoRows: 'minmax(60px, auto)', gap: 8, padding: 8, alignContent: 'start' }}>
+              {laneDocs.map((doc) => renderLitigationDocumentItem(doc, { forceDate: true }))}
+              <button type="button" onClick={() => openForLane(lane)} style={{ border: '1px dashed #cbd5e1', background: '#fff', borderRadius: 7, padding: 7, color: '#475569' }}>+ Document</button>
+            </div>
+          </div>
+        })}
+      </div>
+    )
+  }
+
+  function renderTrackTrueTimeline(track, docs, lanes, laneForDoc, openForLane) {
+    const dated = docs.map((doc) => ({ doc, date: litigationDocumentDateObject(doc) })).filter((item) => item.date)
+    const undated = docs.filter((doc) => !litigationDocumentDateObject(doc))
+    const minMs = dated.length ? Math.min(...dated.map((item) => item.date.getTime())) : Date.now()
+    const maxMs = dated.length ? Math.max(...dated.map((item) => item.date.getTime())) : minMs
+    const span = Math.max(1, maxMs - minMs)
+    const spanDays = Math.max(1, Math.ceil(span / 86400000))
+    const height = Math.max(360, Math.min(780, 260 + Math.min(spanDays, 180) * 2.5))
+    const ticks = Array.from({ length: 5 }, (_, index) => {
+      const ratio = index / 4
+      return { ratio, date: new Date(minMs + span * ratio) }
+    })
+    const stack = {}
+    const positioned = dated.map(({ doc, date }) => {
+      const laneId = laneForDoc(doc)
+      const ratio = maxMs === minMs ? 0.5 : (date.getTime() - minMs) / span
+      const key = `${laneId}|${date.toISOString().slice(0, 10)}`
+      const offset = stack[key] || 0
+      stack[key] = offset + 1
+      return { doc, laneId, top: 26 + ratio * (height - 92) + offset * 48 }
+    })
+    return (
+      <div style={{ borderTop: '1px solid #cbd5e1' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `82px repeat(${Math.max(1, lanes.length)}, minmax(180px, 1fr))`, background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+          <div style={{ padding: 8, fontSize: 12, fontWeight: 800 }}>Timeline</div>
+          {lanes.map((lane, index) => <div key={lane.id || index} style={{ padding: 8, fontSize: 12, fontWeight: 800, textAlign: 'center', borderLeft: '1px solid #e2e8f0' }}>{lane.label}</div>)}
+        </div>
+        <div style={{ position: 'relative', height, display: 'grid', gridTemplateColumns: `82px repeat(${Math.max(1, lanes.length)}, minmax(180px, 1fr))`, overflow: 'hidden' }}>
+          <div style={{ position: 'relative', borderRight: '1px solid #cbd5e1', background: '#fbfdff' }}>
+            <div style={{ position: 'absolute', left: 60, top: 20, bottom: 38, width: 2, background: '#94a3b8' }} />
+            {ticks.map((tick, index) => <div key={index} style={{ position: 'absolute', left: 0, right: 0, top: 22 + tick.ratio * (height - 92), fontSize: 10, color: '#475569' }}><span style={{ display: 'inline-block', width: 55, textAlign: 'right', paddingRight: 6 }}>{tick.date.toLocaleDateString()}</span><span style={{ display: 'inline-block', width: 10, borderTop: '1px solid #64748b', verticalAlign: 'middle' }} /></div>)}
+          </div>
+          {lanes.map((lane, laneIndex) => <div key={lane.id || laneIndex} style={{ position: 'relative', borderRight: laneIndex < lanes.length - 1 ? '1px solid #e2e8f0' : 0 }}><button type="button" onClick={() => openForLane(lane)} style={{ position: 'absolute', left: 8, right: 8, bottom: 8, border: '1px dashed #cbd5e1', background: '#fff', borderRadius: 6, padding: 5, color: '#475569', zIndex: 4 }}>+ Document</button></div>)}
+          {positioned.map(({ doc, laneId, top }) => {
+            const laneIndex = Math.max(0, lanes.findIndex((lane) => lane.id === laneId))
+            const laneCount = Math.max(1, lanes.length)
+            const ratio = laneIndex / laneCount
+            const left = `calc(${ratio * 100}% + ${82 * (1 - ratio) + 7}px)`
+            const width = `calc(${100 / laneCount}% - ${82 / laneCount + 14}px)`
+            return <div key={doc.id} style={{ position: 'absolute', left, width, top, zIndex: 3 }}>{renderLitigationDocumentItem(doc, { compact: true, forceDate: true })}</div>
+          })}
+          {!dated.length && <div style={{ position: 'absolute', left: 90, right: 10, top: 130, color: '#64748b', textAlign: 'center' }}>Add filing dates to display true spacing on the timeline.</div>}
+        </div>
+        {undated.length > 0 && <div style={{ padding: 8, borderTop: '1px solid #e2e8f0', background: '#fff7ed' }}><strong style={{ fontSize: 12 }}>No date:</strong><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 6 }}>{undated.map((doc) => <div key={doc.id} style={{ width: 230 }}>{renderLitigationDocumentItem(doc, { compact: true })}</div>)}</div></div>}
+      </div>
+    )
+  }
+
+  function renderGeneralTrackFilings(track, docs) {
+    const parties = litigationTrackPartiesForDisplay(track, docs)
+    const lanes = parties.map((party, index) => ({ id: String(party.id || ''), label: litigationPartyDisplay(party), party, index }))
+    const laneForDoc = (doc) => String(litigationDocumentPartyId(doc, track.matter_id) || '')
+    const openForLane = (lane) => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, partyId: lane.id })
+    return track.view_mode === 'filings_timeline'
+      ? renderTrackTrueTimeline(track, docs, lanes, laneForDoc, openForLane)
+      : renderTrackEqualFilings(track, docs, lanes, laneForDoc, openForLane)
+  }
+
+  function discoveryTrackLanes() {
+    return DISCOVERY_TRACK_SIDES.flatMap((side) => DISCOVERY_TRACK_TYPES.map((type) => ({ id: `${side.id}:${type.id}`, label: `${side.name} / ${type.short}`, side, type })))
+  }
+
+  function renderDiscoveryTrack(track, docs) {
+    const lanes = discoveryTrackLanes()
+    const laneForDoc = (doc) => `${doc.discovery_side || ''}:${doc.discovery_type || ''}`
+    const openForLane = (lane) => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, discoverySide: lane.side.id, discoveryType: lane.type.id })
+    if (track.view_mode === 'filings_timeline') return renderTrackTrueTimeline(track, docs, lanes, laneForDoc, openForLane)
+    return (
+      <div style={{ borderTop: '1px solid #cbd5e1', minWidth: 1080 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, minmax(130px, 1fr))' }}>
+          {DISCOVERY_TRACK_SIDES.map((side) => <div key={side.id} style={{ gridColumn: 'span 4', padding: 8, background: side.id === 'ours' ? '#eff6ff' : '#fff7ed', textAlign: 'center', fontWeight: 850, borderBottom: '1px solid #cbd5e1', borderRight: side.id === 'ours' ? '2px solid #94a3b8' : 0 }}>{side.name}</div>)}
+          {lanes.map((lane, index) => <div key={lane.id} style={{ padding: 7, background: '#f8fafc', textAlign: 'center', fontWeight: 800, fontSize: 11, borderBottom: '1px solid #e2e8f0', borderLeft: index ? '1px solid #e2e8f0' : 0 }}>{lane.type.short}<div style={{ fontWeight: 500, color: '#64748b', marginTop: 2 }}>{lane.type.name}</div></div>)}
+          {lanes.map((lane, index) => {
+            const laneDocs = docs.filter((doc) => laneForDoc(doc) === lane.id)
+            return <div key={`cell-${lane.id}`} style={{ minHeight: 180, padding: 7, borderLeft: index ? '1px solid #e2e8f0' : 0, display: 'grid', alignContent: 'start', gap: 7, background: index < 4 ? '#fbfdff' : '#fffdf9' }}>
+              {laneDocs.map((doc) => renderLitigationDocumentItem(doc, { compact: true, forceDate: true }))}
+              <button type="button" onClick={() => openForLane(lane)} style={{ border: '1px dashed #cbd5e1', background: '#fff', borderRadius: 6, padding: 5, fontSize: 11 }}>+ Document</button>
+            </div>
+          })}
+        </div>
+        {docs.some((doc) => !doc.discovery_side || !doc.discovery_type) && <div style={{ padding: 8, background: '#fef3c7', borderTop: '1px solid #f59e0b', fontSize: 12 }}>Some Discovery documents still need an “Our Requests / Their Requests” group or RFD/RFP/ROGGS/RFA type. Open the document to finish its assignment.</div>}
+      </div>
+    )
+  }
+
+  function renderLitigationTrackCard(track) {
+    const docs = litigationDocumentsForTrack(track.id)
+    const reliefCount = requestedReliefs.filter((relief) => String(relief.litigation_track_id || '') === String(track.id)).length
+    const effectiveViewMode = track.type === 'discovery' && track.view_mode === 'sections' ? 'filings_equal' : track.view_mode
+    const viewLabel = LITIGATION_TRACK_VIEW_OPTIONS.find((option) => option.value === effectiveViewMode)?.label || 'Sections'
+    const minWidth = track.type === 'discovery' ? 1120 : Math.max(580, 185 + litigationTrackPartiesForDisplay(track, docs).length * 190)
+    return (
+      <section key={track.id} style={{ minWidth, maxWidth: track.type === 'discovery' ? 1400 : 1150, flex: '0 0 auto', border: '1px solid #cbd5e1', borderRadius: 10, overflow: 'hidden', background: '#fff', boxShadow: '0 4px 14px rgba(15,23,42,.06)' }}>
+        <div style={{ padding: 10, background: track.color || '#e2e8f0', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'start' }}>
+          <div style={{ minWidth: 0 }}>
+            <strong style={{ fontSize: 15 }}>{track.name}</strong>
+            <div style={{ color: '#475569', fontSize: 11, marginTop: 2 }}>{track.type === 'discovery' ? 'Discovery track' : `${docs.length} filing${docs.length === 1 ? '' : 's'} · ${reliefCount} relief set${reliefCount === 1 ? '' : 's'}`} · {viewLabel}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <select value={effectiveViewMode || 'sections'} onChange={(event) => updateLitigationTrack(track.id, { view_mode: event.target.value })} style={{ width: 175, padding: '5px 7px', fontSize: 11 }}>
+              {LITIGATION_TRACK_VIEW_OPTIONS.filter((option) => track.type !== 'discovery' || option.value !== 'sections').map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <button type="button" onClick={() => moveLitigationTrack(track.id, -1)} title="Move left">←</button>
+            <button type="button" onClick={() => moveLitigationTrack(track.id, 1)} title="Move right">→</button>
+            <details style={{ position: 'relative' }}>
+              <summary style={{ listStyle: 'none', cursor: 'pointer', border: '1px solid #94a3b8', borderRadius: 6, background: '#fff', padding: '4px 8px', fontWeight: 900 }}>⋮</summary>
+              <div style={{ position: 'absolute', right: 0, top: '100%', zIndex: 20, width: 180, display: 'grid', gap: 5, padding: 8, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, boxShadow: '0 8px 20px rgba(15,23,42,.16)' }}>
+                <button type="button" onClick={() => openEditLitigationTrackModal(track)}>Edit track</button>
+                {track.type !== 'discovery' && <button type="button" onClick={() => duplicateLitigationTrack(track)}>Duplicate track</button>}
+                {track.type !== 'discovery' && <button type="button" onClick={() => addLitigationTrackRow(track)}>Add section</button>}
+                <button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id })}>Add document</button>
+                {track.type !== 'discovery' && <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: track.matter_id, relief_type: 'client_relief', litigation_track_id: track.id })}>Add requested relief</button>}
+                {track.type !== 'discovery' && reliefCount > 0 && <button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(track.matter_id)}>Open requested relief</button>}
+                <button type="button" onClick={() => archiveLitigationTrack(track)} style={{ color: '#991b1b' }}>Archive track</button>
+                {!track.is_default && <button type="button" onClick={() => deleteEmptyLitigationTrack(track)} style={{ color: '#991b1b' }}>Delete empty track</button>}
+              </div>
+            </details>
+          </div>
+        </div>
+        {track.type === 'discovery'
+          ? renderDiscoveryTrack(track, docs)
+          : track.view_mode === 'sections'
+            ? renderGeneralTrackSections(track, docs)
+            : renderGeneralTrackFilings(track, docs)}
+      </section>
+    )
+  }
+
+  function renderLitigationTracksPanel(matterId, { embedded = false } = {}) {
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || null
+    const activeTracks = litigationTracksForMatter(matterId)
+    const archivedTracks = litigationTracksForMatter(matterId, { includeArchived: true }).filter((track) => track.is_archived)
+    const unassignedCount = documents.filter((doc) => String(doc.matter_id || '') === String(matterId) && !doc.litigation_track_id).length
+    if (!matter) return <div style={{ padding: 18, color: '#64748b' }}>Select a matter to view its Litigation Tracks.</div>
+    return (
+      <div style={{ border: embedded ? '1px solid #d5dce3' : 0, borderRadius: 10, padding: embedded ? 12 : 0, background: '#fff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Litigation Tracks</h2>
+            <div style={{ color: '#64748b', fontSize: 13 }}>Documents are grouped by procedural track, party, and section. Discovery is grouped by whose requests and discovery type.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ display: 'inline-flex', gap: 5, alignItems: 'center', fontSize: 12 }}><input type="checkbox" checked={litigationShowDates} onChange={(event) => setLitigationShowDates(event.target.checked)} /> Show dates</label>
+            <button type="button" onClick={() => openNewLitigationTrackModal(matterId)} style={{ background: '#2563eb', color: '#fff', border: 0 }}>+ Add Track</button>
+            {archivedTracks.length > 0 && <button type="button" onClick={() => setShowArchivedLitigationTracks((show) => !show)}>{showArchivedLitigationTracks ? 'Hide archived' : `Archived (${archivedTracks.length})`}</button>}
+          </div>
+        </div>
+        {unassignedCount > 0 && <div style={{ marginBottom: 10, padding: '8px 10px', border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 7, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><span><strong>{unassignedCount}</strong> matter document{unassignedCount === 1 ? '' : 's'} are not assigned to a Litigation Track.</span><button type="button" onClick={() => { setSelectedTemplateMatterId(matterId); setClientDashboardTab('documents'); setPageState('tasks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matterId)}?tab=documents`) }}>Assign in Documents</button></div>}
+        <div style={{ display: 'flex', gap: 12, overflowX: 'auto', alignItems: 'flex-start', paddingBottom: 10 }}>
+          {activeTracks.map((track) => renderLitigationTrackCard(track))}
+          <button type="button" onClick={() => openNewLitigationTrackModal(matterId)} style={{ minWidth: 150, minHeight: 190, border: '2px dashed #cbd5e1', borderRadius: 10, background: '#f8fafc', color: '#475569', fontWeight: 800 }}>+ Add Track</button>
+        </div>
+        {showArchivedLitigationTracks && archivedTracks.length > 0 && <details open style={{ marginTop: 10 }}><summary><strong>Archived Litigation Tracks</strong></summary><div style={{ display: 'grid', gap: 7, marginTop: 8 }}>{archivedTracks.map((track) => <div key={track.id} style={{ border: '1px solid #d5dce3', borderRadius: 7, padding: 9, display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><span><strong>{track.name}</strong> · {litigationDocumentsForTrack(track.id).length} documents</span><button type="button" onClick={() => restoreLitigationTrack(track)}>Restore</button></div>)}</div></details>}
+      </div>
+    )
+  }
+
+  function renderLitigationTracksPage() {
+    return (
+      <div>
+        <h1 style={{ marginBottom: 6 }}>Litigation Tracks</h1>
+        <p style={{ color: '#64748b', marginTop: 0 }}>Select a matter, then organize its petitions, motions, notices, hearings, orders, associated documents, and discovery.</p>
+        <div style={{ maxWidth: 680, marginBottom: 14 }}>
+          <SmartMatterSelect value={litigationTrackMatterId || ''} onChange={(value) => { setLitigationTrackMatterId(value); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#litigation_tracks${value ? `?matter=${encodeURIComponent(value)}` : ''}`) }} placeholder="Type to select a matter" style={{ width: '100%' }} />
+        </div>
+        {renderLitigationTracksPanel(litigationTrackMatterId)}
+      </div>
+    )
+  }
+
+  function renderLitigationTrackModal() {
+    if (!litigationTrackModal) return null
+    return (
+      <Modal title={litigationTrackModal.mode === 'edit' ? 'Edit Litigation Track' : 'New Litigation Track'} onClose={() => setLitigationTrackModal(null)}>
+        <form onSubmit={saveLitigationTrackModal} style={{ display: 'grid', gap: 12 }}>
+          <LabeledField label="Matter"><div style={{ fontWeight: 700 }}>{matterName(litigationTrackModal.matter_id) || matterLabel(litigationTrackModal.matter_id)}</div></LabeledField>
+          <LabeledField label="Track name *"><input autoFocus value={litigationTrackModal.name || ''} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, name: event.target.value })} placeholder="Example: Temporary Relief" /></LabeledField>
+          <LabeledField label="Track type"><select value={litigationTrackModal.type || 'general'} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, type: event.target.value, view_mode: event.target.value === 'discovery' ? 'filings_equal' : litigationTrackModal.view_mode || 'sections' })}><option value="general">Petition / motion / other procedural track</option><option value="discovery" disabled={litigationTrackModal.mode !== 'edit' && litigationTracksForMatter(litigationTrackModal.matter_id, { includeArchived: true }).some((track) => track.type === 'discovery')}>Discovery track</option></select></LabeledField>
+          {litigationTrackModal.type !== 'discovery' && <LabeledField label="Default view"><select value={litigationTrackModal.view_mode || 'sections'} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, view_mode: event.target.value })}>{LITIGATION_TRACK_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></LabeledField>}
+          <LabeledField label="Header color"><input type="color" value={litigationTrackModal.color || '#dbeafe'} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, color: event.target.value })} /></LabeledField>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><button type="button" onClick={() => setLitigationTrackModal(null)}>Cancel</button><button type="submit" style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save Track</button></div>
+        </form>
+      </Modal>
+    )
+  }
+
+  function renderLitigationDocumentModal() {
+    if (!litigationDocumentModal) return null
+    return (
+      <Modal title="Add Document to Litigation Track" onClose={() => setLitigationDocumentModal(null)} wide>
+        <form onSubmit={saveLitigationDocument} style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px,1fr) 180px', gap: 10 }}><LabeledField label="Document name *"><input autoFocus value={litigationDocumentDraft.name || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, name: event.target.value })} /></LabeledField><LabeledField label="Filing / document date"><input type="date" value={litigationDocumentDraft.date || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, date: event.target.value })} /></LabeledField></div>
+          <LabeledField label="Description"><textarea value={litigationDocumentDraft.description || ''} onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, description: event.target.value })} /></LabeledField>
+          {renderLitigationAssignmentFields(litigationDocumentDraft, (patch) => setLitigationDocumentDraft((current) => withLitigationAssignment(current, patch)), { forcedMatterId: litigationDocumentDraft.matter_id, showCreate: false })}
+          <LabeledField label="File"><input type="file" onChange={(event) => setLitigationDocumentDraft({ ...litigationDocumentDraft, file: event.target.files?.[0] || null })} /></LabeledField>
+          <div><strong>Other tags</strong>{renderTagPicker(litigationDocumentDraft.tag_ids || [], (tagId) => { if (isLitigationTrackTagId(tagId)) return; setLitigationDocumentDraft((current) => withLitigationAssignment({ ...current, tag_ids: normalizeTagSelectionForToggle(current.tag_ids || [], tagId) }, {})) }, litigationDocumentDraft.matter_id)}</div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}><button type="button" onClick={() => setLitigationDocumentModal(null)}>Cancel</button><button type="submit" style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save Document</button></div>
+        </form>
+      </Modal>
+    )
+  }
+
+
   function selectedDocumentRows() {
     return documents.filter((doc) => selectedDocumentIds.includes(doc.id))
   }
@@ -12958,25 +13914,38 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       description: doc.description || '',
       status: doc.status || 'Neither',
       tag_ids: Array.isArray(doc.tag_ids) ? doc.tag_ids : [],
-      document_field_values: doc.document_field_values && typeof doc.document_field_values === 'object' ? doc.document_field_values : {}
+      document_field_values: doc.document_field_values && typeof doc.document_field_values === 'object' ? doc.document_field_values : {},
+      litigation_track_id: doc.litigation_track_id || '',
+      litigation_row_id: doc.litigation_row_id || 'pleadings',
+      litigation_party_id: doc.litigation_party_id || '',
+      discovery_side: doc.discovery_side || '',
+      discovery_type: doc.discovery_type || ''
     })
     setShowDocumentWindow(true)
   }
 
   function closeDocumentEditWindow() {
     setEditingDocumentId(null)
-    setDocumentEditForm({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {} })
+    setDocumentEditForm({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
     setShowDocumentWindow(false)
   }
 
   function saveDocumentEdit(e) {
     e.preventDefault()
-    setDocuments(documents.map((doc) => doc.id === editingDocumentId ? { ...doc, ...documentEditForm, tag_ids: tagAndParentIds(documentEditForm.tag_ids || []) } : doc))
+    const track = litigationTrackForId(documentEditForm.litigation_track_id)
+    if (track?.type === 'discovery' && (!documentEditForm.discovery_side || !documentEditForm.discovery_type)) {
+      alert('Choose whether this belongs to Our Requests or Their Requests and select RFD, RFP, ROGGS, or RFA.')
+      return
+    }
+    setDocuments((current) => current.map((doc) => doc.id === editingDocumentId
+      ? withLitigationAssignment({ ...doc, ...documentEditForm, tag_ids: tagAndParentIds(documentEditForm.tag_ids || []) }, {})
+      : doc))
     closeDocumentEditWindow()
   }
 
   function toggleDocumentEditTag(tagId) {
-    setDocumentEditForm((currentForm) => ({ ...currentForm, tag_ids: normalizeTagSelectionForToggle(currentForm.tag_ids || [], tagId) }))
+    if (isLitigationTrackTagId(tagId)) return
+    setDocumentEditForm((currentForm) => withLitigationAssignment({ ...currentForm, tag_ids: normalizeTagSelectionForToggle(currentForm.tag_ids || [], tagId) }, {}))
   }
 
   function toggleDocumentSelected(docId) {
@@ -12988,13 +13957,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function toggleDocumentFormTag(tagId) {
-    setDocumentForm((currentForm) => ({ ...currentForm, tag_ids: normalizeTagSelectionForToggle(currentForm.tag_ids || [], tagId) }))
+    if (isLitigationTrackTagId(tagId)) return
+    setDocumentForm((currentForm) => withLitigationAssignment({ ...currentForm, tag_ids: normalizeTagSelectionForToggle(currentForm.tag_ids || [], tagId) }, {}))
   }
 
   function toggleDocumentTag(docId, tagId) {
+    if (isLitigationTrackTagId(tagId)) return
     setDocuments((currentDocuments) => currentDocuments.map((doc) => {
       if (doc.id !== docId) return doc
-      return { ...doc, tag_ids: normalizeTagSelectionForToggle(doc.tag_ids || [], tagId) }
+      return withLitigationAssignment({ ...doc, tag_ids: normalizeTagSelectionForToggle(doc.tag_ids || [], tagId) }, {})
     }))
   }
 
@@ -13017,7 +13988,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function removeTagFromDocument(docId, tagId) {
-    setDocuments(documents.map((doc) => doc.id === docId ? { ...doc, tag_ids: (doc.tag_ids || []).filter((id) => id !== tagId) } : doc))
+    if (isLitigationTrackTagId(tagId)) return
+    setDocuments((current) => current.map((doc) => doc.id === docId ? withLitigationAssignment({ ...doc, tag_ids: (doc.tag_ids || []).filter((id) => id !== tagId) }, {}) : doc))
   }
 
   function deleteSelectedDocuments() {
@@ -13073,24 +14045,32 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const tempFilePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
     const storedFilePayload = documentForm.file ? await uploadMioDocumentFile(documentForm.file, docId, matterIdForDocument) : {}
-    setDocuments([
-      ...documents,
-      {
-        id: docId,
-        matter_id: matterIdForDocument,
-        name: documentForm.name.trim(),
-        date: documentForm.date || '',
-        description: documentForm.description || '',
-        status: documentForm.status || 'Neither',
-        tag_ids: tagAndParentIds(documentForm.tag_ids || []),
-        document_field_values: documentForm.document_field_values || {},
-        upload_date: dateToInputValue(new Date()),
-        ...emptyDocumentAiReview,
-        ...tempFilePayload,
-        ...storedFilePayload
-      }
-    ])
-    setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
+    const nextDocument = withLitigationAssignment({
+      id: docId,
+      matter_id: matterIdForDocument,
+      name: documentForm.name.trim(),
+      date: documentForm.date || '',
+      description: documentForm.description || '',
+      status: documentForm.status || 'Neither',
+      tag_ids: tagAndParentIds(documentForm.tag_ids || []),
+      document_field_values: documentForm.document_field_values || {},
+      litigation_track_id: documentForm.litigation_track_id || '',
+      litigation_row_id: documentForm.litigation_row_id || '',
+      litigation_party_id: documentForm.litigation_party_id || '',
+      discovery_side: documentForm.discovery_side || '',
+      discovery_type: documentForm.discovery_type || '',
+      upload_date: dateToInputValue(new Date()),
+      ...emptyDocumentAiReview,
+      ...tempFilePayload,
+      ...storedFilePayload
+    }, {})
+    const selectedTrack = litigationTrackForId(nextDocument.litigation_track_id)
+    if (selectedTrack?.type === 'discovery' && (!nextDocument.discovery_side || !nextDocument.discovery_type)) {
+      alert('Choose whether this belongs to Our Requests or Their Requests and select RFD, RFP, ROGGS, or RFA.')
+      return
+    }
+    setDocuments((current) => [...current, nextDocument])
+    setDocumentForm({ matter_id: forcedMatterId || '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: 'pleadings', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   }
 
 
@@ -13299,35 +14279,71 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   async function prepareBulkDocuments(fileList, forcedMatterId = '', options = {}) {
     const files = Array.from(fileList || [])
     const defaultTagIds = Array.isArray(options.defaultTagIds) ? options.defaultTagIds : []
-    const prepared = await Promise.all(files.map(async (file) => ({
-      id: `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      selected: true,
-      matter_id: forcedMatterId || documentForm.matter_id || '',
-      name: file.name.replace(/\.[^/.]+$/, ''),
-      date: '',
-      description: '',
-      status: 'Neither',
-      tag_ids: tagAndParentIds(defaultTagIds),
-      document_field_values: {},
-      ...emptyDocumentAiReview,
-      file,
-      file_name: file.name,
-      original_file_name: file.name,
-      file_type: file.type || '',
-      file_size: file.size || 0,
-      ...(await readFileAsDataUrl(file))
-    })))
-    setBulkDocumentRows([...bulkDocumentRows, ...prepared])
+    const defaultTrackType = String(options.defaultTrackType || '')
+    const defaultDiscoverySide = String(options.defaultDiscoverySide || '')
+    const defaultDiscoveryType = String(options.defaultDiscoveryType || '')
+    const prepared = await Promise.all(files.map(async (file) => {
+      const matterId = forcedMatterId || documentForm.matter_id || ''
+      const inferredDiscoveryType = defaultDiscoveryType || inferDiscoveryTypeFromDocument({ name: file.name, file_name: file.name })
+      const baseRow = {
+        id: `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        selected: true,
+        matter_id: matterId,
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        date: '',
+        description: '',
+        status: 'Neither',
+        tag_ids: tagAndParentIds(defaultTagIds),
+        document_field_values: {},
+        litigation_track_id: '',
+        litigation_row_id: 'pleadings',
+        litigation_party_id: '',
+        discovery_side: defaultDiscoverySide,
+        discovery_type: inferredDiscoveryType,
+        pending_litigation_track_type: defaultTrackType,
+        ...emptyDocumentAiReview,
+        file,
+        file_name: file.name,
+        original_file_name: file.name,
+        file_type: file.type || '',
+        file_size: file.size || 0,
+        ...(await readFileAsDataUrl(file))
+      }
+      if (defaultTrackType === 'discovery' && matterId) {
+        const track = discoveryTrackForMatterId(matterId)
+        return withLitigationAssignment(baseRow, {
+          litigation_track_id: track?.id || '',
+          discovery_side: defaultDiscoverySide,
+          discovery_type: inferredDiscoveryType,
+          litigation_party_id: discoveryTrackPartyId(matterId, defaultDiscoverySide, false)
+        })
+      }
+      return baseRow
+    }))
+    setBulkDocumentRows((current) => [...current, ...prepared])
   }
 
   function updateBulkDocumentRow(rowId, field, value) {
-    setBulkDocumentRows(bulkDocumentRows.map((row) => row.id === rowId ? { ...row, [field]: value } : row))
+    setBulkDocumentRows((current) => current.map((row) => {
+      if (row.id !== rowId) return row
+      if (field === 'matter_id') {
+        const discoveryTrack = row.pending_litigation_track_type === 'discovery' ? discoveryTrackForMatterId(value) : null
+        return withLitigationAssignment({ ...row, matter_id: value }, {
+          litigation_track_id: discoveryTrack?.id || '',
+          discovery_side: row.discovery_side || '',
+          discovery_type: row.discovery_type || inferDiscoveryTypeFromDocument(row),
+          litigation_party_id: discoveryTrack ? discoveryTrackPartyId(value, row.discovery_side, false) : ''
+        })
+      }
+      return { ...row, [field]: value }
+    }))
   }
 
   function toggleBulkDocumentRowTag(rowId, tagId) {
+    if (isLitigationTrackTagId(tagId)) return
     setBulkDocumentRows((currentRows) => currentRows.map((row) => {
       if (row.id !== rowId) return row
-      return { ...row, tag_ids: normalizeTagSelectionForToggle(row.tag_ids || [], tagId) }
+      return withLitigationAssignment({ ...row, tag_ids: normalizeTagSelectionForToggle(row.tag_ids || [], tagId) }, {})
     }))
   }
 
@@ -13358,11 +14374,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert('Check at least one bulk upload row first.')
       return
     }
-    setBulkDocumentRows((current) => current.map((row) => row.selected ? {
-      ...row,
-      matter_id: bulkSelectedMatterId,
-      tag_ids: (row.tag_ids || []).filter((tagId) => isTagAvailableForMatter(tagId, bulkSelectedMatterId))
-    } : row))
+    setBulkDocumentRows((current) => current.map((row) => {
+      if (!row.selected) return row
+      const discoveryTrack = row.pending_litigation_track_type === 'discovery' ? discoveryTrackForMatterId(bulkSelectedMatterId) : null
+      return withLitigationAssignment({
+        ...row,
+        matter_id: bulkSelectedMatterId,
+        tag_ids: (row.tag_ids || []).filter((tagId) => isTagAvailableForMatter(tagId, bulkSelectedMatterId))
+      }, {
+        litigation_track_id: discoveryTrack?.id || '',
+        discovery_side: row.discovery_side || '',
+        discovery_type: row.discovery_type || inferDiscoveryTypeFromDocument(row),
+        litigation_party_id: discoveryTrack ? discoveryTrackPartyId(bulkSelectedMatterId, row.discovery_side, false) : ''
+      })
+    }))
   }
 
   function removeCheckedBulkRows() {
@@ -13382,12 +14407,18 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const docId = `doc-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`
       const storedFilePayload = row.file ? await uploadMioDocumentFile(row.file, docId, row.matter_id) : {}
       const { file, ...rowWithoutFile } = row
-      savedRows.push(withEmptyDocumentAiReview({
+      const assignedRow = withLitigationAssignment({
         ...rowWithoutFile,
         ...storedFilePayload,
         id: docId,
         upload_date: dateToInputValue(new Date())
-      }))
+      }, {})
+      const selectedTrack = litigationTrackForId(assignedRow.litigation_track_id)
+      if (selectedTrack?.type === 'discovery' && (!assignedRow.discovery_side || !assignedRow.discovery_type)) {
+        alert(`Finish the Discovery Track assignment for “${assignedRow.name || assignedRow.file_name || 'document'}”.`)
+        return false
+      }
+      savedRows.push(withEmptyDocumentAiReview(assignedRow))
     }
     setDocuments((current) => [...current, ...savedRows])
     if (isClientPortalMember()) {
@@ -13411,7 +14442,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function updateDocumentCell(docId, field, value) {
-    setDocuments(documents.map((doc) => doc.id === docId ? { ...doc, [field]: value } : doc))
+    setDocuments((current) => current.map((doc) => {
+      if (doc.id !== docId) return doc
+      if (field === 'matter_id') return withLitigationAssignment({ ...doc, matter_id: value }, { litigation_track_id: '' })
+      return { ...doc, [field]: value }
+    }))
   }
 
   function documentSortValue(doc, key) {
@@ -14853,6 +15888,14 @@ async function handleDiscoveryNewRequestFiles(fileList) {
               <textarea placeholder="Description" value={documentForm.description} onChange={(e) => setDocumentForm({ ...documentForm, matter_id: matterId, description: e.target.value })} />
               <input type="file" onChange={(e) => setDocumentForm({ ...documentForm, matter_id: matterId, file: e.target.files?.[0] || null })} />
               <button type="submit">Add Document</button>
+              <div style={{ gridColumn: '1 / -1', border: '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: '#fff' }}>
+                <strong style={{ display: 'block', marginBottom: 6 }}>Litigation Track placement</strong>
+                {renderLitigationAssignmentFields(
+                  { ...documentForm, matter_id: matterId },
+                  (patch) => setDocumentForm((current) => withLitigationAssignment({ ...current, matter_id: matterId }, patch)),
+                  { forcedMatterId: matterId }
+                )}
+              </div>
               <div style={{ gridColumn: '1 / -1' }}>
                 <strong>Tags</strong>
                 {renderTagPicker(documentForm.tag_ids || [], (tagId) => {
@@ -14957,6 +16000,19 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                       </td>
                       <td><button type="button" onClick={() => viewDocument(row)}>View</button></td>
                     </tr>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <td></td>
+                      <td colSpan={7}>
+                        <div style={{ padding: '6px 0' }}>
+                          <strong style={{ display: 'block', marginBottom: 5, fontSize: 12 }}>Litigation Track placement</strong>
+                          {renderLitigationAssignmentFields(
+                            { ...row, matter_id: row.matter_id || matterId },
+                            (patch) => updateBulkDocumentLitigation(row.id, patch),
+                            { forcedMatterId: row.matter_id || matterId, compact: true }
+                          )}
+                        </div>
+                      </td>
+                    </tr>
                     {documentFieldsForTags(row.tag_ids || []).length > 0 && (
                       <tr>
                         <td></td>
@@ -14993,6 +16049,19 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button type="button" onClick={() => viewDocument(doc)}>View</button>
                     <button type="button" onClick={() => downloadDocument(doc)} style={{ marginLeft: 6 }}>Download</button>
+                  </td>
+                </tr>
+                <tr style={{ background: '#f8fafc' }}>
+                  <td></td>
+                  <td colSpan={matterId ? 6 : 7}>
+                    <div style={{ padding: '6px 0' }}>
+                      <strong style={{ display: 'block', marginBottom: 5, fontSize: 12 }}>Litigation Track placement</strong>
+                      {renderLitigationAssignmentFields(
+                        doc,
+                        (patch) => updateSavedDocumentLitigation(doc.id, patch),
+                        { forcedMatterId: doc.matter_id, compact: true }
+                      )}
+                    </div>
                   </td>
                 </tr>
                 {documentFieldsForTags(doc.tag_ids || []).length > 0 && (
@@ -25468,7 +26537,7 @@ useEffect(() => {
       return existingDocument
     }
     const dataUrl = blob ? await blobToDataUrl(blob) : ''
-    const documentRecord = {
+    const rawDocumentRecord = {
       id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       matter_id: row.suggested_matter_id,
       name: fileName.replace(/\.pdf$/i, ''),
@@ -25501,8 +26570,14 @@ useEffect(() => {
       source_service_email_id: row.id,
       source_outlook_message_id: row.outlook_message_id || '',
       source_mailbox_email: row.mailbox_email || serviceEmailMailboxAddress(row.source_id) || '',
+      litigation_track_id: row.litigation_track_id || '',
+      litigation_row_id: row.litigation_row_id || '',
+      litigation_party_id: row.litigation_party_id || row.filed_by_person_id || guessServiceReviewFiler(row) || '',
+      discovery_side: row.discovery_side || '',
+      discovery_type: row.discovery_type || '',
       ...emptyDocumentAiReview
     }
+    const documentRecord = withLitigationAssignment(rawDocumentRecord, {})
     const nextDocuments = [documentRecord, ...documents]
     setDocuments(nextDocuments)
     // Persist the small metadata-only document catalog before billing or moving
@@ -26853,7 +27928,7 @@ useEffect(() => {
     setServiceEmailRows((rows) => rows.map((row) => {
       if (row.id !== rowId) return row
       const matterPath = matterId ? matterEfileFolderForId(matterId) : ''
-      return { ...row, suggested_matter_id: matterId, suggested_save_path: matterPath || '' }
+      return withLitigationAssignment({ ...row, suggested_matter_id: matterId, suggested_save_path: matterPath || '' }, { litigation_track_id: '' })
     }))
   }
 
@@ -27663,6 +28738,14 @@ Ben`) : (row.draft_response || '') })
                 </LabeledField>
                 {normalizedGroup === 'notification_service' && <LabeledField label="Discovery response date"><input placeholder="mm/dd/yyyy" value={row.discovery_response_date || ''} onChange={(e) => updateServiceEmailRow(row.id, { discovery_response_date: e.target.value })} /></LabeledField>}
               </div>
+              <div style={{ marginBottom: 8, padding: 9, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+                <strong style={{ display: 'block', marginBottom: 6 }}>Litigation Track placement</strong>
+                {renderLitigationAssignmentFields(
+                  row,
+                  (patch) => updateServiceEmailLitigation(row.id, patch),
+                  { forcedMatterId: row.suggested_matter_id, compact: true }
+                )}
+              </div>
               {(row.has_attachments || (row.filing_links || []).length) && (
                 <div style={{ marginBottom: 8, padding: 8, border: '1px solid #dbeafe', borderRadius: 6, background: '#fff' }}>
                   <strong>Attachments / filing links:</strong>{' '}
@@ -28105,6 +29188,18 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
                   <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds }) ? tagFullName(serviceEmailDocumentLeafTagId({ ...active, document_tag_ids: tagIds })) : 'Choose tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New tag</button></div></LabeledField>
+                </div>
+                <div style={{ marginTop: 10, padding: 9, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+                  <strong style={{ display: 'block', marginBottom: 6 }}>Litigation Track placement</strong>
+                  {showSavedFilingReviewRows ? (
+                    <div style={{ color: '#475569' }}>
+                      {active.litigation_track_id ? `${litigationTrackForId(active.litigation_track_id)?.name || 'Assigned track'}${litigationTrackForId(active.litigation_track_id)?.type === 'discovery' ? ` · ${DISCOVERY_TRACK_SIDES.find((side) => side.id === active.discovery_side)?.name || 'Request group'} / ${DISCOVERY_TRACK_TYPES.find((type) => type.id === active.discovery_type)?.short || 'Discovery type'}` : ''}` : 'Unassigned'}
+                    </div>
+                  ) : renderLitigationAssignmentFields(
+                    active,
+                    (patch) => updateServiceEmailLitigation(active.id, patch),
+                    { forcedMatterId: active.suggested_matter_id, compact: true }
+                  )}
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
@@ -34987,18 +36082,21 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefBuilder(true)
   }
 
-  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief', template = null, setting_event_id = '' } = {}) {
-    const resolvedMatterId = matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
+  function beginRequestedReliefSetupFlow({ matter_id = '', relief_type = 'client_relief', template = null, relief = null, setting_event_id = '', litigation_track_id = '' } = {}) {
+    const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     if (!resolvedMatterId) {
       alert('Select a matter first, then add the relief.')
       return
     }
     const matterIssueSet = latestRequestedReliefIssueSetForMatter(resolvedMatterId)
+    const defaultTrack = litigationTracksForMatter(resolvedMatterId).find((track) => track.type !== 'discovery') || null
     setRequestedReliefSetupDraft({
+      relief_id: relief?.id || '',
       matter_id: resolvedMatterId,
-      relief_type,
-      name: template?.name || requestedReliefKindLabel(relief_type),
-      setting_event_id: setting_event_id || '',
+      relief_type: relief?.relief_type || relief_type,
+      name: relief?.name || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
+      litigation_track_id: relief?.litigation_track_id || litigation_track_id || defaultTrack?.id || '',
+      setting_event_id: relief?.setting_event_id || setting_event_id || '',
       issue_source: template ? 'template' : (matterIssueSet ? 'matter' : 'full'),
       template_id: template?.id || (template ? template.id : ''),
       use_full_tree: !template && !matterIssueSet
@@ -35011,6 +36109,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     if (!draft?.matter_id) return alert('Select the matter first.')
     const name = (draft.name || '').trim()
     if (!name) return alert('Name the relief before continuing.')
+    const existingRelief = draft.relief_id ? requestedReliefs.find((item) => String(item.id) === String(draft.relief_id)) || null : null
     let issueSet = null
     let template = null
     let useFullTree = false
@@ -35036,13 +36135,15 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       relief_type: draft.relief_type,
       issueSet,
       template,
+      relief: existingRelief ? { ...existingRelief, name, litigation_track_id: draft.litigation_track_id || '', setting_event_id: draft.setting_event_id || '' } : null,
       useFullTree,
       initialName: name,
+      litigationTrackId: draft.litigation_track_id || '',
       settingEventId: draft.setting_event_id || ''
     })
   }
 
-  function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null, useFullTree = false, initialName = '', settingEventId = '' } = {}) {
+  function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, relief = null, useFullTree = false, initialName = '', litigationTrackId = '', settingEventId = '' } = {}) {
     const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     const resolvedIssueSet = issueSet || latestRequestedReliefIssueSetForMatter(resolvedMatterId)
     if (!relief && !resolvedIssueSet && !template && !useFullTree) {
@@ -35071,6 +36172,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       relief_type: relief?.relief_type || relief_type,
       name: relief?.name || initialName || template?.name || requestedReliefKindLabel(relief?.relief_type || relief_type),
       source_template_id: template?.id || relief?.source_template_id || '',
+      litigation_track_id: relief?.litigation_track_id || litigationTrackId || '',
       setting_event_id: relief?.setting_event_id || settingEventId || '',
       issue_option_ids: issueIds,
       selected_option_ids: selectedLeafIds,
@@ -36026,7 +37128,7 @@ ${choices}`, '1'))
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             <LabeledField label="Matter">
-              <select value={draft.matter_id || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, matter_id: e.target.value, setting_event_id: '', issue_source: latestRequestedReliefIssueSetForMatter(e.target.value) ? 'matter' : draft.issue_source })}>
+              <select value={draft.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery'); setRequestedReliefSetupDraft({ ...draft, matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', setting_event_id: '', issue_source: latestRequestedReliefIssueSetForMatter(nextMatterId) ? 'matter' : draft.issue_source }) }}>
                 <option value="">Select matter</option>
                 {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
               </select>
@@ -36044,8 +37146,18 @@ ${choices}`, '1'))
             </LabeledField>
           </div>
 
+          <section style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 12, background: '#eff6ff' }}>
+            <h3 style={{ marginTop: 0 }}>1. Attach this relief to a Litigation Track</h3>
+            <p style={{ color: '#475569', marginTop: 0 }}>The relief belongs to the petition, motion, or other procedural track. A hearing or trial can move without changing this association.</p>
+            <select value={draft.litigation_track_id || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, litigation_track_id: e.target.value })} style={{ width: '100%' }}>
+              <option value="">General / not attached to a track</option>
+              {litigationTracksForMatter(draft.matter_id).filter((track) => track.type !== 'discovery').map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
+            </select>
+            <div style={{ marginTop: 8 }}><button type="button" onClick={() => openNewLitigationTrackModal(draft.matter_id)}>+ Create Litigation Track</button></div>
+          </section>
+
           <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
-            <h3 style={{ marginTop: 0 }}>Attach to a setting/event</h3>
+            <h3 style={{ marginTop: 0 }}>2. Optionally attach to a setting/event</h3>
             <p style={{ color: '#64748b', marginTop: 0 }}>Choose an existing setting connected to this matter, create a new setting, or leave this relief unattached.</p>
             <label style={{ display: 'block', padding: '8px 10px', border: !draft.setting_event_id ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 6, marginBottom: 8, background: !draft.setting_event_id ? '#eff6ff' : 'white' }}>
               <input type="radio" checked={!draft.setting_event_id} onChange={() => setRequestedReliefSetupDraft({ ...draft, setting_event_id: '' })} /> Not attached to a setting/event
@@ -36056,7 +37168,7 @@ ${choices}`, '1'))
               </label>
             )) : <p style={{ color: '#64748b' }}>No existing pending settings were found for this matter.</p>}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>New setting with known date</button>
+              <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', draft.matter_id)}>New setting with known date</button>
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
             </div>
@@ -36098,7 +37210,7 @@ ${choices}`, '1'))
         <style>{`.rr-tree-row:hover{background:#eaf4ff!important}`}</style>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12, alignItems: 'end' }}>
           <LabeledField label="Matter *">
-            <select value={requestedReliefBuilder.matter_id || ''} onChange={(e) => setRequestedReliefBuilder({ ...requestedReliefBuilder, matter_id: e.target.value })}>
+            <select value={requestedReliefBuilder.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery'); setRequestedReliefBuilder({ ...requestedReliefBuilder, matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', setting_event_id: '' }) }}>
               <option value="">Select matter</option>
               {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
             </select>
@@ -36117,13 +37229,24 @@ ${choices}`, '1'))
             </LabeledField>
           )}
           {!isIssueBuilder && (
+            <LabeledField label="Litigation Track">
+              <div style={{ display: 'flex', gap: 5 }}>
+                <select value={requestedReliefBuilder.litigation_track_id || ''} onChange={(e) => setRequestedReliefBuilder({ ...requestedReliefBuilder, litigation_track_id: e.target.value })} style={{ flex: 1 }}>
+                  <option value="">General / unassigned</option>
+                  {litigationTracksForMatter(requestedReliefBuilder.matter_id).filter((track) => track.type !== 'discovery').map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
+                </select>
+                <button type="button" onClick={() => openNewLitigationTrackModal(requestedReliefBuilder.matter_id)} title="Create Litigation Track">+</button>
+              </div>
+            </LabeledField>
+          )}
+          {!isIssueBuilder && (
             <LabeledField label="Attach to setting/event">
               <select value={requestedReliefBuilder.setting_event_id || ''} onChange={(e) => { const nextSettingId = e.target.value; setRequestedReliefBuilder({ ...requestedReliefBuilder, setting_event_id: nextSettingId, name: isRequestedReliefGenericName(requestedReliefBuilder.name, requestedReliefBuilder.relief_type) ? requestedReliefDefaultNameFromSetting(nextSettingId, requestedReliefBuilder.relief_type) : requestedReliefBuilder.name }) }}>
                 <option value="">Not attached to a setting</option>
                 {requestedReliefMatterSettings(requestedReliefBuilder.matter_id).map((event) => <option key={event.id} value={event.id}>{requestedReliefSettingLabel(event.id)}</option>)}
               </select>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
-                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>New setting with known date</button>
+                <button type="button" onClick={() => openRequestedReliefNewSettingWindow('known', requestedReliefBuilder.matter_id)}>New setting with known date</button>
                 <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
                 <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
               </div>
@@ -36150,13 +37273,13 @@ ${choices}`, '1'))
                   const value = e.target.value
                   if (value === 'matter') {
                     const issueSet = latestRequestedReliefIssueSetForMatter(requestedReliefBuilder.matter_id)
-                    if (issueSet) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, issueSet, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                    if (issueSet) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, issueSet, initialName: requestedReliefBuilder.name, litigationTrackId: requestedReliefBuilder.litigation_track_id, settingEventId: requestedReliefBuilder.setting_event_id })
                     else alert('No saved matter issues found for this matter yet.')
                   } else if (value === 'full') {
-                    beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, useFullTree: true, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                    beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, useFullTree: true, initialName: requestedReliefBuilder.name, litigationTrackId: requestedReliefBuilder.litigation_track_id, settingEventId: requestedReliefBuilder.setting_event_id })
                   } else if (value.startsWith('template:')) {
                     const template = requestedReliefTemplates.find((item) => item.id === value.slice(9))
-                    if (template) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, template, initialName: requestedReliefBuilder.name, settingEventId: requestedReliefBuilder.setting_event_id })
+                    if (template) beginRequestedReliefBuilder({ matter_id: requestedReliefBuilder.matter_id, relief_type: requestedReliefBuilder.relief_type, template, initialName: requestedReliefBuilder.name, litigationTrackId: requestedReliefBuilder.litigation_track_id, settingEventId: requestedReliefBuilder.setting_event_id })
                   }
                   e.target.value = ''
                 }}>
@@ -36639,7 +37762,7 @@ ${choices}`, '1'))
     return (
       <section key={relief.id} style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: 'white', marginBottom: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><h3 style={{ margin: 0 }}>{relief.name}</h3><div style={{ color: '#64748b' }}>{requestedReliefKindLabel(relief.relief_type)} • {matterName(relief.matter_id)} • {selectedOptions.length} selected final option(s) • {tableChoiceCount} table X(s)</div><button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(relief.matter_id)} style={{ marginTop: 6 }}>Open matter requested relief</button></div>
+          <div><h3 style={{ margin: 0 }}>{relief.name}</h3><div style={{ color: '#64748b' }}>{requestedReliefKindLabel(relief.relief_type)} • {matterName(relief.matter_id)} • Track: {litigationTrackForId(relief.litigation_track_id)?.name || 'General / unassigned'} • {selectedOptions.length} selected final option(s) • {tableChoiceCount} table X(s)</div><button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(relief.matter_id)} style={{ marginTop: 6 }}>Open matter requested relief</button></div>
           <div><button type="button" onClick={() => beginRequestedReliefBuilder({ relief })}>Edit</button>{' '}<button type="button" onClick={() => deleteRequestedRelief(relief.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button></div>
         </div>
         <ul style={{ columns: 2, marginTop: 10 }}>
@@ -37093,7 +38216,7 @@ ${choices}`, '1'))
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Select Relief Options</button>
                 <button type="button" style={panelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Edit Relief / Issues</button>
-                <button type="button" style={panelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedRelief.matter_id, relief_type: selectedRelief.relief_type })}>Attach / Change Setting</button>
+                <button type="button" style={panelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedRelief.matter_id, relief_type: selectedRelief.relief_type })}>Attach / Change Track or Setting</button>
                 <button type="button" style={panelButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedRelief })}>Save / Update Template</button>
                 <button type="button" style={{ ...panelButton, color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => deleteRequestedRelief(selectedRelief.id)}>Delete Relief</button>
               </div>
@@ -39007,7 +40130,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
                 </div>
                 <select value={selectedSavedRelief ? requestedReliefSavedReliefId : ''} onChange={(e) => setRequestedReliefSavedReliefId(e.target.value)} style={{ width: '100%', marginBottom: 10 }}>
                   <option value="">Select existing relief...</option>
-                  {reliefRowsForCards.map((relief) => <option key={relief.id} value={relief.id}>{`${relief.name || 'Unnamed relief'} - ${requestedReliefKindLabel(relief.relief_type)} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'not attached'}`}</option>)}
+                  {reliefRowsForCards.map((relief) => <option key={relief.id} value={relief.id}>{`${relief.name || 'Unnamed relief'} - ${litigationTrackForId(relief.litigation_track_id)?.name || 'General / unassigned'} - ${relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'no setting'}`}</option>)}
                 </select>
                 {!reliefRowsForCards.length && <div className="rr-v58-empty">No relief sets saved yet. Click New Relief or start from a template.</div>}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, maxHeight: 290, overflow: 'auto', paddingRight: 4 }}>
@@ -39022,7 +40145,8 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
                         </div>
                         <div><span className="rr-v58-pill">{requestedReliefKindLabel(relief.relief_type)}</span></div>
                         <div className="rr-v58-muted">Matter: {matterName(relief.matter_id)}</div>
-                        <div className="rr-v58-muted">Attached: {relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'No setting/event'}</div>
+                        <div className="rr-v58-muted">Litigation Track: {litigationTrackForId(relief.litigation_track_id)?.name || 'General / unassigned'}</div>
+                        <div className="rr-v58-muted">Setting / event: {relief.setting_event_id ? requestedReliefSettingLabel(relief.setting_event_id) : 'None linked'}</div>
                         <div className="rr-v58-muted">Options: {stats.selectedOptions} • Tables: {stats.selectedTables} • Table Xs: {stats.tableChoices}</div>
                         <div className="rr-v58-muted">Updated: {formatReliefDate(relief)}</div>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 'auto' }}>
@@ -39056,6 +40180,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
                       <div><div className="rr-v58-muted">Relief name</div><strong>{selectedSavedRelief.name || 'Unnamed relief'}</strong></div>
                       <div><div className="rr-v58-muted">Type</div><strong>{requestedReliefKindLabel(selectedSavedRelief.relief_type)}</strong></div>
                       <div><div className="rr-v58-muted">Matter</div><strong>{matterName(selectedSavedRelief.matter_id)}</strong></div>
+                      <div><div className="rr-v58-muted">Litigation Track</div><strong>{litigationTrackForId(selectedSavedRelief.litigation_track_id)?.name || 'General / unassigned'}</strong></div>
                       <div><div className="rr-v58-muted">Connected setting / event</div><strong>{selectedSavedRelief.setting_event_id ? requestedReliefSettingLabel(selectedSavedRelief.setting_event_id) : 'No setting/event'}</strong></div>
                       <div><div className="rr-v58-muted">Selected options</div><strong>{reliefCardStats(selectedSavedRelief).selectedOptions}</strong></div>
                       <div><div className="rr-v58-muted">Tables</div><strong>{reliefCardStats(selectedSavedRelief).selectedTables}</strong></div>
@@ -39065,7 +40190,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <button type="button" style={primaryButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Select Relief Options</button>
                     <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Edit Relief / Issues</button>
-                    <button type="button" style={pageButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedSavedRelief.matter_id, relief_type: reliefTypeDefault, relief: selectedSavedRelief })}>Attach / Change Setting</button>
+                    <button type="button" style={pageButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: selectedSavedRelief.matter_id, relief_type: reliefTypeDefault, relief: selectedSavedRelief })}>Attach / Change Track or Setting</button>
                     <button type="button" style={pageButton} onClick={() => beginRequestedReliefBuilder({ relief: selectedSavedRelief })}>Save or Update Template</button>
                     <button type="button" style={{ ...pageButton, color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => deleteRequestedRelief(selectedSavedRelief.id)}>Delete Relief</button>
                   </div>
@@ -43007,6 +44132,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         )}
 
 
+        {canOpenPage('litigation_tracks') && (
+          <a href="#litigation_tracks" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('litigation_tracks') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'litigation_tracks' ? 900 : undefined, color: page === 'litigation_tracks' ? '#1d4ed8' : undefined }}>
+            Litigation Tracks
+          </a>
+        )}
+
         {canOpenPage('requested_relief') && (
           <a href="#requested_relief" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('requested_relief') }} style={{ display: 'block', marginBottom: 10 }}>
             Requested Relief
@@ -43167,6 +44298,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {renderStepDetailModal()}
         {renderSettingWorkspaceModal()}
         {renderBillingModal()}
+        {renderLitigationTrackModal()}
+        {renderLitigationDocumentModal()}
 
         {page === 'screensaver' && canOpenPage('screensaver') && renderScreensaverPage()}
 
@@ -43181,6 +44314,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'banking' && canOpenPage('banking') && renderBankingPage()}
 
         {page === 'service_inbox' && canOpenPage('service_inbox') && renderServiceInboxPage()}
+
+        {page === 'litigation_tracks' && canOpenPage('litigation_tracks') && renderLitigationTracksPage()}
 
         {page === 'requested_relief' && canOpenPage('requested_relief') && renderRequestedReliefPage()}
 
@@ -44028,6 +45163,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('litigation_tracks')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'litigation_tracks' ? '#2f6584' : 'white', color: clientDashboardTab === 'litigation_tracks' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'litigation_tracks' ? 'bold' : 'normal' }}
+                  >
+                    Litigation Tracks
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('requested_relief')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'requested_relief' ? '#2f6584' : 'white', color: clientDashboardTab === 'requested_relief' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'requested_relief' ? 'bold' : 'normal' }}
                   >
@@ -44108,6 +45250,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {clientDashboardTab === 'drafting' && renderDraftingPage({ lockedMatterId: selectedTemplateMatter().id, embedded: true })}
 
                 {clientDashboardTab === 'filings' && renderMatterFilingsPanel(selectedTemplateMatter())}
+
+                {clientDashboardTab === 'litigation_tracks' && renderLitigationTracksPanel(selectedTemplateMatter().id, { embedded: true })}
 
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
@@ -45107,7 +46251,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <form onSubmit={saveDocumentEdit}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
                 <LabeledField label="Matter">
-                  <SmartMatterSelect value={documentEditForm.matter_id || ''} onChange={(value) => setDocumentEditForm({ ...documentEditForm, matter_id: value })} />
+                  <SmartMatterSelect value={documentEditForm.matter_id || ''} onChange={(value) => setDocumentEditForm((current) => withLitigationAssignment({ ...current, matter_id: value }, { litigation_track_id: '' }))} />
                 </LabeledField>
                 <LabeledField label="Document name">
                   <input value={documentEditForm.name || ''} onChange={(e) => setDocumentEditForm({ ...documentEditForm, name: e.target.value })} />
@@ -45123,6 +46267,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 <LabeledField label="Description">
                   <textarea value={documentEditForm.description || ''} onChange={(e) => setDocumentEditForm({ ...documentEditForm, description: e.target.value })} />
                 </LabeledField>
+              </div>
+              <div style={{ marginTop: 12, border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, background: '#f8fafc' }}>
+                <strong style={{ display: 'block', marginBottom: 6 }}>Litigation Track placement</strong>
+                {renderLitigationAssignmentFields(
+                  documentEditForm,
+                  (patch) => setDocumentEditForm((current) => withLitigationAssignment(current, patch)),
+                  { forcedMatterId: documentEditForm.matter_id }
+                )}
               </div>
               <div style={{ marginTop: 12 }}>
                 <strong>Tags</strong>
@@ -45784,6 +46936,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <LabeledField label="Matter">
                             <SmartMatterSelect value={row.matter_id} onChange={(value) => updateDiscoveryRequestRow(index, { matter_id: value })} />
                           </LabeledField>
+                          <LabeledField label="Discovery type *">
+                            <select value={row.discovery_type || ''} onChange={(e) => updateDiscoveryRequestRow(index, { discovery_type: e.target.value })}>
+                              <option value="">Choose RFD, RFP, ROGGS, or RFA...</option>
+                              {DISCOVERY_TRACK_TYPES.map((type) => <option key={type.id} value={type.id}>{type.short} — {type.name}</option>)}
+                            </select>
+                          </LabeledField>
                           <LabeledField label="Document name">
                             <input value={row.name || ''} onChange={(e) => updateDiscoveryRequestRow(index, { name: e.target.value })} placeholder="Request document name *" />
                           </LabeledField>
@@ -45899,7 +47057,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}>
                 <h2>Add Document</h2>
                 <form onSubmit={addDocument} style={{ display: 'grid', gap: 10 }}>
-                  <SmartMatterSelect value={documentForm.matter_id} onChange={(value) => setDocumentForm({ ...documentForm, matter_id: value })} placeholder="Matter for this document *" />
+                  <SmartMatterSelect value={documentForm.matter_id} onChange={(value) => setDocumentForm((current) => withLitigationAssignment({ ...current, matter_id: value }, { litigation_track_id: '' }))} placeholder="Matter for this document *" />
                   <input placeholder="Document name *" value={documentForm.name} onChange={(e) => setDocumentForm({ ...documentForm, name: e.target.value })} />
                   <input type="date" value={documentForm.date} onChange={(e) => setDocumentForm({ ...documentForm, date: e.target.value })} />
                   <textarea placeholder="Description" value={documentForm.description} onChange={(e) => setDocumentForm({ ...documentForm, description: e.target.value })} />
@@ -45909,6 +47067,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <option>Exhibit</option>
                     <option>Do Not Use</option>
                   </select>
+                  <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 9, background: '#f8fafc' }}>
+                    <strong style={{ display: 'block', marginBottom: 6 }}>Litigation Track placement</strong>
+                    {renderLitigationAssignmentFields(
+                      documentForm,
+                      (patch) => setDocumentForm((current) => withLitigationAssignment(current, patch)),
+                      { forcedMatterId: documentForm.matter_id }
+                    )}
+                  </div>
                   <div>
                     <strong>Tags</strong>
                     {renderTagPicker(documentForm.tag_ids || [], toggleDocumentFormTag, documentForm.matter_id)}
