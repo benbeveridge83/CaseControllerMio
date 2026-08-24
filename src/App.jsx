@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V244'
+const MIO_APP_VERSION = 'Mio V245'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -12,6 +12,33 @@ const BILLING_EXPENSE_CATEGORIES = ['Service fee', 'Mediation fee', 'Filing fee'
 const CLIO_BILLING_MIO_VERSION = 'Clio Billing v39'
 const DOCUMENT_BUCKET = 'case-documents'
 const CLIO_BILLING_FIXED_CASE_TYPES = ['DFPS', 'SAPCR/Modification', 'Divorce', 'Other']
+const TAG_LIBRARY_REVISION_KEY = 'caseControllerTagsRevision'
+const CASE_FILING_TAG_SCHEMA = 'case-filings-v245'
+const CASE_FILING_TAG_TREE_VERSION = 2
+const CASE_FILING_TAG_DEFINITIONS = [
+  { key: 'case_filings', id: 'tag-case-filings', name: 'Case Filings', aliases: ['case filing', 'case filings'], parentKey: '', color: '#334155', icon_name: 'pleading', sort_order: 1 },
+  { key: 'case_filings_efiled', id: 'tag-case-filings-efiled', name: 'eFiled', aliases: ['efile', 'e-file', 'efiled', 'e-filed'], parentKey: 'case_filings', migrateFromTopLevel: true, color: '#2563eb', icon_name: 'pleading', sort_order: 1 },
+  { key: 'case_filings_efiled_motions', id: 'tag-case-filings-efiled-motions', name: 'Motions', aliases: ['motion', 'motions'], parentKey: 'case_filings_efiled', legacyAncestorKeys: ['case_filings_efiled'], color: '#d97706', icon_name: 'motion', sort_order: 1 },
+  { key: 'case_filings_efiled_orders', id: 'tag-case-filings-efiled-orders', name: 'Orders', aliases: ['order', 'orders', 'proposed order', 'proposed orders'], parentKey: 'case_filings_efiled', legacyAncestorKeys: ['case_filings_efiled'], color: '#111827', icon_name: 'order', sort_order: 2 },
+  { key: 'case_filings_efiled_pleadings', id: 'tag-case-filings-efiled-pleadings', name: 'Pleadings / Petitions / Answers', aliases: ['pleading', 'pleadings', 'petition', 'petitions', 'answer', 'answers', 'pleading petition answer', 'pleadings petitions answers'], parentKey: 'case_filings_efiled', legacyAncestorKeys: ['case_filings_efiled'], color: '#2563eb', icon_name: 'pleading', sort_order: 3 },
+  { key: 'case_filings_efiled_notices', id: 'tag-case-filings-efiled-notices', name: 'Notices', aliases: ['notice', 'notices', 'setting', 'settings'], parentKey: 'case_filings_efiled', legacyAncestorKeys: ['case_filings_efiled'], color: '#16a34a', icon_name: 'notice', sort_order: 4 },
+  { key: 'case_filings_efiled_other', id: 'tag-case-filings-efiled-other', name: 'Other', aliases: ['other', 'other filing', 'other filings'], parentKey: 'case_filings_efiled', legacyAncestorKeys: ['case_filings_efiled'], color: '#64748b', icon_name: 'other', sort_order: 5 },
+  { key: 'case_filings_discovery', id: 'tag-case-filings-discovery', name: 'Discovery', aliases: ['discovery'], parentKey: 'case_filings', migrateFromTopLevel: true, legacyAncestorKeys: ['case_filings_efiled'], color: '#0891b2', icon_name: 'discovery', sort_order: 2 },
+  { key: 'case_filings_discovery_requests', id: 'tag-case-filings-discovery-requests', name: 'Requests', aliases: ['request', 'requests'], parentKey: 'case_filings_discovery', legacyAncestorKeys: ['case_filings_discovery'], color: '#0284c7', icon_name: 'discovery', sort_order: 1 },
+  { key: 'case_filings_discovery_requests_rfa', id: 'tag-case-filings-discovery-requests-rfa', name: 'RFA', aliases: ['rfa', 'request for admission', 'requests for admission'], parentKey: 'case_filings_discovery_requests', legacyAncestorKeys: ['case_filings_discovery_requests'], color: '#0284c7', icon_name: 'discovery', sort_order: 1 },
+  { key: 'case_filings_discovery_requests_rfd', id: 'tag-case-filings-discovery-requests-rfd', name: 'RFD', aliases: ['rfd', 'request for disclosure', 'requests for disclosure'], parentKey: 'case_filings_discovery_requests', legacyAncestorKeys: ['case_filings_discovery_requests'], color: '#0284c7', icon_name: 'discovery', sort_order: 2 },
+  { key: 'case_filings_discovery_requests_rfp', id: 'tag-case-filings-discovery-requests-rfp', name: 'RFP', aliases: ['rfp', 'request for production', 'requests for production'], parentKey: 'case_filings_discovery_requests', legacyAncestorKeys: ['case_filings_discovery_requests'], color: '#0284c7', icon_name: 'discovery', sort_order: 3 },
+  { key: 'case_filings_discovery_requests_roggs', id: 'tag-case-filings-discovery-requests-roggs', name: 'Roggs', aliases: ['rogg', 'roggs', 'interrogatory', 'interrogatories'], parentKey: 'case_filings_discovery_requests', legacyAncestorKeys: ['case_filings_discovery_requests'], color: '#0284c7', icon_name: 'discovery', sort_order: 4 },
+  { key: 'case_filings_discovery_responses', id: 'tag-case-filings-discovery-responses', name: 'Responses', aliases: ['response', 'responses'], parentKey: 'case_filings_discovery', legacyAncestorKeys: ['case_filings_discovery'], color: '#0f766e', icon_name: 'discovery', sort_order: 2 },
+  { key: 'case_filings_discovery_responses_rfa', id: 'tag-case-filings-discovery-responses-rfa', name: 'RFA', aliases: ['rfa', 'response to request for admission', 'responses to requests for admission'], parentKey: 'case_filings_discovery_responses', legacyAncestorKeys: ['case_filings_discovery_responses'], color: '#0f766e', icon_name: 'discovery', sort_order: 1 },
+  { key: 'case_filings_discovery_responses_rfd', id: 'tag-case-filings-discovery-responses-rfd', name: 'RFD', aliases: ['rfd', 'response to request for disclosure', 'responses to requests for disclosure'], parentKey: 'case_filings_discovery_responses', legacyAncestorKeys: ['case_filings_discovery_responses'], color: '#0f766e', icon_name: 'discovery', sort_order: 2 },
+  { key: 'case_filings_discovery_responses_rfp', id: 'tag-case-filings-discovery-responses-rfp', name: 'RFP', aliases: ['rfp', 'response to request for production', 'responses to requests for production'], parentKey: 'case_filings_discovery_responses', legacyAncestorKeys: ['case_filings_discovery_responses'], color: '#0f766e', icon_name: 'discovery', sort_order: 3 },
+  { key: 'case_filings_discovery_responses_roggs', id: 'tag-case-filings-discovery-responses-roggs', name: 'Roggs', aliases: ['rogg', 'roggs', 'answers to interrogatories', 'interrogatory answers'], parentKey: 'case_filings_discovery_responses', legacyAncestorKeys: ['case_filings_discovery_responses'], color: '#0f766e', icon_name: 'discovery', sort_order: 4 },
+  { key: 'case_filings_discovery_third_party', id: 'tag-case-filings-discovery-third-party', name: '3rd Party Discovery', aliases: ['3rd party discovery', 'third party discovery', 'third-party discovery'], parentKey: 'case_filings_discovery', migrateFromTopLevel: true, legacyAncestorKeys: ['case_filings_discovery', 'case_filings_efiled'], color: '#7c3aed', icon_name: 'discovery', sort_order: 3 },
+  { key: 'case_filings_discovery_third_party_subpoenas', id: 'tag-case-filings-discovery-third-party-subpoenas', name: 'Subpoenas', aliases: ['subpoena', 'subpoenas'], parentKey: 'case_filings_discovery_third_party', legacyAncestorKeys: ['case_filings_discovery_third_party'], color: '#7c3aed', icon_name: 'discovery', sort_order: 1 },
+  { key: 'case_filings_discovery_third_party_depositions', id: 'tag-case-filings-discovery-third-party-depositions', name: 'Depositions', aliases: ['deposition', 'depositions'], parentKey: 'case_filings_discovery_third_party', legacyAncestorKeys: ['case_filings_discovery_third_party'], color: '#7c3aed', icon_name: 'discovery', sort_order: 2 },
+  { key: 'case_filings_discovery_third_party_records', id: 'tag-case-filings-discovery-third-party-records', name: 'Records', aliases: ['record', 'records', 'business records'], parentKey: 'case_filings_discovery_third_party', legacyAncestorKeys: ['case_filings_discovery_third_party'], color: '#7c3aed', icon_name: 'discovery', sort_order: 3 }
+]
 
 const BULK_BILLING_COLUMNS = [
   { key: 'matter', label: 'Matter', width: 300 },
@@ -693,10 +720,10 @@ function workflowDuplicateKey(item = {}) {
   const words = String(item.name || '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/emails?/g, 'email')
-    .replace(/timelines?/g, 'timeline')
-    .replace(/tomorrows/g, 'tomorrow')
-    .replace(/folders?/g, 'folder')
+    .replace(/\bemails?\b/g, 'email')
+    .replace(/\btimelines?\b/g, 'timeline')
+    .replace(/\btomorrows\b/g, 'tomorrow')
+    .replace(/\bfolders?\b/g, 'folder')
     .split(/\s+/)
     .map((word) => word.trim())
     .filter((word) => word && !['check', 'open', 'for', 'the', 'a', 'an'].includes(word))
@@ -2433,6 +2460,7 @@ function serviceEmailStatusLabel(status) {
   return 'Needs review'
 }
 
+
 function App() {
   const [session, setSession] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
@@ -2809,6 +2837,15 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseControllerTags') || '[]') }
     catch { return [] }
   })
+  const tagsRef = useRef(tags)
+  const tagLibraryRevisionRef = useRef((() => {
+    try { return localStorage.getItem(TAG_LIBRARY_REVISION_KEY) || '' } catch { return '' }
+  })())
+  const tagLibrarySaveTimerRef = useRef(null)
+  const tagLibrarySaveGenerationRef = useRef(0)
+  const tagLibraryCloudSaveQueueRef = useRef(Promise.resolve())
+  const caseFilingTagTreeEnsuredRef = useRef('')
+  const [tagLibrarySaveStatus, setTagLibrarySaveStatus] = useState('saved')
   const [documentForm, setDocumentForm] = useState({ matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null, litigation_track_id: '', litigation_row_id: '', litigation_party_id: '', discovery_side: '', discovery_type: '' })
   const [editingDocumentId, setEditingDocumentId] = useState(null)
   const [showDocumentWindow, setShowDocumentWindow] = useState(false)
@@ -4049,31 +4086,65 @@ function App() {
       matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
-      caseControllerTags: { setter: (value) => {
-        const cloudTags = Array.isArray(value) ? value : []
+      caseControllerTags: { setter: (value, record = {}) => {
+        const cloudTags = normalizeTagLibrarySnapshot(value)
+        let browserRaw = null
         let browserTags = []
-        try { browserTags = JSON.parse(window.localStorage.getItem('caseControllerTags') || '[]') } catch {}
-        setTags((prevTags) => {
-          const priorTags = Array.isArray(prevTags) ? prevTags : []
-          const merged = []
-          const seen = new Set()
-          ;[...cloudTags, ...(Array.isArray(browserTags) ? browserTags : []), ...priorTags].forEach((tag) => {
-            const id = String(tag?.id || '').trim()
-            const name = String(tag?.name || '').trim()
-            const parent = String(tag?.parent_id || tag?.parentId || '')
-            const key = id || `name:${name.toLowerCase()}:${parent}`
-            if (!name && !id) return
-            if (seen.has(key)) return
-            seen.add(key)
-            merged.push(tag)
-          })
-          // Never let an empty cloud record wipe out a browser/session tag library.
-          const nextTags = merged.length ? merged : priorTags
-          if (nextTags.length && nextTags.length !== cloudTags.length) {
-            window.setTimeout(() => saveMioStateKey('caseControllerTags', JSON.stringify(nextTags)), 250)
+        let browserRevision = ''
+        try {
+          browserRaw = window.localStorage.getItem('caseControllerTags')
+          browserTags = normalizeTagLibrarySnapshot(JSON.parse(browserRaw || '[]'))
+          browserRevision = window.localStorage.getItem(TAG_LIBRARY_REVISION_KEY) || ''
+        } catch {}
+
+        const cloudRevision = String(record?.updated_at || '')
+        const currentTags = normalizeTagLibrarySnapshot(tagsRef.current)
+        const currentRevision = String(tagLibraryRevisionRef.current || '')
+        const browserRevisionMs = tagLibraryRevisionTime(browserRevision)
+        const cloudRevisionMs = tagLibraryRevisionTime(cloudRevision)
+        const currentRevisionMs = tagLibraryRevisionTime(currentRevision)
+        const hasLegacyBrowserTags = browserTags.length > 0 && !browserRevisionMs
+
+        let nextTags = cloudTags
+        let nextRevision = cloudRevision
+        let source = 'cloud'
+
+        if (browserRevisionMs && (browserRevisionMs >= cloudRevisionMs || !cloudTags.length)) {
+          nextTags = browserTags
+          nextRevision = browserRevision
+          source = 'browser'
+        } else if (hasLegacyBrowserTags) {
+          if (!cloudTags.length) {
+            nextTags = browserTags
+            nextRevision = new Date().toISOString()
+            source = 'legacy_browser'
+          } else {
+            // Pre-V245 browser storage had no revision marker and could be stale.
+            // Keep the cloud value for matching IDs, while rescuing browser-only
+            // tags and any tag carrying a demonstrably newer per-tag timestamp.
+            nextTags = mergeLegacyTagLibrarySnapshots(cloudTags, browserTags)
+            nextRevision = cloudRevision || new Date().toISOString()
+            source = tagLibrarySnapshotsEqual(nextTags, cloudTags) ? 'cloud' : 'legacy_merge'
           }
-          return nextTags
-        })
+        }
+        if (currentRevisionMs > Math.max(browserRevisionMs, cloudRevisionMs)) {
+          nextTags = currentTags
+          nextRevision = currentRevision
+          source = 'current'
+        }
+
+        tagsRef.current = nextTags
+        tagLibraryRevisionRef.current = nextRevision || new Date().toISOString()
+        setTags(nextTags)
+        try {
+          window.localStorage.setItem('caseControllerTags', JSON.stringify(nextTags))
+          window.localStorage.setItem(TAG_LIBRARY_REVISION_KEY, tagLibraryRevisionRef.current)
+        } catch {}
+
+        if (source !== 'cloud' && !tagLibrarySnapshotsEqual(nextTags, cloudTags)) {
+          window.setTimeout(() => scheduleTagLibraryCloudSave(nextTags, tagLibraryRevisionRef.current, { immediate: true }), 50)
+        }
+        return nextTags
       }, kind: 'array', fallback: [] },
       caseMioAiTagRuleDetails: { setter: setAiTagRuleDetails, kind: 'object', fallback: {} },
       caseMioDocumentEventRules: { setter: setDocumentEventRules, kind: 'array', fallback: [] },
@@ -4239,9 +4310,10 @@ function App() {
     if (!binding) return
     const parsed = parseMioStoredValue(record, binding.fallback)
     const value = coerceMioStoredValue(parsed, binding.kind, binding.fallback)
-    binding.setter(value)
+    const appliedValue = binding.setter(value, record)
+    const valueToStore = appliedValue === undefined ? value : appliedValue
     try {
-      window.localStorage.setItem(record.key, typeof value === 'string' ? value : JSON.stringify(value))
+      window.localStorage.setItem(record.key, typeof valueToStore === 'string' ? valueToStore : JSON.stringify(valueToStore))
     } catch {}
   }
 
@@ -4332,6 +4404,161 @@ function App() {
     clearTimeout(mioCloudStateSaveTimersRef.current[key])
     mioCloudStateSaveTimersRef.current[key] = window.setTimeout(() => saveMioStateKeyNow(key, rawValue), 350)
   }
+
+
+  function normalizeTagLibrarySnapshot(value = []) {
+    const rows = Array.isArray(value) ? value : []
+    const seen = new Set()
+    return rows.flatMap((tag, index) => {
+      if (!tag || typeof tag !== 'object') return []
+      const name = String(tag.name ?? '')
+      const parentId = String(tag.parent_id || tag.parentId || '')
+      const recoveredId = `tag-recovered-${index + 1}-${String(name || 'tag').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)}-${String(parentId || 'root').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30)}`
+      const id = String(tag.id || '').trim() || recoveredId
+      if (!id || seen.has(id)) return []
+      seen.add(id)
+      return [{
+        ...tag,
+        id,
+        // Do not trim on every keypress. Doing so removes the space the user
+        // just typed and makes multi-word tag names appear impossible to save.
+        name,
+        parent_id: parentId,
+        matter_ids: Array.isArray(tag.matter_ids) ? tag.matter_ids : [],
+        scope: tag.scope === 'specific' ? 'specific' : 'all'
+      }]
+    })
+  }
+
+  function tagLibraryRevisionTime(value = '') {
+    const parsed = Date.parse(String(value || ''))
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+
+  function tagLibrarySnapshotsEqual(left = [], right = []) {
+    return JSON.stringify(normalizeTagLibrarySnapshot(left)) === JSON.stringify(normalizeTagLibrarySnapshot(right))
+  }
+
+  function mergeLegacyTagLibrarySnapshots(primary = [], fallback = []) {
+    const merged = normalizeTagLibrarySnapshot(primary).map((tag) => ({ ...tag }))
+    const idIndex = new Map(merged.map((tag, index) => [String(tag.id || ''), index]))
+    const signatureIndex = new Map(merged.map((tag, index) => [`${String(tag.name || '').trim().toLowerCase()}|${String(tag.parent_id || '')}`, index]))
+
+    normalizeTagLibrarySnapshot(fallback).forEach((tag) => {
+      const id = String(tag.id || '')
+      const signature = `${String(tag.name || '').trim().toLowerCase()}|${String(tag.parent_id || '')}`
+      if (id && idIndex.has(id)) {
+        const index = idIndex.get(id)
+        const existing = merged[index]
+        const existingTime = Date.parse(String(existing?.updated_at || existing?.created_at || '')) || 0
+        const fallbackTime = Date.parse(String(tag?.updated_at || tag?.created_at || '')) || 0
+        if (fallbackTime > existingTime) {
+          merged[index] = { ...tag }
+          signatureIndex.set(signature, index)
+        }
+        return
+      }
+      if (signature && signatureIndex.has(signature)) return
+      const index = merged.length
+      merged.push({ ...tag })
+      if (id) idIndex.set(id, index)
+      if (signature) signatureIndex.set(signature, index)
+    })
+    return merged
+  }
+
+  function writeTagLibraryBrowserSnapshot(nextTags, revision) {
+    try {
+      window.localStorage.setItem('caseControllerTags', JSON.stringify(nextTags))
+      window.localStorage.setItem(TAG_LIBRARY_REVISION_KEY, revision)
+    } catch {}
+  }
+
+  function enqueueTagLibraryCloudSave(snapshot, generation) {
+    const runSave = async () => {
+      if (generation !== tagLibrarySaveGenerationRef.current) return false
+
+      let ready = !session?.user?.id || (mioCloudStateLoadedRef.current && !mioCloudStateSkipSaveRef.current)
+      for (let attempt = 0; !ready && attempt < 40; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250))
+        if (generation !== tagLibrarySaveGenerationRef.current) return false
+        ready = !session?.user?.id || (mioCloudStateLoadedRef.current && !mioCloudStateSkipSaveRef.current)
+      }
+
+      if (!ready) {
+        if (generation === tagLibrarySaveGenerationRef.current) setTagLibrarySaveStatus('local_only')
+        return false
+      }
+      if (generation !== tagLibrarySaveGenerationRef.current) return false
+
+      try {
+        const saved = await saveMioStateKeyNow('caseControllerTags', JSON.stringify(snapshot))
+        if (generation === tagLibrarySaveGenerationRef.current) {
+          setTagLibrarySaveStatus(session?.user?.id ? (saved ? 'saved' : 'local_only') : 'local_only')
+        }
+        return Boolean(saved)
+      } catch (error) {
+        console.warn('Tag library save failed:', error)
+        if (generation === tagLibrarySaveGenerationRef.current) setTagLibrarySaveStatus('local_only')
+        return false
+      }
+    }
+
+    // Serialize full-snapshot saves. A newer edit is always queued behind an
+    // older in-flight request, so an older response cannot become the final cloud copy.
+    tagLibraryCloudSaveQueueRef.current = tagLibraryCloudSaveQueueRef.current
+      .catch(() => false)
+      .then(runSave)
+    return tagLibraryCloudSaveQueueRef.current
+  }
+
+  function scheduleTagLibraryCloudSave(nextTags, revision, options = {}) {
+    const snapshot = normalizeTagLibrarySnapshot(nextTags)
+    const snapshotRevision = revision || new Date().toISOString()
+    const generation = tagLibrarySaveGenerationRef.current + 1
+    tagLibrarySaveGenerationRef.current = generation
+    clearTimeout(tagLibrarySaveTimerRef.current)
+    setTagLibrarySaveStatus('saving')
+    writeTagLibraryBrowserSnapshot(snapshot, snapshotRevision)
+
+    if (options.immediate) return enqueueTagLibraryCloudSave(snapshot, generation)
+
+    tagLibrarySaveTimerRef.current = window.setTimeout(() => {
+      enqueueTagLibraryCloudSave(snapshot, generation)
+    }, 300)
+    return Promise.resolve(true)
+  }
+
+  function commitTagLibrary(nextOrUpdater, options = {}) {
+    const current = normalizeTagLibrarySnapshot(tagsRef.current)
+    const proposed = typeof nextOrUpdater === 'function' ? nextOrUpdater(current) : nextOrUpdater
+    const next = normalizeTagLibrarySnapshot(proposed)
+    if (!options.force && tagLibrarySnapshotsEqual(current, next)) return current
+    const revision = options.revision || new Date().toISOString()
+    tagsRef.current = next
+    tagLibraryRevisionRef.current = revision
+    setTags(next)
+    writeTagLibraryBrowserSnapshot(next, revision)
+    if (options.persist !== false) scheduleTagLibraryCloudSave(next, revision, { immediate: Boolean(options.immediate) })
+    return next
+  }
+
+  async function saveTagLibraryNow() {
+    const snapshot = normalizeTagLibrarySnapshot(tagsRef.current)
+    const revision = tagLibraryRevisionRef.current || new Date().toISOString()
+    tagLibraryRevisionRef.current = revision
+    clearTimeout(tagLibrarySaveTimerRef.current)
+    writeTagLibraryBrowserSnapshot(snapshot, revision)
+    return scheduleTagLibraryCloudSave(snapshot, revision, { immediate: true })
+  }
+
+  useEffect(() => {
+    const flushTags = () => {
+      if (tagLibrarySaveStatus === 'saving') saveTagLibraryNow().catch(() => {})
+    }
+    window.addEventListener('pagehide', flushTags)
+    return () => window.removeEventListener('pagehide', flushTags)
+  }, [tagLibrarySaveStatus, session?.user?.id])
 
   useEffect(() => {
     if (page === 'lawpay' && canOpenPage('lawpay')) refreshLawPayFinancialData({ silent: true }).catch(() => {})
@@ -5470,9 +5697,105 @@ function App() {
   }, [draftingTemplates])
 
   useEffect(() => {
-    safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
-    try { saveMioStateKey('caseControllerTags', JSON.stringify(tags)) } catch {}
+    const normalized = normalizeTagLibrarySnapshot(tags)
+    tagsRef.current = normalized
+    // commitTagLibrary owns cloud persistence and revision ordering. This effect
+    // only mirrors the rendered snapshot locally; it must not queue an older
+    // cloud write after a cloud-load render.
+    const revision = String(tagLibraryRevisionRef.current || '')
+    try {
+      window.localStorage.setItem('caseControllerTags', JSON.stringify(normalized))
+      if (revision) window.localStorage.setItem(TAG_LIBRARY_REVISION_KEY, revision)
+    } catch {}
   }, [tags])
+
+  useEffect(() => {
+    let timer = null
+    const ensureWhenReady = () => {
+      const userId = String(session?.user?.id || '')
+      if (userId && caseFilingTagTreeEnsuredRef.current === userId) return
+      if (caseFilingTagTreeEnsuredRef.current && caseFilingTagTreeEnsuredRef.current !== userId) caseFilingTagTreeEnsuredRef.current = ''
+      // Do not create a new default tag tree while Mio is still determining whether
+      // an existing signed-in user's cloud tag library must be loaded. Otherwise a
+      // fresh browser snapshot could incorrectly look newer than the real cloud copy.
+      if (!authChecked) {
+        timer = window.setTimeout(ensureWhenReady, 250)
+        return
+      }
+      // The tag library is user-owned cloud state. Do not manufacture or revise it
+      // on the signed-out screen; wait until the authenticated copy has loaded.
+      if (!userId) {
+        caseFilingTagTreeEnsuredRef.current = ''
+        return
+      }
+      if (!userAccessChecked || !mioCloudStateLoadedRef.current) {
+        timer = window.setTimeout(ensureWhenReady, 250)
+        return
+      }
+      ensureCaseFilingTagTree(tagsRef.current, { persist: true, immediate: true })
+      caseFilingTagTreeEnsuredRef.current = userId
+    }
+    ensureWhenReady()
+    return () => { if (timer) window.clearTimeout(timer) }
+  }, [authChecked, session?.user?.id, userAccessChecked])
+
+
+  useEffect(() => {
+    if (!caseFilingTagTreeEnsuredRef.current || !documents.length) return
+    if (session?.user?.id && !mioCloudStateLoadedRef.current) return
+    const workingTags = normalizeTagLibrarySnapshot(tagsRef.current)
+    setDocuments((current) => {
+      let changed = false
+      const next = (current || []).map((doc) => {
+        const fromServiceInbox = Boolean(doc?.source_service_email_id || doc?.source_outlook_message_id) || /^saved from service inbox:/i.test(String(doc?.description || ''))
+        if (!fromServiceInbox) return doc
+        const existing = Array.isArray(doc.tag_ids) ? doc.tag_ids.filter((id) => workingTags.some((tag) => String(tag.id) === String(id))) : []
+        const existingCaseLeaf = existing
+          .filter((id) => caseFilingTagIsWithinRoot(workingTags, id))
+          .sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
+        const manualCasePath = String(doc.document_tag_schema || '').startsWith('manual') && existingCaseLeaf
+          ? tagIdsForTagIdFromWorkingTags(workingTags, existingCaseLeaf)
+          : []
+        const canonical = manualCasePath.length ? manualCasePath : caseFilingTagIdsForRow(doc, { workingTags, ensure: false })
+        if (!canonical.length) return doc
+        const nonCaseTags = existing.filter((id) => !caseFilingTagIsWithinRoot(workingTags, id))
+        const nextIds = Array.from(new Set([...nonCaseTags, ...canonical]))
+        const nextSchema = manualCasePath.length ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA
+        if (JSON.stringify(existing) === JSON.stringify(nextIds) && doc.document_tag_schema === nextSchema) return doc
+        changed = true
+        return { ...doc, tag_ids: nextIds, document_tag_schema: nextSchema, updated_at: new Date().toISOString() }
+      })
+      return changed ? next : current
+    })
+  }, [documents.length, tags, session?.user?.id, userAccessChecked])
+
+  useEffect(() => {
+    if (!caseFilingTagTreeEnsuredRef.current || !serviceEmailRows.length) return
+    if (session?.user?.id && !mioCloudStateLoadedRef.current) return
+    const workingTags = normalizeTagLibrarySnapshot(tagsRef.current)
+    if (!caseFilingTagByKey(workingTags, 'case_filings')) return
+    setServiceEmailRows((current) => {
+      let changed = false
+      const next = (current || []).map((row) => {
+        const category = serviceEmailRowCategory(row)
+        if (!['accepted', 'notification_service'].includes(category)) return row
+        const existing = Array.isArray(row.document_tag_ids) ? row.document_tag_ids.filter((id) => workingTags.some((tag) => String(tag.id) === String(id))) : []
+        const existingCaseLeaf = existing
+          .filter((id) => caseFilingTagIsWithinRoot(workingTags, id))
+          .sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
+        const manualCasePath = row.document_tag_manual && existingCaseLeaf
+          ? tagIdsForTagIdFromWorkingTags(workingTags, existingCaseLeaf)
+          : []
+        const nextIds = manualCasePath.length ? manualCasePath : caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+        if (!nextIds.length) return row
+        const nextSchema = manualCasePath.length ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA
+        if (JSON.stringify(existing) === JSON.stringify(nextIds) && row.document_tag_schema === nextSchema && Boolean(row.document_tag_manual) === Boolean(manualCasePath.length)) return row
+        changed = true
+        return { ...row, document_tag_ids: nextIds, document_tag_manual: Boolean(manualCasePath.length), document_tag_schema: nextSchema }
+      })
+      return changed ? next : current
+    })
+  }, [serviceEmailRows.length, tags, session?.user?.id, userAccessChecked])
 
   useEffect(() => {
     const normalized = (litigationTracks || []).map(ensureLitigationTrackShape)
@@ -5582,7 +5905,7 @@ function App() {
 
   useEffect(() => {
     if (!litigationTracks.length) return
-    setTags((current) => {
+    commitTagLibrary((current) => {
       const next = Array.isArray(current) ? current.map((tag) => ({ ...tag })) : []
       let changed = false
       let rootIndex = next.findIndex((tag) => String(tag.id) === LITIGATION_TRACK_ROOT_TAG_ID)
@@ -9901,10 +10224,22 @@ function App() {
 
   function discoveryDocumentPathInfo(doc) {
     const normalizedPaths = (doc.tag_ids || []).map((tagId) => normalizeDiscoveryTagPath(tagFullName(tagId))).filter(Boolean)
-    const ourRequest = normalizedPaths.some((path) => path === 'discovery ours requests' || path === 'discovery our requests' || path.startsWith('discovery ours requests ') || path.startsWith('discovery our requests '))
-    const theirRequest = normalizedPaths.some((path) => path === 'discovery opposing party requests' || path === 'discovery opposing partys requests' || path === 'discovery opposing party request' || path === 'discovery opposing partys request' || path.startsWith('discovery opposing party requests ') || path.startsWith('discovery opposing partys requests ') || path.startsWith('discovery opposing party request ') || path.startsWith('discovery opposing partys request '))
-    const response = normalizedPaths.some((path) => path === 'discovery ours responses' || path === 'discovery our responses' || path === 'discovery opposing party responses' || path === 'discovery opposing partys responses' || path.startsWith('discovery ours responses ') || path.startsWith('discovery our responses ') || path.startsWith('discovery opposing party responses ') || path.startsWith('discovery opposing partys responses '))
-    return { normalizedPaths, ourRequest, theirRequest, response }
+    const genericRequest = normalizedPaths.some((path) => path === 'discovery request' || path === 'discovery requests' || path.startsWith('discovery request ') || path.startsWith('discovery requests '))
+    const genericResponse = normalizedPaths.some((path) => path === 'discovery response' || path === 'discovery responses' || path.startsWith('discovery response ') || path.startsWith('discovery responses '))
+    const legacyOurRequest = normalizedPaths.some((path) => path === 'discovery ours requests' || path === 'discovery our requests' || path.startsWith('discovery ours requests ') || path.startsWith('discovery our requests '))
+    const legacyTheirRequest = normalizedPaths.some((path) => path === 'discovery opposing party request' || path === 'discovery opposing partys request' || path === 'discovery opposing party requests' || path === 'discovery opposing partys requests' || path.startsWith('discovery opposing party request ') || path.startsWith('discovery opposing party requests ') || path.startsWith('discovery opposing partys request ') || path.startsWith('discovery opposing partys requests '))
+    const legacyResponse = normalizedPaths.some((path) => path === 'discovery ours responses' || path === 'discovery our responses' || path === 'discovery opposing party responses' || path === 'discovery opposing partys responses' || path.startsWith('discovery ours responses ') || path.startsWith('discovery our responses ') || path.startsWith('discovery opposing party responses ') ||
+          path.startsWith('discovery opposing partys responses ') || path.startsWith('discovery opposing partys responses '))
+    const sideValue = String(doc.discovery_side || doc.document_field_values?.discovery_side || '').toLowerCase()
+    const statusText = `${doc.status || ''} ${doc.description || ''}`.toLowerCase()
+    const explicitOurSide = sideValue === 'ours' || sideValue === 'our' || /\bours\b|our request|sent to opposing|propound/.test(statusText)
+    const explicitTheirSide = sideValue === 'theirs' || sideValue === 'their' || /opposing|their request|received from|served on us/.test(statusText)
+    const inferredOurSide = explicitOurSide || (!explicitTheirSide && String(doc.status || '').toLowerCase() === 'ours')
+    const inferredTheirSide = explicitTheirSide || (!explicitOurSide && !inferredOurSide)
+    const ourRequest = legacyOurRequest || (genericRequest && inferredOurSide)
+    const theirRequest = legacyTheirRequest || (genericRequest && inferredTheirSide)
+    const response = legacyResponse || genericResponse
+    return { normalizedPaths, ourRequest, theirRequest, response, genericRequest, genericResponse }
   }
 
   function documentHasDiscoveryRequestSide(doc, side) {
@@ -10624,27 +10959,25 @@ function App() {
     return litigationTrackPartyOptions(matterId, { includeCourt: false }).find((party) => party.source === desiredSource)?.id || ''
   }
 
-  function discoveryRequestBaseTagLabel(side = discoverySideFilter) {
-    return side === 'our' ? 'Discovery > Ours > Requests' : "Discovery > Opposing Party's > Requests"
+  function discoveryRequestBaseTagLabel() {
+    return 'Case Filings > Discovery > Requests'
   }
 
-  function discoveryRequestTagIdsForSide(side = discoverySideFilter) {
-    const base = normalizeDiscoveryTagPath(discoveryRequestBaseTagLabel(side))
-    return tags
-      .filter((tag) => {
-        const full = normalizeDiscoveryTagPath(tagFullName(tag.id))
-        return full === base || full.startsWith(`${base} >`)
-      })
+  function discoveryRequestTagIdsForSide() {
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const requests = caseFilingTagByKey(workingTags, 'case_filings_discovery_requests')
+    if (!requests) return []
+    return workingTags
+      .filter((tag) => caseFilingTagIsDescendantOf(workingTags, tag.id, requests.id))
       .map((tag) => tag.id)
   }
 
-  function discoveryRequestBaseTagIdsForSide(side = discoverySideFilter) {
-    const base = normalizeDiscoveryTagPath(discoveryRequestBaseTagLabel(side))
-    const exactBase = tags.find((tag) => normalizeDiscoveryTagPath(tagFullName(tag.id)) === base)
-    if (exactBase) return tagAndParentIds([exactBase.id])
-    const requestTagIds = discoveryRequestTagIdsForSide(side)
-    return requestTagIds.length ? tagAndParentIds([requestTagIds[0]]) : []
+  function discoveryRequestBaseTagIdsForSide() {
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const requests = caseFilingTagByKey(workingTags, 'case_filings_discovery_requests')
+    return requests ? tagIdsForTagIdFromWorkingTags(workingTags, requests.id) : []
   }
+
 async function handleDiscoveryNewRequestFiles(fileList) {
     const files = Array.from(fileList || [])
     if (files.length === 0) return
@@ -11968,7 +12301,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       workingTags = ensured.workingTags
       ;(set.special_folders?.[key] || []).forEach((docId) => { tagsByDocument[String(docId)] = Array.from(new Set([...(tagsByDocument[String(docId)] || []), ...ensured.tagIds])) })
     })
-    setTags(workingTags)
+    commitTagLibrary(workingTags)
     setDocuments((current) => (current || []).map((doc) => tagsByDocument[String(doc.id)] ? { ...doc, tag_ids: tagAndParentIds(Array.from(new Set([...(doc.tag_ids || []), ...tagsByDocument[String(doc.id)]]))) } : doc))
     alert(`Tags were added to ${Object.keys(tagsByDocument).length} document${Object.keys(tagsByDocument).length === 1 ? '' : 's'}.`)
   }
@@ -13352,7 +13685,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!confirm(`Permanently delete the empty “${track.name}” track?`)) return
     setLitigationTracks((current) => current.filter((item) => String(item.id) !== String(track.id)))
     const tagId = litigationTrackTagId(track.id)
-    setTags((current) => current.filter((tag) => String(tag.id) !== String(tagId) && String(tag.litigation_track_id || '') !== String(track.id)))
+    commitTagLibrary((current) => current.filter((tag) => String(tag.id) !== String(tagId) && String(tag.litigation_track_id || '') !== String(track.id)))
   }
 
   function archiveLitigationTrack(track) {
@@ -14238,7 +14571,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function updateTagColor(tagId, color) {
-    setTags(tags.map((tag) => tag.id === tagId ? { ...tag, color: color || '#4c6783' } : tag))
+    commitTagLibrary((current) => current.map((tag) => tag.id === tagId ? { ...tag, color: color || '#4c6783', updated_at: new Date().toISOString() } : tag))
   }
 
   function childTags(parentId = '') {
@@ -15067,8 +15400,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
     const id = `tag-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    setTags([
-      ...tags,
+    const now = new Date().toISOString()
+    commitTagLibrary((current) => [
+      ...current,
       {
         id,
         name: tagForm.name.trim(),
@@ -15078,7 +15412,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         icon_data: tagForm.icon_data || '',
         icon_name: tagForm.icon_name || '',
         color: tagForm.color || '#4c6783',
-        sort_order: tags.length + 1
+        sort_order: current.length + 1,
+        created_at: now,
+        updated_at: now
       }
     ])
     setTagForm({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
@@ -15119,8 +15455,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
     const id = `tag-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    setTags([
-      ...tags,
+    const now = new Date().toISOString()
+    commitTagLibrary((current) => [
+      ...current,
       {
         id,
         name: childTagForm.name.trim(),
@@ -15130,7 +15467,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         icon_data: childTagForm.icon_data || '',
         icon_name: childTagForm.icon_name || '',
         color: childTagForm.color || '#4c6783',
-        sort_order: tags.length + 1
+        sort_order: current.length + 1,
+        created_at: now,
+        updated_at: now
       }
     ])
     setCollapsedTagLibraryIds((current) => current.filter((id) => id !== (childTagForm.parent_id || childTagWindow.parent_id || '')))
@@ -15163,44 +15502,63 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function deleteTag(tagId) {
+    const tagToDelete = tagsRef.current.find((tag) => String(tag.id) === String(tagId))
+    if (tagToDelete?.system_type === 'case_filing') {
+      alert('This is a required Case Filings system tag. You can rename or recolor it, but its required hierarchy cannot be deleted.')
+      return
+    }
     if (!confirm('Delete this tag? Child tags will become top-level tags. Documents will keep their other tags.')) return
-    setTags(tags.filter((tag) => tag.id !== tagId).map((tag) => tag.parent_id === tagId ? { ...tag, parent_id: '' } : tag))
-    setDocuments(documents.map((doc) => ({ ...doc, tag_ids: (doc.tag_ids || []).filter((id) => id !== tagId) })))
-    setElements(elements.map((element) => ({ ...element, tag_ids: (element.tag_ids || []).filter((id) => id !== tagId) })))
-    setMatterPeople(matterPeople.map((person) => ({ ...person, tag_ids: (person.tag_ids || []).filter((id) => id !== tagId) })))
+    const now = new Date().toISOString()
+    commitTagLibrary((current) => current.filter((tag) => tag.id !== tagId).map((tag) => tag.parent_id === tagId ? { ...tag, parent_id: '', updated_at: now } : tag), { immediate: true })
+    setDocuments((current) => current.map((doc) => ({ ...doc, tag_ids: (doc.tag_ids || []).filter((id) => id !== tagId) })))
+    setElements((current) => current.map((element) => ({ ...element, tag_ids: (element.tag_ids || []).filter((id) => id !== tagId) })))
+    setMatterPeople((current) => current.map((person) => ({ ...person, tag_ids: (person.tag_ids || []).filter((id) => id !== tagId) })))
   }
 
   function moveTag(tagId, nextParentId) {
     if (tagId === nextParentId) return
-    let current = tags.find((tag) => tag.id === nextParentId)
-    while (current) {
-      if (current.parent_id === tagId) return
-      current = tags.find((tag) => tag.id === current.parent_id)
+    const movingTag = tagsRef.current.find((tag) => String(tag.id) === String(tagId))
+    if (movingTag?.system_type === 'case_filing') {
+      alert('This required Case Filings system tag must stay in the Case Filings hierarchy. You can still rename it, recolor it, change its icon, or add custom child tags.')
+      return
     }
-    const siblingOrders = childTags(nextParentId || '')
-    setTags(tags.map((tag) => tag.id === tagId ? { ...tag, parent_id: nextParentId || '', sort_order: siblingOrders.length + 1 } : tag))
+    commitTagLibrary((currentTags) => {
+      let current = currentTags.find((tag) => tag.id === nextParentId)
+      while (current) {
+        if (current.parent_id === tagId) return currentTags
+        current = currentTags.find((tag) => tag.id === current.parent_id)
+      }
+      const siblingCount = currentTags.filter((tag) => String(tag.parent_id || '') === String(nextParentId || '') && tag.id !== tagId).length
+      const now = new Date().toISOString()
+      return currentTags.map((tag) => tag.id === tagId ? { ...tag, parent_id: nextParentId || '', sort_order: siblingCount + 1, updated_at: now } : tag)
+    })
   }
 
   function updateTag(tagId, patch = {}) {
-    setTags((current) => current.map((tag) => tag.id === tagId ? { ...tag, ...patch } : tag))
+    commitTagLibrary((current) => current.map((tag) => tag.id === tagId ? { ...tag, ...patch, updated_at: new Date().toISOString() } : tag))
   }
 
   function reorderTag(tagId, direction) {
-    const tag = tags.find((item) => item.id === tagId)
-    if (!tag) return
-    const siblings = childTags(tag.parent_id || '')
-    const index = siblings.findIndex((item) => item.id === tagId)
-    const swapWith = index + direction
-    if (index < 0 || swapWith < 0 || swapWith >= siblings.length) return
-    const first = siblings[index]
-    const second = siblings[swapWith]
-    const firstOrder = first.sort_order ?? index
-    const secondOrder = second.sort_order ?? swapWith
-    setTags(tags.map((item) => {
-      if (item.id === first.id) return { ...item, sort_order: secondOrder }
-      if (item.id === second.id) return { ...item, sort_order: firstOrder }
-      return item
-    }))
+    commitTagLibrary((currentTags) => {
+      const tag = currentTags.find((item) => item.id === tagId)
+      if (!tag) return currentTags
+      const siblings = currentTags
+        .filter((item) => String(item.parent_id || '') === String(tag.parent_id || ''))
+        .sort((a, b) => (a.sort_order ?? 999999) - (b.sort_order ?? 999999) || String(a.name || '').localeCompare(String(b.name || '')))
+      const index = siblings.findIndex((item) => item.id === tagId)
+      const swapWith = index + direction
+      if (index < 0 || swapWith < 0 || swapWith >= siblings.length) return currentTags
+      const first = siblings[index]
+      const second = siblings[swapWith]
+      const firstOrder = first.sort_order ?? index
+      const secondOrder = second.sort_order ?? swapWith
+      const now = new Date().toISOString()
+      return currentTags.map((item) => {
+        if (item.id === first.id) return { ...item, sort_order: secondOrder, updated_at: now }
+        if (item.id === second.id) return { ...item, sort_order: firstOrder, updated_at: now }
+        return item
+      })
+    })
   }
 
   function indentTag(tagId) {
@@ -17153,14 +17511,15 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
 
-  function tagAndParentIds(tagIds = []) {
+  function tagAndParentIds(tagIds = [], sourceTags = tags) {
+    const library = Array.isArray(sourceTags) ? sourceTags : tags
     const ids = new Set()
     ;(tagIds || []).forEach((tagId) => {
-      let current = tags.find((tag) => tag.id === tagId)
+      let current = library.find((tag) => tag.id === tagId)
       let guard = 0
       while (current && guard < 25) {
         ids.add(current.id)
-        current = current.parent_id ? tags.find((tag) => tag.id === current.parent_id) : null
+        current = current.parent_id ? library.find((tag) => tag.id === current.parent_id) : null
         guard += 1
       }
     })
@@ -25888,31 +26247,53 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function normalizeDiscoveryTagPath(value = '') {
-    return String(value || '')
+    const normalized = String(value || '')
       .toLowerCase()
       .replace(/&/g, ' and ')
       .replace(/[\'’]s\b/g, 's')
       .replace(/[^a-z0-9]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
+    // Canonical paths begin Case Filings > Discovery, while older Mio versions
+    // sometimes placed Discovery under eFiled/Ours. Compare from the Discovery
+    // segment so both generations remain visible in tracking and timelines.
+    const discoveryIndex = normalized.search(/\bdiscovery\b/)
+    if (discoveryIndex >= 0) return normalized.slice(discoveryIndex)
+    return normalized.replace(/^case filings\s+/, '')
   }
 
   function documentHasTimelineDiscoveryTag(doc, kind) {
     const normalizedPaths = (doc.tag_ids || []).map((tagId) => normalizeDiscoveryTagPath(tagFullName(tagId)))
     return normalizedPaths.some((path) => {
       if (kind === 'request') {
-        return path === 'discovery our requests' ||
+        return path === 'discovery request' ||
+          path === 'discovery requests' ||
+          path.startsWith('discovery request ') ||
+          path.startsWith('discovery requests ') ||
+          path === 'discovery our requests' ||
           path === 'discovery ours requests' ||
+          path.startsWith('discovery our requests ') ||
+          path.startsWith('discovery ours requests ') ||
           path === 'discovery opposing party request' ||
           path === 'discovery opposing partys request' ||
           path === 'discovery opposing party requests' ||
-          path === 'discovery opposing partys requests'
+          path === 'discovery opposing partys requests' ||
+          path.startsWith('discovery opposing party request ') ||
+          path.startsWith('discovery opposing party requests ') ||
+          path.startsWith('discovery opposing partys request ') ||
+          path.startsWith('discovery opposing partys requests ')
       }
       if (kind === 'response') {
-        return path === 'discovery our responses' ||
+        return path === 'discovery response' ||
+          path === 'discovery responses' ||
+          path.startsWith('discovery response ') ||
+          path.startsWith('discovery responses ') ||
+          path === 'discovery our responses' ||
           path === 'discovery ours responses' ||
           path === 'discovery opposing party responses' ||
-          path === 'discovery opposing partys responses'
+          path === 'discovery opposing partys responses' ||
+          path.startsWith('discovery our responses ') ||
+          path.startsWith('discovery opposing party responses ')
       }
       return false
     })
@@ -28018,8 +28399,10 @@ useEffect(() => {
   }
 
   function efiledTagId() {
-    const exact = tags.find((tag) => String(tag?.name || '').trim().toLowerCase() === 'efiled' && !tag?.parent_id)
-      || tags.find((tag) => String(tagFullName(tag.id) || tag?.name || '').trim().toLowerCase() === 'efiled')
+    const system = caseFilingTagByKey(tagsRef.current, 'case_filings_efiled')
+    if (system) return system.id
+    const exact = tags.find((tag) => String(tag?.name || '').trim().toLowerCase() === 'efiled')
+      || tags.find((tag) => String(tagFullName(tag.id) || tag?.name || '').trim().toLowerCase().endsWith('> efiled'))
     return exact?.id || ''
   }
 
@@ -28700,7 +29083,7 @@ useEffect(() => {
       })
     }
 
-    const anchorRegex = /<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+    const anchorRegex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
     let match
     while ((match = anchorRegex.exec(text))) addLink(match[1], match[2])
 
@@ -28830,10 +29213,220 @@ useEffect(() => {
     return row.extracted_pdf_name || primaryServicePdfAttachment(row)?.name || safeServiceDocumentNameFromLink(primaryServiceFilingLink(row)) || row.suggested_document_name || ''
   }
 
+  function caseFilingDefinitionByKey(key = '') {
+    return CASE_FILING_TAG_DEFINITIONS.find((item) => item.key === key) || null
+  }
+
+  function caseFilingExpectedPathForKey(key = '') {
+    const parts = []
+    let current = caseFilingDefinitionByKey(key)
+    let guard = 0
+    while (current && guard < 30) {
+      parts.unshift(current.name)
+      current = current.parentKey ? caseFilingDefinitionByKey(current.parentKey) : null
+      guard += 1
+    }
+    return parts.join(' > ')
+  }
+
+  function caseFilingSystemTagId(key = '') {
+    const definition = caseFilingDefinitionByKey(key)
+    return definition?.id || `tag-system-${String(key || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`
+  }
+
+  function caseFilingTagByKey(workingTags = [], key = '') {
+    const definition = caseFilingDefinitionByKey(key)
+    const exactSystem = workingTags.find((tag) => String(tag.system_key || '') === String(key))
+    if (exactSystem) return exactSystem
+    if (definition?.id) {
+      const exactId = workingTags.find((tag) => String(tag.id || '') === String(definition.id))
+      if (exactId) return exactId
+    }
+    const expectedPath = caseFilingExpectedPathForKey(key)
+    return workingTags.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag.id)) === normalizeTagLookupValue(expectedPath)) || null
+  }
+
+  function caseFilingTagIsDescendantOf(workingTags = [], tagOrId = '', ancestorOrId = '') {
+    const tagId = typeof tagOrId === 'object' ? tagOrId?.id : tagOrId
+    const ancestorId = typeof ancestorOrId === 'object' ? ancestorOrId?.id : ancestorOrId
+    if (!tagId || !ancestorId) return false
+    let current = workingTags.find((tag) => String(tag.id) === String(tagId)) || null
+    const seen = new Set()
+    while (current && !seen.has(String(current.id))) {
+      if (String(current.id) === String(ancestorId)) return true
+      seen.add(String(current.id))
+      const parentId = String(current.parent_id || current.parentId || '')
+      current = parentId ? workingTags.find((tag) => String(tag.id) === parentId) || null : null
+    }
+    return false
+  }
+
+  function caseFilingTagIsWithinRoot(workingTags = [], tagId = '') {
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    return Boolean(root && tagId && caseFilingTagIsDescendantOf(workingTags, tagId, root.id))
+  }
+
+  function caseFilingTagsIndented(workingTags = tagsRef.current) {
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    if (!root) return []
+    const rows = []
+    const walk = (parentId, level) => {
+      workingTags
+        .filter((tag) => String(tag.parent_id || tag.parentId || '') === String(parentId || ''))
+        .sort((a, b) => Number(a.sort_order ?? 999999) - Number(b.sort_order ?? 999999) || String(a.name || '').localeCompare(String(b.name || '')))
+        .forEach((tag) => {
+          rows.push({ ...tag, level })
+          walk(tag.id, level + 1)
+        })
+    }
+    rows.push({ ...root, level: 0 })
+    walk(root.id, 1)
+    return rows
+  }
+
+  function ensureCaseFilingTagTree(startingTags = tagsRef.current, options = {}) {
+    const working = normalizeTagLibrarySnapshot(startingTags).map((tag) => ({ ...tag, parent_id: String(tag.parent_id || tag.parentId || '') }))
+    let changed = false
+    const now = new Date().toISOString()
+    const byKey = new Map()
+    const normalizedName = (value) => normalizeTagLookupValue(String(value || '').replace(/&/g, ' and '))
+
+    const findAlias = (definition, predicate = () => true) => {
+      const aliases = new Set([definition.name, ...(definition.aliases || [])].map(normalizedName))
+      return working.find((tag) => predicate(tag) && aliases.has(normalizedName(tag.name))) || null
+    }
+
+    CASE_FILING_TAG_DEFINITIONS.forEach((definition) => {
+      const parent = definition.parentKey ? byKey.get(definition.parentKey) || caseFilingTagByKey(working, definition.parentKey) : null
+      const parentId = String(parent?.id || '')
+      let existing = caseFilingTagByKey(working, definition.key)
+
+      if (!existing) existing = findAlias(definition, (tag) => String(tag.parent_id || '') === parentId)
+      if (!existing && definition.migrateFromTopLevel) existing = findAlias(definition, (tag) => !String(tag.parent_id || ''))
+      if (!existing && Array.isArray(definition.legacyAncestorKeys)) {
+        for (const ancestorKey of definition.legacyAncestorKeys) {
+          const ancestor = byKey.get(ancestorKey) || caseFilingTagByKey(working, ancestorKey)
+          if (!ancestor) continue
+          existing = findAlias(definition, (tag) => caseFilingTagIsDescendantOf(working, tag.id, ancestor.id))
+          if (existing) break
+        }
+      }
+
+      if (!existing) {
+        let id = caseFilingSystemTagId(definition.key)
+        if (working.some((tag) => String(tag.id) === String(id))) id = `${id}-${Math.random().toString(36).slice(2, 7)}`
+        existing = {
+          id,
+          name: definition.name,
+          parent_id: parentId,
+          scope: 'all',
+          matter_ids: [],
+          icon_data: '',
+          icon_name: definition.icon_name || '',
+          color: definition.color || '#4c6783',
+          sort_order: definition.sort_order || 1,
+          system_type: 'case_filing',
+          system_key: definition.key,
+          system_tree_version: CASE_FILING_TAG_TREE_VERSION,
+          tag_schema: CASE_FILING_TAG_SCHEMA,
+          is_active: true,
+          created_at: now,
+          updated_at: now
+        }
+        working.push(existing)
+        changed = true
+      } else {
+        const index = working.findIndex((tag) => String(tag.id) === String(existing.id))
+        const wasSystemTag = Boolean(existing.system_key)
+        const priorTreeVersion = Number(existing.system_tree_version || 0)
+        const patched = {
+          ...existing,
+          parent_id: parentId,
+          system_type: 'case_filing',
+          system_key: definition.key,
+          system_tree_version: CASE_FILING_TAG_TREE_VERSION,
+          tag_schema: CASE_FILING_TAG_SCHEMA
+        }
+        // Canonicalize only when the tag first enters the system tree or when
+        // the tree schema upgrades. User edits made after this upgrade persist.
+        if (!wasSystemTag || priorTreeVersion < CASE_FILING_TAG_TREE_VERSION) patched.name = definition.name
+        if (!patched.scope) patched.scope = 'all'
+        if (!Array.isArray(patched.matter_ids)) patched.matter_ids = []
+        if (!patched.icon_name && !patched.icon_data && definition.icon_name) patched.icon_name = definition.icon_name
+        if (!patched.color && definition.color) patched.color = definition.color
+        if (patched.sort_order === undefined || patched.sort_order === null || priorTreeVersion < CASE_FILING_TAG_TREE_VERSION) patched.sort_order = definition.sort_order || 1
+        if (patched.is_active === undefined) patched.is_active = true
+        if (JSON.stringify(patched) !== JSON.stringify(existing)) {
+          patched.updated_at = now
+          working[index] = patched
+          existing = patched
+          changed = true
+        }
+      }
+      byKey.set(definition.key, existing)
+    })
+
+    if (changed && options.persist !== false) commitTagLibrary(working, { immediate: Boolean(options.immediate) })
+    return working
+  }
+
+  function tagIdsForTagIdFromWorkingTags(workingTags = [], tagId = '') {
+    const target = workingTags.find((tag) => String(tag.id) === String(tagId))
+    if (!target) return []
+    const ids = []
+    let current = target
+    let guard = 0
+    while (current && guard < 30) {
+      ids.unshift(current.id)
+      current = current.parent_id ? workingTags.find((tag) => String(tag.id) === String(current.parent_id)) : null
+      guard += 1
+    }
+    return ids
+  }
+
+  function caseFilingTagKeyForRow(row = {}) {
+    const explicit = `${row.accepted_service_type || ''} ${row.notice_service_type || ''}`.toLowerCase()
+    const text = `${row.efile_filing_description || ''} ${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''} ${row.name || ''} ${row.file_name || ''} ${row.description || ''} ${explicit}`.toLowerCase()
+    const isResponse = /\b(response|responses|answer|answers|responding)\b/.test(text) || /response\s*>/i.test(explicit)
+    const subtype = /request for admission|requests for admission|\brfa\b/.test(text) ? 'rfa'
+      : /request for disclosure|requests for disclosure|\brfd\b/.test(text) ? 'rfd'
+        : /request for production|requests for production|\brfp\b|production request/.test(text) ? 'rfp'
+          : /interrogator|\broggs?\b/.test(text) ? 'roggs'
+            : ''
+    // A bare "RFA", "RFP", "RFD", or "Interrogatories" title is a request
+    // unless the surrounding text clearly identifies it as a response/answer.
+    const isRequest = /\b(request|requests|requested)\b/.test(text) || /request\s*>/i.test(explicit) || (Boolean(subtype) && !isResponse)
+
+    if (/subpoena/.test(text)) return 'case_filings_discovery_third_party_subpoenas'
+    if (/business records|records deposition|deposition on written questions|third[- ]party records|third party records/.test(text)) return 'case_filings_discovery_third_party_records'
+    if (/deposition/.test(text) && /subpoena|third[- ]party|third party/.test(text)) return 'case_filings_discovery_third_party_depositions'
+    if (/third[- ]party discovery|third party discovery/.test(text)) return 'case_filings_discovery_third_party'
+
+    if (/\b(order|judgment|decree|ruling)\b/.test(text)) return 'case_filings_efiled_orders'
+    if (/\bmotion\b|application for|petition to enforce|motion to/.test(text)) return 'case_filings_efiled_motions'
+
+    if (isResponse && subtype) return `case_filings_discovery_responses_${subtype}`
+    if (isRequest && subtype) return `case_filings_discovery_requests_${subtype}`
+    if (isResponse && /discovery|production|admission|disclosure|interrogator|rogg/.test(text)) return 'case_filings_discovery_responses'
+    if (isRequest && /discovery|production|admission|disclosure|interrogator|rogg/.test(text)) return 'case_filings_discovery_requests'
+    if (/discovery/.test(text)) return 'case_filings_discovery'
+
+    if (/\bnotice\b|hearing|trial setting|conference setting|setting notice/.test(text)) return 'case_filings_efiled_notices'
+    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|pleading/.test(text)) return 'case_filings_efiled_pleadings'
+    if (/responses to discovery|discovery responses/.test(text)) return 'case_filings_discovery_responses'
+    if (/requests? for discovery|discovery requests?/.test(text)) return 'case_filings_discovery_requests'
+    return 'case_filings_efiled_other'
+  }
+
+  function caseFilingTagIdsForRow(row = {}, options = {}) {
+    const workingTags = options.workingTags || (options.ensure === false ? normalizeTagLibrarySnapshot(tagsRef.current) : ensureCaseFilingTagTree(tagsRef.current, { persist: true }))
+    const key = caseFilingTagKeyForRow(row)
+    const target = caseFilingTagByKey(workingTags, key) || caseFilingTagByKey(workingTags, 'case_filings')
+    return target ? tagIdsForTagIdFromWorkingTags(workingTags, target.id) : []
+  }
+
   function ensureAcceptedServiceTags() {
-    // V241 intentionally leaves the e-file tag tree exactly as the user arranged it.
-    // Do not create, move, delete, merge, or migrate tags when an e-file window opens.
-    return [...tags]
+    return ensureCaseFilingTagTree(tagsRef.current, { persist: true })
   }
 
   function acceptedServiceDocumentType(row = {}) {
@@ -28855,16 +29448,19 @@ useEffect(() => {
   }
 
   function acceptedServiceTagPathForRow(row = {}) {
-    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
-    if (String(type).startsWith('filing >')) return `efiled > Ours > ${type}`
-    if (String(type).startsWith('Discovery >')) return `efiled > Ours > ${type}`
-    if (type === 'Proposed Order') return 'efiled > Ours > filing > Proposed Order'
-    return `efiled > Ours > ${type}`
+    return caseFilingExpectedPathForKey(caseFilingTagKeyForRow(row))
   }
 
   function acceptedServiceTagCandidatePaths(row = {}) {
-    const legacyPath = acceptedServiceTagPathForRow(row)
+    const canonicalPath = acceptedServiceTagPathForRow(row)
     const type = row.accepted_service_type || acceptedServiceDocumentType(row)
+    const legacyPath = String(type).startsWith('filing >')
+      ? `efiled > Ours > ${type}`
+      : String(type).startsWith('Discovery >')
+        ? `efiled > Ours > ${type}`
+        : type === 'Proposed Order'
+          ? 'efiled > Ours > filing > Proposed Order'
+          : `efiled > Ours > ${type}`
     const withoutOurs = legacyPath.replace(/^efiled\s*>\s*Ours\s*>\s*/i, 'efiled > ')
     const promotedToTopLevel = withoutOurs.replace(/^efiled\s*>\s*/i, '')
     const v240Path = String(type).startsWith('Discovery >')
@@ -28874,10 +29470,12 @@ useEffect(() => {
         : type === 'Proposed Order'
           ? 'efiled > filing > Proposed Order'
           : withoutOurs
-    return Array.from(new Set([legacyPath, withoutOurs, promotedToTopLevel, v240Path].filter(Boolean)))
+    return Array.from(new Set([canonicalPath, legacyPath, withoutOurs, promotedToTopLevel, v240Path].filter(Boolean)))
   }
 
-  function acceptedServiceTagIdsFromWorkingTags(row = {}, workingTags = tags) {
+  function acceptedServiceTagIdsFromWorkingTags(row = {}, workingTags = tagsRef.current) {
+    const canonical = caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+    if (canonical.length) return canonical
     for (const path of acceptedServiceTagCandidatePaths(row)) {
       const ids = tagIdsForPathFromWorkingTags(workingTags, path)
       if (ids.length) return ids
@@ -28886,46 +29484,17 @@ useEffect(() => {
   }
 
   function serviceEmailFilingTagIds(row = null, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
+    const workingTags = options.ensure === false ? normalizeTagLibrarySnapshot(tagsRef.current) : ensureAcceptedServiceTags()
     const typed = acceptedServiceTagIdsFromWorkingTags(row || {}, workingTags)
     if (typed.length) return typed
-    const normalized = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()
-    const exact = workingTags.find((tag) => normalized(tagPathFromWorkingTags(workingTags, tag.id)) === 'filings > ours')
-    if (exact) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, exact.id))
-    const oursUnderFilings = workingTags.find((tag) => normalized(tag.name) === 'ours' && normalized(tagPathFromWorkingTags(workingTags, tag.parent_id)).endsWith('filings'))
-    if (oursUnderFilings) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, oursUnderFilings.id))
-    const ours = workingTags.find((tag) => normalized(tag.name) === 'ours')
-    if (ours) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, ours.id))
-    return tagIdsForPathFromWorkingTags(workingTags, 'efiled')
+    const efiled = caseFilingTagByKey(workingTags, 'case_filings_efiled')
+    if (efiled) return tagIdsForTagIdFromWorkingTags(workingTags, efiled.id)
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    return root ? tagIdsForTagIdFromWorkingTags(workingTags, root.id) : []
   }
 
   function noticeServiceRequiredTagPaths() {
-    return [
-      'Opposing Party',
-      'Opposing Party > Petition / Answer',
-      'Opposing Party > Notice',
-      'Opposing Party > Motion',
-      'Opposing Party > Discovery',
-      'Opposing Party > Discovery > Requests',
-      'Opposing Party > Discovery > Requests > Request for Production',
-      'Opposing Party > Discovery > Requests > Request for Disclosure',
-      'Opposing Party > Discovery > Requests > Request for Admission',
-      'Opposing Party > Discovery > Requests > Interrogatories',
-      'Opposing Party > Discovery > Responses',
-      'Opposing Party > Discovery > Responses > Response to Request for Production',
-      'Opposing Party > Discovery > Responses > Response to Request for Disclosure',
-      'Opposing Party > Discovery > Responses > Response to Request for Admission',
-      'Opposing Party > Discovery > Responses > Answers to Interrogatories',
-      'Opposing Party > Third Party Discovery',
-      'Opposing Party > Third Party Discovery > Subpoena',
-      'Opposing Party > Third Party Discovery > Deposition',
-      'Opposing Party > Third Party Discovery > Records',
-      'Court',
-      'Court > Notice',
-      'Court > Order',
-      'Court > Setting',
-      'Court > Other'
-    ]
+    return CASE_FILING_TAG_DEFINITIONS.map((definition) => caseFilingExpectedPathForKey(definition.key))
   }
 
   function tagPathFromWorkingTags(workingTags, tagId) {
@@ -28949,40 +29518,7 @@ useEffect(() => {
   }
 
   function ensureNoticeServiceTags() {
-    let working = [...tags]
-    let changed = false
-    const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
-    noticeServiceRequiredTagPaths().forEach((path) => {
-      if (findPath(path)) return
-      const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
-      let parentId = ''
-      const built = []
-      parts.forEach((part) => {
-        built.push(part)
-        const currentPath = built.join(' > ')
-        let existing = findPath(currentPath)
-        if (!existing) {
-          existing = {
-            id: safeNoticeTagId(currentPath),
-            name: part,
-            parent_id: parentId,
-            scope: 'all',
-            matter_ids: [],
-            color: built[0] === 'Court' ? '#7c3aed' : '#dc2626',
-            icon_data: '',
-            icon_name: ''
-          }
-          working.push(existing)
-          changed = true
-        }
-        parentId = existing.id
-      })
-    })
-    if (changed) {
-      setTags(working)
-      try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
-    }
-    return working
+    return ensureCaseFilingTagTree(tagsRef.current, { persist: true })
   }
 
   function noticeServiceDocumentSource(row = {}) {
@@ -29011,18 +29547,7 @@ useEffect(() => {
   }
 
   function noticeServiceTagPathForRow(row = {}) {
-    const source = noticeServiceDocumentSource(row)
-    const type = noticeServiceDocumentType(row)
-    if (source === 'Court') {
-      if (type === 'Notice') return 'Court > Notice'
-      if (type === 'Order') return 'Court > Order'
-      if (type === 'Other') return 'Court > Other'
-      return 'Court > Setting'
-    }
-    if (type.startsWith('Requests >')) return `Opposing Party > Discovery > ${type}`
-    if (type.startsWith('Responses >')) return `Opposing Party > Discovery > ${type}`
-    if (type.startsWith('Third Party Discovery')) return `Opposing Party > ${type}`
-    return `Opposing Party > ${type}`
+    return caseFilingExpectedPathForKey(caseFilingTagKeyForRow(row))
   }
 
   function tagIdsForPathFromWorkingTags(workingTags, path = '') {
@@ -29040,30 +29565,55 @@ useEffect(() => {
   }
 
   function noticeServiceTagIdsForRow(row = {}, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureNoticeServiceTags()
+    const workingTags = options.ensure === false ? normalizeTagLibrarySnapshot(tagsRef.current) : ensureNoticeServiceTags()
+    const canonical = caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+    if (canonical.length) return canonical
     return tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
   }
 
   function serviceEmailDocumentTagIds(row = null) {
-    if (Array.isArray(row?.document_tag_ids) && row.document_tag_ids.length) return row.document_tag_ids
-    if (serviceEmailRowCategory(row) === 'notification_service') return noticeServiceTagIdsForRow(row, { ensure: false })
-    return serviceEmailFilingTagIds(row, { ensure: false })
+    const currentTags = normalizeTagLibrarySnapshot(tagsRef.current)
+    const workingTags = caseFilingTagByKey(currentTags, 'case_filings')
+      ? currentTags
+      : ensureCaseFilingTagTree(currentTags, { persist: false })
+    const existing = Array.isArray(row?.document_tag_ids)
+      ? row.document_tag_ids.filter((id) => workingTags.some((tag) => String(tag.id) === String(id)))
+      : []
+    const manualLeaf = existing.slice().sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
+    if (row?.document_tag_manual && manualLeaf && caseFilingTagIsWithinRoot(workingTags, manualLeaf)) {
+      return tagIdsForTagIdFromWorkingTags(workingTags, manualLeaf)
+    }
+    const canonical = caseFilingTagIdsForRow(row || {}, { workingTags, ensure: false })
+    if (canonical.length) return canonical
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    return root ? [root.id] : []
   }
 
   function serviceEmailDocumentTagLabel(row = null) {
     const ids = serviceEmailDocumentTagIds(row)
-    return ids.length ? ids.map((id) => tagFullName(id)).filter(Boolean).join(', ') : 'No tag selected'
+    const leaf = ids.length ? ids[ids.length - 1] : ''
+    return leaf ? tagFullName(leaf) : 'Case Filings'
   }
 
   function updateServiceEmailDocumentTag(rowId, tagId) {
-    const tagIds = tagId ? tagAndParentIds([tagId]) : []
-    setServiceEmailRows((rows) => rows.map((row) => row.id === rowId ? { ...row, document_tag_ids: tagIds } : row))
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const selectedTag = tagId && caseFilingTagIsWithinRoot(workingTags, tagId)
+      ? workingTags.find((tag) => String(tag.id) === String(tagId))
+      : null
+    setServiceEmailRows((rows) => rows.map((row) => {
+      if (row.id !== rowId) return row
+      const tagIds = selectedTag
+        ? tagIdsForTagIdFromWorkingTags(workingTags, selectedTag.id)
+        : caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+      return { ...row, document_tag_ids: tagIds, document_tag_manual: Boolean(selectedTag), document_tag_schema: selectedTag ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA }
+    }))
   }
 
   function serviceEmailDocumentLeafTagId(row = null) {
     const ids = serviceEmailDocumentTagIds(row)
     if (!ids.length) return ''
-    return ids.slice().sort((a, b) => tagDepth(b) - tagDepth(a))[0] || ''
+    const workingTags = normalizeTagLibrarySnapshot(tagsRef.current)
+    return ids.slice().sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
   }
 
   async function blobToDataUrl(blob) {
@@ -29091,7 +29641,8 @@ useEffect(() => {
       date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
       description: `Saved from Service Inbox: ${row.subject || ''}`,
       status: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
-      tag_ids: Array.isArray(row.document_tag_ids) && row.document_tag_ids.length ? tagAndParentIds(row.document_tag_ids) : serviceEmailDocumentTagIds(row),
+      tag_ids: serviceEmailDocumentTagIds(row),
+      document_tag_schema: row.document_tag_manual ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA,
       document_field_values: {
         filing_date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
         notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
@@ -29246,7 +29797,10 @@ useEffect(() => {
       document_field_values: efileMetadata.filingDate ? { filing_date: efileMetadata.filingDate } : {},
       suggested_save_path: suggestedMatterId && matterEfileFolders[suggestedMatterId] ? matterEfileFolders[suggestedMatterId] : '',
       extracted_pdf_name: leadDocumentName || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || filingDescriptionName || '',
-      document_tag_ids: actionGroup === 'notification_service' ? noticeServiceTagIdsForRow({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : [],
+      document_tag_ids: ['accepted', 'notification_service'].includes(actionGroup) ? caseFilingTagIdsForRow({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName, suggested_document_name: docName, efile_filing_description: efileMetadata.filingDescription || '' }, { ensure: true }) : [],
+      document_tag_manual: false,
+      document_tag_schema: ['accepted', 'notification_service'].includes(actionGroup) ? CASE_FILING_TAG_SCHEMA : '',
+      accepted_service_type: actionGroup === 'accepted' ? acceptedServiceDocumentType({ subject, body_preview: plainBody || bodyPreview, extracted_pdf_name: docName, suggested_document_name: docName }) : '',
       notice_service_source: actionGroup === 'notification_service' ? noticeServiceDocumentSource({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
       notice_service_type: actionGroup === 'notification_service' ? noticeServiceDocumentType({ subject, body_preview: plainBody || bodyPreview, from_name: fromName, from_email: fromEmail, extracted_pdf_name: docName }) : '',
       confidence: suggestedMatterId ? Math.max(confidence, 88) : confidence,
@@ -30360,6 +30914,8 @@ async function chooseAndSaveMatterEfileFolder(row) {
   async function saveDownloadedServicePdf(row, providedAttachment = null, options = {}) {
     const currentRow = serviceEmailRows.find((item) => item.id === row?.id) || row
     if (!currentRow) return false
+    if (serviceEmailRowCategory(currentRow) === 'notification_service') ensureNoticeServiceTags()
+    else ensureAcceptedServiceTags()
 
     // Online hosting workflow: do not require the old local Node helper.
     // The app now uses Microsoft Graph/browser file access first. The local helper
@@ -30618,6 +31174,26 @@ async function chooseAndSaveMatterEfileFolder(row) {
     setServiceEmailRows((rows) => rows.map((row) => visibleIds.has(row.id) ? { ...row, phase_selected: checked } : row))
   }
 
+  function serviceRowWithRequiredCaseFilingTag(row, actionGroup = '', suppliedTags = null) {
+    const normalized = normalizedServiceEmailActionGroup(actionGroup || serviceEmailRowCategory(row))
+    if (!['accepted', 'notification_service'].includes(normalized)) return row
+    const workingTags = suppliedTags || ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const existing = Array.isArray(row?.document_tag_ids) ? row.document_tag_ids.filter((id) => workingTags.some((tag) => String(tag.id) === String(id))) : []
+    const existingCaseLeaf = existing
+      .filter((id) => caseFilingTagIsWithinRoot(workingTags, id))
+      .sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
+    const manualCasePath = row?.document_tag_manual && existingCaseLeaf
+      ? tagIdsForTagIdFromWorkingTags(workingTags, existingCaseLeaf)
+      : []
+    const tagIds = manualCasePath.length ? manualCasePath : caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+    return {
+      ...row,
+      document_tag_ids: tagIds,
+      document_tag_manual: Boolean(manualCasePath.length),
+      document_tag_schema: manualCasePath.length ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA
+    }
+  }
+
   function changeSelectedServiceEmailPhase(actionGroup) {
     const normalizedActionGroup = normalizedServiceEmailActionGroup(actionGroup)
     const visibleIds = new Set(serviceEmailRowsForCurrentView().filter((row) => row.phase_selected && row.status !== 'completed').map((row) => row.id))
@@ -30625,23 +31201,29 @@ async function chooseAndSaveMatterEfileFolder(row) {
       setServiceInboxPhase(normalizedActionGroup)
       return
     }
+    const workingTags = ['accepted', 'notification_service'].includes(normalizedActionGroup)
+      ? ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+      : null
     setServiceEmailRows((rows) => rows.map((row) => {
       if (!visibleIds.has(row.id)) return row
       const noResponse = normalizedActionGroup === 'no_response'
       const needsResponse = normalizedActionGroup === 'response_mark_read'
-      return {
+      const next = {
         ...row,
         action_group: normalizedActionGroup,
         category_checked: normalizedActionGroup,
         selected: noResponse,
         phase_selected: false,
         billing_minutes: noResponse ? 0 : (row.billing_minutes || 6),
-        draft_response: needsResponse ? (row.draft_response || `Thank you for your email. I have received it and will review it.\n\nBen`) : '',
+        draft_response: needsResponse ? (row.draft_response || `Thank you for your email. I have received it and will review it.
+
+Ben`) : '',
         suggested_action: serviceEmailPhaseDescription(normalizedActionGroup),
         proposed_actions: [
           { id: `move-${row.outlook_message_id || row.id}`, type: 'move_email', label: `Move Outlook email to ${serviceEmailReadFolder(row.source_id) || 'Read'}`, approved: true, completed: false }
         ]
       }
+      return serviceRowWithRequiredCaseFilingTag(next, normalizedActionGroup, workingTags)
     }))
     setServiceInboxPhase('all')
     setServiceEmailScanNote(`Changed ${visibleIds.size} selected email(s) to ${serviceEmailPhaseLabel(normalizedActionGroup)}.`)
@@ -30654,18 +31236,24 @@ async function chooseAndSaveMatterEfileFolder(row) {
       clearServiceEmailRowCategory(rowId)
       return
     }
+    const workingTags = ['accepted', 'notification_service'].includes(normalized)
+      ? ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+      : null
     setServiceEmailRows((rows) => rows.map((row) => {
       if (row.id !== rowId) return row
       const noResponse = normalized === 'no_response'
-      return {
+      const next = {
         ...row,
         action_group: normalized,
         category_checked: normalized,
         selected: noResponse,
         billing_minutes: noResponse ? 0 : (row.billing_minutes || 6),
-        draft_response: normalized === 'response_mark_read' ? (row.draft_response || `Thank you for your email. I have received it and will review it.\n\nBen`) : '',
+        draft_response: normalized === 'response_mark_read' ? (row.draft_response || `Thank you for your email. I have received it and will review it.
+
+Ben`) : '',
         suggested_action: serviceEmailPhaseDescription(normalized)
       }
+      return serviceRowWithRequiredCaseFilingTag(next, normalized, workingTags)
     }))
   }
 
@@ -30683,29 +31271,34 @@ async function chooseAndSaveMatterEfileFolder(row) {
   function setServiceEmailRowsCategory(rowIds, actionGroup) {
     const ids = new Set(rowIds)
     const normalized = normalizedServiceEmailActionGroup(actionGroup)
+    const workingTags = ['accepted', 'notification_service'].includes(normalized)
+      ? ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+      : null
     setServiceEmailRows((rows) => rows.map((row) => {
       if (!ids.has(row.id) || row.status === 'completed') return row
       if (!normalized) {
-        const noResponse = true
         return {
           ...row,
           action_group: 'no_response',
           category_checked: 'no_response',
-          selected: noResponse,
+          selected: true,
           billing_minutes: 0,
           suggested_action: serviceEmailPhaseDescription('no_response')
         }
       }
       const noResponse = normalized === 'no_response'
-      return {
+      const next = {
         ...row,
         action_group: normalized,
         category_checked: normalized,
         selected: noResponse,
         billing_minutes: noResponse ? 0 : (row.billing_minutes || 6),
-        draft_response: normalized === 'response_mark_read' ? (row.draft_response || `Thank you for your email. I have received it and will review it.\n\nBen`) : '',
+        draft_response: normalized === 'response_mark_read' ? (row.draft_response || `Thank you for your email. I have received it and will review it.
+
+Ben`) : '',
         suggested_action: serviceEmailPhaseDescription(normalized)
       }
+      return serviceRowWithRequiredCaseFilingTag(next, normalized, workingTags)
     }))
     setServiceEmailScanNote(normalized ? `Changed ${ids.size} visible email(s) to ${serviceEmailPhaseLabel(normalized)}.` : `Cleared category on ${ids.size} visible email(s).`)
   }
@@ -30756,11 +31349,25 @@ async function chooseAndSaveMatterEfileFolder(row) {
   function hydrateServiceReviewRow(row = {}) {
     const inferredMatterId = row.suggested_matter_id || inferServiceEmailMatter({ subject: row.subject || '', bodyPreview: row.body_preview || row.bodyPreview || '', body: { content: row.extracted_text || row.pdf_text || '' } })
     const workingTags = serviceEmailRowCategory(row) === 'notification_service' ? ensureNoticeServiceTags() : ensureAcceptedServiceTags()
-    const pathTagIds = serviceEmailRowCategory(row) === 'notification_service'
-      ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
-      : acceptedServiceTagIdsFromWorkingTags(row, workingTags)
-    const inferredTagIds = row.document_tag_ids?.length ? row.document_tag_ids : (pathTagIds.length ? pathTagIds : guessServiceReviewTagIds(row, workingTags))
-    const next = { ...row, suggested_matter_id: inferredMatterId || '', suggested_save_path: inferredMatterId ? matterEfileFolderForId(inferredMatterId) : '', document_tag_ids: inferredTagIds }
+    const existing = Array.isArray(row.document_tag_ids)
+      ? row.document_tag_ids.filter((id) => workingTags.some((tag) => String(tag.id) === String(id)))
+      : []
+    const existingCaseLeaf = existing
+      .filter((id) => caseFilingTagIsWithinRoot(workingTags, id))
+      .sort((a, b) => tagIdsForTagIdFromWorkingTags(workingTags, b).length - tagIdsForTagIdFromWorkingTags(workingTags, a).length)[0] || ''
+    const manualCasePath = row.document_tag_manual && existingCaseLeaf
+      ? tagIdsForTagIdFromWorkingTags(workingTags, existingCaseLeaf)
+      : []
+    const canonicalPath = caseFilingTagIdsForRow(row, { workingTags, ensure: false })
+    const inferredTagIds = manualCasePath.length ? manualCasePath : canonicalPath
+    const next = {
+      ...row,
+      suggested_matter_id: inferredMatterId || '',
+      suggested_save_path: inferredMatterId ? matterEfileFolderForId(inferredMatterId) : '',
+      document_tag_ids: inferredTagIds,
+      document_tag_manual: Boolean(manualCasePath.length),
+      document_tag_schema: manualCasePath.length ? 'manual-case-filings' : CASE_FILING_TAG_SCHEMA
+    }
     next.document_field_values = fillAssociatedDocumentFields({ ...next, tag_ids: inferredTagIds, extracted_text: serviceReviewText(next) })
     return next
   }
@@ -31321,8 +31928,7 @@ Ben`) : (row.draft_response || '') })
                 </LabeledField>
                 <LabeledField label="Document tag">
                   <select value={serviceEmailDocumentLeafTagId(row)} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
-                    <option value="">No tag</option>
-                    {tags.map((tag) => <option key={tag.id} value={tag.id}>{tagFullName(tag.id)}</option>)}
+                    {caseFilingTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
                   </select>
                 </LabeledField>
                 {normalizedGroup === 'notification_service' && <LabeledField label="Discovery response date"><input placeholder="mm/dd/yyyy" value={row.discovery_response_date || ''} onChange={(e) => updateServiceEmailRow(row.id, { discovery_response_date: e.target.value })} /></LabeledField>}
@@ -31520,7 +32126,9 @@ Ben`) : (row.draft_response || '') })
       const next = { ...row, ...patch }
       if (patch.notice_service_source || patch.notice_service_type) {
         const workingTags = ensureNoticeServiceTags()
-        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(next))
+        next.document_tag_ids = caseFilingTagIdsForRow(next, { workingTags, ensure: false })
+        next.document_tag_manual = false
+        next.document_tag_schema = CASE_FILING_TAG_SCHEMA
       }
       return next
     }))
@@ -31532,7 +32140,9 @@ Ben`) : (row.draft_response || '') })
       const next = { ...row, ...patch }
       if (patch.accepted_service_type) {
         const workingTags = ensureAcceptedServiceTags()
-        next.document_tag_ids = acceptedServiceTagIdsFromWorkingTags(next, workingTags)
+        next.document_tag_ids = caseFilingTagIdsForRow(next, { workingTags, ensure: false })
+        next.document_tag_manual = false
+        next.document_tag_schema = CASE_FILING_TAG_SCHEMA
       }
       return next
     }))
@@ -31626,25 +32236,43 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
   function createAndAttachServiceReviewTag(row) {
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const suggestedLeaf = serviceEmailDocumentLeafTagId(row)
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    const parentId = suggestedLeaf && caseFilingTagIsWithinRoot(workingTags, suggestedLeaf) ? suggestedLeaf : (root?.id || '')
     setServiceTagPicker({ open: false, rowId: '', search: '' })
-    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId: serviceEmailDocumentLeafTagId(row) || '' })
+    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId })
   }
 
   function saveServiceReviewTag() {
     const name = String(serviceTagBuilder.name || '').trim()
     if (!name || !serviceTagBuilder.rowId) return
-    const parent = tags.find((tag) => tag.id === serviceTagBuilder.parentId) || null
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const root = caseFilingTagByKey(workingTags, 'case_filings')
+    const requestedParent = workingTags.find((tag) => String(tag.id) === String(serviceTagBuilder.parentId)) || null
+    const parent = requestedParent && caseFilingTagIsWithinRoot(workingTags, requestedParent.id) ? requestedParent : root
+    if (!parent) return alert('Mio could not load the Case Filings tag. Reload and try again.')
+    const now = new Date().toISOString()
     const newTag = {
       id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
-      parent_id: parent?.id || '',
-      color: '#4c6783',
-      sort_order: tags.filter((tag) => String(tag.parent_id || '') === String(parent?.id || '')).length + 1
+      parent_id: parent.id,
+      scope: 'all',
+      matter_ids: [],
+      color: parent.color || '#4c6783',
+      icon_data: '',
+      icon_name: parent.icon_name || '',
+      sort_order: workingTags.filter((tag) => String(tag.parent_id || '') === String(parent.id)).length + 1,
+      created_at: now,
+      updated_at: now
     }
-    setTags((current) => [...current, newTag])
-    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIds([newTag.id]) } : row))
+    const nextTags = commitTagLibrary((current) => [...current, newTag], { immediate: true })
+    const appliedIds = tagIdsForTagIdFromWorkingTags(nextTags, newTag.id)
+    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId
+      ? { ...row, document_tag_ids: appliedIds, document_tag_manual: true, document_tag_schema: 'manual-case-filings' }
+      : row))
     setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })
-    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${tagFullName(parent.id)} > ` : ''}${name}`)
+    setServiceEmailScanNote(`Created and attached Case Filings tag: ${tagFullName(newTag.id) || `${parent.name} > ${name}`}`)
   }
 
   function updateServiceReviewField(rowId, fieldKey, value) {
@@ -31780,7 +32408,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                     { forcedMatterId: active.suggested_matter_id, compact: true }
                   )}
                 </div>
-                <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'No tag selected'}</div>
+                <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied tag path:</strong> {tagIds.map((id) => tagFullName(id)).filter(Boolean).join(' > ') || 'Case Filings'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" onClick={() => emailClientForServiceRow(active)} title="Email this filing to the client">✉ Client</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
@@ -31801,10 +32429,10 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
         {serviceTagPicker.open && (
           <Modal title="Choose document tag" onClose={() => setServiceTagPicker({ open: false, rowId: '', search: '' })} wide>
             <div style={{ display: 'grid', gap: 10 }}>
-              <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search all tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
+              <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search Case Filings tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
               <div style={{ maxHeight: '65vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, padding: 8 }}>
-                <button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, ''); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', marginBottom: 6 }}>No tag</button>
-                {allTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
+                <div style={{ marginBottom: 8, padding: 8, borderRadius: 7, background: '#eff6ff', color: '#1e3a8a', fontSize: 12 }}>Accepted filings and Notifications of Service must stay under <strong>Case Filings</strong>.</div>
+                {caseFilingTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button>{String(tag.system_key || '') !== 'case_filings' && <button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button>}</div>)}
               </div>
             </div>
           </Modal>
@@ -31816,8 +32444,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <LabeledField label="New tag name"><input autoFocus value={serviceTagBuilder.name} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, name: e.target.value }))} placeholder="Enter the new tag name" /></LabeledField>
               <LabeledField label="Place under this tag">
                 <select value={serviceTagBuilder.parentId} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, parentId: e.target.value }))}>
-                  <option value="">Top-level tag</option>
-                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(tag.level || 0)}${tag.name}`}</option>)}
+                  {caseFilingTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(tag.level || 0)}${tag.name}`}</option>)}
                 </select>
               </LabeledField>
               <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}><strong>New location:</strong> {serviceTagBuilder.parentId ? `${tagFullName(serviceTagBuilder.parentId)} > ` : ''}{serviceTagBuilder.name || 'New tag'}</div>
@@ -31842,9 +32469,9 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     const text = `${row.filing_date || ''} ${row.date || ''} ${row.received_at || ''} ${row.file_name || ''} ${row.name || ''} ${row.description || ''}`
     const iso = text.match(/(20\d{2})[-.\/](\d{1,2})[-.\/](\d{1,2})/)
     if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`
-    const dotted = text.match(/(\d{2})[.\-](\d{2})[.\-](\d{2})/)
+    const dotted = text.match(/\b(\d{2})[.\-](\d{2})[.\-](\d{2})\b/)
     if (dotted) return `20${dotted[1]}-${dotted[2]}-${dotted[3]}`
-    const slash = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})/)
+    const slash = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/)
     if (slash) return `${slash[3].length === 2 ? '20' + slash[3] : slash[3]}-${String(slash[1]).padStart(2, '0')}-${String(slash[2]).padStart(2, '0')}`
     if (row.received_at) {
       const date = new Date(row.received_at)
@@ -31880,8 +32507,8 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       return
     }
     const workingTags = ensureAcceptedServiceTags()
-    const oursIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours')
-    const defaultIds = oursIds.length ? oursIds : tagIdsForPathFromWorkingTags(workingTags, 'efiled')
+    const efiledTag = caseFilingTagByKey(workingTags, 'case_filings_efiled')
+    const defaultIds = efiledTag ? tagIdsForTagIdFromWorkingTags(workingTags, efiledTag.id) : []
     const rows = []
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index]
@@ -31918,9 +32545,14 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
   function updateMatterFilingImportTag(rowId, tagId) {
+    const workingTags = ensureCaseFilingTagTree(tagsRef.current, { persist: true })
+    const selected = workingTags.find((tag) => String(tag.id) === String(tagId))
+    const efiled = caseFilingTagByKey(workingTags, 'case_filings_efiled') || caseFilingTagByKey(workingTags, 'case_filings')
+    const leaf = selected && caseFilingTagIsWithinRoot(workingTags, selected.id) ? selected : efiled
+    const selectedIds = leaf ? tagIdsForTagIdFromWorkingTags(workingTags, leaf.id) : []
     setMatterFilingImportRows((current) => current.map((row) => {
       if (row.id !== rowId) return row
-      const next = { ...row, tag_ids: tagId ? tagAndParentIds([tagId]) : [] }
+      const next = { ...row, tag_ids: selectedIds, document_tag_schema: CASE_FILING_TAG_SCHEMA }
       return { ...next, document_field_values: fillAssociatedDocumentFields(next) }
     }))
   }
@@ -32370,8 +33002,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                         <input value={row.name || ''} onChange={(e) => updateMatterFilingImportRow(row.id, { name: e.target.value })} placeholder="Document name" />
                         <label>Filing date <input type="date" value={row.date || inferFilingDateForDocument(row)} onChange={(e) => updateMatterFilingImportRow(row.id, { date: e.target.value, filing_date: e.target.value })} /></label>
                         <select value={deepestSelectedTagIds(row.tag_ids || [])[0] || ''} onChange={(e) => updateMatterFilingImportTag(row.id, e.target.value)}>
-                          <option value="">No tag</option>
-                          {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
+                          {caseFilingTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
                         </select>
                         <div style={{ color: '#64748b', fontSize: 12 }}>{(row.tag_ids || []).map((id) => tagFullName(id)).filter(Boolean).join(' > ')}</div>
                         {renderDocumentFieldsForRow(row, (fieldKey, value) => updateMatterFilingImportFieldValue(row.id, fieldKey, value))}
@@ -50265,7 +50896,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </div>
 
                 <p style={{ color: '#475569', marginTop: -6 }}>
-                  Showing documents tagged with {discoverySideFilter === 'our' ? 'Discovery > Ours > Requests' : "Discovery > Opposing Party\'s > Requests"}. Add New Requests opens the file picker, adds the selected files to Documents &gt; Bulk Upload Review with the request tag already applied, and lets you pick fields/tags or run the AI analyzer. Responses can be added from documents in the same matter tagged with Discovery &gt; Responses.
+                  Showing documents tagged with Case Filings &gt; Discovery &gt; Requests. The Our/Their side is stored separately on the document. Add New Requests opens the file picker, adds the selected files to Documents &gt; Bulk Upload Review with the request tag already applied, and lets you pick fields/tags or run the AI analyzer. Responses use Case Filings &gt; Discovery &gt; Responses.
                 </p>
                 {showDiscoveryRecoveryPanel && (
                   <div style={{ margin: '8px 0 12px', padding: 12, border: '2px solid #d97706', background: '#fffbeb', borderRadius: 6 }}>
@@ -51111,8 +51742,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'tags' && canOpenPage('tags') && (
           <>
-            <h1>Tags</h1>
-            <p>Create sibling and child tags. Tags can have icons/images, and rows can be dragged onto another tag to change their structure.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h1 style={{ marginRight: 'auto' }}>Tags</h1>
+              <span style={{ fontWeight: 800, color: tagLibrarySaveStatus === 'saved' ? '#15803d' : tagLibrarySaveStatus === 'saving' ? '#92400e' : '#b91c1c' }}>
+                {tagLibrarySaveStatus === 'saved' ? 'Saved to Mio' : tagLibrarySaveStatus === 'saving' ? 'Saving tags...' : 'Saved in this browser; cloud retry pending'}
+              </span>
+              <button type="button" onClick={saveTagLibraryNow} disabled={tagLibrarySaveStatus === 'saving'}>Save tags now</button>
+              <button type="button" onClick={() => { ensureCaseFilingTagTree(tagsRef.current, { persist: true, immediate: true }); setServiceEmailScanNote('Case Filings tag hierarchy repaired and saved.') }}>Repair Case Filings tree</button>
+            </div>
+            <p>Create sibling and child tags. Tags can have icons/images, and rows can be dragged onto another tag to change their structure. Every accepted eFile document and Notification of Service now receives the required <strong>Case Filings</strong> family: <strong>Case Filings → eFiled → Motions / Orders / Pleadings / Notices</strong> or <strong>Case Filings → Discovery → Requests / Responses / 3rd Party Discovery</strong>.</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
               <form onSubmit={saveTag} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, display: 'grid', gap: 10 }}>
                 <h2>Create Tag</h2>
@@ -51185,16 +51823,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     const hasChildren = children.length > 0
                     const collapsed = collapsedTagLibraryIds.includes(tag.id)
                     const showChildren = hasChildren && (!collapsed || Boolean(filterText))
+                    const isRequiredCaseFilingTag = tag.system_type === 'case_filing'
                     return (
                       <Fragment key={tag.id}>
                         <div
-                          draggable
+                          draggable={!isRequiredCaseFilingTag}
                           onDragStart={() => setDraggedTagId(tag.id)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => { moveTag(draggedTagId, tag.id); setDraggedTagId(null) }}
                           style={{ marginLeft: level * 24, display: 'flex', alignItems: 'center', gap: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginBottom: 6, background: 'white' }}
                         >
-                          <span style={{ cursor: 'grab' }}>☰</span>
+                          <span style={{ cursor: isRequiredCaseFilingTag ? 'not-allowed' : 'grab' }} title={isRequiredCaseFilingTag ? 'Required Case Filings structure' : 'Drag to move this tag'}>☰</span>
                           <button type="button" onClick={() => toggleTagLibraryCollapsed(tag.id)} disabled={!hasChildren} title={hasChildren ? (collapsed ? 'Expand family' : 'Collapse family') : 'No child tags'} style={{ width: 26 }}>
                             {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
                           </button>
@@ -51202,22 +51841,23 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <select value={tag.icon_data ? '' : (DOCUMENT_TAG_ICON_OPTIONS.some((option) => option.value === tag.icon_name) ? tag.icon_name : '')} onChange={(e) => updateTag(tag.id, { icon_name: e.target.value, icon_data: '' })} title="Tag icon" style={{ maxWidth: 128, fontSize: 11 }}>{DOCUMENT_TAG_ICON_OPTIONS.map((option) => <option key={option.value || 'auto'} value={option.value}>{option.glyph} {option.label}</option>)}</select>
                           <label title="Upload a custom icon/image for this tag" style={{ fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>Custom<input type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; const data = await readFileAsDataUrl(file); updateTag(tag.id, { icon_data: data.file_data, icon_name: data.file_name }) }} /></label>
                           {tag.icon_data && <button type="button" onClick={() => updateTag(tag.id, { icon_data: '', icon_name: '' })} title="Remove tag icon">× icon</button>}
-                          <input value={tag.name || ''} onChange={(e) => updateTag(tag.id, { name: e.target.value })} style={{ fontWeight: 800, minWidth: 180, flex: '1 1 220px' }} title="Edit tag name" />
+                          <input value={tag.name || ''} onChange={(e) => updateTag(tag.id, { name: e.target.value })} onBlur={() => saveTagLibraryNow().catch(() => {})} style={{ fontWeight: 800, minWidth: 180, flex: '1 1 220px' }} title="Edit tag name" />
+                          {isRequiredCaseFilingTag && <span style={{ fontSize: 11, color: '#475569', whiteSpace: 'nowrap' }} title="Required for Accepted eFile and Notification of Service documents">Required</span>}
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
                             <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: tag.color || '#4c6783', display: 'inline-block' }} />
                             <input type="color" value={tag.color || '#4c6783'} onChange={(e) => updateTagColor(tag.id, e.target.value)} title="Tag timeline color" />
                           </label>
                           <span style={{ fontSize: 12, color: '#64748b' }}>{tagScopeLabel(tag)}</span>
-                          <select value={tag.parent_id || ''} onChange={(e) => moveTag(tag.id, e.target.value)} style={{ marginLeft: 'auto' }}>
+                          <select value={tag.parent_id || ''} onChange={(e) => moveTag(tag.id, e.target.value)} disabled={isRequiredCaseFilingTag} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move this tag to another parent'} style={{ marginLeft: 'auto' }}>
                             <option value="">Top-level</option>
                             {allTagsIndented().filter((item) => item.id !== tag.id && !descendantTagIds(tag.id).includes(item.id)).map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
                           </select>
                           <button type="button" onClick={() => reorderTag(tag.id, -1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag up">↑</button>
                           <button type="button" onClick={() => reorderTag(tag.id, 1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) >= childTags(tag.parent_id || '').length - 1} title="Move tag down">↓</button>
-                          <button type="button" onClick={() => outdentTag(tag.id)} disabled={!tag.parent_id} title="Move tag out one level">Outdent</button>
-                          <button type="button" onClick={() => indentTag(tag.id)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag under prior sibling">Indent</button>
+                          <button type="button" onClick={() => outdentTag(tag.id)} disabled={isRequiredCaseFilingTag || !tag.parent_id} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move tag out one level'}>Outdent</button>
+                          <button type="button" onClick={() => indentTag(tag.id)} disabled={isRequiredCaseFilingTag || childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move tag under prior sibling'}>Indent</button>
                           <button type="button" onClick={() => openChildTagWindow(tag)}>+ Child</button>
-                          <button type="button" onClick={() => deleteTag(tag.id)}>Delete</button>
+                          <button type="button" onClick={() => deleteTag(tag.id)} disabled={isRequiredCaseFilingTag} title={isRequiredCaseFilingTag ? 'Required Case Filings system tag' : 'Delete this tag'}>Delete</button>
                         </div>
                         {showChildren && children.map((child) => renderTagLibraryNode(child, level + 1))}
                       </Fragment>
