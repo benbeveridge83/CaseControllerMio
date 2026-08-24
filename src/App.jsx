@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V246'
+const MIO_APP_VERSION = 'Mio V247'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -2979,6 +2979,15 @@ function App() {
   const [tagForm, setTagForm] = useState({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
   const [tagLibraryFilter, setTagLibraryFilter] = useState('')
   const [collapsedTagLibraryIds, setCollapsedTagLibraryIds] = useState([])
+  const [showTagSettings, setShowTagSettings] = useState(false)
+  const [tagPageSettings, setTagPageSettings] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioTagPageSettings') || 'null') || {}
+      return { deleteChildrenWithParent: stored.deleteChildrenWithParent !== false }
+    } catch {
+      return { deleteChildrenWithParent: true }
+    }
+  })
   const [childTagWindow, setChildTagWindow] = useState({ open: false, parent_id: '' })
   const [childTagForm, setChildTagForm] = useState({ name: '', parent_id: '', scope: 'all', matter_ids: [], icon_data: '', icon_name: '', color: '#4c6783' })
   const [aiTagRules, setAiTagRules] = useState([])
@@ -4184,6 +4193,10 @@ function App() {
       matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
+      caseMioTagPageSettings: { setter: (value) => {
+        const settings = value && typeof value === 'object' ? value : {}
+        setTagPageSettings({ deleteChildrenWithParent: settings.deleteChildrenWithParent !== false })
+      }, kind: 'object', fallback: { deleteChildrenWithParent: true } },
       caseControllerTags: { setter: (value, record = {}) => {
         const cloudTags = normalizeTagLibrarySnapshot(value)
         let browserRaw = null
@@ -5807,6 +5820,12 @@ function App() {
   }, [draftingTemplates])
 
   useEffect(() => {
+    const normalized = { deleteChildrenWithParent: tagPageSettings?.deleteChildrenWithParent !== false }
+    safeSetLocalStorage('caseMioTagPageSettings', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioTagPageSettings', JSON.stringify(normalized)) } catch {}
+  }, [tagPageSettings])
+
+  useEffect(() => {
     const normalized = normalizeTagLibrarySnapshot(tags)
     tagsRef.current = normalized
     // commitTagLibrary owns cloud persistence and revision ordering. This effect
@@ -5842,7 +5861,9 @@ function App() {
         timer = window.setTimeout(ensureWhenReady, 250)
         return
       }
-      ensureCaseFilingTagTree(tagsRef.current, { persist: true, immediate: true })
+      // V247: do not auto-repair or regenerate Case Filings tags on load.
+      // Mark the tag library as ready so document/tag reconciliation can use
+      // whatever structure the user actually saved.
       caseFilingTagTreeEnsuredRef.current = userId
     }
     ensureWhenReady()
@@ -15621,26 +15642,53 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function deleteTag(tagId) {
-    const tagToDelete = tagsRef.current.find((tag) => String(tag.id) === String(tagId))
-    if (tagToDelete?.system_type === 'case_filing') {
-      alert('This is a required Case Filings system tag. You can rename or recolor it, but its required hierarchy cannot be deleted.')
-      return
+    const currentTags = normalizeTagLibrarySnapshot(tagsRef.current)
+    const tagToDelete = currentTags.find((tag) => String(tag.id) === String(tagId))
+    if (!tagToDelete) return
+
+    const collectDescendants = (rootId) => {
+      const ids = []
+      const walk = (parentId) => {
+        currentTags
+          .filter((tag) => String(tag.parent_id || '') === String(parentId || ''))
+          .forEach((child) => {
+            ids.push(child.id)
+            walk(child.id)
+          })
+      }
+      walk(rootId)
+      return ids
     }
-    if (!confirm('Delete this tag? Child tags will become top-level tags. Documents will keep their other tags.')) return
+
+    const deleteChildren = tagPageSettings?.deleteChildrenWithParent !== false
+    const descendants = collectDescendants(tagId)
+    const idsToDelete = new Set([tagId, ...(deleteChildren ? descendants : [])])
+    const childText = descendants.length === 1 ? '1 child tag' : `${descendants.length} child tags`
+    const prompt = deleteChildren
+      ? `Delete "${tagToDelete.name || 'this tag'}"${descendants.length ? ` and its ${childText}` : ''}? Documents and other records will keep any tags that are not being deleted.`
+      : `Delete "${tagToDelete.name || 'this tag'}"?${descendants.length ? ` Its ${childText} will become top-level tags.` : ''} Documents and other records will keep their other tags.`
+    if (!confirm(prompt)) return
+
     const now = new Date().toISOString()
-    commitTagLibrary((current) => current.filter((tag) => tag.id !== tagId).map((tag) => tag.parent_id === tagId ? { ...tag, parent_id: '', updated_at: now } : tag), { immediate: true })
-    setDocuments((current) => current.map((doc) => ({ ...doc, tag_ids: (doc.tag_ids || []).filter((id) => id !== tagId) })))
-    setElements((current) => current.map((element) => ({ ...element, tag_ids: (element.tag_ids || []).filter((id) => id !== tagId) })))
-    setMatterPeople((current) => current.map((person) => ({ ...person, tag_ids: (person.tag_ids || []).filter((id) => id !== tagId) })))
+    commitTagLibrary((current) => current
+      .filter((tag) => !idsToDelete.has(tag.id))
+      .map((tag) => (!deleteChildren && String(tag.parent_id || '') === String(tagId)
+        ? { ...tag, parent_id: '', updated_at: now }
+        : tag)), { immediate: true })
+
+    const stripDeletedIds = (ids = []) => (Array.isArray(ids) ? ids : []).filter((id) => !idsToDelete.has(id))
+    setDocuments((current) => current.map((doc) => ({ ...doc, tag_ids: stripDeletedIds(doc.tag_ids) })))
+    setElements((current) => current.map((element) => ({ ...element, tag_ids: stripDeletedIds(element.tag_ids) })))
+    setMatterPeople((current) => current.map((person) => ({ ...person, tag_ids: stripDeletedIds(person.tag_ids) })))
+    setServiceEmailRows((current) => current.map((row) => ({ ...row, document_tag_ids: stripDeletedIds(row.document_tag_ids) })))
+    setMatterFilingImportRows((current) => current.map((row) => ({ ...row, tag_ids: stripDeletedIds(row.tag_ids) })))
+    setDocumentForm((current) => ({ ...current, tag_ids: stripDeletedIds(current.tag_ids) }))
+    setDocumentEditForm((current) => ({ ...current, tag_ids: stripDeletedIds(current.tag_ids) }))
+    setBulkSelectedTagIds((current) => stripDeletedIds(current))
   }
 
   function moveTag(tagId, nextParentId) {
     if (tagId === nextParentId) return
-    const movingTag = tagsRef.current.find((tag) => String(tag.id) === String(tagId))
-    if (movingTag?.system_type === 'case_filing') {
-      alert('This required Case Filings system tag must stay in the Case Filings hierarchy. You can still rename it, recolor it, change its icon, or add custom child tags.')
-      return
-    }
     commitTagLibrary((currentTags) => {
       let current = currentTags.find((tag) => tag.id === nextParentId)
       while (current) {
@@ -29416,6 +29464,11 @@ useEffect(() => {
 
   function ensureCaseFilingTagTree(startingTags = tagsRef.current, options = {}) {
     const working = normalizeTagLibrarySnapshot(startingTags).map((tag) => ({ ...tag, parent_id: String(tag.parent_id || tag.parentId || '') }))
+    // V247: the tag library is user-owned. Normal filing/tag workflows may resolve
+    // existing Case Filings roles, but they must never recreate, rename, reparent,
+    // or otherwise repair tags behind the user's back. Rebuilding the default
+    // filing tree is now an explicit Tags > Settings action only.
+    if (options.repair !== true) return working
     let changed = false
     const now = new Date().toISOString()
     const byKey = new Map()
@@ -52085,9 +52138,32 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 {tagLibrarySaveStatus === 'saved' ? 'Saved to Mio' : tagLibrarySaveStatus === 'saving' ? 'Saving tags...' : 'Saved in this browser; cloud retry pending'}
               </span>
               <button type="button" onClick={saveTagLibraryNow} disabled={tagLibrarySaveStatus === 'saving'}>Save tags now</button>
-              <button type="button" onClick={() => { ensureCaseFilingTagTree(tagsRef.current, { persist: true, immediate: true }); setServiceEmailScanNote('Case Filings tag hierarchy repaired and saved.') }}>Repair Case Filings tree</button>
+              <button type="button" onClick={() => setShowTagSettings((value) => !value)}>Settings</button>
             </div>
-            <p>Create sibling and child tags. Tags can have icons/images, and rows can be dragged onto another tag to change their structure. Every accepted eFile document and Notification of Service now receives the required <strong>Case Filings</strong> family: <strong>Case Filings → eFiled → Motions / Orders / Pleadings / Notices</strong> or <strong>Case Filings → Discovery → Requests / Responses / 3rd Party Discovery</strong>.</p>
+            {showTagSettings && (
+              <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, marginBottom: 12, background: '#f8fafc', display: 'grid', gap: 10 }}>
+                <strong>Tag settings</strong>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={tagPageSettings?.deleteChildrenWithParent !== false}
+                    onChange={(e) => setTagPageSettings((current) => ({ ...current, deleteChildrenWithParent: e.target.checked }))}
+                  />
+                  When deleting a parent tag, delete all child tags too
+                </label>
+                <div style={{ fontSize: 12, color: '#475569' }}>
+                  Default: on. Turn this off if you want a deleted parent's direct children to become top-level tags instead.
+                </div>
+                <div>
+                  <button type="button" onClick={() => {
+                    if (!confirm('Recreate any missing default Case Filings tags and restore the default Case Filings hierarchy? This is the only action that will regenerate those tags.')) return
+                    ensureCaseFilingTagTree(tagsRef.current, { persist: true, immediate: true, repair: true })
+                    setServiceEmailScanNote('Case Filings defaults were explicitly repaired and saved.')
+                  }}>Rebuild default Case Filings tags</button>
+                </div>
+              </div>
+            )}
+            <p>Create sibling and child tags. Tags can have icons/images, and rows can be dragged onto another tag to change their structure. Mio will use Case Filings tags that exist, but it will not recreate deleted filing tags or move them back automatically. If a filing tag is missing, you can choose another tag during review or explicitly rebuild the defaults from <strong>Settings</strong> above.</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
               <form onSubmit={saveTag} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, display: 'grid', gap: 10 }}>
                 <h2>Create Tag</h2>
@@ -52160,17 +52236,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     const hasChildren = children.length > 0
                     const collapsed = collapsedTagLibraryIds.includes(tag.id)
                     const showChildren = hasChildren && (!collapsed || Boolean(filterText))
-                    const isRequiredCaseFilingTag = tag.system_type === 'case_filing'
+                    const isCaseFilingRoleTag = tag.system_type === 'case_filing'
                     return (
                       <Fragment key={tag.id}>
                         <div
-                          draggable={!isRequiredCaseFilingTag}
+                          draggable
                           onDragStart={() => setDraggedTagId(tag.id)}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => { moveTag(draggedTagId, tag.id); setDraggedTagId(null) }}
                           style={{ marginLeft: level * 24, display: 'flex', alignItems: 'center', gap: 8, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginBottom: 6, background: 'white' }}
                         >
-                          <span style={{ cursor: isRequiredCaseFilingTag ? 'not-allowed' : 'grab' }} title={isRequiredCaseFilingTag ? 'Required Case Filings structure' : 'Drag to move this tag'}>☰</span>
+                          <span style={{ cursor: 'grab' }} title="Drag to move this tag">☰</span>
                           <button type="button" onClick={() => toggleTagLibraryCollapsed(tag.id)} disabled={!hasChildren} title={hasChildren ? (collapsed ? 'Expand family' : 'Collapse family') : 'No child tags'} style={{ width: 26 }}>
                             {hasChildren ? (collapsed && !filterText ? '▸' : '▾') : ''}
                           </button>
@@ -52179,22 +52255,22 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                           <label title="Upload a custom icon/image for this tag" style={{ fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>Custom<input type="file" accept="image/*" style={{ display: 'none' }} onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; const data = await readFileAsDataUrl(file); updateTag(tag.id, { icon_data: data.file_data, icon_name: data.file_name }) }} /></label>
                           {tag.icon_data && <button type="button" onClick={() => updateTag(tag.id, { icon_data: '', icon_name: '' })} title="Remove tag icon">× icon</button>}
                           <input value={tag.name || ''} onChange={(e) => updateTag(tag.id, { name: e.target.value })} onBlur={() => saveTagLibraryNow().catch(() => {})} style={{ fontWeight: 800, minWidth: 180, flex: '1 1 220px' }} title="Edit tag name" />
-                          {isRequiredCaseFilingTag && <span style={{ fontSize: 11, color: '#475569', whiteSpace: 'nowrap' }} title="Required for Accepted eFile and Notification of Service documents">Required</span>}
+                          {isCaseFilingRoleTag && <span style={{ fontSize: 11, color: '#475569', whiteSpace: 'nowrap' }} title="Mio recognizes this tag's filing role by its internal key; you may rename, move, or delete it.">Filing role</span>}
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
                             <span style={{ width: 14, height: 14, borderRadius: 3, border: '1px solid #94a3b8', background: tag.color || '#4c6783', display: 'inline-block' }} />
                             <input type="color" value={tag.color || '#4c6783'} onChange={(e) => updateTagColor(tag.id, e.target.value)} title="Tag timeline color" />
                           </label>
                           <span style={{ fontSize: 12, color: '#64748b' }}>{tagScopeLabel(tag)}</span>
-                          <select value={tag.parent_id || ''} onChange={(e) => moveTag(tag.id, e.target.value)} disabled={isRequiredCaseFilingTag} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move this tag to another parent'} style={{ marginLeft: 'auto' }}>
+                          <select value={tag.parent_id || ''} onChange={(e) => moveTag(tag.id, e.target.value)} title="Move this tag to another parent" style={{ marginLeft: 'auto' }}>
                             <option value="">Top-level</option>
                             {allTagsIndented().filter((item) => item.id !== tag.id && !descendantTagIds(tag.id).includes(item.id)).map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level)}{item.name}</option>)}
                           </select>
                           <button type="button" onClick={() => reorderTag(tag.id, -1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag up">↑</button>
                           <button type="button" onClick={() => reorderTag(tag.id, 1)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) >= childTags(tag.parent_id || '').length - 1} title="Move tag down">↓</button>
-                          <button type="button" onClick={() => outdentTag(tag.id)} disabled={isRequiredCaseFilingTag || !tag.parent_id} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move tag out one level'}>Outdent</button>
-                          <button type="button" onClick={() => indentTag(tag.id)} disabled={isRequiredCaseFilingTag || childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title={isRequiredCaseFilingTag ? 'Required Case Filings hierarchy' : 'Move tag under prior sibling'}>Indent</button>
+                          <button type="button" onClick={() => outdentTag(tag.id)} disabled={!tag.parent_id} title="Move tag out one level">Outdent</button>
+                          <button type="button" onClick={() => indentTag(tag.id)} disabled={childTags(tag.parent_id || '').findIndex((item) => item.id === tag.id) <= 0} title="Move tag under prior sibling">Indent</button>
                           <button type="button" onClick={() => openChildTagWindow(tag)}>+ Child</button>
-                          <button type="button" onClick={() => deleteTag(tag.id)} disabled={isRequiredCaseFilingTag} title={isRequiredCaseFilingTag ? 'Required Case Filings system tag' : 'Delete this tag'}>Delete</button>
+                          <button type="button" onClick={() => deleteTag(tag.id)} title="Delete this tag">Delete</button>
                         </div>
                         {showChildren && children.map((child) => renderTagLibraryNode(child, level + 1))}
                       </Fragment>
