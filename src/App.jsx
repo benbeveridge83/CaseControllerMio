@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V243'
+const MIO_APP_VERSION = 'Mio V244'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -30086,7 +30086,7 @@ useEffect(() => {
     const currentPath = matterEfilePickerCurrentPath()
     const parentId = matterEfileFolderPicker.current?.parentReference?.id || ''
     return (
-      <Modal title={`Choose efile folder — ${matterLabel(matterEfileFolderPicker.matterId)}`} onClose={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })} wide>
+      <Modal title={`Choose efile folder — ${matterLabel(matterEfileFolderPicker.matterId)}`} onClose={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })} wide zIndex={2200}>
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}><button type="button" disabled={matterEfileFolderPicker.busy || !parentId} onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: parentId })}>↑ Up</button><input value={currentPath} readOnly style={{ flex: 1 }} /><button type="button" disabled={matterEfileFolderPicker.busy} onClick={useCurrentMatterEfilePickerFolder} style={{ background: '#2563eb', color: '#fff', border: 0 }}>Use this folder</button></div>
           {matterEfileFolderPicker.error && <div style={{ padding: 9, border: '1px solid #f59e0b', background: '#fffbeb', color: '#92400e', borderRadius: 7 }}>{matterEfileFolderPicker.error}</div>}
@@ -52785,7 +52785,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   )
 }
 
-function Modal({ title, children, onClose, wide = false }) {
+function Modal({ title, children, onClose, wide = false, zIndex = 1000 }) {
+  const panelZIndex = Number.isFinite(Number(zIndex)) ? Number(zIndex) : 1000
   return (
     <>
       <div style={{
@@ -52801,7 +52802,7 @@ function Modal({ title, children, onClose, wide = false }) {
         background: 'white',
         border: '2px solid #333',
         padding: 25,
-        zIndex: 1000,
+        zIndex: panelZIndex,
         boxShadow: '0 0 20px rgba(0,0,0,0.35)'
       }}>
         <h2 style={{ textAlign: 'center' }}>{title}</h2>
@@ -52814,7 +52815,7 @@ function Modal({ title, children, onClose, wide = false }) {
           position: 'fixed',
           inset: 0,
           background: 'rgba(0,0,0,0.25)',
-          zIndex: 999
+          zIndex: panelZIndex - 1
         }}
       />
     </>
