@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V240'
+const MIO_APP_VERSION = 'Mio V241'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -1971,7 +1971,6 @@ function App() {
   const matterEfileFolderHandlesRef = useRef({})
   const serviceEmailRowFolderHandlesRef = useRef({})
   const lastServiceEfileFolderHandleRef = useRef(null)
-  const canonicalEfileTagMigrationRef = useRef(false)
   const benAttorneyBackfillRef = useRef(false)
   const [matterEfileFolderPicker, setMatterEfileFolderPicker] = useState({
     open: false,
@@ -2737,6 +2736,7 @@ function App() {
   const [showRequestedReliefBuilder, setShowRequestedReliefBuilder] = useState(false)
   const [showRequestedReliefRestoreWindow, setShowRequestedReliefRestoreWindow] = useState(false)
   const [requestedReliefBuilderMode, setRequestedReliefBuilderMode] = useState('relief')
+  const [requestedReliefIssuePickerView, setRequestedReliefIssuePickerView] = useState('simple')
   const [requestedReliefLayout, setRequestedReliefLayout] = useState(() => localStorage.getItem('caseMioRequestedReliefLayout') || 'split')
   const [requestedReliefActiveIssueId, setRequestedReliefActiveIssueId] = useState('')
   const [showRequestedReliefEditMenu, setShowRequestedReliefEditMenu] = useState(false)
@@ -4710,12 +4710,6 @@ function App() {
     safeSetLocalStorage('caseControllerTags', JSON.stringify(tags))
     try { saveMioStateKey('caseControllerTags', JSON.stringify(tags)) } catch {}
   }, [tags])
-
-  useEffect(() => {
-    if (!tags.length || canonicalEfileTagMigrationRef.current) return
-    canonicalEfileTagMigrationRef.current = true
-    ensureAcceptedServiceTags({ migrateLegacy: true })
-  }, [tags.length])
 
   useEffect(() => {
     const normalized = (litigationTracks || []).map(ensureLitigationTrackShape)
@@ -12689,8 +12683,7 @@ async function saveLitigationDocument(event) {
       .map((tagId) => tags.find((tag) => String(tag.id) === String(tagId)))
       .filter(Boolean)
     if (!candidates.length) return null
-    const canonical = candidates.find((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >'))
-    return canonical || candidates.sort((a, b) => tagDepth(b.id) - tagDepth(a.id) || String(a.name || '').localeCompare(String(b.name || '')))[0]
+    return candidates.sort((a, b) => tagDepth(b.id) - tagDepth(a.id) || String(a.name || '').localeCompare(String(b.name || '')))[0]
   }
 
   function litigationTagFallbackGlyph(tag = null, doc = {}) {
@@ -12914,8 +12907,8 @@ async function saveLitigationDocument(event) {
                 {track.type !== 'discovery' && <button type="button" onClick={() => duplicateLitigationTrack(track)}>Duplicate track</button>}
                 {track.type !== 'discovery' && <button type="button" onClick={() => addLitigationTrackRow(track)}>Add section</button>}
                 <button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id })}>Add document</button>
-                {track.type !== 'discovery' && <button type="button" onClick={() => beginRequestedReliefSetupFlow({ matter_id: track.matter_id, relief_type: 'client_relief', litigation_track_id: track.id })}>Add requested relief</button>}
-                {track.type !== 'discovery' && reliefCount > 0 && <button type="button" onClick={() => openMatterRequestedReliefDashboardInNewTab(track.matter_id)}>Open requested relief</button>}
+                {track.type !== 'discovery' && <button type="button" onClick={() => openMatterRequestedReliefDashboard(track.matter_id, { litigationTrackId: track.id, openSetup: true, reliefType: 'client_relief' })}>Add requested relief</button>}
+                {track.type !== 'discovery' && reliefCount > 0 && <button type="button" onClick={() => openMatterRequestedReliefDashboard(track.matter_id, { litigationTrackId: track.id })}>Open requested relief</button>}
                 <button type="button" onClick={() => archiveLitigationTrack(track)} style={{ color: '#991b1b' }}>Archive track</button>
                 {!track.is_default && <button type="button" onClick={() => deleteEmptyLitigationTrack(track)} style={{ color: '#991b1b' }}>Delete empty track</button>}
               </div>
@@ -13047,12 +13040,12 @@ async function saveLitigationDocument(event) {
   function beginRequestedReliefForTrackParty(track, party) {
     const lanePlacements = litigationPlacementRowsForTrack(track.id).filter((row) => String(row.party_id || '') === String(party.id || ''))
     const preferred = lanePlacements.map((row) => documents.find((doc) => String(doc.id) === String(row.document_id))).filter(Boolean).find((doc) => ['motion', 'pleading'].includes(litigationDocumentKindKey(doc)))
-    beginRequestedReliefSetupFlow({
-      matter_id: track.matter_id,
-      relief_type: requestedReliefTypeForParty(party),
-      litigation_track_id: track.id,
-      litigation_party_id: party.id || '',
-      filing_document_id: preferred?.id || ''
+    openMatterRequestedReliefDashboard(track.matter_id, {
+      litigationTrackId: track.id,
+      litigationPartyId: party.id || '',
+      openSetup: true,
+      reliefType: requestedReliefTypeForParty(party),
+      filingDocumentId: preferred?.id || ''
     })
   }
 
@@ -15971,7 +15964,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       }))
   }
 
-  async function analyzeDocumentWithAi(row, updateRow, { lockedMatterId = '', extraAiFeedbackRecords = [], canonicalEfileTagging = false } = {}) {
+  async function analyzeDocumentWithAi(row, updateRow, { lockedMatterId = '', extraAiFeedbackRecords = [] } = {}) {
     if (!row) return
     const lockMatter = Boolean(lockedMatterId)
     const matterIdForAi = lockedMatterId || row.matter_id || ''
@@ -16011,14 +16004,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     }
 
     const matterForAi = matters.find((matter) => matter.id === matterIdForAi)
-    const isEfileDocument = canonicalEfileTagging
-      || /efile|filing-import|service-email/i.test(String(row.source_type || row.id || ''))
-      || (Array.isArray(row.tag_ids) && row.tag_ids.some((tagId) => isEfileClassificationTagId(tagId)))
-    const workingAiTags = isEfileDocument ? ensureAcceptedServiceTags() : tags
-    const existingTagsForAi = workingAiTags.filter((tag) => !isEfileDocument || normalizeTagLookupValue(tagPathFromWorkingTags(workingAiTags, tag.id)).startsWith('efiled > filing')).map((tag) => ({
+    const existingTagsForAi = tags.map((tag) => ({
       id: tag.id,
       name: tag.name || '',
-      tag_path: tagPathFromWorkingTags(workingAiTags, tag.id),
+      tag_path: tagFullName(tag.id),
       parent_id: tag.parent_id || null
     }))
     const mattersForAi = matters.map((matter) => ({
@@ -16037,9 +16026,6 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         document_id: row.id || null,
         matter_id: matterIdForAi,
         matter_locked: lockMatter,
-        is_efile_document: isEfileDocument,
-        required_tag_root: isEfileDocument ? 'efiled > filing' : '',
-        efile_tag_rule: isEfileDocument ? 'Choose exactly one most-specific document-type leaf under efiled > filing. Never use Ours, Theirs, Opposing Party, or Court as document tags. Filer identity is stored separately in filed_by_person_id and controls the Litigation Track party lane.' : '',
         matter_name: matterForAi ? formatMatterOption(matterForAi) : '',
         name: row.name || row.file_name || '',
         document_name: row.name || row.file_name || '',
@@ -16066,7 +16052,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         tag_analysis_report_rule: 'For every tag you apply or seriously consider, return a tag_analysis item showing which recognition rules fired, which did not fire, which exclusions were considered, and the reason for the final decision.',
         ai_feedback_examples: recentAiFeedbackForAi(extraAiFeedbackRecords),
         field_references: fieldReferenceContextForAi(matterIdForAi, row),
-        tag_hierarchy_rule: isEfileDocument ? 'For this e-filed document, return one most-specific leaf under efiled > filing and include its parents. Do not return source/side tags such as Ours, Theirs, Opposing Party, or Court.' : 'Only apply a child tag if the AI also finds that every parent tag in its path applies under that parent tag\'s recognition rules. If a child tag is selected, include its qualifying parent tags in suggested_tags. IMPORTANT: If a tag has child tags, the AI must not stop at that parent tag as the final classification. The AI must continue down the tag tree and choose the most specific applicable child/leaf tag. If no child tag can be chosen with confidence, omit that branch and add a warning instead of returning the parent-only tag.',
+        tag_hierarchy_rule: 'Only apply a child tag if the AI also finds that every parent tag in its path applies under that parent tag\'s recognition rules. If a child tag is selected, include its qualifying parent tags in suggested_tags. IMPORTANT: If a tag has child tags, the AI must not stop at that parent tag as the final classification. The AI must continue down the tag tree and choose the most specific applicable child/leaf tag. For example, do not return Discovery > Our if Discovery > Our > Requests and Discovery > Our > Responses exist; choose Requests or Responses. If no child tag can be chosen with confidence, omit that branch and add a warning instead of returning the parent-only tag.',
         required_discovery_service_date_rule: 'For every document tagged anywhere under Discovery, Service Date is required if a Service Date field exists. Look first in the Certificate of Service section near the end of the document for a sentence like I certify that a true copy was served on [date], or similar service language. Do not confuse service date with response due date, filing date, hearing date, or setting date. If no service date can be found, return a warning saying Service Date could not be found.',
         signature_source_rule: 'Do not treat a To:, served on, certificate of service recipient, e-service recipient, or service-list line as a signature block. For Ours vs Opposing Party, rely primarily on the true signature block and Attorney for line near the end of the document.',
         tag_exclusivity_rule: 'Exclusivity rules are mandatory. If a tag conflicts with another tag under tag_exclusivity_rules, do not return both. Choose the tag supported by the strongest evidence, usually the signature block/source evidence. If uncertain, omit both conflicting source tags and add a warning.'
@@ -16082,26 +16068,15 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
 
-    const normalizedAi = normalizeAiSuggestionResponse(data, matterIdForAi)
-    let aiPatch = {
-      ...normalizedAi,
+    const aiPatch = {
+      ...normalizeAiSuggestionResponse(data, matterIdForAi),
       extracted_text: textExtraction.extracted_text,
       extraction_method: textExtraction.extraction_method,
       text_quality: textExtraction.text_quality,
       needs_ocr: false,
-      ai_warnings: [...extractionWarnings, ...(normalizedAi.ai_warnings || [])]
+      ai_warnings: [...extractionWarnings, ...((normalizeAiSuggestionResponse(data, matterIdForAi).ai_warnings) || [])]
     }
-    if (isEfileDocument) {
-      const canonicalRow = { ...row, extracted_text: textExtraction.extracted_text, subject: `${row.subject || ''} ${normalizedAi.ai_summary || ''} ${(normalizedAi.suggested_tags || []).map((tag) => tag.tag_path || tag.name || '').join(' ')}` }
-      const canonicalPath = acceptedServiceTagPathForRow(canonicalRow)
-      const canonicalIds = tagIdsForPathFromWorkingTags(workingAiTags, canonicalPath)
-      const leafId = canonicalIds[canonicalIds.length - 1] || ''
-      if (leafId) aiPatch = { ...aiPatch, suggested_tags: [{ tag_id: leafId, tag_path: canonicalPath, confidence: 1, reason: 'Canonical e-file document-type classification under efiled > filing.' }], ai_warnings: [...(aiPatch.ai_warnings || []), `Canonical e-file tag enforced: ${canonicalPath}.`] }
-    }
-    updateRow((currentRow) => {
-      const cleanCurrent = isEfileDocument ? { ...currentRow, tag_ids: (currentRow.tag_ids || []).filter((tagId) => !isEfileClassificationTagId(tagId)) } : currentRow
-      return applyAiResultToEditableRow(cleanCurrent, aiPatch, { lockMatter })
-    })
+    updateRow((currentRow) => applyAiResultToEditableRow(currentRow, aiPatch, { lockMatter }))
   }
 
   function analyzeAiForBulkRow(rowId, lockedMatterId = '', options = {}) {
@@ -26434,9 +26409,7 @@ useEffect(() => {
   async function importSelectedOneDriveEfileDocuments() {
     const rows = oneDriveMatterImportRows.filter((row) => row.selected && !row.alreadyImported)
     if (!rows.length) { alert('Select at least one new OneDrive document link to import.'); return }
-    const canonicalWorkingTags = ensureAcceptedServiceTags()
-    const requiredTagIds = tagIdsForPathFromWorkingTags(canonicalWorkingTags, 'efiled > filing > Other')
-    const requiredTagId = requiredTagIds[requiredTagIds.length - 1] || efiledTagId()
+    const requiredTagId = efiledTagId()
     if (!requiredTagId) { alert('Mio could not find the top-level “efiled” tag. Create that tag first, then import.'); return }
     setOneDriveBusy(true)
     const grouped = new Map()
@@ -26487,7 +26460,7 @@ useEffect(() => {
       }
       setOneDriveMatterImportRows((current) => current.map((row) => rows.some((picked) => picked.id === row.id) ? { ...row, selected: false, alreadyImported: true } : row))
       setOneDriveImportStep(4)
-      setOneDriveMatterImportStatus(`Imported ${savedRows.length} document-to-matter record(s). Every imported document received the required “efiled > filing” tag. Detailed tagging was left for later review.`)
+      setOneDriveMatterImportStatus(`Imported ${savedRows.length} document-to-matter record(s). Every imported document received the required “efiled” tag. Detailed tagging was left for later review.`)
     } catch (error) {
       setOneDriveMatterImportStatus(`Import stopped: ${error.message || error}. ${savedRows.length} record(s) were prepared before the error.`)
       if (savedRows.length) setDocuments((current) => [...savedRows, ...current])
@@ -27142,55 +27115,112 @@ useEffect(() => {
     return row.extracted_pdf_name || primaryServicePdfAttachment(row)?.name || safeServiceDocumentNameFromLink(primaryServiceFilingLink(row)) || row.suggested_document_name || ''
   }
 
-  function acceptedServiceRequiredTagPaths() {
+  function ensureAcceptedServiceTags() {
+    // V241 intentionally leaves the e-file tag tree exactly as the user arranged it.
+    // Do not create, move, delete, merge, or migrate tags when an e-file window opens.
+    return [...tags]
+  }
+
+  function acceptedServiceDocumentType(row = {}) {
+    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''}`.toLowerCase()
+    if (/proposed order|proposed/.test(text)) return 'Proposed Order'
+    if (/order/.test(text)) return 'Proposed Order'
+    if (/interrogator|rogg/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > Roggs'
+    if (/request for production|rfp/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFP'
+    if (/request for disclosure|disclosure|rfd/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFD'
+    if (/request for admission|admission|rfa/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFA'
+    if (/request for production|rfp|production/.test(text)) return 'Discovery > Request > RFP'
+    if (/request for disclosure|disclosure|rfd/.test(text)) return 'Discovery > Request > RFD'
+    if (/request for admission|admission|rfa/.test(text)) return 'Discovery > Request > RFA'
+    if (/interrogator|rogg/.test(text)) return 'Discovery > Request > Roggs'
+    if (/notice|hearing|trial|setting|conference/.test(text)) return 'filing > Notice'
+    if (/motion|temporary order|compel|enforce|withdraw|continuance|sanction|petition to enforce/.test(text)) return 'filing > Motion'
+    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition/.test(text)) return 'filing > Pleading/Petition/Answer'
+    return 'Other'
+  }
+
+  function acceptedServiceTagPathForRow(row = {}) {
+    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
+    if (String(type).startsWith('filing >')) return `efiled > Ours > ${type}`
+    if (String(type).startsWith('Discovery >')) return `efiled > Ours > ${type}`
+    if (type === 'Proposed Order') return 'efiled > Ours > filing > Proposed Order'
+    return `efiled > Ours > ${type}`
+  }
+
+  function acceptedServiceTagCandidatePaths(row = {}) {
+    const legacyPath = acceptedServiceTagPathForRow(row)
+    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
+    const withoutOurs = legacyPath.replace(/^efiled\s*>\s*Ours\s*>\s*/i, 'efiled > ')
+    const promotedToTopLevel = withoutOurs.replace(/^efiled\s*>\s*/i, '')
+    const v240Path = String(type).startsWith('Discovery >')
+      ? `efiled > filing > ${type}`
+      : type === 'Other'
+        ? 'efiled > filing > Other'
+        : type === 'Proposed Order'
+          ? 'efiled > filing > Proposed Order'
+          : withoutOurs
+    return Array.from(new Set([legacyPath, withoutOurs, promotedToTopLevel, v240Path].filter(Boolean)))
+  }
+
+  function acceptedServiceTagIdsFromWorkingTags(row = {}, workingTags = tags) {
+    for (const path of acceptedServiceTagCandidatePaths(row)) {
+      const ids = tagIdsForPathFromWorkingTags(workingTags, path)
+      if (ids.length) return ids
+    }
+    return []
+  }
+
+  function serviceEmailFilingTagIds(row = null, options = {}) {
+    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
+    const typed = acceptedServiceTagIdsFromWorkingTags(row || {}, workingTags)
+    if (typed.length) return typed
+    const normalized = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim()
+    const exact = workingTags.find((tag) => normalized(tagPathFromWorkingTags(workingTags, tag.id)) === 'filings > ours')
+    if (exact) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, exact.id))
+    const oursUnderFilings = workingTags.find((tag) => normalized(tag.name) === 'ours' && normalized(tagPathFromWorkingTags(workingTags, tag.parent_id)).endsWith('filings'))
+    if (oursUnderFilings) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, oursUnderFilings.id))
+    const ours = workingTags.find((tag) => normalized(tag.name) === 'ours')
+    if (ours) return tagIdsForPathFromWorkingTags(workingTags, tagPathFromWorkingTags(workingTags, ours.id))
+    return tagIdsForPathFromWorkingTags(workingTags, 'efiled')
+  }
+
+  function noticeServiceRequiredTagPaths() {
     return [
-      'efiled',
-      'efiled > filing',
-      'efiled > filing > Pleading/Petition/Answer',
-      'efiled > filing > Motion',
-      'efiled > filing > Notice',
-      'efiled > filing > Order',
-      'efiled > filing > Proposed Order',
-      'efiled > filing > Discovery',
-      'efiled > filing > Discovery > Request',
-      'efiled > filing > Discovery > Request > RFP',
-      'efiled > filing > Discovery > Request > RFD',
-      'efiled > filing > Discovery > Request > RFA',
-      'efiled > filing > Discovery > Request > Roggs',
-      'efiled > filing > Discovery > Response',
-      'efiled > filing > Discovery > Response > RFP',
-      'efiled > filing > Discovery > Response > RFD',
-      'efiled > filing > Discovery > Response > RFA',
-      'efiled > filing > Discovery > Response > Roggs',
-      'efiled > filing > Discovery > Other',
-      'efiled > filing > Service Document',
-      'efiled > filing > Other'
+      'Opposing Party',
+      'Opposing Party > Petition / Answer',
+      'Opposing Party > Notice',
+      'Opposing Party > Motion',
+      'Opposing Party > Discovery',
+      'Opposing Party > Discovery > Requests',
+      'Opposing Party > Discovery > Requests > Request for Production',
+      'Opposing Party > Discovery > Requests > Request for Disclosure',
+      'Opposing Party > Discovery > Requests > Request for Admission',
+      'Opposing Party > Discovery > Requests > Interrogatories',
+      'Opposing Party > Discovery > Responses',
+      'Opposing Party > Discovery > Responses > Response to Request for Production',
+      'Opposing Party > Discovery > Responses > Response to Request for Disclosure',
+      'Opposing Party > Discovery > Responses > Response to Request for Admission',
+      'Opposing Party > Discovery > Responses > Answers to Interrogatories',
+      'Opposing Party > Third Party Discovery',
+      'Opposing Party > Third Party Discovery > Subpoena',
+      'Opposing Party > Third Party Discovery > Deposition',
+      'Opposing Party > Third Party Discovery > Records',
+      'Court',
+      'Court > Notice',
+      'Court > Order',
+      'Court > Setting',
+      'Court > Other'
     ]
   }
 
-  function canonicalEfileTagStyle(path = '') {
-    const value = String(path || '').toLowerCase()
-    if (/proposed order|> order$/.test(value)) return { color: '#334155', icon_name: 'order' }
-    if (/notice/.test(value)) return { color: '#16a34a', icon_name: 'notice' }
-    if (/motion/.test(value)) return { color: '#d97706', icon_name: 'motion' }
-    if (/discovery/.test(value)) return { color: '#0891b2', icon_name: 'discovery' }
-    if (/service document/.test(value)) return { color: '#7c3aed', icon_name: 'service' }
-    if (/pleading|petition|answer/.test(value)) return { color: '#2563eb', icon_name: 'pleading' }
-    return { color: '#64748b', icon_name: 'tag' }
-  }
-
-  function safeAcceptedTagId(path = '') {
-    return `tag-efile-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
-  }
-
   function tagPathFromWorkingTags(workingTags, tagId) {
-    const tag = workingTags.find((item) => String(item.id) === String(tagId))
+    const tag = workingTags.find((item) => item.id === tagId)
     if (!tag) return ''
     const parents = []
     let current = tag
     let guard = 0
     while (current?.parent_id && guard < 25) {
-      const parent = workingTags.find((item) => String(item.id) === String(current.parent_id))
+      const parent = workingTags.find((item) => item.id === current.parent_id)
       if (!parent) break
       parents.unshift(parent.name)
       current = parent
@@ -27199,60 +27229,16 @@ useEffect(() => {
     return [...parents, tag.name].join(' > ')
   }
 
-  function tagAndParentIdsFromWorkingTags(workingTags, selectedIds = []) {
-    const output = []
-    ;(selectedIds || []).filter(Boolean).forEach((tagId) => {
-      const chain = []
-      let current = workingTags.find((tag) => String(tag.id) === String(tagId))
-      let guard = 0
-      while (current && guard < 25) {
-        chain.unshift(current.id)
-        current = current.parent_id ? workingTags.find((tag) => String(tag.id) === String(current.parent_id)) : null
-        guard += 1
-      }
-      chain.forEach((id) => { if (!output.includes(id)) output.push(id) })
-    })
-    return output
+  function safeNoticeTagId(path = '') {
+    return `tag-notice-${String(path || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)}`
   }
 
-  function canonicalEfilePathFromLegacyPath(path = '') {
-    const value = normalizeTagLookupValue(path)
-    if (/proposed order/.test(value)) return 'efiled > filing > Proposed Order'
-    if (/response/.test(value) && /production|rfp/.test(value)) return 'efiled > filing > Discovery > Response > RFP'
-    if (/response|answer/.test(value) && /disclosure|rfd/.test(value)) return 'efiled > filing > Discovery > Response > RFD'
-    if (/response|answer/.test(value) && /admission|rfa/.test(value)) return 'efiled > filing > Discovery > Response > RFA'
-    if (/response|answer/.test(value) && /interrogator|rogg/.test(value)) return 'efiled > filing > Discovery > Response > Roggs'
-    if (/request/.test(value) && /production|rfp/.test(value)) return 'efiled > filing > Discovery > Request > RFP'
-    if (/request/.test(value) && /disclosure|rfd/.test(value)) return 'efiled > filing > Discovery > Request > RFD'
-    if (/request/.test(value) && /admission|rfa/.test(value)) return 'efiled > filing > Discovery > Request > RFA'
-    if (/request/.test(value) && /interrogator|rogg/.test(value)) return 'efiled > filing > Discovery > Request > Roggs'
-    if (/discovery|subpoena|deposition|records/.test(value)) return 'efiled > filing > Discovery > Other'
-    if (/service|citation|precept|waiver|return of service/.test(value)) return 'efiled > filing > Service Document'
-    if (/\border\b|decree|judgment|ruling/.test(value)) return 'efiled > filing > Order'
-    if (/notice|setting|hearing|trial/.test(value)) return 'efiled > filing > Notice'
-    if (/motion|application|compel|enforce|continuance|sanction/.test(value)) return 'efiled > filing > Motion'
-    if (/petition|answer|pleading|counterpetition|complaint/.test(value)) return 'efiled > filing > Pleading/Petition/Answer'
-    return 'efiled > filing > Other'
-  }
-
-  function isLegacyEfileClassificationTag(tag = {}, workingTags = tags) {
-    const path = normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag?.id))
-    return path.startsWith('efiled > ours') || path.startsWith('efiled > theirs') || (String(tag?.id || '').startsWith('tag-notice-') && (path.startsWith('opposing party') || path.startsWith('court')))
-  }
-
-  function isEfileClassificationTagId(tagId = '', workingTags = tags) {
-    const tag = workingTags.find((item) => String(item.id) === String(tagId))
-    if (!tag) return false
-    const path = normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, tag.id))
-    return path === 'efiled' || path.startsWith('efiled > ') || isLegacyEfileClassificationTag(tag, workingTags)
-  }
-
-  function ensureAcceptedServiceTags({ migrateLegacy = true } = {}) {
-    const original = [...tags]
-    let working = [...original]
+  function ensureNoticeServiceTags() {
+    let working = [...tags]
     let changed = false
     const findPath = (path) => working.find((tag) => normalizeTagLookupValue(tagPathFromWorkingTags(working, tag.id)) === normalizeTagLookupValue(path))
-    acceptedServiceRequiredTagPaths().forEach((path) => {
+    noticeServiceRequiredTagPaths().forEach((path) => {
+      if (findPath(path)) return
       const parts = path.split('>').map((part) => part.trim()).filter(Boolean)
       let parentId = ''
       const built = []
@@ -27261,108 +27247,27 @@ useEffect(() => {
         const currentPath = built.join(' > ')
         let existing = findPath(currentPath)
         if (!existing) {
-          const style = canonicalEfileTagStyle(currentPath)
-          existing = { id: safeAcceptedTagId(currentPath), name: part, parent_id: parentId, scope: 'all', matter_ids: [], color: style.color, icon_data: '', icon_name: style.icon_name, system_type: 'efile_document_type' }
+          existing = {
+            id: safeNoticeTagId(currentPath),
+            name: part,
+            parent_id: parentId,
+            scope: 'all',
+            matter_ids: [],
+            color: built[0] === 'Court' ? '#7c3aed' : '#dc2626',
+            icon_data: '',
+            icon_name: ''
+          }
           working.push(existing)
           changed = true
         }
         parentId = existing.id
       })
     })
-
-    const legacyTags = migrateLegacy ? original.filter((tag) => isLegacyEfileClassificationTag(tag, original)) : []
-    if (legacyTags.length) {
-      const legacyIds = new Set(legacyTags.map((tag) => String(tag.id)))
-      const targetByLegacyId = new Map()
-      legacyTags.forEach((tag) => {
-        const targetPath = canonicalEfilePathFromLegacyPath(tagPathFromWorkingTags(original, tag.id))
-        const target = findPath(targetPath)
-        if (target) targetByLegacyId.set(String(tag.id), String(target.id))
-      })
-      const isAncestorInOriginal = (ancestorId, childId) => {
-        let current = original.find((tag) => String(tag.id) === String(childId))
-        let guard = 0
-        while (current?.parent_id && guard < 25) {
-          if (String(current.parent_id) === String(ancestorId)) return true
-          current = original.find((tag) => String(tag.id) === String(current.parent_id))
-          guard += 1
-        }
-        return false
-      }
-      working = working.filter((tag) => !legacyIds.has(String(tag.id)))
-      const remapIds = (ids = []) => {
-        const selected = Array.from(new Set((ids || []).filter(Boolean).map(String)))
-        const legacySelected = selected.filter((id) => legacyIds.has(id))
-        const legacyTerminal = legacySelected.filter((id) => !legacySelected.some((other) => other !== id && isAncestorInOriginal(id, other)))
-        const preserved = selected.filter((id) => !legacyIds.has(id) && working.some((tag) => String(tag.id) === id))
-        const mapped = legacyTerminal.map((id) => targetByLegacyId.get(id)).filter(Boolean)
-        return tagAndParentIdsFromWorkingTags(working, [...preserved, ...mapped])
-      }
-      const remapRows = (rows, tagKeys = ['tag_ids', 'document_tag_ids']) => (rows || []).map((row) => {
-        let next = row
-        tagKeys.forEach((key) => {
-          if (!Array.isArray(next?.[key])) return
-          const remapped = remapIds(next[key])
-          if (JSON.stringify(remapped) !== JSON.stringify(next[key])) next = { ...next, [key]: remapped }
-        })
-        return next
-      })
-      setDocuments((rows) => remapRows(rows))
-      setServiceEmailRows((rows) => remapRows(rows))
-      setMatterFilingImportRows((rows) => remapRows(rows))
-      setBulkDocumentRows((rows) => remapRows(rows))
-      changed = true
-    }
-
     if (changed) {
       setTags(working)
       try { saveMioStateKey('caseControllerTags', JSON.stringify(working)) } catch {}
     }
     return working
-  }
-
-  function acceptedServiceDocumentType(row = {}) {
-    const text = `${row.subject || ''} ${row.body_preview || ''} ${row.extracted_pdf_name || ''} ${row.suggested_document_name || ''} ${row.efile_filing_description || ''} ${row.extracted_text || ''}`.toLowerCase()
-    if (/proposed order/.test(text)) return 'Proposed Order'
-    if (/interrogator|rogg/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > Roggs'
-    if (/request for production|\brfp\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFP'
-    if (/request for disclosure|disclosure|\brfd\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFD'
-    if (/request for admission|admission|\brfa\b/.test(text) && /response|answer/.test(text)) return 'Discovery > Response > RFA'
-    if (/request for production|\brfp\b|production/.test(text)) return 'Discovery > Request > RFP'
-    if (/request for disclosure|disclosure|\brfd\b/.test(text)) return 'Discovery > Request > RFD'
-    if (/request for admission|admission|\brfa\b/.test(text)) return 'Discovery > Request > RFA'
-    if (/interrogator|rogg/.test(text)) return 'Discovery > Request > Roggs'
-    if (/subpoena|third[- ]party discovery|deposition notice|business records/.test(text)) return 'Discovery > Other'
-    if (/citation|precept|waiver of service|return of service|service request/.test(text)) return 'Service Document'
-    if (/\border\b|decree|judgment|ruling/.test(text)) return 'Order'
-    if (/notice|hearing|trial|setting|conference/.test(text)) return 'Notice'
-    if (/motion|temporary order|compel|enforce|withdraw|continuance|sanction|petition to enforce/.test(text)) return 'Motion'
-    if (/petition|counterpetition|counter-petition|answer|counter answer|counter-answer|amended petition|original petition|pleading/.test(text)) return 'Pleading/Petition/Answer'
-    return 'Other'
-  }
-
-  function acceptedServiceTagPathForRow(row = {}) {
-    const type = row.accepted_service_type || acceptedServiceDocumentType(row)
-    return canonicalEfilePathFromLegacyPath(type)
-  }
-
-  function serviceEmailFilingTagIds(row = null, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
-    const typed = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row || {}))
-    if (typed.length) return typed
-    return tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing > Other')
-  }
-
-  function noticeServiceRequiredTagPaths() {
-    return acceptedServiceRequiredTagPaths()
-  }
-
-  function safeNoticeTagId(path = '') {
-    return safeAcceptedTagId(path)
-  }
-
-  function ensureNoticeServiceTags(options = {}) {
-    return ensureAcceptedServiceTags(options)
   }
 
   function noticeServiceDocumentSource(row = {}) {
@@ -27391,20 +27296,18 @@ useEffect(() => {
   }
 
   function noticeServiceTagPathForRow(row = {}) {
+    const source = noticeServiceDocumentSource(row)
     const type = noticeServiceDocumentType(row)
-    const mapped = type === 'Responses > Answers to Interrogatories' ? 'Discovery > Response > Roggs'
-      : type === 'Responses > Response to Request for Production' ? 'Discovery > Response > RFP'
-        : type === 'Responses > Response to Request for Disclosure' ? 'Discovery > Response > RFD'
-          : type === 'Responses > Response to Request for Admission' ? 'Discovery > Response > RFA'
-            : type === 'Requests > Request for Production' ? 'Discovery > Request > RFP'
-              : type === 'Requests > Request for Disclosure' ? 'Discovery > Request > RFD'
-                : type === 'Requests > Request for Admission' ? 'Discovery > Request > RFA'
-                  : type === 'Requests > Interrogatories' ? 'Discovery > Request > Roggs'
-                    : type.startsWith('Third Party Discovery') ? 'Discovery > Other'
-                      : type === 'Petition / Answer' ? 'Pleading/Petition/Answer'
-                        : ['Notice', 'Motion', 'Order'].includes(type) ? type
-                          : acceptedServiceDocumentType(row)
-    return `efiled > filing > ${mapped}`
+    if (source === 'Court') {
+      if (type === 'Notice') return 'Court > Notice'
+      if (type === 'Order') return 'Court > Order'
+      if (type === 'Other') return 'Court > Other'
+      return 'Court > Setting'
+    }
+    if (type.startsWith('Requests >')) return `Opposing Party > Discovery > ${type}`
+    if (type.startsWith('Responses >')) return `Opposing Party > Discovery > ${type}`
+    if (type.startsWith('Third Party Discovery')) return `Opposing Party > ${type}`
+    return `Opposing Party > ${type}`
   }
 
   function tagIdsForPathFromWorkingTags(workingTags, path = '') {
@@ -27422,14 +27325,12 @@ useEffect(() => {
   }
 
   function noticeServiceTagIdsForRow(row = {}, options = {}) {
-    const workingTags = options.ensure === false ? tags : ensureAcceptedServiceTags()
+    const workingTags = options.ensure === false ? tags : ensureNoticeServiceTags()
     return tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
   }
 
   function serviceEmailDocumentTagIds(row = null) {
-    const explicit = Array.isArray(row?.document_tag_ids) ? row.document_tag_ids : []
-    const explicitLeaf = selectedTerminalTagIds(explicit).find((tagId) => normalizeTagLookupValue(tagFullName(tagId)).startsWith('efiled > filing >'))
-    if (explicitLeaf) return tagAndParentIds([explicitLeaf])
+    if (Array.isArray(row?.document_tag_ids) && row.document_tag_ids.length) return row.document_tag_ids
     if (serviceEmailRowCategory(row) === 'notification_service') return noticeServiceTagIdsForRow(row, { ensure: false })
     return serviceEmailFilingTagIds(row, { ensure: false })
   }
@@ -27440,10 +27341,6 @@ useEffect(() => {
   }
 
   function updateServiceEmailDocumentTag(rowId, tagId) {
-    if (tagId && !normalizeTagLookupValue(tagFullName(tagId)).startsWith('efiled > filing >')) {
-      alert('E-filed documents must use a document-type tag under efiled > filing.')
-      return
-    }
     const tagIds = tagId ? tagAndParentIds([tagId]) : []
     setServiceEmailRows((rows) => rows.map((row) => row.id === rowId ? { ...row, document_tag_ids: tagIds } : row))
   }
@@ -29144,7 +29041,9 @@ async function chooseAndSaveMatterEfileFolder(row) {
   function hydrateServiceReviewRow(row = {}) {
     const inferredMatterId = row.suggested_matter_id || inferServiceEmailMatter({ subject: row.subject || '', bodyPreview: row.body_preview || row.bodyPreview || '', body: { content: row.extracted_text || row.pdf_text || '' } })
     const workingTags = serviceEmailRowCategory(row) === 'notification_service' ? ensureNoticeServiceTags() : ensureAcceptedServiceTags()
-    const pathTagIds = serviceEmailRowCategory(row) === 'notification_service' ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row)) : tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(row))
+    const pathTagIds = serviceEmailRowCategory(row) === 'notification_service'
+      ? tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(row))
+      : acceptedServiceTagIdsFromWorkingTags(row, workingTags)
     const inferredTagIds = row.document_tag_ids?.length ? row.document_tag_ids : (pathTagIds.length ? pathTagIds : guessServiceReviewTagIds(row, workingTags))
     const next = { ...row, suggested_matter_id: inferredMatterId || '', suggested_save_path: inferredMatterId ? matterEfileFolderForId(inferredMatterId) : '', document_tag_ids: inferredTagIds }
     next.document_field_values = fillAssociatedDocumentFields({ ...next, tag_ids: inferredTagIds, extracted_text: serviceReviewText(next) })
@@ -29708,7 +29607,7 @@ Ben`) : (row.draft_response || '') })
                 <LabeledField label="Document tag">
                   <select value={serviceEmailDocumentLeafTagId(row)} onChange={(e) => updateServiceEmailDocumentTag(row.id, e.target.value)} style={{ width: '100%' }}>
                     <option value="">No tag</option>
-                    {tags.filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >')).map((tag) => <option key={tag.id} value={tag.id}>{tagFullName(tag.id)}</option>)}
+                    {tags.map((tag) => <option key={tag.id} value={tag.id}>{tagFullName(tag.id)}</option>)}
                   </select>
                 </LabeledField>
                 {normalizedGroup === 'notification_service' && <LabeledField label="Discovery response date"><input placeholder="mm/dd/yyyy" value={row.discovery_response_date || ''} onChange={(e) => updateServiceEmailRow(row.id, { discovery_response_date: e.target.value })} /></LabeledField>}
@@ -29905,7 +29804,7 @@ Ben`) : (row.draft_response || '') })
       if (row.id !== rowId) return row
       const next = { ...row, ...patch }
       if (patch.notice_service_source || patch.notice_service_type) {
-        const workingTags = ensureAcceptedServiceTags()
+        const workingTags = ensureNoticeServiceTags()
         next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, noticeServiceTagPathForRow(next))
       }
       return next
@@ -29918,7 +29817,7 @@ Ben`) : (row.draft_response || '') })
       const next = { ...row, ...patch }
       if (patch.accepted_service_type) {
         const workingTags = ensureAcceptedServiceTags()
-        next.document_tag_ids = tagIdsForPathFromWorkingTags(workingTags, acceptedServiceTagPathForRow(next))
+        next.document_tag_ids = acceptedServiceTagIdsFromWorkingTags(next, workingTags)
       }
       return next
     }))
@@ -30012,39 +29911,25 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
   function createAndAttachServiceReviewTag(row) {
-    const workingTags = ensureAcceptedServiceTags()
-    const filingRootIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing')
-    const filingRootId = filingRootIds[filingRootIds.length - 1] || ''
-    const currentLeaf = serviceEmailDocumentLeafTagId(row)
-    const currentPath = normalizeTagLookupValue(tagFullName(currentLeaf))
-    const parentId = currentPath.startsWith('efiled > filing') ? currentLeaf : filingRootId
     setServiceTagPicker({ open: false, rowId: '', search: '' })
-    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId })
+    setServiceTagBuilder({ open: true, rowId: row?.id || '', name: '', parentId: serviceEmailDocumentLeafTagId(row) || '' })
   }
 
   function saveServiceReviewTag() {
     const name = String(serviceTagBuilder.name || '').trim()
     if (!name || !serviceTagBuilder.rowId) return
-    const workingTags = ensureAcceptedServiceTags()
-    const filingRootIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing')
-    const filingRootId = filingRootIds[filingRootIds.length - 1] || ''
-    let parent = workingTags.find((tag) => tag.id === serviceTagBuilder.parentId) || workingTags.find((tag) => tag.id === filingRootId) || null
-    if (!parent || !normalizeTagLookupValue(tagPathFromWorkingTags(workingTags, parent.id)).startsWith('efiled > filing')) {
-      parent = workingTags.find((tag) => tag.id === filingRootId) || null
-    }
-    if (!parent) return alert('Mio could not find the efiled > filing tag. Reload and try again.')
+    const parent = tags.find((tag) => tag.id === serviceTagBuilder.parentId) || null
     const newTag = {
       id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       name,
-      parent_id: parent.id,
+      parent_id: parent?.id || '',
       color: '#4c6783',
-      icon_name: 'other',
-      sort_order: workingTags.filter((tag) => String(tag.parent_id || '') === String(parent.id)).length + 1
+      sort_order: tags.filter((tag) => String(tag.parent_id || '') === String(parent?.id || '')).length + 1
     }
     setTags((current) => [...current, newTag])
-    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIdsFromWorkingTags([...workingTags, newTag], [newTag.id]) } : row))
+    setServiceEmailRows((rows) => rows.map((row) => row.id === serviceTagBuilder.rowId ? { ...row, document_tag_ids: tagAndParentIds([newTag.id]) } : row))
     setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })
-    setServiceEmailScanNote(`Created and attached e-file tag: ${tagPathFromWorkingTags([...workingTags, newTag], newTag.id)}`)
+    setServiceEmailScanNote(`Created and attached tag: ${parent ? `${tagFullName(parent.id)} > ` : ''}${name}`)
   }
 
   function updateServiceReviewField(rowId, fieldKey, value) {
@@ -30204,7 +30089,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search all tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
               <div style={{ maxHeight: '65vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, padding: 8 }}>
                 <button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, ''); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', marginBottom: 6 }}>No tag</button>
-                {allTagsIndented().filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing >') && (!serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase()))).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
+                {allTagsIndented().filter((tag) => !serviceTagPicker.search || tagFullName(tag.id).toLowerCase().includes(serviceTagPicker.search.toLowerCase())).map((tag) => <div key={tag.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto', gap: 6, alignItems: 'center', marginBottom: 4, paddingLeft: `${(tag.level || 0) * 22}px` }}><button type="button" onClick={() => { updateServiceEmailDocumentTag(serviceTagPicker.rowId, tag.id); setServiceTagPicker({ open: false, rowId: '', search: '' }) }} style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 7, background: serviceEmailDocumentLeafTagId(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId) || {}) === tag.id ? '#eff6ff' : '#fff' }}><strong>{tag.name}</strong><span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{tagFullName(tag.id)}</span></button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId: tag.id }) }} style={{ whiteSpace: 'nowrap' }}>Add child</button><button type="button" onClick={() => { const rowId = serviceTagPicker.rowId; const parentId = tag.parent_id || tag.parentId || ''; setServiceTagPicker({ open: false, rowId: '', search: '' }); setServiceTagBuilder({ open: true, rowId, name: '', parentId }) }} style={{ whiteSpace: 'nowrap' }}>Add sibling</button></div>)}
               </div>
             </div>
           </Modal>
@@ -30216,7 +30101,8 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <LabeledField label="New tag name"><input autoFocus value={serviceTagBuilder.name} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, name: e.target.value }))} placeholder="Enter the new tag name" /></LabeledField>
               <LabeledField label="Place under this tag">
                 <select value={serviceTagBuilder.parentId} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, parentId: e.target.value }))}>
-                  {allTagsIndented().filter((tag) => normalizeTagLookupValue(tagFullName(tag.id)).startsWith('efiled > filing')).map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(Math.max(0, (tag.level || 0) - 1))}${tag.name}`}</option>)}
+                  <option value="">Top-level tag</option>
+                  {allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{`${'   '.repeat(tag.level || 0)}${tag.name}`}</option>)}
                 </select>
               </LabeledField>
               <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#f8fafc' }}><strong>New location:</strong> {serviceTagBuilder.parentId ? `${tagFullName(serviceTagBuilder.parentId)} > ` : ''}{serviceTagBuilder.name || 'New tag'}</div>
@@ -30279,7 +30165,8 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       return
     }
     const workingTags = ensureAcceptedServiceTags()
-    const defaultIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > filing > Other')
+    const oursIds = tagIdsForPathFromWorkingTags(workingTags, 'efiled > Ours')
+    const defaultIds = oursIds.length ? oursIds : tagIdsForPathFromWorkingTags(workingTags, 'efiled')
     const rows = []
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index]
@@ -30293,8 +30180,6 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
         file_name: file.name,
         date: inferFilingDateForDocument({ file_name: file.name }),
         description: 'Imported from matter efile folder for filing review.',
-        source_type: 'matter-efile-import',
-        is_efile_document: true,
         status: 'Neither',
         tag_ids: tagAndParentIds(defaultIds),
         document_field_values: {},
@@ -37040,11 +36925,12 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     beginRequestedIssueBuilder({ template: source })
   }
 
-  function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null } = {}) {
+  function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null, view = 'simple' } = {}) {
     const allIds = activeRequestedReliefOptions().filter((option) => !isRequestedReliefOptionRow(option)).map((option) => option.id)
     const sourceSelectedIssueIds = issueSet?.selected_issue_ids || template?.selected_issue_ids || template?.issue_option_ids || allIds
     const expandedSelectedIssueIds = template ? requestedReliefExpandIssueIdsWithCurrentTree(sourceSelectedIssueIds) : sourceSelectedIssueIds
     setRequestedReliefBuilderMode('issues')
+    setRequestedReliefIssuePickerView(view === 'settings' ? 'settings' : 'simple')
     setRequestedReliefActiveIssueId('')
     setShowRequestedReliefEditMenu(false)
     setRequestedReliefBuilder({
@@ -37579,6 +37465,29 @@ ${choices}`, '1'))
     setPage('requested_relief')
   }
 
+  function openMatterRequestedReliefDashboard(matterId, { litigationTrackId = '', litigationPartyId = '', openSetup = false, reliefType = 'client_relief', filingDocumentId = '' } = {}) {
+    if (!matterId) return
+    setSelectedTemplateMatterId(String(matterId))
+    setRequestedReliefMatterFilter(String(matterId))
+    setClientDashboardTab('requested_relief')
+    setPageState('tasks')
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams({ tab: 'requested_relief' })
+      if (litigationTrackId) params.set('rr_track', String(litigationTrackId))
+      if (litigationPartyId) params.set('rr_party', String(litigationPartyId))
+      window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matterId)}?${params.toString()}`)
+    }
+    if (openSetup) {
+      beginRequestedReliefSetupFlow({
+        matter_id: matterId,
+        relief_type: reliefType,
+        litigation_track_id: litigationTrackId,
+        litigation_party_id: litigationPartyId,
+        filing_document_id: filingDocumentId
+      })
+    }
+  }
+
   function openMatterRequestedReliefDashboardInNewTab(matterId) {
     if (!matterId) return
     const url = `${window.location.origin}${window.location.pathname}#matter_dashboard:${encodeURIComponent(matterId)}?tab=requested_relief`
@@ -37796,8 +37705,10 @@ ${choices}`, '1'))
     const reliefChoiceIds = new Set(requestedReliefSelectableReliefOptionIds(builder?.issue_option_ids || []))
     const visibleBuilderIds = requestedReliefVisibleIdsForBuilder(builder?.issue_option_ids || [], builder?.selected_option_ids || [])
     const lockedVisible = new Set(Array.from(leafSelected).flatMap((id) => [id, ...requestedReliefAncestorIds(id)]))
+    const settingsLike = mode === 'settings' || mode === 'matter_settings'
+    const matterSettingsMode = mode === 'matter_settings'
     return children.map((option) => {
-      if (mode === 'settings' && hideRequestedReliefOptionsInSettings && isRequestedReliefOptionRow(option)) return null
+      if (settingsLike && hideRequestedReliefOptionsInSettings && isRequestedReliefOptionRow(option)) return null
       const childCount = requestedReliefChildren(option.id).length
       const expanded = requestedReliefExpandedIds.includes(option.id)
       const isIssueSelected = issueSelected.has(option.id)
@@ -37813,19 +37724,19 @@ ${choices}`, '1'))
       }
       const groupSelectedForOption = mode === 'relief_builder' && isLeafForRelief && requestedReliefOptionIdsForGroup(option.id, builder).some((id) => leafSelected.has(id))
       const isFadedBySelection = groupSelectedForOption && !isLeafSelected
-      const settingsOptionRow = mode === 'settings' && isReliefOption
+      const settingsOptionRow = settingsLike && isReliefOption
       const rowBackground = settingsOptionRow ? '#f0f9ff' : (isLeafSelected ? '#dbeafe' : (isLeafForRelief ? '#eaf4ff' : (depth % 2 ? '#fcfcfd' : 'white')))
       const rowOpacity = 1
       const rowColor = mode === 'relief_builder' && isLeafForRelief && isFadedBySelection ? '#cbd5e1' : '#334155'
       const rowBorder = settingsOptionRow ? '1px dashed #60a5fa' : (isLeafSelected ? '2px solid #1e40af' : (isLeafForRelief ? '1px solid #bfdbfe' : '1px solid transparent'))
       return (
         <Fragment key={option.id}>
-          <div className="rr-tree-row" style={{ display: 'grid', gridTemplateColumns: mode === 'settings' ? '1fr minmax(520px, auto)' : 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, alignItems: 'center', padding: '6px 8px', marginLeft: depth * 22, borderBottom: '1px solid #edf2f7', background: rowBackground, opacity: rowOpacity, color: rowColor, border: rowBorder, borderRadius: isLeafSelected ? 6 : 0 }} draggable={mode === 'settings'} onDragStart={(e) => e.dataTransfer.setData('text/plain', option.id)} onDragOver={(e) => { if (mode === 'settings') e.preventDefault() }} onDrop={(e) => { if (mode !== 'settings') return; e.preventDefault(); const draggedId = e.dataTransfer.getData('text/plain'); if (draggedId && draggedId !== option.id) moveRequestedReliefOption(draggedId, requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === option.id) - requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === draggedId)) }}>
+          <div className="rr-tree-row" style={{ display: 'grid', gridTemplateColumns: settingsLike ? '1fr minmax(520px, auto)' : 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, alignItems: 'center', padding: '6px 8px', marginLeft: depth * 22, borderBottom: '1px solid #edf2f7', background: rowBackground, opacity: rowOpacity, color: rowColor, border: rowBorder, borderRadius: isLeafSelected ? 6 : 0 }} draggable={settingsLike} onDragStart={(e) => e.dataTransfer.setData('text/plain', option.id)} onDragOver={(e) => { if (settingsLike) e.preventDefault() }} onDrop={(e) => { if (!settingsLike) return; e.preventDefault(); const draggedId = e.dataTransfer.getData('text/plain'); if (draggedId && draggedId !== option.id) moveRequestedReliefOption(draggedId, requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === option.id) - requestedReliefSiblings(option.parent_id).findIndex((item) => item.id === draggedId)) }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {mode === 'settings' && <span title="Drag row" style={{ cursor: 'grab', color: '#64748b' }}>☰</span>}
+              {settingsLike && <span title="Drag row" style={{ cursor: 'grab', color: '#64748b' }}>☰</span>}
               <button type="button" onClick={() => toggleRequestedReliefExpanded(option.id)} disabled={!childCount} style={{ width: 24 }}>{childCount ? (expanded ? '-' : '+') : '•'}</button>
-              {mode === 'issues_builder' && <input type="checkbox" checked={isIssueSelected} onChange={(e) => toggleRequestedIssueSelection(option.id, e.target.checked)} title="Check/uncheck this row and all rows below it" />}
-              {mode === 'settings' && isReliefOption ? (
+              {(mode === 'issues_builder' || matterSettingsMode) && !isReliefOption && <input type="checkbox" checked={isIssueSelected} onChange={(e) => toggleRequestedIssueSelection(option.id, e.target.checked)} title="Check/uncheck this row and all issue rows below it" />}
+              {settingsLike && isReliefOption ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <span style={{ color: '#0369a1', background: '#e0f2fe', border: '1px solid #7dd3fc', borderRadius: 999, padding: '2px 8px', fontSize: 11, fontWeight: 800 }}>OPTION</span>
                   <strong style={{ color: '#0f172a' }}>{option.name}</strong>
@@ -37835,12 +37746,12 @@ ${choices}`, '1'))
                 <strong style={{ color: mode === 'issues_builder' && !isIssueSelected && hasSelectedDescendant ? '#94a3b8' : undefined }}>{option.name}</strong>
               )}
               {mode !== 'relief_builder' && childCount ? <span style={{ color: '#64748b', fontSize: 12 }}>({childCount})</span> : null}
-              {mode === 'settings' && isReliefOption && <span style={{ color: '#1e3a8a', background: '#dbeafe', borderRadius: 999, padding: '1px 6px', fontSize: 12 }}>{option.option_type === 'exclusive' ? 'Exclusive option' : 'Non-exclusive option'}{option.has_text_box ? ' + text box' : ''}</span>}
+              {settingsLike && isReliefOption && <span style={{ color: '#1e3a8a', background: '#dbeafe', borderRadius: 999, padding: '1px 6px', fontSize: 12 }}>{option.option_type === 'exclusive' ? 'Exclusive option' : 'Non-exclusive option'}{option.has_text_box ? ' + text box' : ''}</span>}
               {option.is_relief_table && <span style={{ color: '#7c2d12', background: '#ffedd5', borderRadius: 999, padding: '1px 6px', fontSize: 12, fontWeight: 800 }}>TABLE</span>}
               
               {mode === 'relief_builder' && isLeafSelected && <span style={{ color: '#15803d', fontSize: 12 }}>selected</span>}
             </div>
-            {mode === 'settings' ? (
+            {settingsLike ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
                 <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
@@ -37872,7 +37783,7 @@ ${choices}`, '1'))
             ) : <span />}
             {option.is_relief_table && option.table_id && (
               <div style={{ gridColumn: '1 / -1', margin: '8px 0 8px 30px', border: '1px solid #fed7aa', borderRadius: 8, padding: 8, background: '#fff7ed' }}>
-                {renderRequestedReliefTable(activeRequestedReliefTables().find((table) => table.id === option.table_id), { mode: mode === 'settings' ? 'settings' : 'matter' })}
+                {renderRequestedReliefTable(activeRequestedReliefTables().find((table) => table.id === option.table_id), { mode: settingsLike ? 'settings' : 'matter' })}
               </div>
             )}
             {mode === 'relief_builder' && isLeafForRelief && (
@@ -38300,6 +38211,7 @@ ${choices}`, '1'))
             </LabeledField>
           )}
           {isIssueBuilder && <>
+            <button type="button" onClick={() => setRequestedReliefIssuePickerView((current) => current === 'settings' ? 'simple' : 'settings')} style={{ background: requestedReliefIssuePickerView === 'settings' ? '#1d4ed8' : undefined, color: requestedReliefIssuePickerView === 'settings' ? 'white' : undefined }}>{requestedReliefIssuePickerView === 'settings' ? 'Simple issue picker' : 'Settings-style issue tree'}</button>
             <button type="button" onClick={() => setRequestedReliefBuilderEditMode((on) => !on)} style={{ background: requestedReliefBuilderEditMode ? '#f59e0b' : undefined, color: requestedReliefBuilderEditMode ? 'white' : undefined }}>{requestedReliefBuilderEditMode ? 'Add/Edit Issues: ON' : 'Add/Edit Issues'}</button>
             <button type="button" onClick={() => setShowRequestedReliefRestoreWindow(true)}>Edit hidden issues</button>
             <button type="button" onClick={saveRequestedReliefBuilderAsTemplate}>Save as New Template</button>
@@ -38360,15 +38272,39 @@ ${choices}`, '1'))
           <button type="button" onClick={isIssueBuilder ? saveRequestedIssueBuilder : saveRequestedReliefBuilder} style={{ background: '#2f6584', color: 'white', border: 0, padding: '8px 12px', borderRadius: 4 }}>{isIssueBuilder ? 'Save Issues' : 'Save Relief'}</button>
         </div>
         {isIssueBuilder ? (
-          <>
-            <p style={{ color: '#475569' }}>Start with the full issues tree or load an issue template. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
-              <div>Issues / possible court decisions</div><div>Actions</div>
-            </div>
-            <div style={{ border: '1px solid #e2e8f0', borderTop: 0, maxHeight: '56vh', overflow: 'auto' }}>
-              {renderRequestedReliefOptionTree({ mode: 'issues_builder' })}
-            </div>
-          </>
+          requestedReliefIssuePickerView === 'settings' ? (
+            <>
+              <div style={{ border: '1px solid #f59e0b', background: '#fffbeb', color: '#78350f', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                <strong>Master-tree view:</strong> check the issues that belong in this matter. The Add, Edit, Delete, Indent, and option controls change the shared Requested Relief tree used throughout Mio, just like Settings.
+              </div>
+              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 8 }}>
+                <button type="button" onClick={() => setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))}>Expand all</button>
+                <button type="button" onClick={() => setRequestedReliefExpandedIds([])}>Collapse all</button>
+                <button type="button" onClick={() => setHideRequestedReliefOptionsInSettings((show) => !show)}>{hideRequestedReliefOptionsInSettings ? 'Show options' : 'Hide options'}</button>
+                <button type="button" onClick={() => {
+                  const name = (window.prompt('Name the new top-level issue row:') || '').trim()
+                  if (!name) return
+                  setRequestedReliefOptions((current) => resequenceRequestedReliefOptions([...current, ensureRequestedReliefOptionShape({ id: crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`, parent_id: '', name, is_active: true, is_relief_option: false, sort_order: current.filter((item) => !item.parent_id).length + 1 }, current.length)]))
+                }}>+ Top-level row</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr minmax(520px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
+                <div>Select / edit master Requested Relief tree</div><div>Settings actions</div>
+              </div>
+              <div style={{ border: '1px solid #e2e8f0', borderTop: 0, maxHeight: '58vh', overflow: 'auto' }}>
+                {renderRequestedReliefOptionTree({ mode: 'matter_settings' })}
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ color: '#475569' }}>Start with the full issues tree or load an issue template. Uncheck what is not in dispute. Use <strong>Hide label only</strong> for structure headers like Substantive or SAPCR when you want to keep the child rows but not save the header itself.</p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 1fr) minmax(260px, auto)', gap: 8, fontWeight: 'bold', background: '#f8fafc', padding: 8, border: '1px solid #e2e8f0' }}>
+                <div>Issues / possible court decisions</div><div>Actions</div>
+              </div>
+              <div style={{ border: '1px solid #e2e8f0', borderTop: 0, maxHeight: '56vh', overflow: 'auto' }}>
+                {renderRequestedReliefOptionTree({ mode: 'issues_builder' })}
+              </div>
+            </>
+          )
         ) : (
           <>
             <div style={{ color: '#475569', border: '1px solid #bfdbfe', background: '#eff6ff', padding: 9, borderRadius: 8, marginBottom: 10 }}>
@@ -39081,6 +39017,8 @@ ${choices}`, '1'))
     const reliefRows = requestedReliefs.filter((relief) => String(relief.matter_id) === String(matterId))
     const selectedRelief = reliefRows.find((relief) => String(relief.id) === String(requestedReliefSavedReliefId)) || requestedReliefForMatterDefault(matterId)
     const selectedIssueSet = issueRows.find((row) => String(row.id) === String(requestedReliefSavedIssueSetId)) || null
+    const matterLitigationTracks = litigationTracksForMatter(matterId).filter((track) => track.type !== 'discovery')
+    const matterLitigationParties = litigationTrackPartyOptions(matterId, { includeCourt: false }).filter((party) => party.id && party.source !== 'unassigned')
     const reliefStats = (relief) => {
       const selectedOptions = activeRequestedReliefOptions().filter((option) => (relief?.selected_option_ids || []).includes(option.id)).length
       const selectedTables = activeRequestedReliefTables().filter((table) => (relief?.selected_table_ids || []).includes(table.id)).length
@@ -39119,6 +39057,7 @@ ${choices}`, '1'))
             <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>+ New Relief</button>
             <button type="button" style={panelButton} onClick={beginRequestedReliefTemplateBuilder}>+ New Template</button>
             <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId })}>Add / Edit Issues</button>
+            <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId, issueSet: selectedIssueSet || latestRequestedReliefIssueSetForMatter(matterId), view: 'settings' })}>Settings-style Issue Picker</button>
             <button type="button" style={panelButton} onClick={() => openRequestedReliefForMatter(matterId)}>Open Full Page</button>
             <button type="button" style={panelButton} onClick={() => { setViolationsMatterId(matterId); setPage('enforcement'); window.location.hash = 'enforcement' }}>Open Enforcement</button>
           </div>
@@ -39126,22 +39065,33 @@ ${choices}`, '1'))
 
         <section style={{ border: '1px solid #bfdbfe', borderRadius: 12, padding: 12, marginBottom: 14, background: '#eff6ff' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-            <div><strong>Hearings and trials for this matter</strong><div style={muted}>Click an event to create or open requested relief attached to that setting.</div></div>
-            <button type="button" style={panelButton} onClick={() => openRequestedReliefNewSettingWindow('known', matterId)}>+ Add hearing/trial</button>
+            <div><strong>Litigation tracks and parties</strong><div style={muted}>Choose the party lane under the track you are working on. Mio opens Requested Relief with the Litigation Track and Party already filled in.</div></div>
+            <button type="button" style={panelButton} onClick={() => { setClientDashboardTab('litigation_tracks'); if (typeof window !== 'undefined') window.history.replaceState(null, '', `#matter_dashboard:${encodeURIComponent(matterId)}?tab=litigation_tracks`) }}>Open Litigation Tracks</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 9 }}>
-            {requestedReliefMatterSettings(matterId).filter((event) => /hearing|trial|mediation|temporary|final/i.test(`${event.event_category || ''} ${event.event_subcategory || ''} ${event.title || ''}`)).map((event) => {
-              const linked = reliefRows.filter((relief) => String(relief.setting_event_id || '') === String(event.id))
-              return <div key={event.id} style={{ border: '1px solid #93c5fd', borderRadius: 10, background: '#fff', padding: 10 }}>
-                <div style={{ fontWeight: 850 }}>{requestedReliefSettingLabel(event.id)}</div>
-                <div style={{ ...muted, marginTop: 4 }}>{linked.length ? `${linked.length} relief set(s) attached` : 'No requested relief attached yet'}</div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                  {linked.map((relief) => <button key={relief.id} type="button" style={panelButton} onClick={() => { setRequestedReliefSavedReliefId(relief.id); beginRequestedReliefBuilder({ relief }) }}>{relief.name || 'Open relief'}</button>)}
-                  <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief', setting_event_id: event.id })}>+ Add relief</button>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {matterLitigationTracks.map((track) => (
+              <div key={track.id} style={{ border: `2px solid ${litigationTrackAccentColor(track.color || '#dbeafe')}`, borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
+                <div style={{ padding: '9px 11px', background: litigationHexToRgba(track.color || '#dbeafe', .28), display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div><strong>{track.name}</strong><div style={muted}>{reliefRows.filter((relief) => String(relief.litigation_track_id || '') === String(track.id)).length} saved relief set(s) on this track</div></div>
+                  <button type="button" style={panelButton} onClick={() => openMatterRequestedReliefDashboard(matterId, { litigationTrackId: track.id, openSetup: true, reliefType: 'client_relief' })}>+ New relief on this track</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 8, padding: 9 }}>
+                  {matterLitigationParties.map((party) => {
+                    const linked = reliefsForTrackParty(track.id, party.id)
+                    return <div key={`${track.id}-${party.id}`} style={{ border: '1px solid #cbd5e1', borderRadius: 9, padding: 9, background: '#f8fafc' }}>
+                      <div style={{ fontWeight: 850 }}>{litigationPartyDisplay(party)}</div>
+                      <div style={{ ...muted, marginTop: 3 }}>{requestedReliefKindLabel(requestedReliefTypeForParty(party))} • {linked.length ? `${linked.length} saved` : 'none saved'}</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                        <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefForTrackParty(track, party)}>+ Work on requested relief</button>
+                        {linked.map((relief) => <button key={relief.id} type="button" style={panelButton} onClick={() => { setRequestedReliefSavedReliefId(relief.id); beginRequestedReliefBuilder({ relief }) }}>{relief.name || 'Open saved relief'}</button>)}
+                      </div>
+                    </div>
+                  })}
+                  {!matterLitigationParties.length && <div style={{ border: '1px dashed #93c5fd', borderRadius: 9, padding: 12, color: '#64748b' }}>No parties are configured for this matter. Open Litigation Tracks and use Manage matter parties.</div>}
                 </div>
               </div>
-            })}
-            {!requestedReliefMatterSettings(matterId).some((event) => /hearing|trial|mediation|temporary|final/i.test(`${event.event_category || ''} ${event.event_subcategory || ''} ${event.title || ''}`)) && <div style={{ border: '1px dashed #93c5fd', borderRadius: 10, padding: 14, color: '#64748b', background: '#fff' }}>No active hearing or trial events are saved for this matter yet.</div>}
+            ))}
+            {!matterLitigationTracks.length && <div style={{ border: '1px dashed #93c5fd', borderRadius: 10, padding: 14, color: '#64748b', background: '#fff', display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><span>No litigation tracks are saved for this matter yet.</span><button type="button" style={primaryPanelButton} onClick={() => openNewLitigationTrackModal(matterId)}>+ Add Litigation Track</button></div>}
           </div>
         </section>
 
@@ -39174,6 +39124,7 @@ ${choices}`, '1'))
                       <div style={muted}>Updated: {formatReliefDate(issueSet)}</div>
                       <div className="rr-md-card-actions" style={{ marginTop: 'auto' }}>
                         <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); beginRequestedIssueBuilder({ matter_id: matterId, issueSet }) }}>Edit Issues</button>
+                        <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); beginRequestedIssueBuilder({ matter_id: matterId, issueSet, view: 'settings' }) }}>Master Tree</button>
                         <button type="button" style={panelButton} onClick={(e) => { e.stopPropagation(); setRequestedReliefSavedIssueSetId(issueSet.id) }}>Open</button>
                         <button type="button" style={{ ...panelButton, color: '#b91c1c', borderColor: '#fecaca', background: '#fff7f7' }} onClick={(e) => { e.stopPropagation(); deleteRequestedIssueSet(issueSet.id) }}>Delete</button>
                       </div>
@@ -39228,6 +39179,7 @@ ${choices}`, '1'))
                 <div><strong>{selectedIssueSet.name || 'Matter Issues'}</strong><div style={muted}>{issueStats(selectedIssueSet).issueCount} issue rows • {issueStats(selectedIssueSet).finalCount} final options • {issueStats(selectedIssueSet).tableCount} tables</div></div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId, issueSet: selectedIssueSet })}>Edit Issues</button>
+                  <button type="button" style={panelButton} onClick={() => beginRequestedIssueBuilder({ matter_id: matterId, issueSet: selectedIssueSet, view: 'settings' })}>Edit in Master Tree</button>
                   <button type="button" style={primaryPanelButton} onClick={() => beginRequestedReliefSetupFlow({ matter_id: matterId, relief_type: 'client_relief' })}>Create Relief From These Issues</button>
                   <button type="button" style={{ ...panelButton, color: '#b91c1c', borderColor: '#fecaca' }} onClick={() => deleteRequestedIssueSet(selectedIssueSet.id)}>Delete Issue Set</button>
                 </div>
