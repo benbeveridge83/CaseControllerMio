@@ -3,7 +3,10 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V245'
+const MIO_APP_VERSION = 'Mio V246'
+const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
+const MIO_EFILE_HANDLE_DB_VERSION = 1
+const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -2461,6 +2464,93 @@ function serviceEmailStatusLabel(status) {
 }
 
 
+function openMioEfileFolderHandleDb() {
+  if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.open(MIO_EFILE_HANDLE_DB_NAME, MIO_EFILE_HANDLE_DB_VERSION)
+      request.onupgradeneeded = () => {
+        const db = request.result
+        if (!db.objectStoreNames.contains(MIO_EFILE_HANDLE_STORE_NAME)) db.createObjectStore(MIO_EFILE_HANDLE_STORE_NAME, { keyPath: 'matter_id' })
+      }
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => resolve(null)
+      request.onblocked = () => resolve(null)
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
+async function saveMioEfileFolderHandle(matterId, handle) {
+  if (!matterId || !handle) return false
+  const db = await openMioEfileFolderHandleDb()
+  if (!db) return false
+  return await new Promise((resolve) => {
+    try {
+      const transaction = db.transaction(MIO_EFILE_HANDLE_STORE_NAME, 'readwrite')
+      transaction.objectStore(MIO_EFILE_HANDLE_STORE_NAME).put({ matter_id: String(matterId), handle, updated_at: new Date().toISOString() })
+      transaction.oncomplete = () => { try { db.close() } catch {}; resolve(true) }
+      transaction.onerror = () => { try { db.close() } catch {}; resolve(false) }
+      transaction.onabort = () => { try { db.close() } catch {}; resolve(false) }
+    } catch {
+      try { db.close() } catch {}
+      resolve(false)
+    }
+  })
+}
+
+async function loadMioEfileFolderHandle(matterId) {
+  if (!matterId) return null
+  const db = await openMioEfileFolderHandleDb()
+  if (!db) return null
+  return await new Promise((resolve) => {
+    try {
+      const transaction = db.transaction(MIO_EFILE_HANDLE_STORE_NAME, 'readonly')
+      const request = transaction.objectStore(MIO_EFILE_HANDLE_STORE_NAME).get(String(matterId))
+      request.onsuccess = () => resolve(request.result?.handle || null)
+      request.onerror = () => resolve(null)
+      transaction.oncomplete = () => { try { db.close() } catch {} }
+      transaction.onerror = () => { try { db.close() } catch {} }
+      transaction.onabort = () => { try { db.close() } catch {} }
+    } catch {
+      try { db.close() } catch {}
+      resolve(null)
+    }
+  })
+}
+
+async function deleteMioEfileFolderHandle(matterId) {
+  if (!matterId) return false
+  const db = await openMioEfileFolderHandleDb()
+  if (!db) return false
+  return await new Promise((resolve) => {
+    try {
+      const transaction = db.transaction(MIO_EFILE_HANDLE_STORE_NAME, 'readwrite')
+      transaction.objectStore(MIO_EFILE_HANDLE_STORE_NAME).delete(String(matterId))
+      transaction.oncomplete = () => { try { db.close() } catch {}; resolve(true) }
+      transaction.onerror = () => { try { db.close() } catch {}; resolve(false) }
+      transaction.onabort = () => { try { db.close() } catch {}; resolve(false) }
+    } catch {
+      try { db.close() } catch {}
+      resolve(false)
+    }
+  })
+}
+
+function createMioEfileFolderError(message, cause = null) {
+  const error = new Error(String(message || 'The selected efile folder is unavailable.'))
+  error.name = 'MioEfileFolderError'
+  error.mioCode = 'MIO_EFILE_FOLDER'
+  if (cause) error.cause = cause
+  return error
+}
+
+function isMioEfileFolderError(error) {
+  return error?.mioCode === 'MIO_EFILE_FOLDER' || error?.name === 'MioEfileFolderError'
+}
+
+
 function App() {
   const [session, setSession] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
@@ -2752,6 +2842,12 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioMatterEfileFolders') || '{}') }
     catch { return {} }
   })
+  const matterEfileFoldersRef = useRef(matterEfileFolders)
+  const [matterEfileFolderRefs, setMatterEfileFolderRefs] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioMatterEfileFolderRefs') || '{}') }
+    catch { return {} }
+  })
+  const matterEfileFolderRefsRef = useRef(matterEfileFolderRefs)
   // Browser security does not let a web app write to an arbitrary Windows path string.
   // When the user clicks Browse/set, keep the real File System Access directory handle
   // in memory and use that handle to write the downloaded e-file PDF directly into
@@ -2769,7 +2865,8 @@ function App() {
     current: null,
     items: [],
     busy: false,
-    error: ''
+    error: '',
+    notice: ''
   })
 
   function rememberServiceEfileFolderHandle(matterId, rowId, handle) {
@@ -4083,6 +4180,7 @@ function App() {
         if (prefs.preview) setServiceInboxPreviewMode(prefs.preview)
       }, kind: 'object', fallback: { status: 'needs_review', mailbox: 'all', phase: 'no_response', view: 'grouped', folder: 'all', sort: 'folder_date', density: 'compact', preview: 'bottom' } },
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
+      caseMioMatterEfileFolderRefs: { setter: setMatterEfileFolderRefs, kind: 'object', fallback: {} },
       matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
@@ -4923,8 +5021,20 @@ function App() {
   }, [serviceEmailActionLog])
 
   useEffect(() => {
-    try { saveMioStateKey('caseMioMatterEfileFolders', JSON.stringify(matterEfileFolders)) } catch {}
+    matterEfileFoldersRef.current = matterEfileFolders || {}
+    try {
+      safeSetLocalStorage('caseMioMatterEfileFolders', JSON.stringify(matterEfileFolders || {}))
+      saveMioStateKey('caseMioMatterEfileFolders', JSON.stringify(matterEfileFolders || {}))
+    } catch {}
   }, [matterEfileFolders])
+
+  useEffect(() => {
+    matterEfileFolderRefsRef.current = matterEfileFolderRefs || {}
+    try {
+      safeSetLocalStorage('caseMioMatterEfileFolderRefs', JSON.stringify(matterEfileFolderRefs || {}))
+      saveMioStateKey('caseMioMatterEfileFolderRefs', JSON.stringify(matterEfileFolderRefs || {}))
+    } catch {}
+  }, [matterEfileFolderRefs])
 
   useEffect(() => {
     if (!matters.length) return
@@ -13618,25 +13728,34 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setLitigationTrackModal({ mode: 'edit', ...ensureLitigationTrackShape(track) })
   }
 
-  function saveLitigationTrackModal(event) {
+  async function saveLitigationTrackModal(event) {
     event?.preventDefault?.()
     if (!litigationTrackModal?.matter_id) return alert('Select the matter for this track.')
     const name = String(litigationTrackModal.name || '').trim()
     if (!name) return alert('Name the Litigation Track.')
     let createdTrackId = ''
+    const currentTracks = (litigationTracks || []).map(ensureLitigationTrackShape)
+    let nextTracks = currentTracks
     if (litigationTrackModal.mode === 'edit' && litigationTrackModal.id) {
-      setLitigationTracks((current) => current.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track))
+      nextTracks = currentTracks.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track)
     } else {
-      const matterTracks = litigationTracksForMatter(litigationTrackModal.matter_id, { includeArchived: true })
+      const matterTracks = currentTracks.filter((track) => String(track.matter_id || '') === String(litigationTrackModal.matter_id || ''))
       const id = crypto?.randomUUID ? `lit-track-${crypto.randomUUID()}` : `lit-track-${Date.now()}-${Math.random().toString(36).slice(2)}`
       createdTrackId = id
-      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: litigationTrackModal.type === 'discovery' ? [] : [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
-      setLitigationTracks((current) => [...current, nextTrack])
+      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
+      nextTracks = [...currentTracks, nextTrack]
     }
-    const assignAfterCreate = pendingLitigationTrackAssignmentRef.current
-    pendingLitigationTrackAssignmentRef.current = null
-    setLitigationTrackModal(null)
-    if (createdTrackId && typeof assignAfterCreate === 'function') window.setTimeout(() => assignAfterCreate(createdTrackId), 0)
+    try {
+      await saveMioStateKeyNow('caseMioLitigationTracks', JSON.stringify(nextTracks), { throwOnError: true })
+      setLitigationTracks(nextTracks)
+      const assignAfterCreate = pendingLitigationTrackAssignmentRef.current
+      pendingLitigationTrackAssignmentRef.current = null
+      setLitigationTrackModal(null)
+      if (createdTrackId && typeof assignAfterCreate === 'function') window.setTimeout(() => assignAfterCreate(createdTrackId), 0)
+      setServiceEmailScanNote(createdTrackId ? `Created and saved Litigation Track “${name}”. The current filing is assigned to it and can now be saved.` : `Saved Litigation Track “${name}”.`)
+    } catch (error) {
+      alert(`The Litigation Track was not created because Mio could not save it to the backend: ${error.message || error}`)
+    }
   }
 
   function updateLitigationTrack(trackId, patch) {
@@ -14461,7 +14580,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   function renderLitigationTrackModal() {
     if (!litigationTrackModal) return null
     return (
-      <Modal title={litigationTrackModal.mode === 'edit' ? 'Edit Litigation Track' : 'New Litigation Track'} onClose={() => { pendingLitigationTrackAssignmentRef.current = null; setLitigationTrackModal(null) }}>
+      <Modal title={litigationTrackModal.mode === 'edit' ? 'Edit Litigation Track' : 'New Litigation Track'} onClose={() => { pendingLitigationTrackAssignmentRef.current = null; setLitigationTrackModal(null) }} zIndex={2600}>
         <form onSubmit={saveLitigationTrackModal} style={{ display: 'grid', gap: 12 }}>
           <LabeledField label="Matter"><div style={{ fontWeight: 700 }}>{matterName(litigationTrackModal.matter_id) || matterLabel(litigationTrackModal.matter_id)}</div></LabeledField>
           <LabeledField label="Track / event name *"><input autoFocus value={litigationTrackModal.name || ''} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, name: event.target.value })} placeholder="Example: Temporary Orders Hearing" /></LabeledField>
@@ -28186,7 +28305,7 @@ useEffect(() => {
 
 
   function oneDriveJoinPath(...parts) {
-    return `/${parts.map((part) => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')}`.replace(/\/+/, '/')
+    return `/${parts.map((part) => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')}`.replace(/\/+/g, '/')
   }
 
   function defaultOpenCaseFolderPath() {
@@ -28194,37 +28313,48 @@ useEffect(() => {
   }
 
   async function autofillMatterEfileFoldersFromOneDrive() {
-    if (!confirm('Scan OneDrive /All Matters/1. Open Cases for matter folders and fill each matched matter efile folder path? Existing efile folder paths will not be overwritten unless you confirm again.')) return
-    const overwriteExisting = confirm('Overwrite existing efile folder values if a matching OneDrive folder is found? Click Cancel to fill blanks only.')
+    if (!confirm('Scan OneDrive /All Matters/1. Open Cases and match only efile folders that already exist? Mio will not create matter folders or efile folders.')) return
+    const overwriteExisting = confirm('Overwrite existing Matter Table efile folder values when an existing OneDrive efile folder is matched? Click Cancel to fill blanks only.')
     setOneDriveBusy(true)
     try {
       const rootPath = defaultOpenCaseFolderPath()
       const openChildren = await graphFetch(`/me/drive/root:/${oneDriveEncodePath(rootPath)}:/children?$top=200`, { allowInteractive: true })
       const matterFolders = (openChildren?.value || []).filter((item) => item.folder)
-      const updates = {}
+      let savedCount = 0
+      let noExistingEfileCount = 0
       const notes = []
       for (const folder of matterFolders) {
         const matter = matchMatterForFolderName(folder.name)
         if (!matter?.id) continue
-        if (!overwriteExisting && matterEfileFolders[matter.id]) continue
-        let efileFolderName = 'efile'
+        if (!overwriteExisting && matterEfileFolderForId(matter.id)) continue
+        let efileFolder = null
         try {
           const children = await graphFetch(`/me/drive/items/${encodeURIComponent(folder.id)}/children?$top=200`, { allowInteractive: true })
-          const efileFolder = (children?.value || []).find((child) => child.folder && /^e[-_ ]?file$/i.test(String(child.name || '').trim()))
-          if (efileFolder?.name) efileFolderName = efileFolder.name
+          efileFolder = (children?.value || []).find((child) => child.folder && /^e[-_ ]?file$/i.test(String(child.name || '').trim())) || null
         } catch {}
-        updates[matter.id] = oneDriveJoinPath(rootPath, folder.name, efileFolderName)
-        notes.push(`${matterLabel(matter.id) || matter.name || folder.name} -> ${updates[matter.id]}`)
+        if (!efileFolder?.id) {
+          noExistingEfileCount += 1
+          continue
+        }
+        const selectedPath = oneDriveJoinPath(rootPath, folder.name, efileFolder.name)
+        const saved = await saveMatterEfileFolderSelection(matter.id, '', selectedPath, null, {
+          source: 'graph',
+          driveItemId: efileFolder.id,
+          driveId: efileFolder.parentReference?.driveId || '',
+          path: selectedPath,
+          name: efileFolder.name,
+          webUrl: efileFolder.webUrl || ''
+        })
+        if (saved) {
+          savedCount += 1
+          notes.push(`${matterLabel(matter.id) || matter.name || folder.name} -> ${selectedPath}`)
+        }
       }
-      if (!Object.keys(updates).length) {
-        alert('No matching matter efile folders were found. Load/connect OneDrive first and confirm the matter folder names resemble Mio matter names.')
-      } else {
-        setMatterEfileFolders((current) => ({ ...(current || {}), ...updates }))
-        alert(`Filled ${Object.keys(updates).length} efile folder path(s).`)
-      }
-      setOneDriveNote(notes.length ? `Efile folder autofill: ${notes.slice(0, 5).join(' | ')}${notes.length > 5 ? ` | +${notes.length - 5} more` : ''}` : 'Efile folder autofill found no matches.')
+      if (!savedCount) alert(`No existing efile folders were matched. ${noExistingEfileCount ? `${noExistingEfileCount} matched matter folder(s) had no existing efile subfolder and were left unchanged.` : ''}`)
+      else alert(`Saved ${savedCount} existing efile folder path(s) to the Matter Table. Mio did not create any folders.${noExistingEfileCount ? ` ${noExistingEfileCount} matter folder(s) without an existing efile subfolder were skipped.` : ''}`)
+      setOneDriveNote(notes.length ? `Existing efile folder matches: ${notes.slice(0, 5).join(' | ')}${notes.length > 5 ? ` | +${notes.length - 5} more` : ''}` : 'No existing efile folders were matched; no folders were created.')
     } catch (error) {
-      alert(`Could not scan OneDrive for efile folders: ${error.message || error}`)
+      alert(`Could not scan OneDrive for existing efile folders: ${error.message || error}`)
     } finally {
       setOneDriveBusy(false)
     }
@@ -30312,8 +30442,31 @@ useEffect(() => {
       matter?.efile_folder ||
       matter?.e_file_folder ||
       matter?.efileFolder ||
+      matterEfileFolderRefsRef.current?.[id]?.path ||
       ''
     ).trim()
+  }
+
+
+  function matterEfileFolderRefForId(matterId) {
+    const id = String(matterId || '')
+    if (!id) return null
+    return matterEfileFolderRefsRef.current?.[id] || matterEfileFolderRefs?.[id] || null
+  }
+
+  function updateMatterEfileFolderRef(matterId, ref = null) {
+    const id = String(matterId || '')
+    if (!id) return null
+    const next = { ...(matterEfileFolderRefsRef.current || {}) }
+    if (ref) next[id] = { ...ref, matter_id: id, updated_at: new Date().toISOString() }
+    else delete next[id]
+    matterEfileFolderRefsRef.current = next
+    setMatterEfileFolderRefs(next)
+    return next[id] || null
+  }
+
+  function matterEfileFolderIsBrowserSelection(value = '') {
+    return /^\s*\[(?:browser|local)(?:-selected)? folder\]/i.test(String(value || '')) || /^\s*browser folder:/i.test(String(value || ''))
   }
 
   function serviceEmailKnownMatterPath(row) {
@@ -30367,44 +30520,87 @@ useEffect(() => {
 
   function oneDrivePathFromMatterEfileFolder(pathValue = '') {
     const raw = String(pathValue || '').trim()
-    if (!raw) return ''
+    if (!raw || matterEfileFolderIsBrowserSelection(raw)) return ''
     let path = raw.replace(/\\/g, '/')
-    const marker = '/All Matters/'
-    const markerIndex = path.toLowerCase().indexOf(marker.toLowerCase())
-    if (markerIndex >= 0) path = path.slice(markerIndex)
+    const allMattersMarker = '/All Matters/'
+    const allMattersIndex = path.toLowerCase().indexOf(allMattersMarker.toLowerCase())
+    if (allMattersIndex >= 0) path = path.slice(allMattersIndex)
+    else if (/^[a-z]:\//i.test(path)) return ''
     if (!path.startsWith('/')) path = `/${path}`
     path = path.replace(/\/+/g, '/')
     return path
   }
 
+  async function resolveExistingGraphEfileFolder(row) {
+    const matterId = resolveServiceEmailMatterId(row)
+    const savePath = serviceEmailSavePath(row)
+    const savedRef = matterEfileFolderRefForId(matterId)
+    if (!matterId || !savePath || savedRef?.source === 'browser') return null
+    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) return null
+
+    const normalizeRefPath = (value = '') => String(oneDrivePathFromMatterEfileFolder(value) || value || '').replace(/[\\/]+$/, '').trim().toLowerCase()
+    const savedRefMatchesMatterTable = !savedRef?.path || normalizeRefPath(savedRef.path) === normalizeRefPath(savePath)
+    if (savedRef?.driveItemId && !savedRefMatchesMatterTable) updateMatterEfileFolderRef(matterId, null)
+
+    if (savedRef?.driveItemId && savedRefMatchesMatterTable) {
+      try {
+        const byId = await graphFetch(`/me/drive/items/${encodeURIComponent(savedRef.driveItemId)}?$select=id,name,folder,root,webUrl,parentReference`, { allowInteractive: true })
+        if (byId?.id && (byId.folder || byId.root)) return byId
+      } catch (error) {
+        if (!isGraphItemNotFound(error)) throw createMioEfileFolderError('Microsoft OneDrive could not verify the selected Matter Table efile folder. Choose the folder again before saving.', error)
+        updateMatterEfileFolderRef(matterId, null)
+      }
+    }
+
+    const folderPath = oneDrivePathFromMatterEfileFolder(savePath)
+    if (!folderPath) return null
+    try {
+      const encodedPath = oneDriveEncodePath(folderPath)
+      const folder = await graphFetch(encodedPath ? `/me/drive/root:/${encodedPath}?$select=id,name,folder,root,webUrl,parentReference` : '/me/drive/root?$select=id,name,folder,root,webUrl,parentReference', { allowInteractive: true })
+      if (!folder?.id || (!folder.folder && !folder.root)) throw new Error('The selected destination is not a folder.')
+      updateMatterEfileFolderRef(matterId, {
+        source: 'graph',
+        driveItemId: folder.id,
+        driveId: folder.parentReference?.driveId || '',
+        path: folderPath,
+        name: folder.name || '',
+        webUrl: folder.webUrl || ''
+      })
+      return folder
+    } catch (error) {
+      throw createMioEfileFolderError('The efile folder saved in Settings > Matter Table could not be found in OneDrive. Mio did not create a replacement folder. Click Change folder and select an existing folder.', error)
+    }
+  }
+
   async function uploadServicePdfToOneDriveFolder(row, fileName, blob) {
     if (!blob || !fileName) return null
     const savePath = serviceEmailSavePath(row)
-    const oneDriveFolderPath = oneDrivePathFromMatterEfileFolder(savePath)
-    if (!oneDriveFolderPath || !oneDriveFolderPath.toLowerCase().includes('/all matters/')) return null
-    if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) return null
+    const folder = await resolveExistingGraphEfileFolder(row)
+    if (!folder?.id) return null
     const cleanName = String(fileName || 'efile-document.pdf').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
-    const uploadPath = `${oneDriveFolderPath}/${cleanName}`.replace(/\/+/g, '/')
-    const encoded = oneDriveEncodePath(uploadPath)
-    const result = await graphFetch(`/me/drive/root:/${encoded}:/content`, {
-      method: 'PUT',
-      body: blob,
-      allowInteractive: true,
-      headers: { 'Content-Type': blob.type || 'application/pdf' }
-    })
-    if (!result?.id) throw new Error('OneDrive did not return a file ID after upload.')
-    const verified = await graphFetch(`/me/drive/items/${encodeURIComponent(result.id)}?$select=id,name,size,webUrl,parentReference`, { allowInteractive: true })
-    if (!verified?.id || String(verified.name || '') !== cleanName || Number(verified.size || 0) < 1) {
-      throw new Error(`OneDrive could not verify ${cleanName} after upload.`)
-    }
-    return {
-      ok: true,
-      fileName: cleanName,
-      savedPath: savePath ? `${savePath}\\${cleanName}` : uploadPath,
-      oneDrivePath: uploadPath,
-      webUrl: verified.webUrl || result?.webUrl || '',
-      driveItemId: verified.id,
-      verified: true
+    try {
+      const result = await graphFetch(`/me/drive/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(cleanName)}:/content`, {
+        method: 'PUT',
+        body: blob,
+        allowInteractive: true,
+        headers: { 'Content-Type': blob.type || 'application/pdf' }
+      })
+      if (!result?.id) throw new Error('OneDrive did not return a file ID after upload.')
+      const verified = await graphFetch(`/me/drive/items/${encodeURIComponent(result.id)}?$select=id,name,size,webUrl,parentReference`, { allowInteractive: true })
+      if (!verified?.id || String(verified.name || '') !== cleanName || Number(verified.size || 0) < 1) throw new Error(`OneDrive could not verify ${cleanName} after upload.`)
+      if (verified.parentReference?.id && String(verified.parentReference.id) !== String(folder.id)) throw new Error('OneDrive returned the file from a different folder than the one selected in the Matter Table.')
+      const oneDrivePath = `${oneDrivePathFromMatterEfileFolder(savePath).replace(/\/$/, '')}/${cleanName}`.replace(/\/+/g, '/')
+      return {
+        ok: true,
+        fileName: cleanName,
+        savedPath: savePath ? `${savePath.replace(/[\\/]+$/, '')}\\${cleanName}` : oneDrivePath,
+        oneDrivePath,
+        webUrl: verified.webUrl || result.webUrl || '',
+        driveItemId: verified.id,
+        verified: true
+      }
+    } catch (error) {
+      throw createMioEfileFolderError(`OneDrive could not save and verify ${cleanName} in the selected existing efile folder. No folder was created and the email was not moved.`, error)
     }
   }
 
@@ -30568,68 +30764,172 @@ useEffect(() => {
   }
 
   function matterEfilePickerCurrentPath(picker = matterEfileFolderPicker) {
+    if (picker?.current?.root) return '/'
     if (picker?.current) return `${oneDriveParentPathFromItem(picker.current) || ''}/${picker.current.name || ''}`.replace(/\/+/g, '/') || '/'
     return picker?.path || '/'
   }
 
+  function closeMatterEfileFolderPicker() {
+    setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '', notice: '' })
+  }
+
   async function loadMatterEfileFolderPicker({ matterId = '', rowId = '', itemId = '', pathValue = '', open = true } = {}) {
-    const fallbackPath = oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(matterId)) || pathValue || defaultOpenCaseFolderPath()
-    setMatterEfileFolderPicker((current) => ({ ...current, open, matterId: matterId || current.matterId, rowId: rowId || current.rowId, busy: true, error: '' }))
-    try {
-      const encodedPath = oneDriveEncodePath(pathValue || fallbackPath)
-      const folderEndpoint = itemId ? `/me/drive/items/${encodeURIComponent(itemId)}` : (encodedPath ? `/me/drive/root:/${encodedPath}` : '/me/drive/root')
-      const childrenEndpoint = itemId ? `/me/drive/items/${encodeURIComponent(itemId)}/children?$top=200` : (encodedPath ? `/me/drive/root:/${encodedPath}:/children?$top=200` : '/me/drive/root/children?$top=200')
+    const resolvedMatterId = String(matterId || matterEfileFolderPicker.matterId || '')
+    const resolvedRowId = String(rowId || matterEfileFolderPicker.rowId || '')
+    const savedRef = matterEfileFolderRefForId(resolvedMatterId)
+    const savedGraphPath = oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(resolvedMatterId))
+    const requestedItemId = String(itemId || (!pathValue && savedRef?.source === 'graph' ? savedRef.driveItemId || '' : ''))
+    const requestedPath = pathValue || (!requestedItemId ? (savedGraphPath || defaultOpenCaseFolderPath()) : '')
+    setMatterEfileFolderPicker((current) => ({ ...current, open, matterId: resolvedMatterId, rowId: resolvedRowId, busy: true, error: '', notice: '' }))
+
+    const fetchFolder = async ({ targetItemId = '', targetPath = '' } = {}) => {
+      const encodedPath = oneDriveEncodePath(targetPath)
+      const folderEndpoint = targetItemId ? `/me/drive/items/${encodeURIComponent(targetItemId)}` : (encodedPath ? `/me/drive/root:/${encodedPath}` : '/me/drive/root')
+      const childrenEndpoint = targetItemId ? `/me/drive/items/${encodeURIComponent(targetItemId)}/children?$top=200` : (encodedPath ? `/me/drive/root:/${encodedPath}:/children?$top=200` : '/me/drive/root/children?$top=200')
       const [folder, children] = await Promise.all([
         graphFetch(folderEndpoint, { allowInteractive: true }),
         graphFetch(childrenEndpoint, { allowInteractive: true })
       ])
-      const folders = (Array.isArray(children?.value) ? children.value : []).filter((item) => item.folder).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true }))
-      const resolvedPath = folder ? `${oneDriveParentPathFromItem(folder) || ''}/${folder.name || ''}`.replace(/\/+/g, '/') || '/' : (pathValue || fallbackPath)
-      setMatterEfileFolderPicker({ open: true, matterId, rowId, path: resolvedPath, current: folder || null, items: folders, busy: false, error: '' })
-    } catch (error) {
-      setMatterEfileFolderPicker((current) => ({ ...current, open: true, matterId: matterId || current.matterId, rowId: rowId || current.rowId, busy: false, error: error.message || String(error) }))
+      if (!folder?.id || (!folder.folder && !folder.root)) throw new Error('The selected OneDrive item is not a folder.')
+      const folders = (Array.isArray(children?.value) ? children.value : []).filter((entry) => entry.folder).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base', numeric: true }))
+      const resolvedPath = folder.root ? '/' : `${oneDriveParentPathFromItem(folder) || ''}/${folder.name || ''}`.replace(/\/+/g, '/') || '/'
+      return { folder, folders, resolvedPath }
+    }
+
+    try {
+      const result = await fetchFolder({ targetItemId: requestedItemId, targetPath: requestedPath })
+      setMatterEfileFolderPicker({ open: true, matterId: resolvedMatterId, rowId: resolvedRowId, path: result.resolvedPath, current: result.folder, items: result.folders, busy: false, error: '', notice: '' })
+      return
+    } catch (initialError) {
+      const fallbackTargets = [defaultOpenCaseFolderPath(), '/'].filter((value, index, list) => value && list.indexOf(value) === index && oneDriveEncodePath(value) !== oneDriveEncodePath(requestedPath))
+      for (const fallbackPath of fallbackTargets) {
+        try {
+          const result = await fetchFolder({ targetPath: fallbackPath })
+          setMatterEfileFolderPicker({
+            open: true,
+            matterId: resolvedMatterId,
+            rowId: resolvedRowId,
+            path: result.resolvedPath,
+            current: result.folder,
+            items: result.folders,
+            busy: false,
+            error: '',
+            notice: 'The previously saved OneDrive folder could not be opened. Browse and select an existing folder below. Mio will not create a replacement folder.'
+          })
+          return
+        } catch {}
+      }
+      setMatterEfileFolderPicker((current) => ({
+        ...current,
+        open: true,
+        matterId: resolvedMatterId,
+        rowId: resolvedRowId,
+        path: '/',
+        current: null,
+        items: [],
+        busy: false,
+        error: `Could not browse OneDrive folders. Choose a local/OneDrive-synced folder below, or reconnect Microsoft. Mio will not create a folder. ${initialError.message || initialError}`,
+        notice: ''
+      }))
     }
   }
 
   function openMatterEfileFolderPickerForMatter(matterId, rowId = '') {
     if (!matterId) return alert('Select a matter first.')
-    loadMatterEfileFolderPicker({ matterId: String(matterId), rowId: String(rowId || ''), pathValue: oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(matterId)) || defaultOpenCaseFolderPath(), open: true })
+    const savedRef = matterEfileFolderRefForId(matterId)
+    const savedPath = oneDrivePathFromMatterEfileFolder(matterEfileFolderForId(matterId))
+    loadMatterEfileFolderPicker({
+      matterId: String(matterId),
+      rowId: String(rowId || ''),
+      itemId: savedRef?.source === 'graph' ? String(savedRef.driveItemId || '') : '',
+      pathValue: savedRef?.source === 'graph' && savedRef.driveItemId ? '' : (savedPath || defaultOpenCaseFolderPath()),
+      open: true
+    })
   }
 
-  async function saveMatterEfileFolderSelection(matterId, rowId, value, handle = null) {
-    const next = sanitizeServiceEfilePath(value, { suggested_matter_id: matterId })
-    if (!matterId || !next) return ''
-    setMatterEfileFolders((folders) => ({ ...(folders || {}), [matterId]: next }))
-    if (handle) rememberServiceEfileFolderHandle(matterId, rowId, handle)
-    const { error: folderSaveError } = await supabase.from('matters').update({ efile_folder: next }).eq('id', matterId)
-    if (folderSaveError) {
-      console.error('Could not save matter efile folder:', folderSaveError)
-      alert(`Mio selected the folder, but could not save it to the Matter Table: ${folderSaveError.message || folderSaveError}`)
+  async function saveMatterEfileFolderSelection(matterId, rowId, value, handle = null, folderRef = null) {
+    const id = String(matterId || '')
+    const next = sanitizeServiceEfilePath(value, { suggested_matter_id: id })
+    if (!id || !next) return ''
+
+    const { data: updatedMatterFolder, error: folderSaveError } = await supabase
+      .from('matters')
+      .update({ efile_folder: next })
+      .eq('id', id)
+      .select('id,efile_folder')
+      .maybeSingle()
+    if (folderSaveError || !updatedMatterFolder?.id || String(updatedMatterFolder.efile_folder || '').trim() !== next) {
+      const detail = folderSaveError?.message || folderSaveError || 'The matter row did not confirm the selected efile folder.'
+      console.error('Could not save matter efile folder:', detail)
+      alert(`Mio could not save the selected folder to Settings > Matter Table: ${detail}`)
       return ''
     }
-    setMatters((current) => current.map((matter) => String(matter.id) === String(matterId) ? { ...matter, efile_folder: next } : matter))
-    setServiceEmailRows((rows) => rows.map((item) => String(item.id) === String(rowId) || String(resolveServiceEmailMatterId(item)) === String(matterId) ? { ...item, suggested_matter_id: resolveServiceEmailMatterId(item) || matterId, suggested_save_path: next } : item))
-    setServiceEmailScanNote(`Saved efile folder for ${matterLabel(matterId)} in the Matter Table.`)
+
+    const nextFolders = { ...(matterEfileFoldersRef.current || {}), [id]: next }
+    matterEfileFoldersRef.current = nextFolders
+    safeSetLocalStorage('caseMioMatterEfileFolders', JSON.stringify(nextFolders))
+    setMatterEfileFolders(nextFolders)
+
+    let normalizedRef = null
+    if (handle) {
+      normalizedRef = { source: 'browser', path: next, name: handle.name || '', handleKey: id }
+      rememberServiceEfileFolderHandle(id, rowId, handle)
+      const handleSaved = await saveMioEfileFolderHandle(id, handle)
+      if (!handleSaved) setServiceEmailScanNote('The folder path was saved to the Matter Table. Chrome could not persist the folder permission, so it may ask you to choose that folder again after a browser restart.')
+    } else if (folderRef) {
+      normalizedRef = { ...folderRef, source: folderRef.source || 'graph', path: next }
+      delete matterEfileFolderHandlesRef.current[id]
+      if (rowId) delete serviceEmailRowFolderHandlesRef.current[String(rowId)]
+      setMatterEfileFolderHandles((handles) => {
+        const nextHandles = { ...(handles || {}) }
+        delete nextHandles[id]
+        return nextHandles
+      })
+      await deleteMioEfileFolderHandle(id)
+    }
+    if (normalizedRef) updateMatterEfileFolderRef(id, normalizedRef)
+
+    setMatters((current) => current.map((matter) => String(matter.id) === id ? { ...matter, efile_folder: next } : matter))
+    setServiceEmailRows((rows) => rows.map((item) => String(item.id) === String(rowId) || String(resolveServiceEmailMatterId(item)) === id ? { ...item, suggested_matter_id: resolveServiceEmailMatterId(item) || id, suggested_save_path: next } : item))
+
+    try {
+      await saveMioStateKeyNow('caseMioMatterEfileFolders', JSON.stringify(nextFolders), { throwOnError: false })
+      await saveMioStateKeyNow('caseMioMatterEfileFolderRefs', JSON.stringify(matterEfileFolderRefsRef.current || {}), { throwOnError: false })
+    } catch {}
+    setServiceEmailScanNote(`Saved ${next} as the efile folder for ${matterLabel(id)} in Settings > Matter Table.`)
     return next
   }
 
   async function useCurrentMatterEfilePickerFolder() {
     const matterId = matterEfileFolderPicker.matterId
     const rowId = matterEfileFolderPicker.rowId
+    const currentFolder = matterEfileFolderPicker.current
+    if (!currentFolder?.id || (!currentFolder.folder && !currentFolder.root)) {
+      setMatterEfileFolderPicker((current) => ({ ...current, error: 'Open an existing folder in the list before choosing Use this folder.' }))
+      return
+    }
     const pathValue = matterEfilePickerCurrentPath()
-    const saved = await saveMatterEfileFolderSelection(matterId, rowId, pathValue)
-    if (saved) setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })
+    const saved = await saveMatterEfileFolderSelection(matterId, rowId, pathValue, null, {
+      source: 'graph',
+      driveItemId: currentFolder.id,
+      driveId: currentFolder.parentReference?.driveId || '',
+      path: pathValue,
+      name: currentFolder.name || '',
+      webUrl: currentFolder.webUrl || ''
+    })
+    if (saved) closeMatterEfileFolderPicker()
   }
 
   async function chooseLocalMatterEfileFolder() {
     if (!window.showDirectoryPicker) return alert('Use Chrome or Edge to choose a local/OneDrive-synced folder.')
     try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
       const matterId = matterEfileFolderPicker.matterId
+      const pickerId = `mio-efile-${String(matterId || 'matter').replace(/[^a-z0-9_-]/gi, '').slice(-18)}`
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite', id: pickerId })
       const rowId = matterEfileFolderPicker.rowId
-      const displayPath = `[Browser-selected folder] ${handle.name || 'efile'}`
-      const saved = await saveMatterEfileFolderSelection(matterId, rowId, displayPath, handle)
-      if (saved) setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })
+      const displayPath = `[Browser folder] ${handle.name || 'Selected folder'}`
+      const saved = await saveMatterEfileFolderSelection(matterId, rowId, displayPath, handle, { source: 'browser', path: displayPath, name: handle.name || '' })
+      if (saved) closeMatterEfileFolderPicker()
     } catch (error) {
       if (error?.name !== 'AbortError') setMatterEfileFolderPicker((current) => ({ ...current, error: error.message || String(error) }))
     }
@@ -30639,16 +30939,26 @@ useEffect(() => {
     if (!matterEfileFolderPicker.open) return null
     const currentPath = matterEfilePickerCurrentPath()
     const parentId = matterEfileFolderPicker.current?.parentReference?.id || ''
+    const savedMatterFolder = matterEfileFolderForId(matterEfileFolderPicker.matterId)
     return (
-      <Modal title={`Choose efile folder — ${matterLabel(matterEfileFolderPicker.matterId)}`} onClose={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })} wide zIndex={2200}>
+      <Modal title={`Choose efile folder — ${matterLabel(matterEfileFolderPicker.matterId)}`} onClose={closeMatterEfileFolderPicker} wide zIndex={2200}>
         <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}><button type="button" disabled={matterEfileFolderPicker.busy || !parentId} onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: parentId })}>↑ Up</button><input value={currentPath} readOnly style={{ flex: 1 }} /><button type="button" disabled={matterEfileFolderPicker.busy} onClick={useCurrentMatterEfilePickerFolder} style={{ background: '#2563eb', color: '#fff', border: 0 }}>Use this folder</button></div>
-          {matterEfileFolderPicker.error && <div style={{ padding: 9, border: '1px solid #f59e0b', background: '#fffbeb', color: '#92400e', borderRadius: 7 }}>{matterEfileFolderPicker.error}</div>}
-          <div style={{ minHeight: 300, maxHeight: '58vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
-            {matterEfileFolderPicker.busy ? <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>Loading OneDrive folders…</div> : matterEfileFolderPicker.items.map((folder) => <button key={folder.id} type="button" onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: folder.id })} style={{ width: '100%', display: 'flex', gap: 9, alignItems: 'center', textAlign: 'left', padding: '10px 12px', border: 0, borderBottom: '1px solid #e2e8f0', borderRadius: 0, background: '#fff' }}><span>📁</span><strong>{folder.name}</strong></button>)}
-            {!matterEfileFolderPicker.busy && !matterEfileFolderPicker.items.length && <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>No child folders. Use this folder, go up, or choose a local/OneDrive-synced folder.</div>}
+          <div style={{ padding: 9, border: '1px solid #bfdbfe', borderRadius: 7, background: '#eff6ff', color: '#1e3a8a' }}>
+            <strong>Current Matter Table folder:</strong> {savedMatterFolder || 'None selected'}<br />
+            Choose an existing folder. Mio will save that selection to Settings &gt; Matter Table and will not create a matter folder or efile folder.
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><button type="button" onClick={chooseLocalMatterEfileFolder}>Choose local / synced folder</button><button type="button" onClick={() => setMatterEfileFolderPicker({ open: false, matterId: '', rowId: '', path: '/', current: null, items: [], busy: false, error: '' })}>Cancel</button></div>
+          {matterEfileFolderPicker.notice && <div style={{ padding: 9, border: '1px solid #f59e0b', background: '#fffbeb', color: '#92400e', borderRadius: 7 }}>{matterEfileFolderPicker.notice}</div>}
+          <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
+            <button type="button" disabled={matterEfileFolderPicker.busy || !parentId} onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: parentId })}>↑ Up</button>
+            <input value={currentPath} readOnly style={{ flex: 1 }} />
+            <button type="button" disabled={matterEfileFolderPicker.busy || !matterEfileFolderPicker.current?.id} onClick={useCurrentMatterEfilePickerFolder} style={{ background: '#2563eb', color: '#fff', border: 0 }}>Use this existing folder</button>
+          </div>
+          {matterEfileFolderPicker.error && <div style={{ padding: 9, border: '1px solid #ef4444', background: '#fef2f2', color: '#991b1b', borderRadius: 7 }}>{matterEfileFolderPicker.error}</div>}
+          <div style={{ minHeight: 300, maxHeight: '58vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+            {matterEfileFolderPicker.busy ? <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>Loading existing OneDrive folders…</div> : matterEfileFolderPicker.items.map((folder) => <button key={folder.id} type="button" onClick={() => loadMatterEfileFolderPicker({ matterId: matterEfileFolderPicker.matterId, rowId: matterEfileFolderPicker.rowId, itemId: folder.id })} style={{ width: '100%', display: 'flex', gap: 9, alignItems: 'center', textAlign: 'left', padding: '10px 12px', border: 0, borderBottom: '1px solid #e2e8f0', borderRadius: 0, background: '#fff' }}><span>📁</span><strong>{folder.name}</strong></button>)}
+            {!matterEfileFolderPicker.busy && !matterEfileFolderPicker.items.length && <div style={{ padding: 30, textAlign: 'center', color: '#64748b' }}>No child folders are shown here. Use the current existing folder, go up, or choose a local/OneDrive-synced folder.</div>}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><button type="button" onClick={chooseLocalMatterEfileFolder}>Choose local / synced existing folder</button><button type="button" onClick={closeMatterEfileFolderPicker}>Cancel</button></div>
         </div>
       </Modal>
     )
@@ -30879,7 +31189,7 @@ async function chooseAndSaveMatterEfileFolder(row) {
     const rowHandleKey = row?.id ? String(row.id) : ''
     let directoryHandle = (rowHandleKey && serviceEmailRowFolderHandlesRef.current[rowHandleKey])
       || (matterHandleKey && matterEfileFolderHandlesRef.current[matterHandleKey])
-      || (matterHandleKey && matterEfileFolderHandles[resolvedMatterIdForSave])
+      || (matterHandleKey && matterEfileFolderHandles[matterHandleKey])
       || null
 
     const verifyHandle = async (handle) => {
@@ -30896,24 +31206,37 @@ async function chooseAndSaveMatterEfileFolder(row) {
       }
     }
 
+    if (!directoryHandle && matterHandleKey && matterEfileFolderRefForId(matterHandleKey)?.source === 'browser') {
+      directoryHandle = await loadMioEfileFolderHandle(matterHandleKey)
+      if (directoryHandle) rememberServiceEfileFolderHandle(matterHandleKey, rowHandleKey, directoryHandle)
+    }
     if (await verifyHandle(directoryHandle)) return directoryHandle
 
-    if (!window.showDirectoryPicker) {
-      throw new Error('Chrome did not provide folder access. Use Chrome or Edge and click Browse/set to choose the actual matter efile folder.')
-    }
-
+    if (!resolvedMatterIdForSave) throw createMioEfileFolderError('Select the matching matter before saving this filing.')
     const displayPath = serviceEmailSavePath(row)
-    if (!resolvedMatterIdForSave) throw new Error('Select the matching matter before saving this filing.')
-    if (!displayPath) throw new Error('This matter has no efile folder set in the Matter Table. Set the efile folder on the matter first; Mio will not create or guess one.')
-    directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
-    rememberServiceEfileFolderHandle(resolvedMatterIdForSave, row?.id, directoryHandle)
-    if (!displayPath) await saveMatterEfileFolderSelection(resolvedMatterIdForSave, row?.id || '', `[Browser-selected folder] ${directoryHandle?.name || 'efile'}`, directoryHandle)
+    if (!displayPath) {
+      openMatterEfileFolderPickerForMatter(resolvedMatterIdForSave, row?.id || '')
+      throw createMioEfileFolderError('This matter has no efile folder selected in Settings > Matter Table. Choose an existing folder first. Mio will not create one.')
+    }
+    if (!window.showDirectoryPicker) throw createMioEfileFolderError('Chrome did not provide folder access. Use Chrome or Edge and click Change folder to choose the actual existing matter folder.')
+
+    const pickerId = `mio-efile-${String(matterHandleKey || 'matter').replace(/[^a-z0-9_-]/gi, '').slice(-18)}`
+    directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite', id: pickerId })
+    const selectedDisplayPath = `[Browser folder] ${directoryHandle?.name || 'Selected folder'}`
+    const saved = await saveMatterEfileFolderSelection(resolvedMatterIdForSave, row?.id || '', selectedDisplayPath, directoryHandle, { source: 'browser', path: selectedDisplayPath, name: directoryHandle?.name || '' })
+    if (!saved) throw createMioEfileFolderError('The selected browser folder could not be saved to Settings > Matter Table.')
     return directoryHandle
   }
 
   async function saveDownloadedServicePdf(row, providedAttachment = null, options = {}) {
     const currentRow = serviceEmailRows.find((item) => item.id === row?.id) || row
     if (!currentRow) return false
+    const matterId = resolveServiceEmailMatterId(currentRow)
+    if (!matterId) throw createMioEfileFolderError('Select the matching matter before saving this filing.')
+    if (!serviceEmailPathIsKnown(currentRow)) {
+      openMatterEfileFolderPickerForMatter(matterId, currentRow.id || '')
+      throw createMioEfileFolderError('Choose an existing efile folder for this matter. Mio will not save, bill, move the email, or create a folder until you do.')
+    }
     if (serviceEmailRowCategory(currentRow) === 'notification_service') ensureNoticeServiceTags()
     else ensureAcceptedServiceTags()
 
@@ -30921,7 +31244,9 @@ async function chooseAndSaveMatterEfileFolder(row) {
     // The app now uses Microsoft Graph/browser file access first. The local helper
     // remains available only as an optional legacy fallback if it is explicitly enabled
     // in serviceGraphConfig.useLocalHelper.
-    const shouldUseLegacyLocalHelper = serviceGraphConfig?.useLocalHelper === true && options.preferLocalHelper === true
+    // Do not use the legacy local helper for Service Inbox saves. Older helper versions could
+    // create missing directories. V246 writes only to an existing Graph folder or a folder the user selected.
+    const shouldUseLegacyLocalHelper = false
     if (!providedAttachment && shouldUseLegacyLocalHelper && primaryServiceFilingLink(currentRow)?.url) {
       try {
         return await saveServicePdfViaLocalHelper(currentRow)
@@ -30957,8 +31282,7 @@ async function chooseAndSaveMatterEfileFolder(row) {
       attachment = await pickLocalServicePdfAttachment(currentRow)
     }
     if (!attachment?.blob && !attachment?.file && !attachment?.content_url) {
-      setServiceEmailScanNote('The PDF was not saved because no PDF was selected or loaded. Click the PDF link/open eFile PDF first if needed, then click Save PDF + move and choose that PDF. Case Controller will rename it and copy it into the selected matter efile folder.')
-      return false
+      throw new Error('The PDF was not selected or loaded. Open/download the eFile PDF if needed, click Bill and save again, and choose that PDF when Chrome asks. No file was saved, billed, or moved.')
     }
 
     // Build the target name ONLY from the row's document name / eFile PDF name. Do not keep
@@ -30990,19 +31314,7 @@ async function chooseAndSaveMatterEfileFolder(row) {
     }
 
     try {
-      let savedInfo = null
-      try {
-        savedInfo = await uploadServicePdfToOneDriveFolder(currentRow, fileName, blob)
-      } catch (oneDriveError) {
-        console.warn('OneDrive upload from service email failed:', oneDriveError)
-        // When Mio is connected live and the Matter Table points into OneDrive,
-        // never silently substitute a remembered browser folder handle. That can
-        // point at an old/wrong folder while the email is still billed and moved.
-        if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected && oneDrivePathFromMatterEfileFolder(serviceEmailSavePath(currentRow))) {
-          throw new Error(`OneDrive did not save and verify ${fileName}: ${oneDriveError.message || oneDriveError}`)
-        }
-        setServiceEmailScanNote(`OneDrive upload was unavailable for ${fileName}. Mio will request direct folder access.`)
-      }
+      let savedInfo = await uploadServicePdfToOneDriveFolder(currentRow, fileName, blob)
 
       if (!savedInfo) {
         const directoryHandle = await ensureServiceEmailDirectoryHandle(currentRow)
@@ -31040,8 +31352,9 @@ async function chooseAndSaveMatterEfileFolder(row) {
       setServiceEmailScanNote(`Saved ${fileName} to ${savedInfo?.oneDrivePath ? 'OneDrive' : 'the selected matter efile folder'} and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
       return { ok: true, verified: savedInfo?.verified !== false, fileName, savedPath: savedInfo?.savedPath || '', oneDrivePath: savedInfo?.oneDrivePath || '', webUrl: savedInfo?.webUrl || '', driveItemId: savedInfo?.driveItemId || '' }
     } catch (error) {
-      if (error?.name !== 'AbortError') setServiceEmailScanNote(`Could not save PDF to the selected matter folder: ${error.message || error}`)
-      return false
+      if (error?.name === 'AbortError') return false
+      setServiceEmailScanNote(`Could not save PDF to the selected matter folder: ${error.message || error}`)
+      throw error
     }
   }
 
@@ -31481,11 +31794,21 @@ Ben`) : '',
 
   async function processSingleFilingServiceEmail(row) {
     if (!row) return false
+    const matterId = resolveServiceEmailMatterId(row)
+    if (!matterId) {
+      alert('Select the matching matter before saving this filing.')
+      return false
+    }
+    if (!serviceEmailPathIsKnown(row)) {
+      setServiceEmailScanNote('Choose an existing efile folder. Mio will not save, bill, move the email, or create a folder until the selection is saved to the Matter Table.')
+      openMatterEfileFolderPickerForMatter(matterId, row.id || '')
+      return false
+    }
     const label = serviceEmailRowCategory(row) === 'accepted' ? 'Saved accepted PDF and moved email to Read' : 'Processed notification of service and moved email to Read'
     setServiceGraphBusy(true)
     try {
       setServiceEmailScanNote(`Saving PDF for ${row.subject || 'email'} using Microsoft Graph/browser folder access...`)
-      const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
+      const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true, preferLocalHelper: false })
       if (!savedPdf) throw new Error('The PDF was not saved. Confirm the matter efile folder, allow folder access when prompted, and choose the PDF if the browser cannot fetch it automatically.')
       const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
       const billingEntry = maybeCreateServiceEmailBillingEntry(row, serviceEmailRowCategory(row) === 'accepted' ? 'Accepted e-filing review' : 'Notification of service review')
@@ -31508,6 +31831,12 @@ Ben`) : '',
       setServiceEmailScanNote(`${label}. Removed from this review queue.`)
       return true
     } catch (error) {
+      if (isMioEfileFolderError(error)) {
+        recordServiceEmailAction('save_pdf_and_move_to_read', row, { result: 'failed', notes: error.message || String(error), document_name: row.suggested_document_name || '' })
+        setServiceEmailScanNote(`Save PDF / move stopped: ${error.message || error}`)
+        alert(`Save PDF / move stopped: ${error.message || error}`)
+        return false
+      }
       if (isGraphItemNotFound(error)) {
         recordServiceEmailAction('save_pdf_and_move_to_read', row, { result: 'already_removed', notes: error.message || String(error) })
         setServiceEmailRows((current) => current.filter((item) => item.id !== row.id))
@@ -31692,7 +32021,7 @@ Ben`) : '',
           // Online version: use Microsoft Graph/browser folder access instead of the old
           // local Node helper. The browser writes directly to the selected matter efile
           // folder with the row's Document name after the user grants folder access.
-          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
+          const savedPdf = await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true, preferLocalHelper: false })
           if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
@@ -31715,7 +32044,10 @@ Ben`) : '',
             throw new Error('Outlook did not confirm the email moved to the Read folder.')
           }
         } catch (error) {
-          if (isGraphItemNotFound(error)) {
+          if (isMioEfileFolderError(error)) {
+            failures.push(`${row.subject || row.id}: ${error.message || error}`)
+            recordServiceEmailAction('bulk_save_pdf_and_move_to_read', row, { result: 'failed', notes: error.message || String(error), billing_minutes: row.billing_minutes || 0, document_name: row.suggested_document_name || row.saved_pdf_name || row.extracted_pdf_name || '', save_path: serviceEmailSavePath(row) })
+          } else if (isGraphItemNotFound(error)) {
             processed += 1
             moved += 1
             recordServiceEmailAction('bulk_save_pdf_and_move_to_read', row, {
@@ -31880,8 +32212,8 @@ Ben`) : (row.draft_response || '') })
                 </div>
                 {!compact && <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {primaryServiceFilingLink(row) && <button type="button" onClick={() => downloadServiceFilingLink(row)} style={{ fontSize: 12 }}>Preview/open eFile PDF</button>}
-                  <button type="button" onClick={() => saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })} style={{ fontSize: 12 }}>Save PDF to row folder</button>
-                  <span style={{ fontSize: 12, color: '#64748b' }}>No helper needed; uses Microsoft Graph/browser folder access and the row document name.</span>
+                  <button type="button" onClick={async () => { try { await saveDownloadedServicePdf(row, null, { tryDirectDownload: true, allowPick: true, preferLocalHelper: false }) } catch (error) { alert(`Could not save PDF: ${error.message || error}`) } }} style={{ fontSize: 12 }}>Save PDF to row folder</button>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>Uses only the existing Matter Table folder. If Chrome cannot read the eFile PDF directly, it will ask you to choose the downloaded PDF.</span>
                 </div>}
                 {!compact && (serviceEmailPathIsKnown(row)
                   ? <div><strong>Save:</strong> {serviceEmailSavePath(row)}</div>
@@ -32065,7 +32397,7 @@ Ben`) : (row.draft_response || '') })
           // Online version: use Microsoft Graph/browser folder access instead of the old
           // local Node helper. Do not use Chrome's Save As dialog; write directly to
           // the selected matter efile folder with the row's Document name.
-          const savedPdf = await saveDownloadedServicePdf(row, bulkSourcePdfsByRowId[row.id] || null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
+          const savedPdf = await saveDownloadedServicePdf(row, bulkSourcePdfsByRowId[row.id] || null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: false })
           if (!savedPdf) throw new Error('PDF was not saved. Confirm folder access and select the PDF if prompted.')
           const savedInfo = typeof savedPdf === 'object' ? savedPdf : {}
           saved += 1
@@ -32149,9 +32481,14 @@ Ben`) : (row.draft_response || '') })
   }
 
   async function saveSingleNoticeServicePdf(row) {
-    const saved = await saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: false, preferLocalHelper: true })
-    if (saved) setServiceEmailScanNote(`Saved notice-of-service document ${saved.fileName || row.suggested_document_name || ''} with tag ${serviceEmailDocumentTagLabel(row)}.`)
-    return saved
+    try {
+      const saved = await saveDownloadedServicePdf({ ...row, document_tag_ids: serviceEmailDocumentTagIds(row) }, null, { tryDirectDownload: true, allowPick: true, preferLocalHelper: false })
+      if (saved) setServiceEmailScanNote(`Saved notice-of-service document ${saved.fileName || row.suggested_document_name || ''} with tag ${serviceEmailDocumentTagLabel(row)}.`)
+      return saved
+    } catch (error) {
+      alert(`Could not save notice-of-service PDF: ${error.message || error}`)
+      return false
+    }
   }
 
   function addNoticeServiceRowToCalendar(row) {
@@ -32389,7 +32726,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="Matter">
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
-                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly style={{ width: '100%' }} />{!showSavedFilingReviewRows && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>{saveFolder ? 'Change folder' : 'Choose folder'}</button>}</div></LabeledField>
+                  <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'grid', gap: 4 }}><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly placeholder="No efile folder selected" style={{ width: '100%' }} />{!showSavedFilingReviewRows && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>{saveFolder ? 'Change folder' : 'Choose folder'}</button>}</div><div style={{ fontSize: 11, color: saveFolder ? '#166534' : '#991b1b' }}>{saveFolder ? 'Folder selection is saved to the Matter Table. Mio will use only this existing folder.' : 'Choose an existing folder before saving. Mio will not create one.'}</div></div></LabeledField>
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { extracted_pdf_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
@@ -32427,7 +32764,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       </Modal>
 
         {serviceTagPicker.open && (
-          <Modal title="Choose document tag" onClose={() => setServiceTagPicker({ open: false, rowId: '', search: '' })} wide>
+          <Modal title="Choose document tag" onClose={() => setServiceTagPicker({ open: false, rowId: '', search: '' })} wide zIndex={2400}>
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', gap: 8 }}><input autoFocus value={serviceTagPicker.search} onChange={(e) => setServiceTagPicker((current) => ({ ...current, search: e.target.value }))} placeholder="Search Case Filings tags" style={{ flex: 1 }} /><button type="button" onClick={() => createAndAttachServiceReviewTag(serviceEmailRows.find((row) => row.id === serviceTagPicker.rowId))}>Add a new tag</button></div>
               <div style={{ maxHeight: '65vh', overflow: 'auto', border: '1px solid #cbd5e1', borderRadius: 10, padding: 8 }}>
@@ -32439,7 +32776,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
         )}
 
         {serviceTagBuilder.open && (
-          <Modal title="Add a new tag" onClose={() => setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })}>
+          <Modal title="Add a new tag" onClose={() => setServiceTagBuilder({ open: false, rowId: '', name: '', parentId: '' })} zIndex={2500}>
             <div style={{ display: 'grid', gap: 12 }}>
               <LabeledField label="New tag name"><input autoFocus value={serviceTagBuilder.name} onChange={(e) => setServiceTagBuilder((current) => ({ ...current, name: e.target.value }))} placeholder="Enter the new tag name" /></LabeledField>
               <LabeledField label="Place under this tag">
@@ -33295,7 +33632,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
             <LabeledField label="Default e-service billing time"><input value="6 minutes" readOnly /></LabeledField>
             <LabeledField label="Discovery response calculation"><input value="30 days after received; roll weekend/holiday forward" readOnly /></LabeledField>
-            <LabeledField label="Filing save destination"><input value={'C:\\Users\\bever\\OneDrive - Beveridge Law Firm, PLLC\\All Matters\\1. Open Cases\\{Matter}\\efile'} readOnly /></LabeledField>
+            <LabeledField label="Filing save destination"><input value="No automatic folder. Select an existing folder for each matter in the Matter Table." readOnly /></LabeledField>
           </div>
           <p style={{ color: '#64748b', marginBottom: 0 }}>
             Live version should let you edit holiday calendars, billing descriptions, response templates, Outlook folder IDs, and which proposed actions require approval before completion.
@@ -33304,7 +33641,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
 
         <section id="matter-efile-folders-section" style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
           <h3 style={{ marginTop: 0 }}>Matter efile folders</h3>
-          <p style={{ color: '#64748b', marginTop: 0 }}>Set the OneDrive efile folder for each matter. When you edit a save path on an email that is matched to a matter, the path is remembered here automatically.</p>
+          <p style={{ color: '#64748b', marginTop: 0 }}>Choose the existing OneDrive or browser-accessible folder for each matter. The Service Inbox saves only to the folder shown here. Mio does not create matter folders or efile folders.</p>
           <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
             <table cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left' }}>Matter</th><th style={{ textAlign: 'left' }}>OneDrive / efile folder</th></tr></thead>
@@ -52488,7 +52825,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       }}
                     />
                   </label>
-                  <button type="button" onClick={autofillMatterEfileFoldersFromOneDrive} disabled={oneDriveBusy}>Fill efile folders from OneDrive</button>
+                  <button type="button" onClick={autofillMatterEfileFoldersFromOneDrive} disabled={oneDriveBusy}>Match existing efile folders from OneDrive</button>
                 </div>
 
                 <div
