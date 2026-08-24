@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V242'
+const MIO_APP_VERSION = 'Mio V243'
 const ORDER_EVENT_AUTOMATION_START_DATE = '2026-08-10'
 const DEFAULT_BILLING_SENDER_EMAIL = 'billing@beveridgelawfirm.com'
 const DEFAULT_MIO_BILLING_CUTOVER_DATE = '2026-08-09'
@@ -958,33 +958,793 @@ const emptyDocumentFieldRuleForm = {
 }
 
 
+
+const DRAFTING_TEMPLATE_STATUS_OPTIONS = [
+  { value: 'draft', label: 'Draft' },
+  { value: 'testing', label: 'Testing' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'retired', label: 'Retired' }
+]
+
+const DRAFTING_TEMPLATE_ENGINE_OPTIONS = [
+  { value: 'docx_assembly', label: 'Word template assembly (.docx)' },
+  { value: 'ai_text', label: 'AI text draft (legacy)' }
+]
+
+const DRAFTING_FIELD_TYPE_OPTIONS = [
+  { value: 'text', label: 'Text' },
+  { value: 'email', label: 'Email' },
+  { value: 'textarea', label: 'Long text' },
+  { value: 'date', label: 'Date' },
+  { value: 'select', label: 'Dropdown' },
+  { value: 'checkbox_group', label: 'Checkbox group' },
+  { value: 'list', label: 'List (one row per line)' },
+  { value: 'event_list', label: 'Matter events / deadlines' },
+  { value: 'event_select', label: 'Select one matter event' },
+  { value: 'service_list', label: 'Service recipients' }
+]
+
+const DRAFTING_FIELD_SOURCE_OPTIONS = [
+  { value: 'manual', label: 'Manual / template default' },
+  { value: 'today', label: 'Today' },
+  { value: 'matter.caption_subject', label: 'Matter caption subject / children' },
+  { value: 'matter.client_role', label: 'Client party role' },
+  { value: 'matter.children', label: 'Children from Matter Parties' },
+  { value: 'matter.future_events', label: 'Future matter events' },
+  { value: 'matter.service_recipients', label: 'Client and opposing counsel' },
+  { value: 'court.coordinator_email', label: 'Court coordinator email' },
+  { value: 'court.address', label: 'Court address' }
+]
+
 const emptyDraftingTemplateForm = {
   id: '',
+  system_key: '',
   document_type: '',
   name: '',
+  category: '',
+  engine: 'docx_assembly',
+  version: '1.0',
+  status: 'draft',
   template_text: '',
   files: [],
   fields: [],
   requirements: '',
   ai_instructions: '',
   tag_id: '',
+  approved_at: '',
+  updated_at: '',
   is_active: true
 }
 
 function cleanDraftingTemplate(input = {}) {
+  const safeStatus = DRAFTING_TEMPLATE_STATUS_OPTIONS.some((item) => item.value === input.status) ? input.status : (input.is_approved ? 'approved' : 'draft')
+  const safeEngine = DRAFTING_TEMPLATE_ENGINE_OPTIONS.some((item) => item.value === input.engine) ? input.engine : ((input.files || []).some((file) => /\.docx$/i.test(file?.name || '')) ? 'docx_assembly' : 'ai_text')
   return {
     ...emptyDraftingTemplateForm,
     ...input,
     id: input.id || `draft-template-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    status: safeStatus,
+    engine: safeEngine,
+    version: String(input.version || '1.0'),
     fields: Array.isArray(input.fields) ? input.fields.map((field) => ({
       id: field.id || `draft-field-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       label: field.label || field.name || '',
       key: field.key || String(field.label || field.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+      type: DRAFTING_FIELD_TYPE_OPTIONS.some((item) => item.value === field.type) ? field.type : 'text',
+      source: DRAFTING_FIELD_SOURCE_OPTIONS.some((item) => item.value === field.source) ? field.source : 'manual',
+      group: field.group || 'General',
       help: field.help || '',
+      placeholder: field.placeholder || '',
+      default_value: Array.isArray(field.default_value) ? [...field.default_value] : (field.default_value ?? ''),
+      options: Array.isArray(field.options) ? field.options.map((option) => typeof option === 'string' ? { value: option, label: option } : { value: String(option?.value ?? option?.label ?? ''), label: String(option?.label ?? option?.value ?? '') }).filter((option) => option.value || option.label) : [],
       required: !!field.required
     })).filter((field) => field.label || field.key) : [],
-    files: Array.isArray(input.files) ? input.files : []
+    files: Array.isArray(input.files) ? input.files.map((file, index) => ({
+      id: file?.id || `draft-template-file-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      name: file?.name || file?.original_file_name || `Template ${index + 1}.docx`,
+      original_file_name: file?.original_file_name || file?.name || '',
+      output_name: file?.output_name || file?.name || `Draft ${index + 1}.docx`,
+      role: file?.role || 'document',
+      include_by_default: file?.include_by_default !== false,
+      type: file?.type || file?.file_type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: Number(file?.size || file?.file_size || 0) || 0,
+      file_data: file?.file_data || '',
+      uploaded_at: file?.uploaded_at || ''
+    })) : []
   }
+}
+
+const MIO_WITHDRAWAL_MOTION_DOCX_DATA_URL = [
+  'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,',
+  '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',
+  'bWxQSwUGAAAAAA8ADwC6AwAAsCoAAAAA',
+].join('')
+
+const MIO_WITHDRAWAL_ORDER_DOCX_DATA_URL = [
+  'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,',
+  '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',
+].join('')
+
+const MIO_WITHDRAWAL_NOTICE_DOCX_DATA_URL = [
+  'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,',
+  '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',
+  'JXsh00gBvheSkAIhhTqRgtpuofaQgj+aT+Zj4fvuBFKo/5k1QgpTx3ZtNixibl01Gik08LB4x0YHs/GMvcCa5YVtIgXUW1VECiVbIdNIAb4VkpACIYU6kYLa',
+  'ZqH2kEL9x9zrhxTqf2aNkMLYnVq2yMN2ASk08LB4x7N6njcT98I2kQLqrSoihZKdkGmkAN8JSUiBkEKtSEFpr1B7SKH+46T1Qwr1P7NGSGEUONMxezcKs8eF',
+  '0UihgYfFOzKw9tPR9TzIXREplGyETCMF+EZIQgqEFOpECmpbhdpDCvUfcaofUqj/mTVCCvZw4kzZX4sxN6MYjRQaeFi8dQq1n9ir5+HCikihZB9kGinA90ES',
+  'UiCkUCdSUNsp1B5SqP/YPf2QQv3PrBFS8G13IdPhwmik0MDDIh54WfcpknoeeHlDCpd/Hf/x/1BLAwQUAAAACACAhhhdYHmC0zk1AABzrwYAGgAAAHdvcmQv',
+  'c3R5bGVzV2l0aEVmZmVjdHMueG1s7X1dl6NGsu37+RW16sVPnpYAIcnLfc4SAsZey+Pxmfb4Pqur1F2arpLqSiq37V9/QJ+AEsiPSMiE7X6YKUAZkLkzc8cO',
+  'iPj+f/54eb77fbndrTbr998M/zb45m65ftg8rtaf33/z71/jbyff3O32i/Xj4nmzXr7/5s/l7pv/+e//+v7rd7v9n8/L3V3y+/Xuu6+vD+/vn/b71+/evds9',
+  'PC1fFru/vawetpvd5tP+bw+bl3ebT59WD8t3Xzfbx3fOYDg4/L/X7eZhudslxuaL9e+L3f2puZcNX2svi4fz/3UGg0ny92p9aeP2jjavy3Vy8tNm+7LYJ39u',
+  'Pye/2H55e/02afN1sV99XD2v9n+mbfmXZn5/f/+2XX93auPby32kv/kuuYHvfn95Pl+8qbr2eKOn/zn/Ystzk8efhJuHt5flen+4vXfb5XNyw5v17mn1eu03',
+  '2daSk0/nRiofOPOwX1+Hntqgh9vF1+R/rg3y3P7j8Ucvz8c7r25xOOAYkbSJyy94biFv83wnWfB9leuabOd+Vuvbv283b6/X1lZqrf24/nJpK1kGRNo6jVH2',
+  '0XZqN/PhafGaTKCXh+9+/LzebBcfn5M7Snr8LkXk/X//191dsjw9bh7C5afF2/N+lx45HNv+sj0dOx46Hzz/dfw73qz3u7uv3y12D6vVr8n9Ja2/rBJDP8zW',
+  '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',
+].join('')
+
+
+const WITHDRAWAL_PACKET_DRAFT_FIELDS = [
+  { id: 'withdraw-field-caption-1', label: 'Caption opening', key: 'caption_left_line_1', type: 'text', source: 'manual', group: 'Caption', default_value: 'IN THE INTEREST OF', required: true },
+  { id: 'withdraw-field-caption-2', label: 'Case caption names / subject', key: 'caption_left_line_2', type: 'textarea', source: 'matter.caption_subject', group: 'Caption', help: 'Example: ZANE MORGAN BLACKBURN AND XAIDA MAE BLACKBURN,', required: true },
+  { id: 'withdraw-field-caption-3', label: 'Caption designation', key: 'caption_left_line_3', type: 'text', source: 'manual', group: 'Caption', default_value: 'CHILDREN', help: 'Examples: CHILDREN; A CHILD; or leave blank when not applicable.', required: false },
+  { id: 'withdraw-field-client-role', label: 'Client party role', key: 'client_role', type: 'select', source: 'matter.client_role', group: 'Withdrawal facts', options: [{ value: 'Petitioner', label: 'Petitioner' }, { value: 'Respondent', label: 'Respondent' }, { value: 'Movant', label: 'Movant' }, { value: 'Applicant', label: 'Applicant' }, { value: 'Intervenor', label: 'Intervenor' }], required: true },
+  { id: 'withdraw-field-suit', label: 'Suit description', key: 'suit_description', type: 'textarea', source: 'manual', group: 'Withdrawal facts', default_value: 'This is a suit affecting the parent-child relationship.', required: true },
+  { id: 'withdraw-field-discovery', label: 'Discovery statement', key: 'discovery_statement', type: 'textarea', source: 'manual', group: 'Withdrawal facts', default_value: 'Discovery is being conducted under Level 2. The discovery period in this suit has ended.', required: false },
+  { id: 'withdraw-field-children', label: 'Children / persons listed in the pleading', key: 'children', type: 'list', source: 'matter.children', group: 'Withdrawal facts', help: 'One per line. Use Name | age or Name | date of birth.', required: false },
+  { id: 'withdraw-field-consent', label: 'Client consents to withdrawal?', key: 'client_consents', type: 'select', source: 'manual', group: 'Withdrawal facts', options: [{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], required: true },
+  { id: 'withdraw-field-reason', label: 'Good-cause explanation', key: 'withdrawal_reason', type: 'textarea', source: 'manual', group: 'Withdrawal facts', help: 'Complete the sentence after the attorney name. Example: has not been able to effectively communicate with the client and continued representation will constitute a financial hardship.', required: true },
+  { id: 'withdraw-field-file-date', label: 'Motion filing / service date', key: 'filing_date', type: 'date', source: 'today', group: 'Filing and service', required: true },
+  { id: 'withdraw-field-service-methods', label: 'Methods used to notify client', key: 'client_service_methods', type: 'checkbox_group', source: 'manual', group: 'Filing and service', default_value: ['email', 'certified_mail', 'first_class_mail'], options: [{ value: 'email', label: 'Email' }, { value: 'certified_mail', label: 'Certified mail' }, { value: 'first_class_mail', label: 'Regular first-class mail' }], required: true },
+  { id: 'withdraw-field-recipients', label: 'Certificate-of-service recipients', key: 'service_recipients', type: 'service_list', source: 'matter.service_recipients', group: 'Filing and service', required: true },
+  { id: 'withdraw-field-settings', label: 'Pending settings and deadlines disclosed to client', key: 'pending_settings', type: 'event_list', source: 'matter.future_events', group: 'Settings and hearing', required: false },
+  { id: 'withdraw-field-hearing', label: 'Hearing on motion to withdraw', key: 'motion_hearing_event_id', type: 'event_select', source: 'manual', group: 'Settings and hearing', required: false },
+  { id: 'withdraw-field-replacement-status', label: 'Replacement counsel', key: 'replacement_counsel_status', type: 'select', source: 'manual', group: 'Settings and hearing', default_value: 'none', options: [{ value: 'none', label: 'No replacement counsel' }, { value: 'substituting', label: 'Replacement counsel is substituting' }], required: true },
+  { id: 'withdraw-field-replacement-name', label: 'Replacement counsel name', key: 'replacement_counsel_name', type: 'text', source: 'manual', group: 'Settings and hearing', required: false },
+  { id: 'withdraw-field-hearing-location', label: 'Hearing location override', key: 'hearing_location', type: 'text', source: 'court.address', group: 'Contact overrides', help: 'Leave the auto-filled court address unless the hearing will be elsewhere.', required: false },
+  { id: 'withdraw-field-court-email', label: 'Court contact email override', key: 'court_contact_email', type: 'email', source: 'court.coordinator_email', group: 'Contact overrides', required: false },
+  { id: 'withdraw-field-client-address', label: 'Client mailing address override', key: 'client_address_override', type: 'text', source: 'manual', group: 'Contact overrides', help: 'Leave blank to use the client address saved in Mio.', required: false },
+  { id: 'withdraw-field-client-email', label: 'Client email override', key: 'client_email_override', type: 'email', source: 'manual', group: 'Contact overrides', help: 'Leave blank to use the client email saved in Mio.', required: false },
+  { id: 'withdraw-field-court-phone', label: 'Court phone override', key: 'court_phone_override', type: 'text', source: 'manual', group: 'Contact overrides', required: false },
+  { id: 'withdraw-field-court-web', label: 'Court procedures website override', key: 'court_website_override', type: 'text', source: 'manual', group: 'Contact overrides', required: false }
+]
+
+const BUILT_IN_DRAFTING_TEMPLATES = [
+  {
+    id: 'draft-template-system-withdrawal-packet-v1',
+    system_key: 'withdrawal_packet',
+    document_type: 'Withdrawal Motion and Proposed Order',
+    name: 'Withdrawal Motion + Proposed Order',
+    category: 'Withdrawal',
+    engine: 'docx_assembly',
+    version: '1.0',
+    status: 'testing',
+    approved_at: '',
+    is_active: true,
+    requirements: 'Verify the client address and email, consent status, good-cause facts, every pending setting/deadline, service method, hearing information, and the court caption before filing. The uploaded motion and order use different consent facts, so confirm the actual consent status for each matter before approving this template version.',
+    ai_instructions: 'This approved template uses deterministic Word document assembly. AI is not permitted to invent names, dates, addresses, settings, service recipients, consent, or withdrawal facts.',
+    fields: WITHDRAWAL_PACKET_DRAFT_FIELDS,
+    files: [
+      { id: 'withdrawal-motion-docx-v1', name: 'Motion for Withdrawal of Attorney - Mio Template.docx', original_file_name: 'Motion for Withdrawal of Attorney.doc', output_name: 'Motion for Withdrawal of Attorney - {{client_name}}.docx', role: 'motion', include_by_default: true, type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', file_data: MIO_WITHDRAWAL_MOTION_DOCX_DATA_URL },
+      { id: 'withdrawal-order-docx-v1', name: 'Order for Withdrawal of Attorney - Mio Template.docx', original_file_name: 'Order for Withdrawal of Attorney.doc', output_name: 'Proposed Order for Withdrawal of Attorney - {{client_name}}.docx', role: 'proposed_order', include_by_default: true, type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', file_data: MIO_WITHDRAWAL_ORDER_DOCX_DATA_URL }
+    ]
+  },
+  {
+    id: 'draft-template-system-withdrawal-client-notice-v1',
+    system_key: 'withdrawal_client_notice',
+    document_type: 'Client Notice Regarding Motion to Withdraw',
+    name: 'Client Notice Regarding Withdrawal',
+    category: 'Withdrawal',
+    engine: 'docx_assembly',
+    version: '1.0',
+    status: 'testing',
+    is_active: true,
+    requirements: 'This notice was not supplied as an approved form. Review and approve its wording in Settings before relying on it.',
+    ai_instructions: 'Use deterministic Word assembly only. Do not invent facts.',
+    fields: WITHDRAWAL_PACKET_DRAFT_FIELDS,
+    files: [
+      { id: 'withdrawal-client-notice-docx-v1', name: 'Notice to Client Regarding Motion to Withdraw - Mio Template.docx', output_name: 'Notice to Client Regarding Motion to Withdraw - {{client_name}}.docx', role: 'client_notice', include_by_default: true, type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', file_data: MIO_WITHDRAWAL_NOTICE_DOCX_DATA_URL }
+    ]
+  }
+]
+
+function mergeBuiltInDraftingTemplates(storedTemplates = []) {
+  const stored = (Array.isArray(storedTemplates) ? storedTemplates : []).map(cleanDraftingTemplate)
+  const existingSystemKeys = new Set(stored.map((template) => template.system_key).filter(Boolean))
+  return [...stored, ...BUILT_IN_DRAFTING_TEMPLATES.filter((template) => !existingSystemKeys.has(template.system_key)).map(cleanDraftingTemplate)]
 }
 
 
@@ -1914,13 +2674,14 @@ function App() {
   const [draftingTemplates, setDraftingTemplates] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioDraftingTemplates') || '[]')
-      return Array.isArray(stored) ? stored.map(cleanDraftingTemplate) : []
-    } catch { return [] }
+      return mergeBuiltInDraftingTemplates(stored)
+    } catch { return mergeBuiltInDraftingTemplates([]) }
   })
   const [draftingTemplateForm, setDraftingTemplateForm] = useState(emptyDraftingTemplateForm)
   const [draftingTemplateUploadFiles, setDraftingTemplateUploadFiles] = useState([])
-  const [draftingSelection, setDraftingSelection] = useState({ matter_id: '', template_id: '', field_values: {} })
+  const [draftingSelection, setDraftingSelection] = useState({ matter_id: '', template_id: '', field_values: {}, selected_file_names: [] })
   const [draftingOutput, setDraftingOutput] = useState('')
+  const [draftingGeneratedFiles, setDraftingGeneratedFiles] = useState([])
   const [draftingStatus, setDraftingStatus] = useState('')
   const [serviceEmailSources, setServiceEmailSources] = useState(() => {
     try {
@@ -3269,7 +4030,7 @@ function App() {
         return mergeMioArraysById(browser, current, cloud).map(ensureLitigationPlacementShape)
       }), kind: 'array', fallback: [] },
       caseMioLitigationTabTrackFilters: { setter: (value) => setLitigationTabTrackFilters(value && typeof value === 'object' ? value : {}), kind: 'object', fallback: {} },
-      caseMioDraftingTemplates: { setter: (value) => setDraftingTemplates(Array.isArray(value) ? value.map(cleanDraftingTemplate) : []), kind: 'array', fallback: [] },
+      caseMioDraftingTemplates: { setter: (value) => setDraftingTemplates(mergeBuiltInDraftingTemplates(Array.isArray(value) ? value : [])), kind: 'array', fallback: [] },
       caseMioServiceEmailSources: { setter: setServiceEmailSources, kind: 'array', fallback: defaultServiceEmailSources },
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
@@ -14958,8 +15719,23 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     return template.name || template.document_type || 'Drafting template'
   }
 
+  function draftingTemplateStatusLabel(template) {
+    return DRAFTING_TEMPLATE_STATUS_OPTIONS.find((item) => item.value === template?.status)?.label || 'Draft'
+  }
+
+  function draftingTemplateIsAssembly(template) {
+    return String(template?.engine || '') === 'docx_assembly'
+  }
+
+  function draftingTemplateStatusColors(template) {
+    if (template?.status === 'approved') return { background: '#dcfce7', color: '#166534', border: '#86efac' }
+    if (template?.status === 'testing') return { background: '#fef3c7', color: '#92400e', border: '#fcd34d' }
+    if (template?.status === 'retired') return { background: '#e5e7eb', color: '#475569', border: '#cbd5e1' }
+    return { background: '#dbeafe', color: '#1d4ed8', border: '#93c5fd' }
+  }
+
   function resetDraftingTemplateForm() {
-    setDraftingTemplateForm(emptyDraftingTemplateForm)
+    setDraftingTemplateForm({ ...emptyDraftingTemplateForm, files: [], fields: [] })
     setDraftingTemplateUploadFiles([])
   }
 
@@ -14977,7 +15753,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
   function addDraftingTemplateField() {
     const id = `draft-field-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    setDraftingTemplateForm((current) => ({ ...current, fields: [...(current.fields || []), { id, label: '', key: '', help: '', required: false }] }))
+    setDraftingTemplateForm((current) => ({
+      ...current,
+      fields: [...(current.fields || []), { id, label: '', key: '', type: 'text', source: 'manual', group: 'General', help: '', placeholder: '', default_value: '', options: [], required: false }]
+    }))
   }
 
   function removeDraftingTemplateField(fieldId) {
@@ -15000,40 +15779,866 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     setDraftingTemplateUploadFiles((current) => Array.from(current || []).filter((file, index) => !(index === fileIndex && file.name === fileName)))
   }
 
+  function updateDraftingTemplateFile(fileId, patch) {
+    setDraftingTemplateForm((current) => ({
+      ...current,
+      files: (current.files || []).map((file) => String(file.id || file.name) === String(fileId) ? { ...file, ...patch } : file)
+    }))
+  }
+
+  function draftingNextVersion(version = '1.0') {
+    const match = String(version || '1.0').match(/^(\d+)(?:\.(\d+))?$/)
+    if (!match) return '1.1'
+    return `${Number(match[1])}.${Number(match[2] || 0) + 1}`
+  }
+
+  function draftingNormalizeFieldKey(value = '') {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  }
+
   async function saveDraftingTemplate(e) {
     e.preventDefault()
     const cleanType = String(draftingTemplateForm.document_type || '').trim()
     const cleanName = String(draftingTemplateForm.name || cleanType || '').trim()
     if (!cleanType && !cleanName) { alert('Add a document type or template name before saving.'); return }
-    const uploadedFiles = await Promise.all(Array.from(draftingTemplateUploadFiles || []).map(async (file) => {
+
+    const engine = draftingTemplateForm.engine || 'docx_assembly'
+    const pendingFiles = Array.from(draftingTemplateUploadFiles || [])
+    if (engine === 'docx_assembly' && pendingFiles.some((file) => !/\.docx$/i.test(file.name || ''))) {
+      alert('Word template assembly requires .docx files. Convert old .doc files to .docx before uploading them.')
+      return
+    }
+
+    const uploadedFiles = await Promise.all(pendingFiles.map(async (file, index) => {
       const payload = await readFileAsDataUrl(file)
-      return { name: file.name, type: file.type || '', size: file.size || 0, file_data: payload.file_data || '', original_file_name: file.name, uploaded_at: new Date().toISOString() }
+      return {
+        id: `draft-template-file-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+        name: file.name,
+        original_file_name: file.name,
+        output_name: file.name.replace(/\s*-\s*Mio Template(?=\.docx$)/i, ''),
+        role: 'document',
+        include_by_default: true,
+        type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        size: file.size || 0,
+        file_data: payload.file_data || '',
+        uploaded_at: new Date().toISOString()
+      }
     }))
-    const fields = (draftingTemplateForm.fields || []).map((field) => {
+
+    const seenKeys = new Set()
+    const fields = (draftingTemplateForm.fields || []).map((field, index) => {
       const label = String(field.label || '').trim()
-      const key = String(field.key || label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')).trim()
-      return { ...field, label, key: key || `field_${Date.now()}`, help: field.help || '', required: !!field.required }
-    }).filter((field) => field.label || field.key)
-    const nextTemplate = cleanDraftingTemplate({ ...draftingTemplateForm, document_type: cleanType || cleanName, name: cleanName || cleanType, fields, files: [...(draftingTemplateForm.files || []), ...uploadedFiles], updated_at: new Date().toISOString() })
+      const key = draftingNormalizeFieldKey(field.key || label) || `field_${index + 1}`
+      return {
+        ...field,
+        label,
+        key,
+        type: field.type || 'text',
+        source: field.source || 'manual',
+        group: field.group || 'General',
+        help: field.help || '',
+        placeholder: field.placeholder || '',
+        default_value: Array.isArray(field.default_value) ? [...field.default_value] : (field.default_value ?? ''),
+        options: Array.isArray(field.options) ? field.options : [],
+        required: !!field.required
+      }
+    }).filter((field) => {
+      if (!field.label && !field.key) return false
+      if (seenKeys.has(field.key)) return false
+      seenKeys.add(field.key)
+      return true
+    })
+
+    const combinedFiles = [...(draftingTemplateForm.files || []), ...uploadedFiles]
+    const status = draftingTemplateForm.status || 'draft'
+    if (engine === 'docx_assembly' && status === 'approved' && !combinedFiles.some((file) => /\.docx$/i.test(file.name || ''))) {
+      alert('An approved Word-assembly template must contain at least one .docx template file.')
+      return
+    }
+
+    const nextTemplate = cleanDraftingTemplate({
+      ...draftingTemplateForm,
+      document_type: cleanType || cleanName,
+      name: cleanName || cleanType,
+      engine,
+      status,
+      approved_at: status === 'approved' ? (draftingTemplateForm.approved_at || new Date().toISOString()) : '',
+      fields,
+      files: combinedFiles,
+      updated_at: new Date().toISOString()
+    })
     setDraftingTemplates((current) => current.some((template) => template.id === nextTemplate.id) ? current.map((template) => template.id === nextTemplate.id ? nextTemplate : template) : [...current, nextTemplate])
-    setDraftingSelection((current) => ({ ...current, template_id: nextTemplate.id }))
+    setDraftingSelection((current) => ({ ...current, template_id: nextTemplate.id, selected_file_names: (nextTemplate.files || []).filter((file) => file.include_by_default !== false).map((file) => file.id || file.name) }))
     resetDraftingTemplateForm()
   }
 
+  function approveDraftingTemplate(templateId) {
+    const template = draftingTemplates.find((item) => String(item.id) === String(templateId))
+    if (!template) return
+    if (draftingTemplateIsAssembly(template) && !(template.files || []).some((file) => /\.docx$/i.test(file.name || ''))) {
+      alert('Upload at least one .docx template before approving this template.')
+      return
+    }
+    if (!window.confirm(`Approve ${draftingTemplateLabel(template)} version ${template.version || '1.0'} for use?`)) return
+    setDraftingTemplates((current) => current.map((item) => String(item.id) === String(templateId) ? cleanDraftingTemplate({ ...item, status: 'approved', approved_at: new Date().toISOString(), updated_at: new Date().toISOString(), is_active: true }) : item))
+  }
+
+  function duplicateDraftingTemplateVersion(template) {
+    const suggested = draftingNextVersion(template?.version || '1.0')
+    const version = window.prompt('New version number:', suggested)
+    if (version === null) return
+    const copy = cleanDraftingTemplate({
+      ...template,
+      id: `draft-template-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      system_key: '',
+      name: `${draftingTemplateLabel(template)} v${String(version || suggested).trim()}`,
+      version: String(version || suggested).trim(),
+      status: 'draft',
+      approved_at: '',
+      updated_at: new Date().toISOString()
+    })
+    setDraftingTemplates((current) => [...current, copy])
+    editDraftingTemplate(copy)
+  }
+
+  function retireDraftingTemplate(templateId) {
+    if (!window.confirm('Retire this template? It will stop appearing on the Drafting page, but prior generated documents will remain.')) return
+    setDraftingTemplates((current) => current.map((template) => String(template.id) === String(templateId) ? cleanDraftingTemplate({ ...template, status: 'retired', is_active: false, updated_at: new Date().toISOString() }) : template))
+  }
+
   function deleteDraftingTemplate(templateId) {
+    const template = draftingTemplates.find((item) => String(item.id) === String(templateId))
+    if (template?.system_key) {
+      retireDraftingTemplate(templateId)
+      return
+    }
     if (!window.confirm('Delete this drafting template?')) return
-    setDraftingTemplates((current) => current.filter((template) => template.id !== templateId))
-    if (draftingSelection.template_id === templateId) setDraftingSelection((current) => ({ ...current, template_id: '', field_values: {} }))
+    setDraftingTemplates((current) => current.filter((item) => item.id !== templateId))
+    if (draftingSelection.template_id === templateId) setDraftingSelection((current) => ({ ...current, template_id: '', field_values: {}, selected_file_names: [] }))
+  }
+
+  function restoreBuiltInDraftingTemplates() {
+    if (!window.confirm('Restore the built-in withdrawal templates to their original Mio versions? Any edits to those two built-in templates will be replaced.')) return
+    const builtInKeys = new Set(BUILT_IN_DRAFTING_TEMPLATES.map((template) => template.system_key))
+    setDraftingTemplates((current) => [...current.filter((template) => !builtInKeys.has(template.system_key)), ...BUILT_IN_DRAFTING_TEMPLATES.map(cleanDraftingTemplate)])
+  }
+
+  function downloadDraftingTemplateFile(file) {
+    if (!file?.file_data) { alert('No template file data is available.'); return }
+    const link = document.createElement('a')
+    link.href = file.file_data
+    link.download = file.name || 'template.docx'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
+  function draftingMatterClientRecord(matter) {
+    if (!matter) return {}
+    return matter.clients || clients.find((client) => String(client.id) === String(matter.client_id)) || {}
+  }
+
+  function draftingMatterCourtRecord(matter) {
+    if (!matter) return {}
+    return matter.courts || courts.find((court) => String(court.id) === String(matter.court_id)) || {}
+  }
+
+  function draftingAssignedAttorney(matter) {
+    const extra = matter ? matterExtraFor(matter.id) : {}
+    const assigned = team.find((member) => String(member.id) === String(extra?.assigned_attorney_id || ''))
+    const signedIn = team.find((member) => String(member.email || '').toLowerCase() === String(session?.user?.email || '').toLowerCase())
+    return assigned || signedIn || team[0] || {}
+  }
+
+  function draftingPersonFullName(person = {}) {
+    return `${person.first_name || ''} ${person.last_name || ''}`.trim() || person.name || ''
+  }
+
+  function draftingInlineAddress(person = {}) {
+    const street = String(person.address || '').trim()
+    const locality = [person.city ? `${person.city}${person.state ? ',' : ''}` : '', person.state, person.zip].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    if (street && locality) return `${street}, ${locality}`
+    return street || locality
+  }
+
+  function draftingMultilineAddress(person = {}) {
+    const street = String(person.address || '').trim()
+    const cityState = [person.city ? `${person.city}${person.state ? ',' : ''}` : '', person.state, person.zip].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+    return [street, cityState].filter(Boolean).join('\n')
+  }
+
+  function draftingFirmAddressLines() {
+    const raw = String(lawFirmProfile?.address || '').trim() || '1600 East Highway 6, Suite 225\nAlvin, Texas 77511'
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    if (lines.length >= 2) return [lines[0], lines.slice(1).join(', ')]
+    const suiteMatch = raw.match(/^(.*?(?:Suite|Ste\.?)[^,]*),\s*(.+)$/i)
+    if (suiteMatch) return [suiteMatch[1].trim(), suiteMatch[2].trim()]
+    const parts = raw.split(',').map((part) => part.trim()).filter(Boolean)
+    if (parts.length >= 3) return [parts.slice(0, 2).join(', '), parts.slice(2).join(', ')]
+    return [raw, '']
+  }
+
+  function draftingFutureEventsForMatter(matter) {
+    if (!matter) return []
+    const today = dateToInputValue(new Date())
+    return events.filter((event) => {
+      const eventMatterId = event.matter_id || event.matters?.id || ''
+      if (String(eventMatterId) !== String(matter.id)) return false
+      if (event.is_active === false || isUndatedEventDate(event.start_date)) return false
+      return String(event.start_date || '') >= today
+    }).sort((a, b) => `${a.start_date || ''}T${a.start_time || ''}`.localeCompare(`${b.start_date || ''}T${b.start_time || ''}`))
+  }
+
+  function draftingEventTitle(event = {}) {
+    return event.title || event.event_subcategory || event.event_category || 'Court setting / deadline'
+  }
+
+  function draftingServiceRecipientOptions(matter) {
+    if (!matter) return []
+    const client = draftingMatterClientRecord(matter)
+    const extra = matterExtraFor(matter.id)
+    const rows = []
+    const clientName = draftingPersonFullName(client) || matterClientName(matter) || 'Client'
+    rows.push({ id: 'client', type: 'client', name: clientName, email: client.email || matter.client_email || '', label: `${clientName} (client)` })
+    ;(extra?.opposing_parties || []).forEach((party, index) => {
+      const counsel = party?.counsel || {}
+      const name = counsel.name || party.name || `Opposing counsel ${index + 1}`
+      const email = counsel.email || party.email || ''
+      if (!name && !email) return
+      rows.push({ id: `opposing-counsel-${index}`, type: 'opposing_counsel', name, email, label: `${name}${email ? ` — ${email}` : ''}` })
+    })
+    return rows
+  }
+
+  function draftingChildrenForMatter(matter) {
+    if (!matter) return []
+    const direct = Array.isArray(matter.children) ? matter.children : []
+    const litigation = matterExtraFor(matter.id)?.litigation_parties || []
+    return [...direct, ...litigation.filter((party) => /child|minor/i.test(String(party.role || '')))].map((item) => ({
+      name: item.name || draftingPersonFullName(item),
+      age: item.age || item.date_of_birth || item.dob || ''
+    })).filter((item) => item.name)
+  }
+
+  function draftingClientRoleForMatter(matter) {
+    if (!matter) return ''
+    const extra = matterExtraFor(matter.id)
+    const clientParty = (extra?.litigation_parties || []).find((party) => party.source === 'client')
+    return matter.client_role || clientParty?.role || ''
+  }
+
+  function draftingCaptionSubjectForMatter(matter) {
+    const saved = matter?.case_caption_subject || matter?.caption_subject || ''
+    if (saved) return saved
+    const children = draftingChildrenForMatter(matter)
+    if (children.length) return `${children.map((child) => String(child.name || '').trim().toUpperCase()).filter(Boolean).join(' AND ')},`
+    return ''
+  }
+
+  function draftingDefaultValueForField(field, matter) {
+    const source = field?.source || 'manual'
+    if (source === 'today') return dateToInputValue(new Date())
+    if (source === 'matter.caption_subject') return draftingCaptionSubjectForMatter(matter) || field.default_value || ''
+    if (source === 'matter.client_role') return draftingClientRoleForMatter(matter) || field.default_value || ''
+    if (source === 'matter.children') return draftingChildrenForMatter(matter).map((child) => `${child.name}${child.age ? ` | ${child.age}` : ''}`).join('\n') || field.default_value || ''
+    if (source === 'matter.future_events') return draftingFutureEventsForMatter(matter).map((event) => String(event.id))
+    if (source === 'matter.service_recipients') return draftingServiceRecipientOptions(matter).map((recipient) => recipient.id)
+    if (source === 'court.coordinator_email') {
+      const court = draftingMatterCourtRecord(matter)
+      const courtPeople = matter ? matterExtraFor(matter.id)?.court_people || [] : []
+      return court.court_coordinator_email || court.coordinator_email || courtPeople.find((person) => /coordinator/i.test(person.title || ''))?.email || field.default_value || ''
+    }
+    if (source === 'court.address') {
+      const court = draftingMatterCourtRecord(matter)
+      return court.court_address || court.address || field.default_value || ''
+    }
+    if (Array.isArray(field?.default_value)) return [...field.default_value]
+    return field?.default_value ?? ''
+  }
+
+  function buildDefaultDraftingFieldValues(template, matter) {
+    return Object.fromEntries((template?.fields || []).map((field) => [field.key, draftingDefaultValueForField(field, matter)]))
+  }
+
+  function draftingDefaultSelectedFiles(template) {
+    return (template?.files || []).filter((file) => file.include_by_default !== false).map((file) => file.id || file.name)
+  }
+
+  function selectDraftingMatter(matterId, lockedMatterId = '') {
+    const template = draftingSelectedTemplate()
+    const matter = matters.find((item) => String(item.id) === String(lockedMatterId || matterId)) || null
+    setDraftingSelection((current) => ({
+      ...current,
+      matter_id: lockedMatterId || matterId,
+      field_values: template ? buildDefaultDraftingFieldValues(template, matter) : {},
+      selected_file_names: template ? draftingDefaultSelectedFiles(template) : []
+    }))
+    setDraftingGeneratedFiles([])
+    setDraftingOutput('')
+    setDraftingStatus('')
+  }
+
+  function selectDraftingTemplate(templateId, lockedMatterId = '') {
+    const template = draftingTemplates.find((item) => String(item.id) === String(templateId)) || null
+    const matterId = lockedMatterId || draftingSelection.matter_id
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || null
+    setDraftingSelection((current) => ({
+      ...current,
+      template_id: templateId,
+      matter_id: matterId,
+      field_values: template ? buildDefaultDraftingFieldValues(template, matter) : {},
+      selected_file_names: template ? draftingDefaultSelectedFiles(template) : []
+    }))
+    setDraftingGeneratedFiles([])
+    setDraftingOutput('')
+    setDraftingStatus('')
+  }
+
+  function prepareDraftingSelection(templateId, matterId) {
+    const template = draftingTemplates.find((item) => String(item.id) === String(templateId)) || null
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || null
+    setDraftingSelection({
+      matter_id: matterId,
+      template_id: templateId,
+      field_values: template ? buildDefaultDraftingFieldValues(template, matter) : {},
+      selected_file_names: template ? draftingDefaultSelectedFiles(template) : []
+    })
+    setDraftingGeneratedFiles([])
+    setDraftingOutput('')
+    setDraftingStatus('')
   }
 
   function updateDraftingFieldValue(fieldKey, value) {
     setDraftingSelection((current) => ({ ...current, field_values: { ...(current.field_values || {}), [fieldKey]: value } }))
+    setDraftingGeneratedFiles([])
+    setDraftingOutput('')
+    setDraftingStatus('')
+  }
+
+  function toggleDraftingCheckboxValue(fieldKey, optionValue) {
+    const current = Array.isArray((draftingSelection.field_values || {})[fieldKey]) ? (draftingSelection.field_values || {})[fieldKey] : []
+    updateDraftingFieldValue(fieldKey, current.includes(optionValue) ? current.filter((value) => value !== optionValue) : [...current, optionValue])
+  }
+
+  function toggleDraftingTemplateFile(file) {
+    const key = file?.id || file?.name
+    if (!key) return
+    const current = Array.isArray(draftingSelection.selected_file_names) ? draftingSelection.selected_file_names : []
+    setDraftingSelection((selection) => ({ ...selection, selected_file_names: current.includes(key) ? current.filter((value) => value !== key) : [...current, key] }))
+    setDraftingGeneratedFiles([])
+    setDraftingStatus('')
+  }
+
+  function draftingLongDate(value) {
+    if (!value) return ''
+    const date = new Date(`${value}T12:00:00`)
+    if (Number.isNaN(date.getTime())) return String(value)
+    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+  }
+
+  function draftingShortDate(value) {
+    if (!value) return ''
+    const date = new Date(`${value}T12:00:00`)
+    if (Number.isNaN(date.getTime())) return String(value)
+    return date.toLocaleDateString('en-US')
+  }
+
+  function draftingLegalTime(value) {
+    if (!value) return ''
+    const parts = String(value).split(':')
+    const hour = Number(parts[0])
+    const minute = Number(parts[1] || 0)
+    if (!Number.isFinite(hour)) return String(value)
+    const suffix = hour >= 12 ? 'P.M.' : 'A.M.'
+    return `${hour % 12 || 12}:${String(minute).padStart(2, '0')} ${suffix}`
+  }
+
+  function draftingEventDateTimeLong(event = {}) {
+    const date = draftingLongDate(event.start_date)
+    const time = draftingLegalTime(event.start_time)
+    return [date, time ? `at ${time}` : ''].filter(Boolean).join(' ')
+  }
+
+  function draftingCourtCaptionLines(court = {}, matter = {}) {
+    const rawName = String(court.court_name || matter.court || '').trim()
+    const county = String(court.county || matter.county || '').replace(/\s+County$/i, '').trim()
+    const districtMatch = rawName.match(/(\d+)(st|nd|rd|th)?\s+(?:Judicial\s+)?District\s+Court/i)
+    if (districtMatch) {
+      const suffix = districtMatch[2] || (() => {
+        const n = Number(districtMatch[1])
+        if (n % 100 >= 11 && n % 100 <= 13) return 'th'
+        if (n % 10 === 1) return 'st'
+        if (n % 10 === 2) return 'nd'
+        if (n % 10 === 3) return 'rd'
+        return 'th'
+      })()
+      return { line1: 'IN THE', line2: `${districtMatch[1]}${suffix.toUpperCase()} JUDICIAL DISTRICT COURT`, line3: county ? `${county.toUpperCase()} COUNTY, TEXAS` : 'TEXAS' }
+    }
+    const countyCourtMatch = rawName.match(/County\s+Court\s+at\s+Law(?:\s+(?:No\.?|Number)\s*(\d+))?/i)
+    if (countyCourtMatch) {
+      return { line1: 'IN THE COUNTY', line2: `COURT AT LAW${countyCourtMatch[1] ? ` NO. ${countyCourtMatch[1]}` : ''}`, line3: county ? `${county.toUpperCase()} COUNTY, TEXAS` : 'TEXAS' }
+    }
+    return { line1: 'IN THE', line2: rawName ? rawName.toUpperCase() : 'COURT', line3: county ? `${county.toUpperCase()} COUNTY, TEXAS` : 'TEXAS' }
+  }
+
+  function draftingParseRows(value, keys = ['name', 'age']) {
+    if (Array.isArray(value)) return value.map((item) => typeof item === 'object' ? item : { [keys[0]]: String(item), [keys[1]]: '' })
+    return String(value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+      const parts = line.split(/\s*\|\s*|\t+/)
+      return { [keys[0]]: parts[0] || '', [keys[1]]: parts.slice(1).join(' | ') || '' }
+    })
+  }
+
+  function draftingEnsureSentence(value = '') {
+    const clean = String(value || '').trim()
+    if (!clean) return ''
+    return /[.!?]$/.test(clean) ? clean : `${clean}.`
+  }
+
+  function draftingJoinList(items = []) {
+    const clean = items.map((item) => String(item || '').trim()).filter(Boolean)
+    if (clean.length <= 1) return clean[0] || ''
+    if (clean.length === 2) return `${clean[0]} and ${clean[1]}`
+    return `${clean.slice(0, -1).join(', ')}, and ${clean[clean.length - 1]}`
+  }
+
+  function draftingServiceMethodDisplay(values = []) {
+    const selected = Array.isArray(values) ? values : []
+    const labels = []
+    if (selected.includes('email')) labels.push('e-mail')
+    if (selected.includes('certified_mail')) labels.push('certified mail')
+    if (selected.includes('first_class_mail')) labels.push('regular first-class mail')
+    return draftingJoinList(labels)
+  }
+
+  function draftingServiceMailClause(values = []) {
+    const selected = Array.isArray(values) ? values : []
+    if (selected.includes('certified_mail') && selected.includes('first_class_mail')) return 'by both certified and regular first-class mail,'
+    if (selected.includes('certified_mail')) return 'by certified mail,'
+    if (selected.includes('first_class_mail')) return 'by regular first-class mail,'
+    return 'for notice purposes,'
+  }
+
+  function buildDraftingAssemblyData(template, matter, fieldValues = {}) {
+    const client = draftingMatterClientRecord(matter)
+    const court = draftingMatterCourtRecord(matter)
+    const attorney = draftingAssignedAttorney(matter)
+    const extra = matter ? matterExtraFor(matter.id) : {}
+    const clientName = draftingPersonFullName(client) || matterClientName(matter) || ''
+    const clientFirstName = client.first_name || clientName.split(/\s+/)[0] || 'Client'
+    const attorneyName = draftingPersonFullName(attorney) || attorney.name || 'Ben Beveridge'
+    const attorneyEmail = attorney.email || session?.user?.email || 'ben@beveridgelawfirm.com'
+    const attorneyBarNumber = attorney.state_bar_number || attorney.bar_number || attorney.bar_no || '24121457'
+    const firmAddress = draftingFirmAddressLines()
+    const courtCaption = draftingCourtCaptionLines(court, matter)
+    const clientAddressInline = String(fieldValues.client_address_override || '').trim() || draftingInlineAddress(client)
+    const clientAddressMultiline = String(fieldValues.client_address_override || '').trim() || draftingMultilineAddress(client)
+    const clientEmail = String(fieldValues.client_email_override || '').trim() || client.email || matter?.client_email || ''
+    const children = draftingParseRows(fieldValues.children, ['name', 'age'])
+    const pendingEventIds = Array.isArray(fieldValues.pending_settings) ? fieldValues.pending_settings.map(String) : []
+    const allMatterEvents = draftingFutureEventsForMatter(matter)
+    const pendingEvents = allMatterEvents.filter((event) => pendingEventIds.includes(String(event.id)))
+    const pendingRows = pendingEvents.map((event) => ({ title: draftingEventTitle(event), date: [draftingShortDate(event.start_date), event.start_time ? draftingLegalTime(event.start_time) : ''].filter(Boolean).join(' ') }))
+    const hearingEvent = allMatterEvents.find((event) => String(event.id) === String(fieldValues.motion_hearing_event_id || '')) || events.find((event) => String(event.id) === String(fieldValues.motion_hearing_event_id || '')) || null
+    const serviceOptions = draftingServiceRecipientOptions(matter)
+    const selectedRecipientIds = Array.isArray(fieldValues.service_recipients) ? fieldValues.service_recipients : []
+    const serviceMethods = Array.isArray(fieldValues.client_service_methods) ? fieldValues.client_service_methods : []
+    const serviceRecipients = serviceOptions.filter((recipient) => selectedRecipientIds.includes(recipient.id)).map((recipient) => {
+      if (recipient.type === 'client') {
+        const methodText = draftingServiceMethodDisplay(serviceMethods) || 'the selected service methods'
+        return { ...recipient, service_line: `${recipient.name} by ${methodText}${recipient.email ? ` at ${recipient.email}` : ''}.` }
+      }
+      return { ...recipient, service_line: `${recipient.name} by electronic filing manager${recipient.email ? ` at ${recipient.email}` : ''}.` }
+    })
+    const consent = String(fieldValues.client_consents || '').toLowerCase()
+    const orderDeliveryParts = []
+    if (serviceMethods.includes('certified_mail') && serviceMethods.includes('first_class_mail')) orderDeliveryParts.push(`at ${clientAddressInline} by both certified and regular first-class mail`)
+    else if (serviceMethods.includes('certified_mail')) orderDeliveryParts.push(`at ${clientAddressInline} by certified mail`)
+    else if (serviceMethods.includes('first_class_mail')) orderDeliveryParts.push(`at ${clientAddressInline} by regular first-class mail`)
+    if (serviceMethods.includes('email')) orderDeliveryParts.push(`by e-mail at ${clientEmail}`)
+    const clientDeliveryOrderClause = `The Court further finds that a copy of the Motion for Withdrawal of Attorney was delivered to ${clientName}${orderDeliveryParts.length ? ` ${draftingJoinList(orderDeliveryParts)}` : ''}.`
+    const clientConsentMotionClause = consent === 'yes'
+      ? `${clientName} consents and agrees to the withdrawal of ${attorneyName} in this matter.`
+      : `${clientName} neither consents to nor agrees to the withdrawal of ${attorneyName} in this matter.`
+    const clientConsentOrderClause = consent === 'yes'
+      ? `The Court further finds that ${clientName} agrees to the withdrawal by ${attorneyName}; therefore, the Court finds that ${attorneyName} has shown good cause to withdraw.`
+      : `The Court further finds that ${clientName} neither consents to nor agrees to the withdrawal by ${attorneyName}.`
+    const replacementName = String(fieldValues.replacement_counsel_name || '').trim()
+    const replacementCounselOrderClause = fieldValues.replacement_counsel_status === 'substituting'
+      ? `The Court finds that ${replacementName || 'replacement counsel'} is substituting in as counsel for ${clientName}.`
+      : `The Court finds that there is no attorney substituting in as counsel for ${clientName} at this time.`
+    const reasonText = draftingEnsureSentence(fieldValues.withdrawal_reason)
+    const withdrawalReasonClause = reasonText && reasonText.toLowerCase().startsWith(attorneyName.toLowerCase()) ? reasonText : draftingEnsureSentence(`${attorneyName} ${reasonText}`)
+    const pendingDescriptions = pendingEvents.map((event) => `${draftingEventTitle(event)} on ${draftingEventDateTimeLong(event)}`)
+    const pendingSummary = pendingDescriptions.join('; ')
+    const pendingSettingsMotionClause = pendingEvents.length
+      ? `${clientName} has been notified in writing of the following pending settings, hearings, and/or deadlines in this case: ${pendingSummary}.`
+      : 'There are no pending settings or deadlines in this case.'
+    const pendingSettingsOrderIntro = pendingEvents.length
+      ? `The Court further finds that ${clientName} has been notified of the following pending settings, hearings and/or deadlines in this case:`
+      : `The Court further finds that there are no pending settings, hearings, or deadlines presently known in this case.`
+    const pendingSettingsNoticeClause = pendingEvents.length
+      ? `The following settings and deadlines are presently known and have been disclosed to you: ${pendingSummary}.`
+      : 'There are no pending settings or deadlines presently known to the firm.'
+    const filingDate = fieldValues.filing_date || dateToInputValue(new Date())
+    const hearingLocation = String(fieldValues.hearing_location || '').trim() || court.court_address || court.address || ''
+    const courtPeople = extra?.court_people || []
+    const courtContactEmail = String(fieldValues.court_contact_email || '').trim() || court.court_coordinator_email || court.coordinator_email || courtPeople.find((person) => /coordinator/i.test(person.title || ''))?.email || ''
+    const courtPhone = String(fieldValues.court_phone_override || '').trim() || court.court_phone || court.phone || ''
+    const courtWebsite = String(fieldValues.court_website_override || '').trim() || court.court_website || court.website || ''
+    const captionSubject = String(fieldValues.caption_left_line_2 || '').trim()
+    const captionOpening = String(fieldValues.caption_left_line_1 || 'IN THE INTEREST OF').trim()
+    const captionDesignation = String(fieldValues.caption_left_line_3 || '').trim()
+    const firmName = lawFirmProfile?.firm_name || 'Beveridge Law Firm, PLLC'
+    const firmPhone = lawFirmProfile?.phone || '(281) 407-0961'
+    const firmServiceEmail = lawFirmProfile?.email || 'service@beveridgelawfirm.com'
+    const noticeIntro = `This letter gives you written notice that ${attorneyName} and ${firmName} are seeking permission from the Court to withdraw from representing you in the above-referenced matter. A Motion for Withdrawal of Attorney is being filed and served on ${draftingLongDate(filingDate)}.`
+
+    return {
+      ...fieldValues,
+      cause_number: matter?.cause_number || '',
+      matter_display_name: matter?.name || '',
+      client_name: clientName,
+      client_first_name: clientFirstName,
+      client_email: clientEmail,
+      client_address_inline: clientAddressInline,
+      client_address_multiline: clientAddressMultiline,
+      client_role: fieldValues.client_role || draftingClientRoleForMatter(matter),
+      attorney_name: attorneyName,
+      attorney_email: attorneyEmail,
+      attorney_bar_number: attorneyBarNumber,
+      firm_name: firmName,
+      firm_address_line_1: firmAddress[0] || '',
+      firm_address_line_2: firmAddress[1] || '',
+      firm_phone: firmPhone,
+      firm_service_email: firmServiceEmail,
+      caption_left_line_1: captionOpening,
+      caption_left_line_2: captionSubject,
+      caption_left_line_3: captionDesignation,
+      court_caption_line_1: courtCaption.line1,
+      court_caption_line_2: courtCaption.line2,
+      court_caption_line_3: courtCaption.line3,
+      court_name: court.court_name || matter?.court || '',
+      hearing_court_name: court.court_name || matter?.court || '',
+      hearing_location: hearingLocation,
+      court_phone: courtPhone,
+      court_contact_email: courtContactEmail,
+      court_website: courtWebsite,
+      filing_date: filingDate,
+      filing_date_long: draftingLongDate(filingDate),
+      notice_date_long: draftingLongDate(filingDate),
+      children: children.length ? children : [{ name: '', age: '' }],
+      pending_settings: pendingRows.length ? pendingRows : [{ title: 'No pending settings or deadlines', date: '' }],
+      service_recipients: serviceRecipients,
+      client_consent_motion_clause: clientConsentMotionClause,
+      client_consent_order_clause: clientConsentOrderClause,
+      replacement_counsel_order_clause: replacementCounselOrderClause,
+      withdrawal_reason_clause: withdrawalReasonClause,
+      pending_settings_motion_clause: pendingSettingsMotionClause,
+      pending_settings_order_intro: pendingSettingsOrderIntro,
+      pending_settings_notice_clause: pendingSettingsNoticeClause,
+      client_service_methods_display: draftingServiceMethodDisplay(serviceMethods),
+      client_service_method_clause: draftingServiceMailClause(serviceMethods),
+      client_delivery_order_clause: clientDeliveryOrderClause,
+      motion_hearing_datetime_long: hearingEvent ? draftingEventDateTimeLong(hearingEvent) : '',
+      has_motion_hearing: Boolean(hearingEvent),
+      has_pending_settings: pendingEvents.length > 0,
+      withdrawal_notice_intro: noticeIntro,
+      generated_at: new Date().toISOString(),
+      template_name: draftingTemplateLabel(template),
+      template_version: template?.version || '1.0'
+    }
+  }
+
+  function draftingValueMissing(value) {
+    if (Array.isArray(value)) return value.length === 0
+    if (value && typeof value === 'object') return Object.keys(value).length === 0
+    return !String(value ?? '').trim()
+  }
+
+  function draftingPreflightIssues(template, matter, data, fieldValues = {}) {
+    const issues = []
+    const fieldKeys = new Set((template?.fields || []).map((field) => field.key).filter(Boolean))
+    const isWithdrawalTemplate = /withdraw/i.test(`${template?.system_key || ''} ${template?.category || ''} ${template?.document_type || ''} ${template?.name || ''}`)
+    ;(template?.fields || []).forEach((field) => {
+      if (field.required && draftingValueMissing(fieldValues[field.key])) issues.push({ level: 'error', message: `Complete ${field.label || field.key}.` })
+    })
+    if (!matter) issues.push({ level: 'error', message: 'Select a matter.' })
+    if (isWithdrawalTemplate) {
+      if (!data?.cause_number) issues.push({ level: 'error', message: 'The matter does not have a cause number.' })
+      if (!data?.client_name) issues.push({ level: 'error', message: 'The matter does not have a client name.' })
+      if (!data?.client_address_inline) issues.push({ level: 'error', message: 'The client mailing address is missing. Add it to the client or use the address override.' })
+      if (!data?.client_email) issues.push({ level: 'error', message: 'The client email is missing. Add it to the client or use the email override.' })
+      if (!data?.court_name) issues.push({ level: 'error', message: 'The matter does not have a court selected.' })
+      if (!data?.caption_left_line_2) issues.push({ level: 'error', message: 'The case caption names / subject are missing.' })
+    }
+    if (fieldValues.replacement_counsel_status === 'substituting' && !String(fieldValues.replacement_counsel_name || '').trim()) issues.push({ level: 'error', message: 'Enter the replacement counsel name.' })
+    if (draftingTemplateIsAssembly(template)) {
+      const selected = Array.isArray(draftingSelection.selected_file_names) ? draftingSelection.selected_file_names : []
+      const selectedFiles = (template?.files || []).filter((file) => selected.includes(file.id || file.name))
+      if (!selectedFiles.length) issues.push({ level: 'error', message: 'Select at least one Word document to generate.' })
+      selectedFiles.forEach((file) => {
+        if (!/\.docx$/i.test(file.name || '')) issues.push({ level: 'error', message: `${file.name} is not a .docx Word template.` })
+        if (!file.file_data) issues.push({ level: 'error', message: `${file.name} does not contain an uploaded template file.` })
+      })
+    }
+    if (template?.status !== 'approved') issues.push({ level: 'warning', message: `Template status is ${draftingTemplateStatusLabel(template)}. Review the generated document carefully before use.` })
+    if (fieldKeys.has('service_recipients') && matter) {
+      const selectedRecipientIds = Array.isArray(fieldValues.service_recipients) ? fieldValues.service_recipients : []
+      draftingServiceRecipientOptions(matter).filter((recipient) => selectedRecipientIds.includes(recipient.id) && recipient.type !== 'client' && !recipient.email).forEach((recipient) => issues.push({ level: 'warning', message: `${recipient.name || 'A selected service recipient'} does not have an email address in Mio.` }))
+    }
+    if (fieldKeys.has('pending_settings') && (!Array.isArray(fieldValues.pending_settings) || fieldValues.pending_settings.length === 0)) issues.push({ level: 'warning', message: 'No pending matter settings or deadlines are selected.' })
+    if (fieldKeys.has('client_consents') && String(fieldValues.client_consents || '').toLowerCase() === 'no') issues.push({ level: 'warning', message: 'The uploaded motion states that the client does not consent, while the uploaded proposed order contains agreed-withdrawal language. Review the generated no-consent order finding before filing.' })
+    if (fieldKeys.has('motion_hearing_event_id') && !fieldValues.motion_hearing_event_id) issues.push({ level: 'warning', message: 'No hearing on the motion to withdraw is selected; the hearing-notice section will be omitted.' })
+    return issues
+  }
+
+  async function ensureDraftingZipLibrary() {
+    if (window.JSZip) return window.JSZip
+    await new Promise((resolve, reject) => {
+      const src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+      const existing = Array.from(document.scripts).find((script) => script.src === src)
+      if (existing) {
+        existing.addEventListener('load', resolve, { once: true })
+        existing.addEventListener('error', () => reject(new Error('The Word assembly ZIP library could not load.')), { once: true })
+        return
+      }
+      const script = document.createElement('script')
+      script.src = src
+      script.async = true
+      script.onload = resolve
+      script.onerror = () => reject(new Error('The Word assembly ZIP library could not load.'))
+      document.head.appendChild(script)
+    })
+    if (!window.JSZip) throw new Error('The Word assembly ZIP library did not become available.')
+    return window.JSZip
+  }
+
+  function draftingResolveData(data, key) {
+    if (!key) return ''
+    if (Object.prototype.hasOwnProperty.call(data || {}, key)) return data[key]
+    return String(key).split('.').reduce((value, part) => value == null ? undefined : value[part], data)
+  }
+
+  function draftingTruthy(value) {
+    if (Array.isArray(value)) return value.length > 0
+    if (value && typeof value === 'object') return Object.keys(value).length > 0
+    if (typeof value === 'string' && ['false', 'no', '0', ''].includes(value.trim().toLowerCase())) return false
+    return Boolean(value)
+  }
+
+  function draftingWordTextNodes(element) {
+    if (!element?.getElementsByTagNameNS) return []
+    return Array.from(element.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 't'))
+  }
+
+  function draftingWordElementText(element) {
+    return draftingWordTextNodes(element).map((node) => node.textContent || '').join('').replace(/\s+/g, ' ').trim()
+  }
+
+  function draftingDirectElementChildren(parent) {
+    return Array.from(parent?.childNodes || []).filter((node) => node.nodeType === 1)
+  }
+
+  function draftingBlockMarker(element) {
+    const text = draftingWordElementText(element)
+    const start = text.match(/^\{\{#(if|unless|each)\s+([a-zA-Z0-9_.-]+)\}\}$/)
+    if (start) return { kind: start[1], key: start[2], end: false }
+    const end = text.match(/^\{\{\/(if|unless|each)\}\}$/)
+    if (end) return { kind: end[1], key: '', end: true }
+    return null
+  }
+
+  function draftingRemoveNodeRange(parent, startNode, endNode) {
+    let node = startNode
+    while (node) {
+      const next = node.nextSibling
+      parent.removeChild(node)
+      if (node === endNode) break
+      node = next
+    }
+  }
+
+  function draftingReplaceTokensInElement(element, data) {
+    const nodes = draftingWordTextNodes(element)
+    if (!nodes.length) return
+    const segments = []
+    let combined = ''
+    nodes.forEach((node) => {
+      const value = node.textContent || ''
+      segments.push({ node, start: combined.length, end: combined.length + value.length })
+      combined += value
+    })
+    const matches = Array.from(combined.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g)).reverse()
+    matches.forEach((match) => {
+      const startPos = match.index
+      const endPos = startPos + match[0].length
+      const startSegment = segments.find((segment) => startPos >= segment.start && startPos < segment.end) || segments.find((segment) => startPos === segment.start)
+      const endSegment = segments.find((segment) => endPos > segment.start && endPos <= segment.end) || segments[segments.length - 1]
+      if (!startSegment || !endSegment) return
+      const raw = draftingResolveData(data, match[1])
+      const replacement = Array.isArray(raw) ? raw.map((item) => typeof item === 'object' ? (item.label || item.name || '') : String(item)).filter(Boolean).join(', ') : (raw == null ? '' : (typeof raw === 'object' ? (raw.label || raw.name || '') : String(raw)))
+      const startOffset = startPos - startSegment.start
+      const endOffset = endPos - endSegment.start
+      if (startSegment.node === endSegment.node) {
+        const current = startSegment.node.textContent || ''
+        startSegment.node.textContent = `${current.slice(0, startOffset)}${replacement}${current.slice(endOffset)}`
+      } else {
+        const startText = startSegment.node.textContent || ''
+        const endText = endSegment.node.textContent || ''
+        startSegment.node.textContent = `${startText.slice(0, startOffset)}${replacement}`
+        let clearing = false
+        nodes.forEach((node) => {
+          if (node === startSegment.node) { clearing = true; return }
+          if (!clearing) return
+          if (node === endSegment.node) { node.textContent = endText.slice(endOffset); clearing = false; return }
+          node.textContent = ''
+        })
+      }
+      startSegment.node.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+    })
+  }
+
+  function draftingProcessWordBlocks(parent, data) {
+    let changed = true
+    while (changed) {
+      changed = false
+      const children = draftingDirectElementChildren(parent)
+      for (let index = 0; index < children.length; index += 1) {
+        const marker = draftingBlockMarker(children[index])
+        if (!marker || marker.end) continue
+        let depth = 0
+        let endNode = null
+        for (let scan = index + 1; scan < children.length; scan += 1) {
+          const candidate = draftingBlockMarker(children[scan])
+          if (!candidate) continue
+          if (!candidate.end) { depth += 1; continue }
+          if (depth > 0) { depth -= 1; continue }
+          if (candidate.kind === marker.kind) { endNode = children[scan]; break }
+        }
+        if (!endNode) continue
+        const startNode = children[index]
+        const bodyNodes = []
+        let cursor = startNode.nextSibling
+        while (cursor && cursor !== endNode) { bodyNodes.push(cursor); cursor = cursor.nextSibling }
+        if (marker.kind === 'each') {
+          const rawItems = draftingResolveData(data, marker.key)
+          const items = Array.isArray(rawItems) ? rawItems : (rawItems == null || rawItems === '' ? [] : [rawItems])
+          items.forEach((item, itemIndex) => {
+            const itemData = typeof item === 'object' && item !== null ? { ...data, ...item, $index: itemIndex + 1 } : { ...data, value: item, $index: itemIndex + 1 }
+            bodyNodes.forEach((bodyNode) => {
+              const clone = bodyNode.cloneNode(true)
+              draftingProcessWordBlocks(clone, itemData)
+              draftingReplaceTokensInElement(clone, itemData)
+              parent.insertBefore(clone, startNode)
+            })
+          })
+          draftingRemoveNodeRange(parent, startNode, endNode)
+        } else {
+          const truth = draftingTruthy(draftingResolveData(data, marker.key))
+          const keep = marker.kind === 'if' ? truth : !truth
+          if (keep) {
+            parent.removeChild(startNode)
+            parent.removeChild(endNode)
+          } else {
+            draftingRemoveNodeRange(parent, startNode, endNode)
+          }
+        }
+        changed = true
+        break
+      }
+    }
+    draftingDirectElementChildren(parent).forEach((child) => draftingProcessWordBlocks(child, data))
+  }
+
+  function draftingProcessWordXml(xml, data) {
+    const parser = new DOMParser()
+    const xmlDoc = parser.parseFromString(xml, 'application/xml')
+    if (xmlDoc.getElementsByTagName('parsererror').length) throw new Error('The uploaded Word template contains XML that could not be read.')
+    draftingProcessWordBlocks(xmlDoc.documentElement, data)
+    draftingReplaceTokensInElement(xmlDoc.documentElement, data)
+    return new XMLSerializer().serializeToString(xmlDoc)
+  }
+
+  function draftingBlobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result || '')
+      reader.onerror = () => reject(reader.error || new Error('Could not convert the generated Word file.'))
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  function draftingOutputFileName(file, data, matter) {
+    const proposed = String(file?.output_name || file?.name || 'Draft.docx').replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key) => {
+      const value = draftingResolveData(data, key)
+      return value == null ? '' : String(value)
+    })
+    const withoutTemplate = proposed.replace(/\s*-\s*Mio Template(?=\.docx$)/i, '')
+    const withExtension = /\.docx$/i.test(withoutTemplate) ? withoutTemplate : `${withoutTemplate}.docx`
+    return withExtension.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || `Draft - ${matter?.cause_number || 'Matter'}.docx`
+  }
+
+  async function generateDocxFromTemplateFile(templateFile, data, matter) {
+    await ensureDraftingZipLibrary()
+    const bytes = dataUrlToUint8Array(templateFile.file_data || '')
+    if (!bytes.length) throw new Error(`${templateFile.name} does not contain Word template data.`)
+    const zip = await window.JSZip.loadAsync(bytes)
+    const xmlPaths = Object.keys(zip.files).filter((path) => /^word\/(?:document|header\d+|footer\d+)\.xml$/i.test(path))
+    for (const path of xmlPaths) {
+      const xml = await zip.file(path).async('string')
+      zip.file(path, draftingProcessWordXml(xml, data))
+    }
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', compression: 'DEFLATE' })
+    const fileName = draftingOutputFileName(templateFile, data, matter)
+    return {
+      id: `generated-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name: fileName,
+      blob,
+      data_url: await draftingBlobToDataUrl(blob),
+      size: blob.size,
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      source_file_name: templateFile.name,
+      role: templateFile.role || 'document',
+      generated_at: new Date().toISOString()
+    }
+  }
+
+  async function generateWordAssemblyDrafts(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    if (!matter) { alert('Select a matter before drafting.'); return }
+    if (!template) { alert('Select a document type/template before drafting.'); return }
+    const fieldValues = draftingSelection.field_values || {}
+    const data = buildDraftingAssemblyData(template, matter, fieldValues)
+    const issues = draftingPreflightIssues(template, matter, data, fieldValues)
+    const errors = issues.filter((issue) => issue.level === 'error')
+    if (errors.length) { alert(`Mio cannot generate the Word document yet:\n\n${errors.map((issue) => `• ${issue.message}`).join('\n')}`); return }
+    const warnings = issues.filter((issue) => issue.level === 'warning')
+    if (warnings.length && !window.confirm(`Review these items before generating:\n\n${warnings.map((issue) => `• ${issue.message}`).join('\n')}\n\nGenerate the Word document(s) anyway?`)) return
+    const selectedKeys = Array.isArray(draftingSelection.selected_file_names) ? draftingSelection.selected_file_names : []
+    const selectedFiles = (template.files || []).filter((file) => selectedKeys.includes(file.id || file.name))
+    setDraftingStatus(`Assembling ${selectedFiles.length} real Word document${selectedFiles.length === 1 ? '' : 's'} from the approved .docx template...`)
+    setDraftingGeneratedFiles([])
+    setDraftingOutput('')
+    try {
+      const generated = []
+      for (const file of selectedFiles) {
+        generated.push(await generateDocxFromTemplateFile(file, data, matter))
+      }
+      setDraftingGeneratedFiles(generated)
+      setDraftingStatus(`Generated ${generated.length} editable .docx document${generated.length === 1 ? '' : 's'}. Download them or save them to this matter's Documents.`)
+    } catch (error) {
+      console.error('Word template assembly failed:', error)
+      setDraftingStatus(`Word generation failed: ${error?.message || error}`)
+      alert(`Mio could not generate the Word document. ${error?.message || error}`)
+    }
   }
 
   function buildDraftingFallbackText({ template, matter, fieldValues, relatedDocuments }) {
     const clientName = matter ? matterClientName(matter) : ''
     const court = matter?.court_id ? (courts.find((item) => String(item.id) === String(matter.court_id))?.court_name || matter.court || '') : (matter?.court || '')
-    const fieldLines = Object.entries(fieldValues || {}).filter(([, value]) => String(value || '').trim()).map(([key, value]) => `${key}: ${value}`)
+    const fieldLines = Object.entries(fieldValues || {}).filter(([, value]) => String(value || '').trim()).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
     const docLines = (relatedDocuments || []).slice(0, 12).map((doc) => `- ${doc.name || doc.file_name || 'Document'}${doc.date ? ` (${doc.date})` : ''}${doc.description ? `: ${doc.description}` : ''}`)
     return [
       `${template.document_type || template.name || 'Draft Document'}`,
@@ -15053,7 +16658,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       template.ai_instructions || 'Use the template and matter information to draft the filing for this matter.',
       '',
       'Template Text:',
-      template.template_text || '[Template file attached in settings. If this draft is incomplete, update the draft-document edge function to read DOC/DOCX/PDF template files.]',
+      template.template_text || '[No template text was supplied.]',
       '',
       'Matter Documents Considered:',
       docLines.length ? docLines.join('\n') : 'No matter documents were found in Mio Documents.',
@@ -15068,11 +16673,16 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const template = draftingSelectedTemplate()
     if (!matter) { alert('Select a matter before drafting.'); return }
     if (!template) { alert('Select a document type/template before drafting.'); return }
+    if (draftingTemplateIsAssembly(template)) {
+      await generateWordAssemblyDrafts(lockedMatterId)
+      return
+    }
     const fieldValues = draftingSelection.field_values || {}
-    const missingRequired = (template.fields || []).filter((field) => field.required && !String(fieldValues[field.key] || '').trim())
+    const missingRequired = (template.fields || []).filter((field) => field.required && draftingValueMissing(fieldValues[field.key]))
     if (missingRequired.length) { alert(`Complete required field(s): ${missingRequired.map((field) => field.label || field.key).join(', ')}`); return }
-    setDraftingStatus('Preparing matter information and sending draft request...')
+    setDraftingStatus('Preparing matter information and sending the AI text-draft request...')
     setDraftingOutput('')
+    setDraftingGeneratedFiles([])
     const relatedDocuments = documents.filter((doc) => String(doc.matter_id || '') === String(matter.id))
     const relatedDocumentContext = relatedDocuments.slice(0, 20).map((doc) => ({ id: doc.id, name: doc.name || doc.file_name || '', date: doc.date || '', description: doc.description || '', tags: (doc.tag_ids || []).map((tagId) => tagFullName(tagId)).filter(Boolean), extracted_text: String(doc.extracted_text || '').slice(0, 6000) }))
     try {
@@ -15080,14 +16690,103 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         const { data, error } = await supabase.functions.invoke('draft-document', { body: { user_id: session.user.id, matter, client_name: matterClientName(matter), court: matter.court_id ? courts.find((item) => String(item.id) === String(matter.court_id)) : null, document_type: template.document_type || template.name || '', template, field_values: fieldValues, requirements_reminders: template.requirements || '', ai_instructions: template.ai_instructions || '', related_documents: relatedDocumentContext } })
         if (!error && (data?.draft_text || data?.text || data?.draft)) {
           setDraftingOutput(data.draft_text || data.text || data.draft)
-          setDraftingStatus('AI draft generated. Review, edit, then save it to Documents.')
+          setDraftingStatus('AI text draft generated. Review and edit it before saving.')
           return
         }
         if (error) console.warn('draft-document edge function failed:', error)
       }
     } catch (error) { console.warn('draft-document edge function unavailable:', error) }
     setDraftingOutput(buildDraftingFallbackText({ template, matter, fieldValues, relatedDocuments }))
-    setDraftingStatus('Draft created with local fallback. Update the draft-document edge function for full AI drafting from template files and matter documents.')
+    setDraftingStatus('The AI edge function was unavailable, so Mio created a local text fallback. This is not a template-assembled .docx document.')
+  }
+
+  function downloadGeneratedDraftWord(file) {
+    if (!file?.blob && !file?.data_url) return
+    const link = document.createElement('a')
+    const objectUrl = file.blob ? URL.createObjectURL(file.blob) : file.data_url
+    link.href = objectUrl
+    link.download = file.name || 'Draft.docx'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    if (file.blob) window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500)
+  }
+
+  async function downloadAllGeneratedDraftWords() {
+    if (!draftingGeneratedFiles.length) return
+    if (draftingGeneratedFiles.length === 1) { downloadGeneratedDraftWord(draftingGeneratedFiles[0]); return }
+    await ensureDraftingZipLibrary()
+    const zip = new window.JSZip()
+    draftingGeneratedFiles.forEach((file) => zip.file(file.name, file.blob || dataUrlToUint8Array(file.data_url || '')))
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+    const matter = draftingSelectedMatter()
+    const template = draftingSelectedTemplate()
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    link.href = url
+    link.download = `${draftingTemplateLabel(template) || 'Draft Word Documents'} - ${matterClientName(matter) || matter?.cause_number || 'Matter'}.zip`.replace(/[\\/:*?"<>|]+/g, '-')
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500)
+  }
+
+  async function saveGeneratedDraftsToDocuments(lockedMatterId = '') {
+    const matter = draftingSelectedMatter(lockedMatterId)
+    const template = draftingSelectedTemplate()
+    if (!matter || !template || !draftingGeneratedFiles.length) { alert('Generate the Word document(s) before saving.'); return }
+    setDraftingStatus(`Saving ${draftingGeneratedFiles.length} Word document${draftingGeneratedFiles.length === 1 ? '' : 's'} to the matter...`)
+    const data = buildDraftingAssemblyData(template, matter, draftingSelection.field_values || {})
+    const tagIds = template.tag_id ? tagAndParentIds([template.tag_id]) : []
+    const saved = []
+    for (const generated of draftingGeneratedFiles) {
+      const docId = `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const fileObject = new File([generated.blob], generated.name, { type: generated.type })
+      const stored = await uploadMioDocumentFile(fileObject, docId, matter.id)
+      saved.push({
+        id: docId,
+        matter_id: matter.id,
+        name: generated.name.replace(/\.docx$/i, ''),
+        date: dateToInputValue(new Date()),
+        description: `Editable Word draft generated from ${draftingTemplateLabel(template)} v${template.version || '1.0'} (${draftingTemplateStatusLabel(template)}).`,
+        status: 'Draft',
+        tag_ids: tagIds,
+        document_field_values: {
+          ...(draftingSelection.field_values || {}),
+          draft_type: template.document_type || template.name || '',
+          drafting_audit: {
+            template_id: template.id,
+            template_name: draftingTemplateLabel(template),
+            template_version: template.version || '1.0',
+            template_status: template.status || 'draft',
+            template_file: generated.source_file_name,
+            generated_at: generated.generated_at,
+            generated_by: session?.user?.email || '',
+            matter_id: matter.id,
+            matter_cause_number: matter.cause_number || ''
+          },
+          assembly_snapshot: {
+            client_name: data.client_name,
+            client_email: data.client_email,
+            client_address: data.client_address_inline,
+            court_name: data.court_name,
+            filing_date: data.filing_date,
+            pending_settings: data.pending_settings,
+            consent: draftingSelection.field_values?.client_consents || ''
+          }
+        },
+        upload_date: dateToInputValue(new Date()),
+        file_name: generated.name,
+        original_file_name: generated.name,
+        file_type: generated.type,
+        file_size: generated.size,
+        ...stored,
+        ...(!stored.file_path ? { file_data: generated.data_url } : {}),
+        ...emptyDocumentAiReview
+      })
+    }
+    setDocuments((current) => [...saved, ...current])
+    setDraftingStatus(`Saved ${saved.length} editable .docx document${saved.length === 1 ? '' : 's'} to this matter's Documents.`)
   }
 
   function escapeDraftWordHtml(value) {
@@ -15121,7 +16820,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     document.body.appendChild(link)
     link.click()
     link.remove()
-    setDraftingStatus('Word document downloaded. It can be opened and edited in Microsoft Word.')
+    setDraftingStatus('Legacy Word-compatible .doc downloaded. Use an approved .docx assembly template for true Word document generation.')
   }
 
   function viewCurrentDraftWord(lockedMatterId = '') {
@@ -15142,9 +16841,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const fileName = draftingWordFileName(lockedMatterId)
     const wordHtml = buildDraftWordHtml(lockedMatterId)
     const tagIds = template.tag_id ? tagAndParentIds([template.tag_id]) : []
-    setDocuments((current) => [{ id: `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`, matter_id: matter.id, name: fileName.replace(/\.doc$/i, ''), date: dateToInputValue(new Date()), description: `Editable Word draft generated from ${draftingTemplateLabel(template)}.`, status: 'Draft', tag_ids: tagIds, document_field_values: { ...(draftingSelection.field_values || {}), draft_type: template.document_type || template.name || '', requirements_reminders: template.requirements || '', ai_instructions: template.ai_instructions || '' }, upload_date: dateToInputValue(new Date()), file_name: fileName, original_file_name: fileName, file_type: 'application/msword', file_size: wordHtml.length, file_data: buildDraftWordDataUrl(lockedMatterId), ...emptyDocumentAiReview }, ...current])
-    setDraftingStatus('Word draft saved to this matter’s Documents tab. You can open or download it from Saved Drafts or Documents.')
+    setDocuments((current) => [{ id: `doc-draft-${Date.now()}-${Math.random().toString(36).slice(2)}`, matter_id: matter.id, name: fileName.replace(/\.doc$/i, ''), date: dateToInputValue(new Date()), description: `Legacy Word-compatible draft generated from ${draftingTemplateLabel(template)}.`, status: 'Draft', tag_ids: tagIds, document_field_values: { ...(draftingSelection.field_values || {}), draft_type: template.document_type || template.name || '', requirements_reminders: template.requirements || '', ai_instructions: template.ai_instructions || '' }, upload_date: dateToInputValue(new Date()), file_name: fileName, original_file_name: fileName, file_type: 'application/msword', file_size: wordHtml.length, file_data: buildDraftWordDataUrl(lockedMatterId), ...emptyDocumentAiReview }, ...current])
+    setDraftingStatus('Legacy Word-compatible draft saved to this matter’s Documents tab.')
   }
+
 
   async function prepareBulkDocuments(fileList, forcedMatterId = '', options = {}) {
     const files = Array.from(fileList || [])
@@ -22768,6 +24468,16 @@ async function updateTeamCell(memberId, field, value) {
     return { done, total, pct: total ? Math.round((done / total) * 100) : 0 }
   }
 
+  function openWithdrawalDrafting(matterId, systemKey = 'withdrawal_packet') {
+    const template = draftingTemplates.find((item) => item.system_key === systemKey && item.status !== 'retired' && item.is_active !== false)
+    if (!template) {
+      alert('The withdrawal Word template is not active. Open Settings > Drafting and restore or activate the built-in withdrawal templates.')
+      return
+    }
+    prepareDraftingSelection(template.id, matterId)
+    setPage('drafting')
+  }
+
   function renderWithdrawalsPage() {
     const maxWithdrawalCount = Math.max(1, ...Object.values(withdrawalStatusCounts))
     return (
@@ -22870,9 +24580,12 @@ async function updateTeamCell(memberId, field, value) {
                   </td>
                   <td>{matter.courts?.court_name || ''}{matter.courts?.county ? ` - ${matter.courts.county}` : ''}</td>
                   <td>{counsel?.name || ''}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button type="button" onClick={() => markMatterForWithdrawal(matter.id)}>Mark Withdrawing</button>
-                    <button type="button" onClick={() => { setSelectedTemplateMatterId(matter.id); setPage('tasks') }} style={{ marginLeft: 6 }}>Open dashboard</button>
+                  <td style={{ minWidth: 180 }}>
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <button type="button" onClick={() => openWithdrawalDrafting(matter.id, 'withdrawal_packet')} style={{ fontWeight: 850, color: '#1d4ed8' }}>Draft motion / order</button>
+                      <button type="button" onClick={() => openWithdrawalDrafting(matter.id, 'withdrawal_client_notice')}>Draft client notice</button>
+                      <button type="button" onClick={() => { setSelectedTemplateMatterId(matter.id); setPage('tasks') }}>Open dashboard</button>
+                    </div>
                   </td>
                 </tr>
               )
@@ -30291,24 +32004,155 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   function renderDraftingSettings() {
     const selectedTagName = draftingTemplateForm.tag_id ? tagFullName(draftingTemplateForm.tag_id) : ''
     const pendingFiles = Array.from(draftingTemplateUploadFiles || [])
+    const statusRank = { approved: 0, testing: 1, draft: 2, retired: 3 }
+    const sortedTemplates = [...draftingTemplates].sort((a, b) => {
+      const categoryCompare = String(a.category || '').localeCompare(String(b.category || ''))
+      if (categoryCompare) return categoryCompare
+      const statusCompare = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9)
+      if (statusCompare) return statusCompare
+      return draftingTemplateLabel(a).localeCompare(draftingTemplateLabel(b))
+    })
+    const fieldOptionText = (field) => (field.options || []).map((option) => typeof option === 'string' ? option : (option.label || option.value || '')).filter(Boolean).join('\n')
+    const fieldDefaultText = (field) => Array.isArray(field.default_value) ? field.default_value.join(', ') : String(field.default_value ?? '')
+    const updateFieldOptionsFromText = (fieldId, value) => {
+      const options = String(value || '').split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).map((item) => ({ value: item, label: item }))
+      updateDraftingTemplateField(fieldId, { options })
+    }
+    const updateFieldDefaultFromText = (field, value) => {
+      const usesArray = ['checkbox_group', 'event_list', 'service_list'].includes(field.type)
+      updateDraftingTemplateField(field.id, { default_value: usesArray ? String(value || '').split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean) : value })
+    }
+
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.25fr)', gap: 14, alignItems: 'start', width: '100%' }}>
-        <form onSubmit={saveDraftingTemplate} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}>
-          <h2 style={{ marginTop: 0 }}>{draftingTemplateForm.id ? 'Edit Drafting Template' : 'Add Drafting Template'}</h2>
-          <LabeledField label="Document Type"><input value={draftingTemplateForm.document_type} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, document_type: e.target.value })} placeholder="Notice of Hearing, Motion to Withdraw, etc." /></LabeledField>
-          <LabeledField label="Template Name"><input value={draftingTemplateForm.name} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, name: e.target.value })} placeholder="Template display name" /></LabeledField>
-          <LabeledField label="Template Text / Notes"><textarea value={draftingTemplateForm.template_text} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, template_text: e.target.value })} rows={8} placeholder="Paste template text here if available. Uploaded templates are also saved below." /></LabeledField>
-          <LabeledField label="Upload Template File(s)"><input type="file" multiple accept=".doc,.docx,.pdf,.rtf,.txt" onChange={(e) => setDraftingTemplateUploadFiles(Array.from(e.target.files || []))} /></LabeledField>
-          {pendingFiles.length > 0 && <div style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: 8, background: '#eff6ff', marginBottom: 10 }}><strong>Files waiting to be saved</strong>{pendingFiles.map((file, index) => <div key={`${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 6, alignItems: 'center', minWidth: 0 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => removePendingDraftingTemplateFile(file.name, index)}>Remove</button></div>)}</div>}
-          {(draftingTemplateForm.files || []).length > 0 && <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 10 }}><strong>Saved template files</strong><div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Remove deletes the file from this template immediately.</div>{(draftingTemplateForm.files || []).map((file, index) => <div key={`${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 6, alignItems: 'center', minWidth: 0 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => removeDraftingTemplateFile(file.name)} style={{ color: '#991b1b' }}>Remove</button></div>)}</div>}
-          <LabeledField label="Requirements / Reminders"><textarea value={draftingTemplateForm.requirements} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, requirements: e.target.value })} rows={5} placeholder="Add reminders to review when drafting this document." /></LabeledField>
-          <LabeledField label="AI Instructions"><textarea value={draftingTemplateForm.ai_instructions} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, ai_instructions: e.target.value })} rows={5} placeholder="Instructions for the AI for this specific type of draft." /></LabeledField>
-          <LabeledField label="Document Tag Applied to Saved Drafts"><select value={draftingTemplateForm.tag_id} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, tag_id: e.target.value })}><option value="">No default tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{tag.label}</option>)}</select>{selectedTagName && <div style={{ fontSize: 12, color: '#475569' }}>Selected: {selectedTagName}</div>}</LabeledField>
-          <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6, minWidth: 0 }}><legend>User fields for this draft</legend><p style={{ color: '#64748b', marginTop: 0 }}>Add fields the user must fill in before drafting, such as setting date, setting time, hearing location, or special relief.</p>{(draftingTemplateForm.fields || []).map((field) => <div key={field.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, 1fr) minmax(110px, 1fr) minmax(130px, 1fr) auto auto', gap: 6, marginBottom: 6, alignItems: 'center', minWidth: 0 }}><input value={field.label || ''} onChange={(e) => updateDraftingTemplateField(field.id, { label: e.target.value })} placeholder="Field label" /><input value={field.key || ''} onChange={(e) => updateDraftingTemplateField(field.id, { key: e.target.value })} placeholder="field_key" /><input value={field.help || ''} onChange={(e) => updateDraftingTemplateField(field.id, { help: e.target.value })} placeholder="Help text" /><label><input type="checkbox" checked={!!field.required} onChange={(e) => updateDraftingTemplateField(field.id, { required: e.target.checked })} /> Required</label><button type="button" onClick={() => removeDraftingTemplateField(field.id)}>Remove</button></div>)}<button type="button" onClick={addDraftingTemplateField}>+ Add Field</button></fieldset>
-          <label style={{ display: 'block', marginTop: 10 }}><input type="checkbox" checked={draftingTemplateForm.is_active !== false} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, is_active: e.target.checked })} /> Active</label>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="submit">{draftingTemplateForm.id ? 'Save Changes' : 'Add Template'}</button><button type="button" onClick={resetDraftingTemplateForm}>Clear</button></div>
-        </form>
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}><h2 style={{ marginTop: 0 }}>Drafting Templates</h2>{draftingTemplates.length === 0 && <p>No drafting templates have been added yet.</p>}{draftingTemplates.map((template) => <div key={template.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, marginBottom: 10, minWidth: 0 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 260px' }}><strong>{draftingTemplateLabel(template)}</strong><div style={{ fontSize: 12, color: '#64748b', overflowWrap: 'anywhere' }}>{template.document_type || 'No document type'} {template.tag_id ? `| Tag: ${tagFullName(template.tag_id)}` : ''}</div><div style={{ fontSize: 12 }}>{(template.fields || []).length} user field(s); {(template.files || []).length} template file(s)</div></div><div style={{ flex: '0 0 auto' }}><button type="button" onClick={() => editDraftingTemplate(template)}>Edit</button><button type="button" onClick={() => deleteDraftingTemplate(template.id)} style={{ marginLeft: 6 }}>Delete</button></div></div>{(template.files || []).length > 0 && <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}><strong style={{ fontSize: 12 }}>Template files</strong>{(template.files || []).map((file, index) => <div key={`${template.id}-${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginTop: 5, minWidth: 0 }}><span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => { setDraftingTemplateForm(cleanDraftingTemplate(template)); setDraftingTemplateUploadFiles([]); setTimeout(() => removeDraftingTemplateFile(file.name), 0) }} style={{ color: '#991b1b', padding: '4px 8px' }}>Remove</button></div>)}</div>}{template.requirements && <p style={{ overflowWrap: 'anywhere' }}><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p style={{ overflowWrap: 'anywhere' }}><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>)}</div>
+      <div style={{ display: 'grid', gap: 14, width: '100%' }}>
+        <section style={{ border: '1px solid #bfdbfe', borderRadius: 10, padding: 14, background: '#eff6ff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div style={{ maxWidth: 900 }}>
+              <h2 style={{ margin: 0 }}>Word Drafting Templates</h2>
+              <p style={{ margin: '6px 0 0', color: '#334155' }}>Upload an approved .docx form, define the information Mio must collect, test the result, and approve a version before routine use. Mio preserves the Word formatting and replaces only the marked fields and conditional sections.</p>
+            </div>
+            <button type="button" onClick={restoreBuiltInDraftingTemplates}>Restore built-in withdrawal templates</button>
+          </div>
+          <details style={{ marginTop: 10 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Word template marker reference</summary>
+            <div style={{ marginTop: 8, display: 'grid', gap: 5, fontSize: 13 }}>
+              <div><code>{'{{client_name}}'}</code> — insert one field value.</div>
+              <div><code>{'{{#if has_motion_hearing}} ... {{/if}}'}</code> — include a section only when the value is present/true.</div>
+              <div><code>{'{{#unless has_pending_settings}} ... {{/unless}}'}</code> — include a section only when the value is absent/false.</div>
+              <div><code>{'{{#each service_recipients}} ... {{service_line}} ... {{/each}}'}</code> — repeat a paragraph or table row for each list item.</div>
+              <div style={{ color: '#64748b' }}>Put block markers in their own Word paragraph or table row. Use .docx, not the older .doc format.</div>
+            </div>
+          </details>
+        </section>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))', gap: 14, alignItems: 'start', width: '100%' }}>
+          <form onSubmit={saveDraftingTemplate} style={{ border: '1px solid #d5dce3', borderRadius: 10, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0 }}>{draftingTemplateForm.id ? 'Edit Drafting Template' : 'Add Drafting Template'}</h2>
+              {draftingTemplateForm.system_key && <span style={{ fontSize: 12, color: '#475569' }}>Built-in: {draftingTemplateForm.system_key}</span>}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(180px, 1fr))', gap: 10, marginTop: 12 }}>
+              <LabeledField label="Document Type"><input value={draftingTemplateForm.document_type || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, document_type: e.target.value })} placeholder="Motion, order, notice, petition..." /></LabeledField>
+              <LabeledField label="Template Name"><input value={draftingTemplateForm.name || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, name: e.target.value })} placeholder="Display name" /></LabeledField>
+              <LabeledField label="Category"><input value={draftingTemplateForm.category || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, category: e.target.value })} placeholder="Withdrawal, Conservatorship, Support..." /></LabeledField>
+              <LabeledField label="Version"><input value={draftingTemplateForm.version || '1.0'} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, version: e.target.value })} placeholder="1.0" /></LabeledField>
+              <LabeledField label="Drafting Engine"><select value={draftingTemplateForm.engine || 'docx_assembly'} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, engine: e.target.value })}>{DRAFTING_TEMPLATE_ENGINE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+              <LabeledField label="Lifecycle Status"><select value={draftingTemplateForm.status || 'draft'} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, status: e.target.value })}>{DRAFTING_TEMPLATE_STATUS_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+            </div>
+
+            <LabeledField label="Template Notes"><textarea value={draftingTemplateForm.template_text || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, template_text: e.target.value })} rows={4} placeholder="Internal notes about when this form should be used and how it differs from other versions." /></LabeledField>
+
+            <section style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 10, marginTop: 10, background: '#f8fafc' }}>
+              <h3 style={{ margin: '0 0 8px' }}>{draftingTemplateForm.engine === 'ai_text' ? 'Reference Files' : 'Word Template Files'}</h3>
+              <input type="file" multiple accept={draftingTemplateForm.engine === 'ai_text' ? '.doc,.docx,.pdf,.rtf,.txt' : '.docx'} onChange={(e) => setDraftingTemplateUploadFiles(Array.from(e.target.files || []))} />
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 5 }}>{draftingTemplateForm.engine === 'ai_text' ? 'Legacy AI text templates may use reference files.' : 'Only .docx files can be assembled into real editable Word documents.'}</div>
+
+              {pendingFiles.length > 0 && <div style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: 8, background: '#eff6ff', marginTop: 10 }}>
+                <strong>Files waiting to be saved</strong>
+                {pendingFiles.map((file, index) => <div key={`${file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 6, alignItems: 'center', minWidth: 0 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => removePendingDraftingTemplateFile(file.name, index)}>Remove</button></div>)}
+              </div>}
+
+              {(draftingTemplateForm.files || []).length > 0 && <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                {(draftingTemplateForm.files || []).map((file, index) => {
+                  const fileKey = file.id || file.name
+                  return <div key={`${fileKey}-${index}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: '#fff', display: 'grid', gap: 7 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><strong style={{ overflowWrap: 'anywhere' }}>{file.name}</strong><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => downloadDraftingTemplateFile(file)}>Download template</button><button type="button" onClick={() => removeDraftingTemplateFile(file.name)} style={{ color: '#991b1b' }}>Remove</button></div></div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(210px, 1fr) minmax(130px, .55fr)', gap: 8 }}>
+                      <LabeledField label="Generated file name"><input value={file.output_name || ''} onChange={(e) => updateDraftingTemplateFile(fileKey, { output_name: e.target.value })} placeholder="Motion - {{client_name}}.docx" /></LabeledField>
+                      <LabeledField label="Document role"><select value={file.role || 'document'} onChange={(e) => updateDraftingTemplateFile(fileKey, { role: e.target.value })}><option value="document">Document</option><option value="motion">Motion</option><option value="proposed_order">Proposed order</option><option value="client_notice">Client notice</option><option value="petition">Petition</option><option value="order">Order</option></select></LabeledField>
+                    </div>
+                    <label><input type="checkbox" checked={file.include_by_default !== false} onChange={(e) => updateDraftingTemplateFile(fileKey, { include_by_default: e.target.checked })} /> Generate this file by default</label>
+                  </div>
+                })}
+              </div>}
+            </section>
+
+            <LabeledField label="Requirements / Review Reminders"><textarea value={draftingTemplateForm.requirements || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, requirements: e.target.value })} rows={4} placeholder="Facts and filing details that must be verified before use." /></LabeledField>
+            <LabeledField label={draftingTemplateForm.engine === 'ai_text' ? 'AI Instructions' : 'Assembly / AI Guardrails'}><textarea value={draftingTemplateForm.ai_instructions || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, ai_instructions: e.target.value })} rows={4} placeholder="For Word assembly, describe what AI may not invent. For legacy AI drafting, enter document-specific instructions." /></LabeledField>
+            <LabeledField label="Document Tag Applied to Saved Drafts"><select value={draftingTemplateForm.tag_id || ''} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, tag_id: e.target.value })}><option value="">No default tag</option>{allTagsIndented().map((tag) => <option key={tag.id} value={tag.id}>{tag.label}</option>)}</select>{selectedTagName && <div style={{ fontSize: 12, color: '#475569' }}>Selected: {selectedTagName}</div>}</LabeledField>
+
+            <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 8, minWidth: 0, marginTop: 12, padding: 10 }}>
+              <legend style={{ fontWeight: 800 }}>Fields collected before drafting</legend>
+              <p style={{ color: '#64748b', marginTop: 0 }}>Each field becomes a Word token with the same key, for example <code>{'{{withdrawal_reason}}'}</code>.</p>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {(draftingTemplateForm.fields || []).map((field, index) => <div key={field.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 9, background: '#f8fafc', display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><strong>Field {index + 1}: {field.label || field.key || 'Untitled'}</strong><button type="button" onClick={() => removeDraftingTemplateField(field.id)} style={{ color: '#991b1b' }}>Remove</button></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(160px, 1fr))', gap: 8 }}>
+                    <LabeledField label="Label"><input value={field.label || ''} onChange={(e) => updateDraftingTemplateField(field.id, { label: e.target.value })} placeholder="Client consents?" /></LabeledField>
+                    <LabeledField label="Token key"><input value={field.key || ''} onChange={(e) => updateDraftingTemplateField(field.id, { key: e.target.value })} placeholder="client_consents" /></LabeledField>
+                    <LabeledField label="Group"><input value={field.group || 'General'} onChange={(e) => updateDraftingTemplateField(field.id, { group: e.target.value })} placeholder="General" /></LabeledField>
+                    <LabeledField label="Input type"><select value={field.type || 'text'} onChange={(e) => updateDraftingTemplateField(field.id, { type: e.target.value })}>{DRAFTING_FIELD_TYPE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+                    <LabeledField label="Auto-fill source"><select value={field.source || 'manual'} onChange={(e) => updateDraftingTemplateField(field.id, { source: e.target.value })}>{DRAFTING_FIELD_SOURCE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField>
+                    <LabeledField label="Default value"><input value={fieldDefaultText(field)} onChange={(e) => updateFieldDefaultFromText(field, e.target.value)} placeholder="Optional default" /></LabeledField>
+                  </div>
+                  {['select', 'checkbox_group'].includes(field.type) && <LabeledField label="Options (one per line)"><textarea value={fieldOptionText(field)} onChange={(e) => updateFieldOptionsFromText(field.id, e.target.value)} rows={3} placeholder="Yes\nNo" /></LabeledField>}
+                  <LabeledField label="Help text"><input value={field.help || ''} onChange={(e) => updateDraftingTemplateField(field.id, { help: e.target.value })} placeholder="What the drafter should verify or enter." /></LabeledField>
+                  <label><input type="checkbox" checked={!!field.required} onChange={(e) => updateDraftingTemplateField(field.id, { required: e.target.checked })} /> Required before generation</label>
+                </div>)}
+              </div>
+              <button type="button" onClick={addDraftingTemplateField} style={{ marginTop: 10 }}>+ Add Field</button>
+            </fieldset>
+
+            <label style={{ display: 'block', marginTop: 10 }}><input type="checkbox" checked={draftingTemplateForm.is_active !== false} onChange={(e) => setDraftingTemplateForm({ ...draftingTemplateForm, is_active: e.target.checked })} /> Active and available on the Drafting page</label>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="submit" style={{ fontWeight: 850 }}>{draftingTemplateForm.id ? 'Save Template Changes' : 'Add Template'}</button><button type="button" onClick={resetDraftingTemplateForm}>Clear Form</button></div>
+          </form>
+
+          <div style={{ border: '1px solid #d5dce3', borderRadius: 10, padding: 14, background: 'white', minWidth: 0, overflow: 'hidden' }}>
+            <h2 style={{ marginTop: 0 }}>Template Library</h2>
+            {sortedTemplates.length === 0 && <p>No drafting templates have been added yet.</p>}
+            <div style={{ display: 'grid', gap: 10 }}>
+              {sortedTemplates.map((template) => {
+                const colors = draftingTemplateStatusColors(template)
+                return <article key={template.id} style={{ border: '1px solid #d5dce3', borderRadius: 9, padding: 11, opacity: template.status === 'retired' ? 0.72 : 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <strong style={{ fontSize: 16 }}>{draftingTemplateLabel(template)}</strong>
+                        <span style={{ border: `1px solid ${colors.border}`, background: colors.background, color: colors.color, borderRadius: 999, padding: '3px 8px', fontSize: 11, fontWeight: 850 }}>{draftingTemplateStatusLabel(template)}</span>
+                        <span style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '3px 8px', fontSize: 11 }}>{template.engine === 'docx_assembly' ? 'Word assembly' : 'Legacy AI text'}</span>
+                      </div>
+                      <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{template.category || 'Uncategorized'} · Version {template.version || '1.0'}{template.system_key ? ` · Built-in ${template.system_key}` : ''}{template.is_active === false ? ' · Inactive' : ''}</div>
+                      <div style={{ fontSize: 12, marginTop: 3 }}>{(template.fields || []).length} field(s) · {(template.files || []).length} template file(s){template.tag_id ? ` · Tag: ${tagFullName(template.tag_id)}` : ''}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => editDraftingTemplate(template)}>Edit</button>
+                      {template.status !== 'approved' && template.status !== 'retired' && <button type="button" onClick={() => approveDraftingTemplate(template.id)} style={{ color: '#166534', fontWeight: 850 }}>Approve</button>}
+                      <button type="button" onClick={() => duplicateDraftingTemplateVersion(template)}>New version</button>
+                      {template.status !== 'retired' && <button type="button" onClick={() => retireDraftingTemplate(template.id)}>Retire</button>}
+                      {!template.system_key && <button type="button" onClick={() => deleteDraftingTemplate(template.id)} style={{ color: '#991b1b' }}>Delete</button>}
+                    </div>
+                  </div>
+                  {(template.files || []).length > 0 && <div style={{ marginTop: 9, paddingTop: 8, borderTop: '1px solid #e2e8f0', display: 'grid', gap: 5 }}>
+                    {(template.files || []).map((file, index) => <div key={`${template.id}-${file.id || file.name}-${index}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', minWidth: 0 }}><span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name} → {file.output_name || file.name}</span><button type="button" onClick={() => downloadDraftingTemplateFile(file)} style={{ padding: '4px 8px' }}>Download template</button></div>)}
+                  </div>}
+                  {template.requirements && <p style={{ overflowWrap: 'anywhere', marginBottom: 0 }}><strong>Review:</strong> {template.requirements}</p>}
+                  {template.approved_at && <div style={{ color: '#64748b', fontSize: 11, marginTop: 7 }}>Approved {new Date(template.approved_at).toLocaleString()}</div>}
+                </article>
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     )
   }
@@ -30317,20 +32161,147 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     const lockedMatterId = options.lockedMatterId || ''
     const embedded = !!options.embedded
     const matter = draftingSelectedMatter(lockedMatterId)
-    const activeTemplates = draftingTemplates.filter((template) => template.is_active !== false)
     const template = draftingSelectedTemplate()
     const matterId = lockedMatterId || draftingSelection.matter_id
-    const matterDrafts = documents.filter((doc) => String(doc.matter_id || '') === String(matterId || '') && (doc.status === 'Draft' || /draft generated from/i.test(doc.description || '')))
+    const fieldValues = draftingSelection.field_values || {}
+    const activeTemplates = draftingTemplates.filter((item) => item.is_active !== false && item.status !== 'retired').sort((a, b) => {
+      if (a.status === 'approved' && b.status !== 'approved') return -1
+      if (b.status === 'approved' && a.status !== 'approved') return 1
+      return draftingTemplateLabel(a).localeCompare(draftingTemplateLabel(b))
+    })
+    const matterDrafts = documents.filter((doc) => String(doc.matter_id || '') === String(matterId || '') && (doc.status === 'Draft' || /draft generated from|editable word draft/i.test(doc.description || '')))
+    const isAssembly = draftingTemplateIsAssembly(template)
+    const assemblyData = template && matter ? buildDraftingAssemblyData(template, matter, fieldValues) : null
+    const preflightIssues = template && matter ? draftingPreflightIssues(template, matter, assemblyData, fieldValues) : []
+    const futureEvents = draftingFutureEventsForMatter(matter)
+    const recipientOptions = draftingServiceRecipientOptions(matter)
+    const selectedFileKeys = Array.isArray(draftingSelection.selected_file_names) ? draftingSelection.selected_file_names : []
+    const selectedFileCount = (template?.files || []).filter((file) => selectedFileKeys.includes(file.id || file.name)).length
+    const groupedFields = (template?.fields || []).reduce((groups, field) => {
+      const group = field.group || 'General'
+      if (!groups[group]) groups[group] = []
+      groups[group].push(field)
+      return groups
+    }, {})
+
+    const renderDraftingFieldInput = (field) => {
+      const value = fieldValues[field.key]
+      const commonHelp = field.help ? <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{field.help}</div> : null
+      if (field.key === 'replacement_counsel_name' && fieldValues.replacement_counsel_status !== 'substituting') return null
+      if (field.type === 'textarea' || field.type === 'list') return <><textarea value={Array.isArray(value) ? value.join('\n') : (value || '')} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} rows={field.type === 'list' ? 5 : 3} placeholder={field.placeholder || field.help || ''} />{commonHelp}</>
+      if (field.type === 'date') return <><input type="date" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} />{commonHelp}</>
+      if (field.type === 'email') return <><input type="email" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}</>
+      if (field.type === 'select') return <><select value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)}><option value="">Select...</option>{(field.options || []).map((option) => { const optionValue = typeof option === 'string' ? option : option.value; const optionLabel = typeof option === 'string' ? option : (option.label || option.value); return <option key={optionValue} value={optionValue}>{optionLabel}</option> })}</select>{commonHelp}</>
+      if (field.type === 'checkbox_group') {
+        const selected = Array.isArray(value) ? value : []
+        return <><div style={{ display: 'grid', gap: 6 }}>{(field.options || []).map((option) => { const optionValue = typeof option === 'string' ? option : option.value; const optionLabel = typeof option === 'string' ? option : (option.label || option.value); return <label key={optionValue} style={{ display: 'flex', gap: 7, alignItems: 'center' }}><input type="checkbox" checked={selected.includes(optionValue)} onChange={() => toggleDraftingCheckboxValue(field.key, optionValue)} /> {optionLabel}</label> })}</div>{commonHelp}</>
+      }
+      if (field.type === 'event_list') {
+        const selected = Array.isArray(value) ? value.map(String) : []
+        return <div style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => updateDraftingFieldValue(field.key, futureEvents.map((event) => String(event.id)))} style={{ padding: '4px 8px' }}>Select all future events</button><button type="button" onClick={() => updateDraftingFieldValue(field.key, [])} style={{ padding: '4px 8px' }}>Select none</button></div>
+          {futureEvents.length === 0 && <div style={{ color: '#92400e', fontSize: 13 }}>No future matter events or deadlines were found.</div>}
+          {futureEvents.map((event) => <label key={event.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 7, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 8px', background: selected.includes(String(event.id)) ? '#eff6ff' : '#fff' }}><input type="checkbox" checked={selected.includes(String(event.id))} onChange={() => toggleDraftingCheckboxValue(field.key, String(event.id))} /><span><strong>{draftingEventTitle(event)}</strong><br /><span style={{ color: '#64748b', fontSize: 12 }}>{draftingEventDateTimeLong(event)}</span></span></label>)}
+          {commonHelp}
+        </div>
+      }
+      if (field.type === 'event_select') return <><select value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)}><option value="">No hearing selected — omit hearing-notice section</option>{futureEvents.map((event) => <option key={event.id} value={event.id}>{draftingEventTitle(event)} — {draftingEventDateTimeLong(event)}</option>)}</select>{commonHelp}</>
+      if (field.type === 'service_list') {
+        const selected = Array.isArray(value) ? value : []
+        return <div style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => updateDraftingFieldValue(field.key, recipientOptions.map((recipient) => recipient.id))} style={{ padding: '4px 8px' }}>Select all</button><button type="button" onClick={() => updateDraftingFieldValue(field.key, [])} style={{ padding: '4px 8px' }}>Select none</button></div>
+          {recipientOptions.map((recipient) => <label key={recipient.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 7, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 8px', background: selected.includes(recipient.id) ? '#eff6ff' : '#fff' }}><input type="checkbox" checked={selected.includes(recipient.id)} onChange={() => toggleDraftingCheckboxValue(field.key, recipient.id)} /><span>{recipient.label}{!recipient.email && <span style={{ color: '#991b1b' }}> — email missing</span>}</span></label>)}
+          {commonHelp}
+        </div>
+      }
+      return <><input type="text" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}</>
+    }
+
+    const renderFieldGroup = (groupName, fields) => {
+      const content = <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 10 }}>{fields.map((field) => {
+        const input = renderDraftingFieldInput(field)
+        if (input === null) return null
+        return <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}>{input}</LabeledField>
+      })}</div>
+      if (groupName === 'Contact overrides') return <details key={groupName} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 10, background: '#f8fafc' }}><summary style={{ cursor: 'pointer', fontWeight: 850 }}>{groupName} (normally leave unchanged)</summary><div style={{ marginTop: 10 }}>{content}</div></details>
+      return <fieldset key={groupName} style={{ border: '1px solid #d5dce3', borderRadius: 8, minWidth: 0, padding: 10 }}><legend style={{ fontWeight: 850 }}>{groupName}</legend>{content}</fieldset>
+    }
+
     return (
       <div style={{ display: 'grid', gap: 14 }}>
-        {!embedded && <h1>Drafting</h1>}
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Begin Drafting</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)', gap: 12 }}><LabeledField label="Matter">{lockedMatterId ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4 }}>{matter ? formatMatterOption(matter) : 'Matter not found'}</div> : <SmartMatterSelect value={draftingSelection.matter_id} onChange={(value) => setDraftingSelection({ ...draftingSelection, matter_id: value })} placeholder="Select matter" />}</LabeledField><LabeledField label="Document Type / Template"><select value={draftingSelection.template_id} onChange={(e) => setDraftingSelection({ ...draftingSelection, template_id: e.target.value, field_values: {} })}><option value="">Select drafting template</option>{activeTemplates.map((item) => <option key={item.id} value={item.id}>{draftingTemplateLabel(item)}</option>)}</select></LabeledField></div>
-          {template && <div style={{ marginTop: 12, display: 'grid', gap: 10 }}><div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 10, background: '#f8fafc' }}><strong>{draftingTemplateLabel(template)}</strong>{template.requirements && <p><strong>Requirements/reminders:</strong> {template.requirements}</p>}{template.ai_instructions && <p><strong>AI instructions:</strong> {template.ai_instructions}</p>}</div>{(template.fields || []).length > 0 && <fieldset style={{ border: '1px solid #d5dce3', borderRadius: 6 }}><legend>Draft fields</legend><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 10 }}>{(template.fields || []).map((field) => <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}><input value={(draftingSelection.field_values || {})[field.key] || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.help || ''} /></LabeledField>)}</div></fieldset>}<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => generateDraftForMatter(lockedMatterId)}>Draft for Matter</button><button type="button" onClick={() => viewCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>View Word Draft</button><button type="button" onClick={() => downloadCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>Download Word</button><button type="button" onClick={() => saveCurrentDraftToDocuments(lockedMatterId)} disabled={!draftingOutput}>Save Word to Matter Documents</button><button type="button" onClick={() => { setDraftingOutput(''); setDraftingStatus('') }}>Clear Draft</button></div>{draftingStatus && <div style={{ color: '#334155', fontWeight: 'bold' }}>{draftingStatus}</div>}<LabeledField label="Draft Text"><textarea value={draftingOutput} onChange={(e) => setDraftingOutput(e.target.value)} rows={20} placeholder="Generated draft will appear here and can be edited before viewing, downloading, or saving as a Word document." /></LabeledField></div>}
-        </div>
-        <div style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: 'white' }}><h2 style={{ marginTop: 0 }}>Saved Drafts for This Matter</h2>{!matterId && <p>Select a matter to see saved drafts.</p>}{matterId && matterDrafts.length === 0 && <p>No drafts saved for this matter yet.</p>}{matterDrafts.map((doc) => <div key={doc.id} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><strong>{doc.name || doc.file_name}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{doc.date || doc.upload_date || ''} {doc.tag_ids?.length ? `| ${doc.tag_ids.map((tagId) => tagFullName(tagId)).filter(Boolean).join(', ')}` : ''}</div><div>{doc.description}</div></div><div><button type="button" onClick={() => viewDocument(doc)}>Open</button><button type="button" onClick={() => downloadDocument(doc)} style={{ marginLeft: 6 }}>Download</button></div></div>)}</div>
+        {!embedded && <h1 style={{ marginBottom: 0 }}>Drafting</h1>}
+        <section style={{ border: '1px solid #d5dce3', borderRadius: 10, padding: 14, background: 'white' }}>
+          <h2 style={{ marginTop: 0 }}>Begin Drafting</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+            <LabeledField label="Matter">{lockedMatterId ? <div style={{ padding: 9, border: '1px solid #cbd5e1', borderRadius: 6, background: '#f8fafc' }}>{matter ? formatMatterOption(matter) : 'Matter not found'}</div> : <SmartMatterSelect value={draftingSelection.matter_id} onChange={(value) => selectDraftingMatter(value)} placeholder="Select matter" />}</LabeledField>
+            <LabeledField label="Document Type / Template"><select value={draftingSelection.template_id || ''} onChange={(e) => selectDraftingTemplate(e.target.value, lockedMatterId)}><option value="">Select drafting template</option>{activeTemplates.map((item) => <option key={item.id} value={item.id}>{draftingTemplateLabel(item)} — v{item.version || '1.0'} ({draftingTemplateStatusLabel(item)})</option>)}</select></LabeledField>
+          </div>
+
+          {template && <div style={{ marginTop: 12, display: 'grid', gap: 12 }}>
+            <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 11, background: '#f8fafc' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div><strong style={{ fontSize: 17 }}>{draftingTemplateLabel(template)}</strong><div style={{ color: '#64748b', fontSize: 12, marginTop: 3 }}>{template.category || 'Uncategorized'} · Version {template.version || '1.0'} · {isAssembly ? 'Real .docx Word assembly' : 'Legacy AI text draft'}</div></div>
+                {(() => { const colors = draftingTemplateStatusColors(template); return <span style={{ border: `1px solid ${colors.border}`, background: colors.background, color: colors.color, borderRadius: 999, padding: '5px 10px', fontSize: 12, fontWeight: 850 }}>{draftingTemplateStatusLabel(template)}</span> })()}
+              </div>
+              {template.requirements && <p style={{ marginBottom: 0 }}><strong>Requirements/reminders:</strong> {template.requirements}</p>}
+              {template.ai_instructions && <p style={{ marginBottom: 0 }}><strong>{isAssembly ? 'Assembly guardrail:' : 'AI instructions:'}</strong> {template.ai_instructions}</p>}
+            </div>
+
+            {isAssembly && <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 10 }}>
+              <h3 style={{ margin: '0 0 8px' }}>Word documents to generate</h3>
+              <div style={{ display: 'grid', gap: 7 }}>{(template.files || []).map((file) => { const key = file.id || file.name; return <label key={key} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 8, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 9px', background: selectedFileKeys.includes(key) ? '#eff6ff' : '#fff' }}><input type="checkbox" checked={selectedFileKeys.includes(key)} onChange={() => toggleDraftingTemplateFile(file)} /><span><strong>{file.output_name || file.name}</strong><br /><span style={{ color: '#64748b', fontSize: 12 }}>Template: {file.name}</span></span></label> })}</div>
+            </section>}
+
+            {isAssembly && matter && assemblyData && <section style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 10, background: '#eff6ff' }}>
+              <h3 style={{ margin: '0 0 8px' }}>Matter data Mio will place into the Word document</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 8, fontSize: 13 }}>
+                <div><strong>Cause:</strong><br />{assemblyData.cause_number || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Client:</strong><br />{assemblyData.client_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Client address:</strong><br />{assemblyData.client_address_inline || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Client email:</strong><br />{assemblyData.client_email || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Court:</strong><br />{assemblyData.court_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Assigned attorney:</strong><br />{assemblyData.attorney_name} · {assemblyData.attorney_email}</div>
+              </div>
+            </section>}
+
+            {(template.fields || []).length > 0 && <div style={{ display: 'grid', gap: 10 }}>{Object.entries(groupedFields).map(([groupName, fields]) => renderFieldGroup(groupName, fields))}</div>}
+
+            {preflightIssues.length > 0 && <section style={{ border: '1px solid #fcd34d', borderRadius: 8, padding: 10, background: '#fffbeb' }}>
+              <strong>Preflight review</strong>
+              <div style={{ display: 'grid', gap: 5, marginTop: 7 }}>{preflightIssues.map((issue, index) => <div key={`${issue.level}-${index}`} style={{ color: issue.level === 'error' ? '#991b1b' : '#92400e' }}>{issue.level === 'error' ? 'Required: ' : 'Review: '}{issue.message}</div>)}</div>
+            </section>}
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button type="button" onClick={() => generateDraftForMatter(lockedMatterId)} style={{ fontWeight: 900, color: '#1d4ed8' }}>{isAssembly ? (selectedFileCount ? `Generate ${selectedFileCount} Word Document${selectedFileCount === 1 ? '' : 's'}` : 'Generate Word Document(s)') : 'Generate AI Text Draft'}</button>
+              {isAssembly && <button type="button" onClick={downloadAllGeneratedDraftWords} disabled={!draftingGeneratedFiles.length}>Download {draftingGeneratedFiles.length > 1 ? 'All as ZIP' : 'Word Document'}</button>}
+              {isAssembly && <button type="button" onClick={() => saveGeneratedDraftsToDocuments(lockedMatterId)} disabled={!draftingGeneratedFiles.length}>Save Word Document(s) to Matter</button>}
+              {!isAssembly && <button type="button" onClick={() => viewCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>View Legacy Word Draft</button>}
+              {!isAssembly && <button type="button" onClick={() => downloadCurrentDraftWord(lockedMatterId)} disabled={!draftingOutput}>Download Legacy .doc</button>}
+              {!isAssembly && <button type="button" onClick={() => saveCurrentDraftToDocuments(lockedMatterId)} disabled={!draftingOutput}>Save Legacy Draft to Matter</button>}
+              <button type="button" onClick={() => { setDraftingGeneratedFiles([]); setDraftingOutput(''); setDraftingStatus('') }}>Clear Generated Draft</button>
+            </div>
+
+            {draftingStatus && <div style={{ color: /failed/i.test(draftingStatus) ? '#991b1b' : '#334155', fontWeight: 800, border: '1px solid #cbd5e1', borderRadius: 7, padding: 9, background: '#f8fafc' }}>{draftingStatus}</div>}
+
+            {isAssembly && draftingGeneratedFiles.length > 0 && <section style={{ border: '1px solid #86efac', borderRadius: 8, padding: 10, background: '#f0fdf4' }}>
+              <h3 style={{ margin: '0 0 8px' }}>Generated editable Word documents</h3>
+              <div style={{ display: 'grid', gap: 7 }}>{draftingGeneratedFiles.map((file) => <div key={file.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', border: '1px solid #bbf7d0', borderRadius: 7, padding: '8px 10px', background: '#fff', flexWrap: 'wrap' }}><div><strong>{file.name}</strong><div style={{ color: '#64748b', fontSize: 12 }}>{Math.max(1, Math.round((file.size || 0) / 1024))} KB · Created {new Date(file.generated_at).toLocaleString()}</div></div><button type="button" onClick={() => downloadGeneratedDraftWord(file)} style={{ fontWeight: 850 }}>Download .docx</button></div>)}</div>
+            </section>}
+
+            {!isAssembly && <LabeledField label="Legacy AI Draft Text"><textarea value={draftingOutput} onChange={(e) => setDraftingOutput(e.target.value)} rows={20} placeholder="The legacy AI text draft will appear here. Approved Word templates do not use this text box." /></LabeledField>}
+          </div>}
+        </section>
+
+        <section style={{ border: '1px solid #d5dce3', borderRadius: 10, padding: 14, background: 'white' }}>
+          <h2 style={{ marginTop: 0 }}>Saved Drafts for This Matter</h2>
+          {!matterId && <p>Select a matter to see saved drafts.</p>}
+          {matterId && matterDrafts.length === 0 && <p>No drafts saved for this matter yet.</p>}
+          <div style={{ display: 'grid', gap: 8 }}>{matterDrafts.map((doc) => <div key={doc.id} style={{ border: '1px solid #e2e8f0', borderRadius: 7, padding: 9, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><strong>{doc.name || doc.file_name}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{doc.date || doc.upload_date || ''}{doc.tag_ids?.length ? ` · ${doc.tag_ids.map((tagId) => tagFullName(tagId)).filter(Boolean).join(', ')}` : ''}</div><div>{doc.description}</div></div><div><button type="button" onClick={() => viewDocument(doc)}>Open</button><button type="button" onClick={() => downloadDocument(doc)} style={{ marginLeft: 6 }}>Download</button></div></div>)}</div>
+        </section>
       </div>
     )
   }
+
 
   function renderMatterFilingsPanel(matter) {
     const matterDocs = documents.filter((doc) => String(doc.matter_id || '') === String(matter?.id || ''))
