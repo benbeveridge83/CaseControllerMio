@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V250'
+const MIO_APP_VERSION = 'Mio V251'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -6606,7 +6606,9 @@ function App() {
   }, [workflowActiveTab])
 
   useEffect(() => {
-    safeSetLocalStorage('caseControllerMatterExtraInfo', JSON.stringify(matterExtraInfoById))
+    const serialized = JSON.stringify(matterExtraInfoById)
+    safeSetLocalStorage('caseControllerMatterExtraInfo', serialized)
+    try { saveMioStateKey('caseControllerMatterExtraInfo', serialized) } catch {}
   }, [matterExtraInfoById])
 
   useEffect(() => {
@@ -13883,6 +13885,35 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return rows
   }
 
+  function syncOpposingPartiesFromLitigationParties(extra = {}, matterId = '') {
+    const cloned = cloneMatterExtraInfo(extra)
+    const litigation = Array.isArray(cloned.litigation_parties)
+      ? cloned.litigation_parties.map((party, index) => ensureLitigationPartyShape(party, matterId, index))
+      : []
+    const opposing = litigation.filter((party) => party.source === 'opposing' && (party.name || party.email || party.role || party.attorney_name || party.attorney_email))
+    if (!opposing.length) return cloned
+    const existing = Array.isArray(cloned.opposing_parties) ? cloned.opposing_parties : []
+    const nextOpposing = opposing.map((party, index) => {
+      const prior = existing[index] || {}
+      const priorCounsel = prior.counsel || {}
+      return {
+        ...emptyPartyInfo,
+        ...prior,
+        name: party.name || prior.name || '',
+        party_type: party.role || prior.party_type || 'Opposing Party',
+        email: party.email || prior.email || '',
+        counsel: {
+          ...emptyCounselInfo,
+          ...priorCounsel,
+          name: party.attorney_name || priorCounsel.name || '',
+          email: party.attorney_email || priorCounsel.email || '',
+          title: priorCounsel.title || (party.attorney_name ? `Counsel for ${party.name || party.role || `Opposing Party ${index + 1}`}` : '')
+        }
+      }
+    })
+    return { ...cloned, opposing_parties: nextOpposing.length ? nextOpposing : cloned.opposing_parties }
+  }
+
   function litigationMatterPartyRows(matterId, { includeBlanks = false, minimum = 0 } = {}) {
     const extra = matterExtraFor(matterId)
     const stored = Array.isArray(extra.litigation_parties) ? extra.litigation_parties : []
@@ -13897,7 +13928,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const current = matterExtraFor(matterId)
     const parties = litigationMatterPartyRows(matterId, { includeBlanks: true, minimum: Math.max(6, index + 1) })
     parties[index] = ensureLitigationPartyShape({ ...(parties[index] || {}), ...patch }, matterId, index)
-    setMatterExtraInfoById((all) => ({ ...all, [matterId]: { ...current, litigation_parties: parties } }))
+    const nextExtra = syncOpposingPartiesFromLitigationParties({ ...current, litigation_parties: parties }, matterId)
+    setMatterExtraInfoById((all) => ({ ...all, [matterId]: nextExtra }))
   }
 
   function addLitigationMatterParty(matterId) {
@@ -13905,7 +13937,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const current = matterExtraFor(matterId)
     const parties = litigationMatterPartyRows(matterId, { includeBlanks: true, minimum: 6 })
     parties.push(ensureLitigationPartyShape({ id: `lit-party-${matterId}-${Date.now()}` }, matterId, parties.length))
-    setMatterExtraInfoById((all) => ({ ...all, [matterId]: { ...current, litigation_parties: parties } }))
+    const nextExtra = syncOpposingPartiesFromLitigationParties({ ...current, litigation_parties: parties }, matterId)
+    setMatterExtraInfoById((all) => ({ ...all, [matterId]: nextExtra }))
   }
 
   function removeLitigationMatterParty(matterId, index) {
@@ -13913,7 +13946,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const current = matterExtraFor(matterId)
     const parties = litigationMatterPartyRows(matterId, { includeBlanks: true, minimum: 6 }).filter((_, partyIndex) => partyIndex !== index)
     while (parties.length < 6) parties.push(ensureLitigationPartyShape({ id: `lit-party-${matterId}-${parties.length + 1}` }, matterId, parties.length))
-    setMatterExtraInfoById((all) => ({ ...all, [matterId]: { ...current, litigation_parties: parties } }))
+    const nextExtra = syncOpposingPartiesFromLitigationParties({ ...current, litigation_parties: parties }, matterId)
+    setMatterExtraInfoById((all) => ({ ...all, [matterId]: nextExtra }))
   }
 
   function litigationTrackPartyOptions(matterId, { includeCourt = false, includeUnassigned = false } = {}) {
@@ -21424,7 +21458,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function matterExtraFor(matterId) {
-    return cloneMatterExtraInfo(matterExtraInfoById[matterId] || {})
+    return syncOpposingPartiesFromLitigationParties(cloneMatterExtraInfo(matterExtraInfoById[matterId] || {}), matterId)
   }
 
   function updateMatterExtraDraftField(field, value) {
@@ -30447,12 +30481,46 @@ useEffect(() => {
     return ids.slice().sort((a, b) => filingTagIdsForTagId(b, workingTags).length - filingTagIdsForTagId(a, workingTags).length)[0] || ''
   }
 
+  async function normalizeServicePdfBlob(value, contentType = 'application/pdf') {
+    if (!value) return null
+    if (typeof Blob !== 'undefined' && value instanceof Blob) return value
+    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return new Blob([value], { type: contentType || 'application/pdf' })
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView?.(value)) {
+      const start = Number(value.byteOffset || 0)
+      const end = start + Number(value.byteLength || 0)
+      return new Blob([value.buffer.slice(start, end)], { type: contentType || 'application/pdf' })
+    }
+    if (typeof value === 'string') {
+      const text = value.trim()
+      if (!text) return null
+      if (/^data:/i.test(text)) {
+        const response = await fetch(text)
+        return await response.blob()
+      }
+      if (/^[A-Za-z0-9+/=\s]+$/.test(text) && text.replace(/\s/g, '').length >= 24) {
+        try { return base64ToServiceBlob(text, contentType || 'application/pdf') } catch {}
+      }
+      return null
+    }
+    if (value?.blob && value.blob !== value) return await normalizeServicePdfBlob(value.blob, value.type || value.content_type || contentType)
+    if (value?.file && value.file !== value) return await normalizeServicePdfBlob(value.file, value.type || value.content_type || contentType)
+    if (typeof value?.arrayBuffer === 'function') {
+      try {
+        const buffer = await value.arrayBuffer()
+        return new Blob([buffer], { type: value.type || value.content_type || contentType || 'application/pdf' })
+      } catch {}
+    }
+    return null
+  }
+
   async function blobToDataUrl(blob) {
+    const safeBlob = await normalizeServicePdfBlob(blob, blob?.type || blob?.content_type || 'application/pdf')
+    if (!safeBlob) return ''
     return await new Promise((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(reader.result || '')
       reader.onerror = reject
-      reader.readAsDataURL(blob)
+      reader.readAsDataURL(safeBlob)
     })
   }
 
@@ -30483,9 +30551,9 @@ useEffect(() => {
         notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
         source_email_subject: row.subject || '',
         source_email_from: row.from_email || row.from_name || '',
-        filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || ''
+        filed_by_person_id: serviceReviewEffectiveFilerId(row)
       },
-      filed_by_person_id: row.filed_by_person_id || guessServiceReviewFiler(row) || '',
+      filed_by_person_id: serviceReviewEffectiveFilerId(row),
       filing_date: row.filing_date || row.document_field_values?.filing_date || (row.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date())),
       notice_service_source: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_source || noticeServiceDocumentSource(row)) : 'Ours',
       notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
@@ -30776,7 +30844,7 @@ useEffect(() => {
       category: serviceEmailPhaseLabel(serviceEmailRowCategory(row)),
       billing_minutes: billingMinutes,
       document_name: details.document_name ?? row?.suggested_document_name ?? '',
-      filed_by_person_id: details.filed_by_person_id ?? row?.filed_by_person_id ?? (row ? guessServiceReviewFiler(row) : ''),
+      filed_by_person_id: details.filed_by_person_id ?? (row ? serviceReviewEffectiveFilerId(row) : ''),
       save_path: details.save_path ?? (row ? serviceEmailSavePath(row) : ''),
       notes: details.notes || ''
     }
@@ -31285,6 +31353,8 @@ useEffect(() => {
 
   async function uploadServicePdfToOneDriveFolder(row, fileName, blob) {
     if (!blob || !fileName) return null
+    const safeBlob = await normalizeServicePdfBlob(blob, blob?.type || blob?.content_type || 'application/pdf')
+    if (!safeBlob) throw new Error('The selected PDF content could not be converted into a file for OneDrive.')
     const savePath = serviceEmailSavePath(row)
     const folder = await resolveExistingGraphEfileFolder(row)
     if (!folder?.id) return null
@@ -31292,9 +31362,9 @@ useEffect(() => {
     try {
       const result = await graphFetch(`/me/drive/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(cleanName)}:/content`, {
         method: 'PUT',
-        body: blob,
+        body: safeBlob,
         allowInteractive: true,
-        headers: { 'Content-Type': blob.type || 'application/pdf' }
+        headers: { 'Content-Type': safeBlob.type || 'application/pdf' }
       })
       if (!result?.id) throw new Error('OneDrive did not return a file ID after upload.')
       const verified = await graphFetch(`/me/drive/items/${encodeURIComponent(result.id)}?$select=id,name,size,webUrl,parentReference`, { allowInteractive: true })
@@ -32010,14 +32080,14 @@ async function chooseAndSaveMatterEfileFolder(row) {
       .replace(/\s+/g, ' ')
       .trim()
 
-    let blob = attachment.blob || attachment.file || null
+    let blob = await normalizeServicePdfBlob(attachment.blob || attachment.file || null, attachment.content_type || 'application/pdf')
     if (!blob && attachment.content_url) {
       const response = await fetch(attachment.content_url)
       if (!response.ok) throw new Error(`Could not read selected PDF content (${response.status}).`)
-      blob = await response.blob()
+      blob = await normalizeServicePdfBlob(await response.blob(), attachment.content_type || 'application/pdf')
     }
     if (!blob) {
-      setServiceEmailScanNote('The PDF was not saved because the selected PDF file could not be read.')
+      setServiceEmailScanNote('The PDF was not saved because the selected PDF file could not be read as PDF bytes.')
       return false
     }
 
@@ -33342,6 +33412,11 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       const counsel = party.counsel || {}
       add(`party-counsel-${index}`, counsel.name, counsel.title || `Counsel for ${party.name || `Party ${index + 1}`}`, 'counsel', counsel.email)
     })
+    ;(extra.litigation_parties || []).forEach((party, index) => {
+      if (party.source !== 'opposing') return
+      add(party.id || `litigation-party-${index}`, party.name, party.role || 'Opposing Party', 'party', party.email)
+      add(`litigation-party-counsel-${party.id || index}`, party.attorney_name, `Counsel for ${party.name || party.role || `Opposing Party ${index + 1}`}`, 'counsel', party.attorney_email)
+    })
     ;(extra.prior_counsels || []).forEach((person, index) => add(`prior-counsel-${index}`, person.name, person.title || 'Prior Counsel', 'prior_counsel', person.email))
     ;(extra.co_counsels || []).forEach((person, index) => add(`co-counsel-${index}`, person.name, person.title || 'Co-Counsel', 'co_counsel', person.email))
     ;(extra.court_people || []).forEach((person, index) => add(`court-person-${index}`, person.name, person.title || 'Court', 'court', person.email))
@@ -33357,11 +33432,24 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     if (!options.length) return ''
     if (serviceEmailRowCategory(row) === 'accepted') return options.find((item) => item.source === 'attorney')?.id || defaultFirmAttorneyOption().id
     const text = serviceReviewText(row).toLowerCase()
-    const direct = options.find((item) => item.name && text.includes(item.name.toLowerCase()))
-    if (direct) return direct.id
-    if (/filed by the court|court clerk|district clerk|county clerk/.test(text)) return options.find((item) => item.source === 'court')?.id || ''
+    // A court name normally appears in the caption of every filing, so do not treat a
+    // mere court-name match as proof that the court filed the document. For incoming
+    // Notifications of Service, prefer an opposing attorney/party match first.
+    const directCounsel = options.find((item) => item.source === 'counsel' && item.name && text.includes(item.name.toLowerCase()))
+    if (directCounsel) return directCounsel.id
+    const directParty = options.find((item) => item.source === 'party' && item.name && text.includes(item.name.toLowerCase()))
+    if (directParty) return directParty.id
+    if (/filed by the court|filed by court|court clerk|district clerk|county clerk/.test(text)) return options.find((item) => item.source === 'court')?.id || ''
+    const directOther = options.find((item) => !['court', 'client', 'attorney'].includes(item.source) && item.name && text.includes(item.name.toLowerCase()))
+    if (directOther) return directOther.id
+    const opposingCounsel = options.find((item) => item.source === 'counsel')
     const opposingParty = options.find((item) => item.source === 'party')
-    return opposingParty?.id || options.find((item) => !['client', 'attorney'].includes(item.source))?.id || options[0]?.id || ''
+    return opposingCounsel?.id || opposingParty?.id || options.find((item) => !['client', 'attorney', 'court'].includes(item.source))?.id || options[0]?.id || ''
+  }
+
+  function serviceReviewEffectiveFilerId(row = {}) {
+    if (row?.filed_by_manual && row?.filed_by_person_id) return row.filed_by_person_id
+    return guessServiceReviewFiler(row) || row?.filed_by_person_id || ''
   }
 
   function renderFilingServiceReviewWindow(kind = 'accepted') {
@@ -33433,7 +33521,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                   <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { extracted_pdf_name: e.target.value })} /></LabeledField>
                   <LabeledField label="Document name (Filing Description)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
-                  <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={active.filed_by_person_id || guessServiceReviewFiler(active) || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
+                  <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={serviceReviewEffectiveFilerId(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value, filed_by_manual: true })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Filing Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, filing_tag_ids: tagIds }) ? filingTagFullName(serviceEmailDocumentLeafTagId({ ...active, filing_tag_ids: tagIds })) : 'Choose Filing Tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New Filing Tag</button></div></LabeledField>
                 </div>
                 <div style={{ marginTop: 10, padding: 9, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
