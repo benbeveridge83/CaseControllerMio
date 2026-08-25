@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V249'
+const MIO_APP_VERSION = 'Mio V250'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -2829,8 +2829,14 @@ function App() {
   const [litigationDropTargetKey, setLitigationDropTargetKey] = useState('')
   const litigationDocumentPaneDragRef = useRef(null)
   const [litigationPartyTableFilters, setLitigationPartyTableFilters] = useState(() => {
-    try { return { search: '', case_status: 'all', matter_status: 'all', active: 'active', ...(JSON.parse(localStorage.getItem('caseMioLitigationPartyTableFilters') || '{}') || {}) } }
-    catch { return { search: '', case_status: 'all', matter_status: 'all', active: 'active' } }
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioLitigationPartyTableFiltersV250') || localStorage.getItem('caseMioLitigationPartyTableFilters') || '{}') || {}
+      return normalizeMatterSettingsChecklistFilters(stored)
+    } catch { return normalizeMatterSettingsChecklistFilters({}) }
+  })
+  const [efileFolderTableFilters, setEfileFolderTableFilters] = useState(() => {
+    try { return normalizeMatterSettingsChecklistFilters(JSON.parse(localStorage.getItem('caseMioEfileFolderTableFiltersV250') || '{}') || {}) }
+    catch { return normalizeMatterSettingsChecklistFilters({}) }
   })
 
   const [draftingTemplates, setDraftingTemplates] = useState(() => {
@@ -2875,6 +2881,7 @@ function App() {
   const [serviceTagBuilder, setServiceTagBuilder] = useState({ open: false, rowId: '', name: '', parentId: '' })
   const [serviceTagPicker, setServiceTagPicker] = useState({ open: false, rowId: '', search: '' })
   const [showServiceInboxSettings, setShowServiceInboxSettings] = useState(false)
+  const [serviceInboxSettingsTab, setServiceInboxSettingsTab] = useState(() => localStorage.getItem('caseMioServiceInboxSettingsTabV250') || 'tags')
   const [filingTagForm, setFilingTagForm] = useState({ name: '', parent_id: '', filing_role: '', color: '#4c6783' })
   const [filingTagSettings, setFilingTagSettings] = useState(() => {
     try {
@@ -4903,6 +4910,7 @@ function App() {
 
   function openServiceInboxFilingTagSettings() {
     setPage('service_inbox')
+    setServiceInboxSettingsTab('tags')
     setShowServiceInboxSettings(true)
     window.setTimeout(() => document.getElementById('service-inbox-filing-tags-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120)
   }
@@ -6416,7 +6424,12 @@ function App() {
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneOpen', litigationDocumentPaneOpen ? 'true' : 'false') }, [litigationDocumentPaneOpen])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPanePosition', JSON.stringify(litigationDocumentPanePosition || {})) }, [litigationDocumentPanePosition])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneFilters', JSON.stringify(litigationDocumentPaneFilters || {})) }, [litigationDocumentPaneFilters])
-  useEffect(() => { safeSetLocalStorage('caseMioLitigationPartyTableFilters', JSON.stringify(litigationPartyTableFilters || {})) }, [litigationPartyTableFilters])
+  useEffect(() => {
+    safeSetLocalStorage('caseMioLitigationPartyTableFiltersV250', JSON.stringify(litigationPartyTableFilters || {}))
+    safeSetLocalStorage('caseMioLitigationPartyTableFilters', JSON.stringify(litigationPartyTableFilters || {}))
+  }, [litigationPartyTableFilters])
+  useEffect(() => { safeSetLocalStorage('caseMioEfileFolderTableFiltersV250', JSON.stringify(efileFolderTableFilters || {})) }, [efileFolderTableFilters])
+  useEffect(() => { safeSetLocalStorage('caseMioServiceInboxSettingsTabV250', serviceInboxSettingsTab || 'tags') }, [serviceInboxSettingsTab])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioLitigationShowDates', litigationShowDates ? 'true' : 'false')
@@ -15027,24 +15040,151 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     )
   }
 
-  function renderLitigationPartySettingsTable() {
-    const search = String(litigationPartyTableFilters.search || '').trim().toLowerCase()
+  function normalizeMatterSettingsChecklistFilters(value = {}) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    const arrayOrAll = (key) => Array.isArray(source[key]) ? source[key].map((item) => String(item)) : null
+    return {
+      search: String(source.search || ''),
+      case_types: arrayOrAll('case_types'),
+      case_statuses: arrayOrAll('case_statuses'),
+      matter_statuses: arrayOrAll('matter_statuses'),
+      withdrawal_statuses: arrayOrAll('withdrawal_statuses')
+    }
+  }
+
+  function matterSettingsFilterValue(matter, filterKey) {
+    if (filterKey === 'case_types') return String(matter?.matter_type || '').trim() || '__blank__'
+    if (filterKey === 'case_statuses') return String(matter?.case_status || '').trim() || '__blank__'
+    if (filterKey === 'matter_statuses') return String(matter?.matter_status || '').trim() || '__blank__'
+    if (filterKey === 'withdrawal_statuses') return matterWithdrawalStatus(matter) === 'withdrawing' ? 'withdrawing' : 'not_withdrawing'
+    return '__blank__'
+  }
+
+  function matterSettingsFilterOptions(filterKey) {
+    if (filterKey === 'withdrawal_statuses') return [
+      { value: 'withdrawing', label: 'Withdrawing' },
+      { value: 'not_withdrawing', label: 'Not withdrawing' }
+    ]
+    const values = Array.from(new Set(matters.map((matter) => matterSettingsFilterValue(matter, filterKey))))
+      .sort((a, b) => {
+        if (a === '__blank__') return 1
+        if (b === '__blank__') return -1
+        return String(a).localeCompare(String(b))
+      })
+    return values.map((value) => ({ value, label: value === '__blank__' ? '(Blank)' : value }))
+  }
+
+  function matterMatchesSettingsChecklistFilters(matter, filters = {}, extraSearchText = '') {
+    const normalized = normalizeMatterSettingsChecklistFilters(filters)
+    for (const filterKey of ['case_types', 'case_statuses', 'matter_statuses', 'withdrawal_statuses']) {
+      const selected = normalized[filterKey]
+      if (Array.isArray(selected) && !selected.includes(matterSettingsFilterValue(matter, filterKey))) return false
+    }
+    const search = String(normalized.search || '').trim().toLowerCase()
+    if (search) {
+      const haystack = `${matterName(matter?.id)} ${matter?.name || ''} ${matter?.cause_number || ''} ${matter?.matter_type || ''} ${matter?.case_status || ''} ${matter?.matter_status || ''} ${extraSearchText || ''}`.toLowerCase()
+      if (!haystack.includes(search)) return false
+    }
+    return true
+  }
+
+  function renderMatterSettingsChecklistFilter(title, filterKey, filters, setFilters) {
+    const options = matterSettingsFilterOptions(filterKey)
+    const selected = Array.isArray(filters?.[filterKey]) ? filters[filterKey].map(String) : null
+    const selectedCount = selected === null ? options.length : selected.length
+    const summary = selected === null ? `${title}: All` : `${title}: ${selectedCount}/${options.length}`
+    const optionValues = options.map((option) => String(option.value))
+    const setSelection = (next) => setFilters((current) => ({ ...normalizeMatterSettingsChecklistFilters(current), [filterKey]: next }))
+    return (
+      <details style={{ position: 'relative' }}>
+        <summary style={{ cursor: 'pointer', border: '1px solid #94a3b8', borderRadius: 6, background: '#fff', padding: '6px 9px', fontWeight: 750, minWidth: 145, listStyle: 'none' }}>{summary}</summary>
+        <div style={{ position: 'absolute', zIndex: 80, top: '105%', left: 0, width: 280, maxHeight: 330, overflow: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 9, boxShadow: '0 10px 28px rgba(15,23,42,.18)' }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
+            <button type="button" onClick={() => setSelection(null)}>All</button>
+            <button type="button" onClick={() => setSelection([])}>None</button>
+          </div>
+          {options.map((option) => {
+            const checked = selected === null || selected.includes(String(option.value))
+            return <label key={option.value} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 2px' }}>
+              <input type="checkbox" checked={checked} onChange={(event) => {
+                if (selected === null) {
+                  if (!event.target.checked) setSelection(optionValues.filter((value) => value !== String(option.value)))
+                  return
+                }
+                const next = event.target.checked
+                  ? Array.from(new Set([...selected, String(option.value)]))
+                  : selected.filter((value) => value !== String(option.value))
+                setSelection(next)
+              }} />
+              <span>{option.label}</span>
+            </label>
+          })}
+          {!options.length && <div style={{ color: '#64748b', fontSize: 12 }}>No values are available yet.</div>}
+        </div>
+      </details>
+    )
+  }
+
+  function renderMatterSettingsFilterBar(filters, setFilters, { searchPlaceholder = 'Filter matters...' } = {}) {
+    return (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, padding: 9, border: '1px solid #dbe3ea', borderRadius: 8, background: '#f8fafc' }}>
+        <input value={filters?.search || ''} onChange={(event) => setFilters((current) => ({ ...normalizeMatterSettingsChecklistFilters(current), search: event.target.value }))} placeholder={searchPlaceholder} style={{ minWidth: 250, flex: '1 1 280px' }} />
+        {renderMatterSettingsChecklistFilter('Case Type', 'case_types', filters, setFilters)}
+        {renderMatterSettingsChecklistFilter('Case Status', 'case_statuses', filters, setFilters)}
+        {renderMatterSettingsChecklistFilter('Matter Status', 'matter_statuses', filters, setFilters)}
+        {renderMatterSettingsChecklistFilter('Withdrawal', 'withdrawal_statuses', filters, setFilters)}
+        <button type="button" onClick={() => setFilters(normalizeMatterSettingsChecklistFilters({}))}>Show all</button>
+      </div>
+    )
+  }
+
+  function filteredEfileFolderMatters() {
+    return matters
+      .filter((matter) => matterMatchesSettingsChecklistFilters(matter, efileFolderTableFilters))
+      .sort((a, b) => matterName(a.id).localeCompare(matterName(b.id)))
+  }
+
+  function renderMatterEfileFoldersSection({ id = 'matter-efile-folders-section', embedded = false } = {}) {
+    const rows = filteredEfileFolderMatters()
+    return (
+      <section id={id} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: embedded ? 0 : 14 }}>
+        <h3 style={{ marginTop: 0 }}>Matter efile folders</h3>
+        <p style={{ color: '#64748b', marginTop: 0 }}>Choose the existing OneDrive or browser-accessible folder for each matter. The Service Inbox saves only to the folder shown here. Mio does not create matter folders or efile folders.</p>
+        {renderMatterSettingsFilterBar(efileFolderTableFilters, setEfileFolderTableFilters, { searchPlaceholder: 'Filter matters or cause numbers...' })}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 7, color: '#64748b', fontSize: 12 }}><strong style={{ color: '#334155' }}>{rows.length}</strong> matter{rows.length === 1 ? '' : 's'} shown</div>
+        <div style={{ maxHeight: embedded ? 430 : 300, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+          <table cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: '#f8fafc', position: 'sticky', top: 0, zIndex: 2 }}><th style={{ textAlign: 'left' }}>Matter</th><th style={{ textAlign: 'left' }}>OneDrive / efile folder</th></tr></thead>
+            <tbody>
+              {rows.map((matter) => (
+                <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                  <td style={{ width: '35%' }}><strong>{formatMatterOption(matter)}</strong><div style={{ color: '#64748b', fontSize: 10 }}>{matter.matter_type || ''}{matter.case_status ? ` · ${matter.case_status}` : ''}{matter.matter_status ? ` · ${matter.matter_status}` : ''}{matterWithdrawalStatus(matter) === 'withdrawing' ? ' · Withdrawing' : ''}</div></td>
+                  <td><div style={{ display: 'flex', gap: 6 }}><input value={matterEfileFolderForId(matter.id)} readOnly placeholder="No folder selected" style={{ width: '100%' }} /><button type="button" onClick={() => openMatterEfileFolderPickerForMatter(matter.id)} style={{ whiteSpace: 'nowrap' }}>{matterEfileFolderForId(matter.id) ? 'Change' : 'Choose'}</button></div></td>
+                </tr>
+              ))}
+              {!rows.length && <tr><td colSpan="2" style={{ padding: 12, color: '#64748b', textAlign: 'center' }}>No matters match the selected filters.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  function renderLitigationPartySettingsTable({ embedded = false } = {}) {
     const rows = matters.filter((matter) => {
-      if (litigationPartyTableFilters.active === 'active' && matter.is_active === false) return false
-      if (litigationPartyTableFilters.active === 'inactive' && matter.is_active !== false) return false
-      if (litigationPartyTableFilters.case_status !== 'all' && String(matter.case_status || '') !== String(litigationPartyTableFilters.case_status)) return false
-      if (litigationPartyTableFilters.matter_status !== 'all' && String(matter.matter_status || '') !== String(litigationPartyTableFilters.matter_status)) return false
       const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: 6 })
-      const haystack = `${matterName(matter.id)} ${matter.name || ''} ${matter.cause_number || ''} ${parties.map((party) => `${party.name} ${party.email} ${party.attorney_name} ${party.attorney_email}`).join(' ')}`.toLowerCase()
-      return !search || haystack.includes(search)
+      const partyText = parties.map((party) => `${party.name || ''} ${party.email || ''} ${party.attorney_name || ''} ${party.attorney_email || ''} ${party.role || ''}`).join(' ')
+      return matterMatchesSettingsChecklistFilters(matter, litigationPartyTableFilters, partyText)
     }).sort((a, b) => matterName(a.id).localeCompare(matterName(b.id)))
     const maxPartyColumns = Math.max(6, ...rows.map((matter) => litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: 6 }).length))
     return (
-      <div>
-        <h2>Litigation Parties by Matter</h2>
+      <div style={embedded ? { padding: 0 } : undefined}>
+        <h2 style={{ marginTop: embedded ? 0 : undefined }}>Litigation Parties by Matter</h2>
         <p style={{ color: '#64748b' }}>One row per matter. These parties create the subcolumns inside every Litigation Track. Each matter starts with six party slots and can add more.</p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(250px,1.5fr) repeat(3, minmax(150px,.7fr))', gap: 8, marginBottom: 10 }}><input value={litigationPartyTableFilters.search || ''} onChange={(event) => setLitigationPartyTableFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Filter matters, parties, attorneys, or emails..." /><select value={litigationPartyTableFilters.case_status || 'all'} onChange={(event) => setLitigationPartyTableFilters((current) => ({ ...current, case_status: event.target.value }))}><option value="all">All case statuses</option>{Array.from(new Set(matters.map((matter) => matter.case_status).filter(Boolean))).sort().map((value) => <option key={value} value={value}>{value}</option>)}</select><select value={litigationPartyTableFilters.matter_status || 'all'} onChange={(event) => setLitigationPartyTableFilters((current) => ({ ...current, matter_status: event.target.value }))}><option value="all">All matter statuses</option>{Array.from(new Set(matters.map((matter) => matter.matter_status).filter(Boolean))).sort().map((value) => <option key={value} value={value}>{value}</option>)}</select><select value={litigationPartyTableFilters.active || 'active'} onChange={(event) => setLitigationPartyTableFilters((current) => ({ ...current, active: event.target.value }))}><option value="all">Active + inactive</option><option value="active">Active matters</option><option value="inactive">Inactive matters</option></select></div>
-        <div style={{ overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 8 }}><table style={{ borderCollapse: 'collapse', minWidth: 300 + maxPartyColumns * 285, width: '100%', background: '#fff' }}><thead><tr><th style={{ position: 'sticky', left: 0, zIndex: 3, background: '#e2e8f0', minWidth: 280, padding: 8, textAlign: 'left', borderRight: '2px solid #94a3b8' }}>Matter</th>{Array.from({ length: maxPartyColumns }, (_, index) => <th key={index} style={{ minWidth: 285, padding: 8, background: '#f8fafc', borderRight: '1px solid #cbd5e1' }}>Party {index + 1}</th>)}<th style={{ minWidth: 110, background: '#e2e8f0' }}>Actions</th></tr></thead><tbody>{rows.map((matter) => { const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: maxPartyColumns }); return <tr key={matter.id}><td style={{ position: 'sticky', left: 0, zIndex: 2, background: '#fff', padding: 8, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #94a3b8', verticalAlign: 'top' }}><strong>{matterName(matter.id)}</strong><div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{matter.cause_number || 'No cause number'}</div><div style={{ color: '#64748b', fontSize: 10 }}>{matter.case_status || ''}{matter.matter_status ? ` · ${matter.matter_status}` : ''}</div></td>{parties.map((party, index) => <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0', verticalAlign: 'top' }}><div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: 5 }}><select value={party.source || 'other'} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { source: event.target.value })}><option value="client">Client side</option><option value="opposing">Opposing side</option><option value="other">Other</option></select><input value={party.role || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { role: event.target.value })} placeholder="Role / party type" /><input style={{ gridColumn: 'span 2' }} value={party.name || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { name: event.target.value })} placeholder="Party name" /><input style={{ gridColumn: 'span 2' }} value={party.email || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { email: event.target.value })} placeholder="Party email" /><input style={{ gridColumn: 'span 2' }} value={party.attorney_name || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { attorney_name: event.target.value })} placeholder="Party's attorney" /><input style={{ gridColumn: 'span 2' }} value={party.attorney_email || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { attorney_email: event.target.value })} placeholder="Attorney email" />{index >= 6 && <button type="button" onClick={() => removeLitigationMatterParty(matter.id, index)} style={{ gridColumn: 'span 2', color: '#991b1b' }}>Remove party slot</button>}</div></td>)}<td style={{ padding: 8, borderTop: '1px solid #e2e8f0', verticalAlign: 'top' }}><button type="button" onClick={() => addLitigationMatterParty(matter.id)}>+ Add party</button></td></tr>})}</tbody></table></div>
+        {renderMatterSettingsFilterBar(litigationPartyTableFilters, setLitigationPartyTableFilters, { searchPlaceholder: 'Filter matters, parties, attorneys, or emails...' })}
+        <div style={{ marginBottom: 7, color: '#64748b', fontSize: 12 }}><strong style={{ color: '#334155' }}>{rows.length}</strong> matter{rows.length === 1 ? '' : 's'} shown</div>
+        <div style={{ overflowX: 'auto', maxHeight: embedded ? 500 : undefined, overflowY: embedded ? 'auto' : undefined, border: '1px solid #cbd5e1', borderRadius: 8 }}><table style={{ borderCollapse: 'collapse', minWidth: 300 + maxPartyColumns * 285, width: '100%', background: '#fff' }}><thead><tr><th style={{ position: 'sticky', left: 0, top: 0, zIndex: 4, background: '#e2e8f0', minWidth: 280, padding: 8, textAlign: 'left', borderRight: '2px solid #94a3b8' }}>Matter</th>{Array.from({ length: maxPartyColumns }, (_, index) => <th key={index} style={{ minWidth: 285, padding: 8, background: '#f8fafc', borderRight: '1px solid #cbd5e1', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Party {index + 1}</th>)}<th style={{ minWidth: 110, background: '#e2e8f0', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Actions</th></tr></thead><tbody>{rows.map((matter) => { const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: maxPartyColumns }); return <tr key={matter.id}><td style={{ position: 'sticky', left: 0, zIndex: 2, background: '#fff', padding: 8, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #94a3b8', verticalAlign: 'top' }}><strong>{matterName(matter.id)}</strong><div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{matter.cause_number || 'No cause number'}</div><div style={{ color: '#64748b', fontSize: 10 }}>{matter.matter_type || ''}{matter.case_status ? ` · ${matter.case_status}` : ''}{matter.matter_status ? ` · ${matter.matter_status}` : ''}{matterWithdrawalStatus(matter) === 'withdrawing' ? ' · Withdrawing' : ''}</div></td>{parties.map((party, index) => <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0', verticalAlign: 'top' }}><div style={{ display: 'grid', gridTemplateColumns: '95px 1fr', gap: 5 }}><select value={party.source || 'other'} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { source: event.target.value })}><option value="client">Client side</option><option value="opposing">Opposing side</option><option value="other">Other</option></select><input value={party.role || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { role: event.target.value })} placeholder="Role / party type" /><input style={{ gridColumn: 'span 2' }} value={party.name || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { name: event.target.value })} placeholder="Party name" /><input style={{ gridColumn: 'span 2' }} value={party.email || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { email: event.target.value })} placeholder="Party email" /><input style={{ gridColumn: 'span 2' }} value={party.attorney_name || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { attorney_name: event.target.value })} placeholder="Party's attorney" /><input style={{ gridColumn: 'span 2' }} value={party.attorney_email || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { attorney_email: event.target.value })} placeholder="Attorney email" />{index >= 6 && <button type="button" onClick={() => removeLitigationMatterParty(matter.id, index)} style={{ gridColumn: 'span 2', color: '#991b1b' }}>Remove party slot</button>}</div></td>)}<td style={{ padding: 8, borderTop: '1px solid #e2e8f0', verticalAlign: 'top' }}><button type="button" onClick={() => addLitigationMatterParty(matter.id)}>+ Add party</button></td></tr>})}</tbody></table></div>
+        {!rows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 12 }}>No matters match the selected filters.</div>}
       </div>
     )
   }
@@ -33964,76 +34104,91 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   function renderServiceInboxFilingTagSettings() {
     const rows = serviceFilingTagsIndented('', 0, filingTagsRef.current)
     const roleOptions = SERVICE_FILING_TAG_ROLE_OPTIONS
+    const tabs = [
+      { id: 'tags', label: 'Filing Tags' },
+      { id: 'litigation_parties', label: 'Litigation Parties' },
+      { id: 'efile_folders', label: 'Efile Folders' }
+    ]
     return (
       <section id="service-inbox-filing-tags-settings" style={{ border: '2px solid #94a3b8', borderRadius: 10, padding: 14, background: '#f8fafc', marginTop: 18, marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <div>
             <h2 style={{ margin: 0 }}>Service Inbox Settings</h2>
-            <div style={{ color: '#64748b', marginTop: 4 }}>Filing Tags are a separate tag library used only for Accepted e-file and Notification of Service documents.</div>
+            <div style={{ color: '#64748b', marginTop: 4 }}>These are the settings used while reviewing Accepted e-file and Notification of Service emails.</div>
           </div>
-          <span style={{ marginLeft: 'auto', fontWeight: 800, color: filingTagSaveStatus === 'saved' ? '#15803d' : filingTagSaveStatus === 'saving' ? '#92400e' : '#b91c1c' }}>
+          {serviceInboxSettingsTab === 'tags' && <span style={{ marginLeft: 'auto', fontWeight: 800, color: filingTagSaveStatus === 'saved' ? '#15803d' : filingTagSaveStatus === 'saving' ? '#92400e' : '#b91c1c' }}>
             {filingTagSaveStatus === 'saved' ? 'Filing Tags saved to Mio' : filingTagSaveStatus === 'saving' ? 'Saving Filing Tags...' : 'Filing Tags saved in this browser; cloud retry pending'}
-          </span>
-          <button type="button" onClick={saveServiceFilingTagsNow} disabled={filingTagSaveStatus === 'saving'}>Save Filing Tags now</button>
-          <button type="button" onClick={() => { setSettingsTab('service_email'); setPage('settings') }}>Service Email Settings</button>
-          <button type="button" onClick={() => setShowServiceInboxSettings(false)}>Close settings</button>
+          </span>}
+          <button type="button" onClick={() => setShowServiceInboxSettings(false)} style={{ marginLeft: serviceInboxSettingsTab === 'tags' ? 0 : 'auto' }}>Close settings</button>
         </div>
 
-        <div style={{ marginTop: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
-          <strong>Filing Tag behavior</strong>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-            <input type="checkbox" checked={filingTagSettings?.deleteChildrenWithParent !== false} onChange={(e) => setFilingTagSettings({ deleteChildrenWithParent: e.target.checked })} />
-            When deleting a Filing Tag, delete all of its child Filing Tags too
-          </label>
-          <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>Default: on. If turned off, direct children move up one level when their parent is deleted.</div>
-          <div style={{ marginTop: 8 }}><button type="button" onClick={resetServiceFilingTagsToDefaults}>Restore default Filing Tags</button> <span style={{ color: '#64748b', fontSize: 12 }}>This is the only action that regenerates the default Filing Tags.</span></div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12, marginBottom: 14, borderBottom: '1px solid #cbd5e1', paddingBottom: 8 }}>
+          {tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setServiceInboxSettingsTab(tab.id)} style={{ fontWeight: 850, padding: '7px 14px', border: serviceInboxSettingsTab === tab.id ? '2px solid #1d4ed8' : '1px solid #94a3b8', background: serviceInboxSettingsTab === tab.id ? '#dbeafe' : '#fff', color: serviceInboxSettingsTab === tab.id ? '#1e3a8a' : '#334155', borderRadius: 7 }}>{tab.label}</button>)}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 390px) 1fr', gap: 14, alignItems: 'start', marginTop: 14 }}>
-          <form onSubmit={createServiceFilingTag} style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#fff', display: 'grid', gap: 9 }}>
-            <h3 style={{ margin: 0 }}>Create Filing Tag</h3>
-            <LabeledField label="Name"><input id="service-filing-tag-name" value={filingTagForm.name} onChange={(e) => setFilingTagForm((current) => ({ ...current, name: e.target.value }))} placeholder="Motion, Order, RFP response..." /></LabeledField>
-            <LabeledField label="Parent">
-              <select value={filingTagForm.parent_id} onChange={(e) => setFilingTagForm((current) => ({ ...current, parent_id: e.target.value }))}>
-                <option value="">Top-level Filing Tag</option>
-                {rows.map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
-              </select>
-            </LabeledField>
-            <LabeledField label="Automatic prediction role">
-              <select value={filingTagForm.filing_role} onChange={(e) => setFilingTagForm((current) => ({ ...current, filing_role: e.target.value }))}>
-                {roleOptions.map((option) => <option key={option.value || 'none'} value={option.value}>{option.label}</option>)}
-              </select>
-            </LabeledField>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Color <input type="color" value={filingTagForm.color || '#4c6783'} onChange={(e) => setFilingTagForm((current) => ({ ...current, color: e.target.value }))} /></label>
-            <button type="submit">Add Filing Tag</button>
-          </form>
+        {serviceInboxSettingsTab === 'tags' && <>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <button type="button" onClick={saveServiceFilingTagsNow} disabled={filingTagSaveStatus === 'saving'}>Save Filing Tags now</button>
+          </div>
+          <div style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+            <strong>Filing Tag behavior</strong>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <input type="checkbox" checked={filingTagSettings?.deleteChildrenWithParent !== false} onChange={(e) => setFilingTagSettings({ deleteChildrenWithParent: e.target.checked })} />
+              When deleting a Filing Tag, delete all of its child Filing Tags too
+            </label>
+            <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>Default: on. If turned off, direct children move up one level when their parent is deleted.</div>
+            <div style={{ marginTop: 8 }}><button type="button" onClick={resetServiceFilingTagsToDefaults}>Restore default Filing Tags</button> <span style={{ color: '#64748b', fontSize: 12 }}>This is the only action that regenerates the default Filing Tags.</span></div>
+          </div>
 
-          <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#fff', minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 9 }}>
-              <h3 style={{ margin: 0 }}>Filing Tag Library</h3>
-              <span style={{ color: '#64748b', fontSize: 12 }}>Rename, move, recolor, assign a prediction role, add children, or delete any Filing Tag. Mio never recreates deleted tags automatically.</span>
-            </div>
-            <div style={{ display: 'grid', gap: 6 }}>
-              {rows.map((tag) => {
-                const descendants = filingTagDescendantIds(tag.id)
-                return <div key={tag.id} style={{ marginLeft: (tag.level || 0) * 20, display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) minmax(180px, .9fr) minmax(180px, .9fr) auto auto auto', gap: 6, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 7, padding: 7 }}>
-                  <input value={tag.name || ''} onChange={(e) => updateServiceFilingTag(tag.id, { name: e.target.value })} onBlur={() => saveServiceFilingTagsNow().catch(() => {})} style={{ fontWeight: 750, minWidth: 0 }} />
-                  <select value={tag.filing_role || ''} onChange={(e) => updateServiceFilingTag(tag.id, { filing_role: e.target.value })} title="What kind of e-filing Mio should predict this tag for">
-                    {roleOptions.map((option) => <option key={option.value || 'none'} value={option.value}>{option.label}</option>)}
-                  </select>
-                  <select value={tag.parent_id || ''} onChange={(e) => updateServiceFilingTag(tag.id, { parent_id: e.target.value })} title="Move Filing Tag">
-                    <option value="">Top-level</option>
-                    {rows.filter((item) => item.id !== tag.id && !descendants.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level || 0)}{item.name}</option>)}
-                  </select>
-                  <input type="color" value={tag.color || '#4c6783'} onChange={(e) => updateServiceFilingTag(tag.id, { color: e.target.value })} title="Filing Tag color" />
-                  <button type="button" onClick={() => addChildServiceFilingTag(tag)}>+ Child</button>
-                  <button type="button" onClick={() => deleteServiceFilingTag(tag.id)}>Delete</button>
-                </div>
-              })}
-              {!rows.length && <div style={{ color: '#64748b', padding: 14, border: '1px dashed #cbd5e1', borderRadius: 8 }}>No Filing Tags exist. Create one on the left, or use Restore default Filing Tags.</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 390px) 1fr', gap: 14, alignItems: 'start', marginTop: 14 }}>
+            <form onSubmit={createServiceFilingTag} style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#fff', display: 'grid', gap: 9 }}>
+              <h3 style={{ margin: 0 }}>Create Filing Tag</h3>
+              <LabeledField label="Name"><input id="service-filing-tag-name" value={filingTagForm.name} onChange={(e) => setFilingTagForm((current) => ({ ...current, name: e.target.value }))} placeholder="Motion, Order, RFP response..." /></LabeledField>
+              <LabeledField label="Parent">
+                <select value={filingTagForm.parent_id} onChange={(e) => setFilingTagForm((current) => ({ ...current, parent_id: e.target.value }))}>
+                  <option value="">Top-level Filing Tag</option>
+                  {rows.map((tag) => <option key={tag.id} value={tag.id}>{'— '.repeat(tag.level || 0)}{tag.name}</option>)}
+                </select>
+              </LabeledField>
+              <LabeledField label="Automatic prediction role">
+                <select value={filingTagForm.filing_role} onChange={(e) => setFilingTagForm((current) => ({ ...current, filing_role: e.target.value }))}>
+                  {roleOptions.map((option) => <option key={option.value || 'none'} value={option.value}>{option.label}</option>)}
+                </select>
+              </LabeledField>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Color <input type="color" value={filingTagForm.color || '#4c6783'} onChange={(e) => setFilingTagForm((current) => ({ ...current, color: e.target.value }))} /></label>
+              <button type="submit">Add Filing Tag</button>
+            </form>
+
+            <div style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, background: '#fff', minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 9 }}>
+                <h3 style={{ margin: 0 }}>Filing Tag Library</h3>
+                <span style={{ color: '#64748b', fontSize: 12 }}>Rename, move, recolor, assign a prediction role, add children, or delete any Filing Tag. Mio never recreates deleted tags automatically.</span>
+              </div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {rows.map((tag) => {
+                  const descendants = filingTagDescendantIds(tag.id)
+                  return <div key={tag.id} style={{ marginLeft: (tag.level || 0) * 20, display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) minmax(180px, .9fr) minmax(180px, .9fr) auto auto auto', gap: 6, alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 7, padding: 7 }}>
+                    <input value={tag.name || ''} onChange={(e) => updateServiceFilingTag(tag.id, { name: e.target.value })} onBlur={() => saveServiceFilingTagsNow().catch(() => {})} style={{ fontWeight: 750, minWidth: 0 }} />
+                    <select value={tag.filing_role || ''} onChange={(e) => updateServiceFilingTag(tag.id, { filing_role: e.target.value })} title="What kind of e-filing Mio should predict this tag for">
+                      {roleOptions.map((option) => <option key={option.value || 'none'} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <select value={tag.parent_id || ''} onChange={(e) => updateServiceFilingTag(tag.id, { parent_id: e.target.value })} title="Move Filing Tag">
+                      <option value="">Top-level</option>
+                      {rows.filter((item) => item.id !== tag.id && !descendants.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{'— '.repeat(item.level || 0)}{item.name}</option>)}
+                    </select>
+                    <input type="color" value={tag.color || '#4c6783'} onChange={(e) => updateServiceFilingTag(tag.id, { color: e.target.value })} title="Filing Tag color" />
+                    <button type="button" onClick={() => addChildServiceFilingTag(tag)}>+ Child</button>
+                    <button type="button" onClick={() => deleteServiceFilingTag(tag.id)}>Delete</button>
+                  </div>
+                })}
+                {!rows.length && <div style={{ color: '#64748b', padding: 14, border: '1px dashed #cbd5e1', borderRadius: 8 }}>No Filing Tags exist. Create one on the left, or use Restore default Filing Tags.</div>}
+              </div>
             </div>
           </div>
-        </div>
+        </>}
+
+        {serviceInboxSettingsTab === 'litigation_parties' && <div>{renderLitigationPartySettingsTable({ embedded: true })}</div>}
+        {serviceInboxSettingsTab === 'efile_folders' && <div>{renderMatterEfileFoldersSection({ id: 'service-inbox-efile-folders-section', embedded: true })}</div>}
       </section>
     )
   }
@@ -34079,7 +34234,6 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               setShowServiceInboxSettings(next)
               if (next) window.setTimeout(() => document.getElementById('service-inbox-filing-tags-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
             }}>⚙ Settings</button>
-            <button type="button" onClick={() => { setSettingsTab('service_email'); setPage('settings') }}>Service Email Settings</button>
             <label> Email account:{' '}
               <select value={serviceInboxMailboxFilter} onChange={(e) => { setServiceInboxMailboxFilter(e.target.value); setServiceInboxFolderFilter('all') }}>
                 <option value="all">All connected emails</option>
@@ -34299,24 +34453,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
           </p>
         </section>
 
-        <section id="matter-efile-folders-section" style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 14 }}>
-          <h3 style={{ marginTop: 0 }}>Matter efile folders</h3>
-          <p style={{ color: '#64748b', marginTop: 0 }}>Choose the existing OneDrive or browser-accessible folder for each matter. The Service Inbox saves only to the folder shown here. Mio does not create matter folders or efile folders.</p>
-          <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
-            <table cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr style={{ background: '#f8fafc' }}><th style={{ textAlign: 'left' }}>Matter</th><th style={{ textAlign: 'left' }}>OneDrive / efile folder</th></tr></thead>
-              <tbody>
-                {matters.map((matter) => (
-                  <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
-                    <td style={{ width: '35%' }}>{formatMatterOption(matter)}</td>
-                    <td><div style={{ display: 'flex', gap: 6 }}><input value={matterEfileFolderForId(matter.id)} readOnly placeholder="No folder selected" style={{ width: '100%' }} /><button type="button" onClick={() => openMatterEfileFolderPickerForMatter(matter.id)} style={{ whiteSpace: 'nowrap' }}>{matterEfileFolderForId(matter.id) ? 'Change' : 'Choose'}</button></div></td>
-                  </tr>
-                ))}
-                {!matters.length && <tr><td colSpan="2" style={{ padding: 12, color: '#64748b', textAlign: 'center' }}>No matters found yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        {renderMatterEfileFoldersSection()}
 
         <div style={{ border: '1px solid #ddd', borderRadius: 8, overflowX: 'auto' }}>
           <table cellPadding="8" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1850 }}>
