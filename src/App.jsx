@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V253'
+const MIO_APP_VERSION = 'Mio V254'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -4240,6 +4240,61 @@ function App() {
     return status === 401 || code === 'PGRST301' || code === '401' || message.includes('jwt expired') || message.includes('invalid jwt') || message.includes('invalid claim') || message.includes('not authenticated') || message.includes('authentication required')
   }
 
+  function isSupabaseAuthTransportError(error) {
+    const message = String(error?.message || error?.error_description || error || '').toLowerCase()
+    return message.includes('failed to fetch') || message.includes('networkerror') || message.includes('network request failed') || message.includes('load failed') || message.includes('cors') || message.includes('err_failed')
+  }
+
+  function supabaseAuthStorageKeys(storage) {
+    const keys = []
+    if (!storage) return keys
+    try {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index)
+        if (!key) continue
+        const lowered = key.toLowerCase()
+        if ((lowered.startsWith('sb-') && lowered.includes('auth-token')) || lowered.includes('supabase.auth.token') || lowered === 'murski-auth-token') keys.push(key)
+      }
+    } catch {}
+    return keys
+  }
+
+  function readStoredSupabaseSessionSnapshot() {
+    const storages = [typeof localStorage !== 'undefined' ? localStorage : null, typeof sessionStorage !== 'undefined' ? sessionStorage : null]
+    for (const storage of storages) {
+      for (const key of supabaseAuthStorageKeys(storage)) {
+        try {
+          const raw = storage.getItem(key)
+          if (!raw) continue
+          const parsed = JSON.parse(raw)
+          const candidate = parsed?.currentSession || parsed?.session || parsed
+          if (candidate && (candidate.access_token || candidate.refresh_token || candidate.expires_at)) return { key, storage, session: candidate }
+        } catch {}
+      }
+    }
+    return null
+  }
+
+  function clearStoredSupabaseAuthSession(reason = '') {
+    const storages = [typeof localStorage !== 'undefined' ? localStorage : null, typeof sessionStorage !== 'undefined' ? sessionStorage : null]
+    storages.forEach((storage) => {
+      if (!storage) return
+      supabaseAuthStorageKeys(storage).forEach((key) => { try { storage.removeItem(key) } catch {} })
+    })
+    try { localStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
+    try { sessionStorage.removeItem('caseMioSupabaseSessionV1') } catch {}
+    try { window.__caseMioSupabaseSessionLookupV217 = null } catch {}
+    supabaseSessionRefreshRef.current = null
+    if (reason) console.warn('Cleared stale Supabase browser session:', reason)
+  }
+
+  function storedSupabaseSessionNeedsLogin() {
+    const snapshot = readStoredSupabaseSessionSnapshot()
+    if (!snapshot?.session) return false
+    const expiresAtMs = Number(snapshot.session.expires_at || 0) * 1000
+    return Boolean(expiresAtMs && expiresAtMs <= Date.now() + 15000)
+  }
+
   async function getFreshSupabaseSession({ force = false, sessionHint = null } = {}) {
     let current = sessionHint || null
     if (!current) {
@@ -5568,6 +5623,15 @@ function App() {
 
     const recoverStoredSession = async () => {
       try {
+        // Do not let getSession() automatically exchange an already-expired refresh token during boot.
+        // If Auth is temporarily unreachable, browsers surface the failed refresh as a misleading CORS error
+        // and Mio can get stuck between a stale token, repeated 401s, and the login screen.
+        if (storedSupabaseSessionNeedsLogin()) {
+          clearStoredSupabaseAuthSession('saved access token was already expired at startup')
+          finishAuthCheck(null)
+          return
+        }
+        try { supabase.auth.stopAutoRefresh?.() } catch {}
         const lookupKey = '__caseMioSupabaseSessionLookupV217'
         if (!window[lookupKey]) {
           window[lookupKey] = supabase.auth.getSession().finally(() => {
@@ -5584,12 +5648,18 @@ function App() {
             recoveredSession = await getFreshSupabaseSession({ sessionHint: recoveredSession })
           } catch (refreshError) {
             console.warn('Stored Supabase session is no longer usable; showing login instead of starting Mio with a stale token.', refreshError)
+            if (isSupabaseAuthTransportError(refreshError) || isSupabaseUnauthorizedError(refreshError)) {
+              clearStoredSupabaseAuthSession('stored-session refresh failed')
+            }
             recoveredSession = null
           }
         }
         finishAuthCheck(recoveredSession)
       } catch (error) {
         console.warn('Unable to recover Supabase session without blocking startup.', error)
+        if (isSupabaseAuthTransportError(error) || String(error?.message || '').includes('session lookup timed out')) {
+          clearStoredSupabaseAuthSession('startup session lookup failed')
+        }
         finishAuthCheck(null)
       }
     }
@@ -5637,6 +5707,11 @@ function App() {
         if (!disposed && fresh?.access_token && fresh.access_token !== session?.access_token) setSession(fresh)
       } catch (error) {
         console.warn('Mio could not refresh the Supabase session before it expired.', error)
+        const expiresAtMs = Number(session?.expires_at || 0) * 1000
+        if ((isSupabaseAuthTransportError(error) || isSupabaseUnauthorizedError(error)) && expiresAtMs && expiresAtMs <= Date.now() + 15000) {
+          clearStoredSupabaseAuthSession('session expired and could not be refreshed')
+          if (!disposed) setSession(null)
+        }
       } finally {
         inFlight = false
       }
@@ -7231,6 +7306,10 @@ function App() {
     setLoginBlockedMessage('')
 
     clearMioBrowserCacheForAuthentication()
+    // A stale refresh token can keep firing while the user is trying to log in.
+    // Remove only Supabase auth-session keys before password sign-in; normal Mio filter/preferences remain intact.
+    clearStoredSupabaseAuthSession('starting a fresh password sign-in')
+    try { supabase.auth.stopAutoRefresh?.() } catch {}
 
     let data = null
     let error = null
@@ -7263,8 +7342,24 @@ function App() {
       }
     }
 
+    if (error && isSupabaseAuthTransportError(error)) {
+      // Retry once after the stale session has been cleared. This is intentionally not a loop.
+      try {
+        await new Promise((resolve) => window.setTimeout(resolve, 600))
+        const retry = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword })
+        data = retry.data
+        error = retry.error
+      } catch (retryError) {
+        error = retryError
+      }
+    }
+
     if (error) {
-      alert(error.message || String(error))
+      if (isSupabaseAuthTransportError(error)) {
+        alert('Mio could not reach Supabase Auth. Your password was not rejected; the authentication service/network request failed. Close duplicate Mio tabs and try again in a moment. If this continues, check the Supabase project Auth status.')
+      } else {
+        alert(error.message || String(error))
+      }
       return
     }
 
