@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V252'
+const MIO_APP_VERSION = 'Mio V253'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -124,6 +124,14 @@ const BULK_INVOICE_COLUMNS = [
 
 const DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS = Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, true]))
 const DEFAULT_BULK_INVOICE_FILTERS = Object.fromEntries(BULK_INVOICE_COLUMNS.filter((column) => column.key !== 'actions').map((column) => [column.key, '']))
+const BULK_INVOICE_PERSISTED_FILTER_KEYS = ['type', 'status', 'created', 'sent', 'lastPayment']
+
+function persistentBulkInvoiceFilters(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const next = { ...DEFAULT_BULK_INVOICE_FILTERS }
+  BULK_INVOICE_PERSISTED_FILTER_KEYS.forEach((key) => { next[key] = String(source[key] || '') })
+  return next
+}
 
 const DISCOVERY_RFP_RESPONSE_OPTIONS = [
   'No items have been identified - after a diligent search - that are responsive to the request.',
@@ -184,6 +192,46 @@ function normalizeMioMicrosoftTenantId(value) {
 // Module-scope fallback used by the Service Inbox scanner.  Keeping this outside
 // App() prevents ReferenceError if an older inner helper is removed or hidden by
 // a hot-reload merge.
+function normalizeServiceFileNameCandidate(value) {
+  return String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isGenericOrGeneratedServiceFileName(value) {
+  const clean = normalizeServiceFileNameCandidate(value)
+  if (!clean) return true
+  const lower = clean.toLowerCase()
+  const compact = lower.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const base = compact.replace(/\s+pdf$/i, '').trim()
+
+  if (/^https?\b|https?\s+content\b|\bwww\./i.test(lower)) return true
+  if (/tylerhost(?:\.net)?|efilingmail|viewdocuments(?:\.aspx)?|content\.tylerhost/i.test(lower)) return true
+  if (/\b(?:filer|filing|service|envelope)\s+information\b/i.test(base)) return true
+  if (/^(?:file|document|attachment|download|download document|efile|efile document|efile download|e file document|e file download|file stamped copy|select the pdf|pdf)$/i.test(base)) return true
+  return false
+}
+
+function verifiedServicePdfFileName(value) {
+  const clean = normalizeServiceFileNameCandidate(value).replace(/\.+$/g, '')
+  if (!clean || isGenericOrGeneratedServiceFileName(clean)) return ''
+  return /\.pdf$/i.test(clean) ? clean : `${clean}.pdf`
+}
+
+function clearTransientSearchFields(value, keys = ['search']) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const next = { ...source }
+  keys.forEach((key) => { next[key] = '' })
+  return next
+}
+
 function safeServiceDocumentNameFromLink(link) {
   if (!link) return ''
   const clean = (value) => String(value || '')
@@ -203,18 +251,20 @@ function safeServiceDocumentNameFromLink(link) {
       return ''
     }
   }
-  const candidates = [link.name, link.fileName, link.filename, link.label, nameFromUrl(link.url)]
-    .map(clean)
-    .filter(Boolean)
-  const usable = candidates.find((value) => /\.pdf$/i.test(value))
-    || candidates.find((value) => /pdf|document|download|filing|file[- ]?stamped/i.test(value) && !/^https?:/i.test(value))
-    || ''
-  return clean(usable)
-    .replace(/download\/select the pdf to fill this from the pdf name/ig, '')
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 160)
+  const strongCandidates = [
+    link.original_file_name,
+    link.originalFileName,
+    link.download_name,
+    link.downloadName,
+    link.fileName,
+    link.filename,
+    link.name,
+    nameFromUrl(link.url)
+  ].map(clean).filter(Boolean)
+  const label = clean(link.label)
+  if (/\.pdf$/i.test(label)) strongCandidates.push(label)
+  const usable = strongCandidates.map(verifiedServicePdfFileName).find(Boolean) || ''
+  return usable.slice(0, 160)
 }
 
 
@@ -2824,7 +2874,10 @@ function App() {
     catch { return { x: 1050, y: 185 } }
   })
   const [litigationDocumentPaneFilters, setLitigationDocumentPaneFilters] = useState(() => {
-    try { return { search: '', kind: 'all', assignment: 'all', track_id: 'all', ...(JSON.parse(localStorage.getItem('caseMioLitigationDocumentPaneFilters') || '{}') || {}) } }
+    try {
+      const saved = JSON.parse(localStorage.getItem('caseMioLitigationDocumentPaneFilters') || '{}') || {}
+      return { search: '', kind: 'all', assignment: 'all', track_id: 'all', ...clearTransientSearchFields(saved, ['search']), search: '' }
+    }
     catch { return { search: '', kind: 'all', assignment: 'all', track_id: 'all' } }
   })
   const [litigationDropTargetKey, setLitigationDropTargetKey] = useState('')
@@ -2832,11 +2885,11 @@ function App() {
   const [litigationPartyTableFilters, setLitigationPartyTableFilters] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioLitigationPartyTableFiltersV250') || localStorage.getItem('caseMioLitigationPartyTableFilters') || '{}') || {}
-      return normalizeMatterSettingsChecklistFilters(stored)
+      return normalizeMatterSettingsChecklistFilters(clearTransientSearchFields(stored, ['search']))
     } catch { return normalizeMatterSettingsChecklistFilters({}) }
   })
   const [efileFolderTableFilters, setEfileFolderTableFilters] = useState(() => {
-    try { return normalizeMatterSettingsChecklistFilters(JSON.parse(localStorage.getItem('caseMioEfileFolderTableFiltersV250') || '{}') || {}) }
+    try { return normalizeMatterSettingsChecklistFilters(clearTransientSearchFields(JSON.parse(localStorage.getItem('caseMioEfileFolderTableFiltersV250') || '{}') || {}, ['search'])) }
     catch { return normalizeMatterSettingsChecklistFilters({}) }
   })
 
@@ -3374,7 +3427,10 @@ function App() {
   })
   const activeMioBillingCutoverDate = MIO_ONLY_FINANCE_MODE ? DEFAULT_MIO_BILLING_CUTOVER_DATE : (mioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
   const [bulkBillingFilters, setBulkBillingFilters] = useState(() => {
-    try { return { case_status: 'all', matter_status: 'all', search: '', ...(JSON.parse(localStorage.getItem('caseMioBulkBillingFilters') || '{}') || {}) } }
+    try {
+      const saved = JSON.parse(localStorage.getItem('caseMioBulkBillingFilters') || '{}') || {}
+      return { case_status: 'all', matter_status: 'all', ...clearTransientSearchFields(saved, ['search']), search: '' }
+    }
     catch { return { case_status: 'all', matter_status: 'all', search: '' } }
   })
   const [bulkBillingSort, setBulkBillingSort] = useState(() => {
@@ -3404,7 +3460,8 @@ function App() {
   const [bulkOutstandingInvoiceReview, setBulkOutstandingInvoiceReview] = useState({ open: false, rows: [], skipped: [], progress: '' })
   const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)
   const [bulkInvoiceFilters, setBulkInvoiceFilters] = useState(() => {
-    try { return { ...DEFAULT_BULK_INVOICE_FILTERS, ...(JSON.parse(localStorage.getItem('caseMioBulkInvoiceFilters') || '{}') || {}) } }
+    // Keep real filters (type/status/date), but never restore per-column text searches.
+    try { return persistentBulkInvoiceFilters(JSON.parse(localStorage.getItem('caseMioBulkInvoiceFilters') || '{}') || {}) }
     catch { return { ...DEFAULT_BULK_INVOICE_FILTERS } }
   })
   const [bulkInvoiceSort, setBulkInvoiceSort] = useState(() => {
@@ -3590,7 +3647,12 @@ function App() {
   const [orderRows, setOrderRows] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderRows') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
   const [deletedOrderRowIds, setDeletedOrderRowIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioDeletedOrderRowIds') || '[]'); return Array.isArray(saved) ? saved.map(String) : [] } catch { return [] } })
   const [orderExpandedIds, setOrderExpandedIds] = useState(() => { try { const saved = JSON.parse(localStorage.getItem('caseMioOrderExpandedIds') || '[]'); return Array.isArray(saved) ? saved : [] } catch { return [] } })
-  const [orderFilters, setOrderFilters] = useState(() => { try { return { type: 'all', holder: 'all', search: '', completed: 'open', ...(JSON.parse(localStorage.getItem('caseMioOrderFilters') || '{}') || {}) } } catch { return { type: 'all', holder: 'all', search: '', completed: 'open' } } })
+  const [orderFilters, setOrderFilters] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('caseMioOrderFilters') || '{}') || {}
+      return { type: 'all', holder: 'all', completed: 'open', ...clearTransientSearchFields(saved, ['search']), search: '' }
+    } catch { return { type: 'all', holder: 'all', search: '', completed: 'open' } }
+  })
   const [orderAutomationToday, setOrderAutomationToday] = useState(() => dateToInputValue(new Date()))
   const [showOrderForm, setShowOrderForm] = useState(false)
   const [orderForm, setOrderForm] = useState({ matter_id: '', title: '', order_type: 'temporary_order', drafter: 'me', finalization_type: 'Hearing', finalization_date: '' })
@@ -3999,7 +4061,9 @@ function App() {
   const matterTimelineBaseSvgWidth = 1800
   const [matterTimelineViewportWidth, setMatterTimelineViewportWidth] = useState(1400)
 
-  const [matterPageSearch, setMatterPageSearch] = useState(() => localStorage.getItem('matterPageSearch') || '')
+  // Search text is intentionally session-only. Hard refreshes keep checkbox/status
+  // filters but always reopen the Matters page with an empty predictive search box.
+  const [matterPageSearch, setMatterPageSearch] = useState('')
   function initialMatterPageMultiFilter(key) {
     try {
       const raw = localStorage.getItem(key)
@@ -4473,11 +4537,19 @@ function App() {
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
       caseMioRetainerReplenishmentTargets: { setter: setRetainerReplenishmentTargets, kind: 'object', fallback: {} },
       caseMioBillingCutoverDate: { setter: (value) => setMioBillingCutoverDate(String(value || DEFAULT_MIO_BILLING_CUTOVER_DATE)), kind: 'string', fallback: DEFAULT_MIO_BILLING_CUTOVER_DATE },
-      caseMioBulkBillingFilters: { setter: (value) => setBulkBillingFilters({ case_status: 'all', matter_status: 'all', search: '', ...(value || {}) }), kind: 'object', fallback: { case_status: 'all', matter_status: 'all', search: '' } },
+      caseMioBulkBillingFilters: { setter: (value) => {
+        const next = { case_status: 'all', matter_status: 'all', ...clearTransientSearchFields(value, ['search']), search: '' }
+        setBulkBillingFilters(next)
+        return next
+      }, kind: 'object', fallback: { case_status: 'all', matter_status: 'all', search: '' } },
       caseMioBulkBillingSort: { setter: (value) => setBulkBillingSort({ field: 'matter', direction: 'asc', ...(value || {}) }), kind: 'object', fallback: { field: 'matter', direction: 'asc' } },
       caseMioBulkBillingSelectedCaseTypes: { setter: (value) => setBulkBillingSelectedCaseTypes(Array.isArray(value) ? value : ['__all__']), kind: 'array', fallback: ['__all__'] },
       caseMioBulkBillingVisibleColumns: { setter: (value) => setBulkBillingVisibleColumns({ ...DEFAULT_BULK_BILLING_VISIBLE_COLUMNS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_BULK_BILLING_VISIBLE_COLUMNS },
-      caseMioBulkInvoiceFilters: { setter: (value) => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_BULK_INVOICE_FILTERS },
+      caseMioBulkInvoiceFilters: { setter: (value) => {
+        const next = persistentBulkInvoiceFilters(value)
+        setBulkInvoiceFilters(next)
+        return next
+      }, kind: 'object', fallback: DEFAULT_BULK_INVOICE_FILTERS },
       caseMioBulkInvoiceSort: { setter: (value) => setBulkInvoiceSort({ field: 'created', direction: 'desc', ...(value || {}) }), kind: 'object', fallback: { field: 'created', direction: 'desc' } },
       caseMioBulkInvoiceVisibleColumns: { setter: (value) => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS, ...(value || {}) }), kind: 'object', fallback: DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS },
       caseMioBankAccountRoles: { setter: setBankAccountRoles, kind: 'object', fallback: {} },
@@ -4506,7 +4578,11 @@ function App() {
       }), kind: 'array', fallback: [] },
       caseMioDeletedOrderRowIds: { setter: (value) => setDeletedOrderRowIds((current) => Array.from(new Set([...(Array.isArray(value) ? value : []), ...(current || [])].map(String).filter(Boolean)))), kind: 'array', fallback: [] },
       caseMioOrderExpandedIds: { setter: setOrderExpandedIds, kind: 'array', fallback: [] },
-      caseMioOrderFilters: { setter: (value) => setOrderFilters({ type: 'all', holder: 'all', search: '', completed: 'open', ...(value || {}) }), kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
+      caseMioOrderFilters: { setter: (value) => {
+        const next = { type: 'all', holder: 'all', completed: 'open', ...clearTransientSearchFields(value, ['search']), search: '' }
+        setOrderFilters(next)
+        return next
+      }, kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
@@ -4541,7 +4617,10 @@ function App() {
       caseMioShowNeedToSetSteps: { setter: setShowNeedToSetSteps, kind: 'boolean', fallback: true },
       caseMioChecklistStepCompletions: { setter: setChecklistStepCompletions, kind: 'object', fallback: {} },
       caseMioChecklistCompletionDefaultTagId: { setter: setChecklistCompletionDefaultTagId, kind: 'string', fallback: '' },
-      matterPageSearch: { setter: setMatterPageSearch, kind: 'string', fallback: '' },
+      matterPageSearch: { setter: () => {
+        setMatterPageSearch('')
+        return ''
+      }, kind: 'string', fallback: '' },
       matterPageFilterCaseStatus: { setter: setMatterPageFilterCaseStatus, kind: 'array', fallback: null },
       matterPageFilterMatterStatus: { setter: setMatterPageFilterMatterStatus, kind: 'array', fallback: null },
       matterPageFilterCaseType: { setter: setMatterPageFilterCaseType, kind: 'array', fallback: null },
@@ -5754,7 +5833,7 @@ function App() {
   }, [mioBillingCutoverDate])
 
   useEffect(() => {
-    try { saveMioStateKey('caseMioBulkBillingFilters', JSON.stringify(bulkBillingFilters || {})) } catch {}
+    try { saveMioStateKey('caseMioBulkBillingFilters', JSON.stringify(clearTransientSearchFields(bulkBillingFilters, ['search']))) } catch {}
   }, [bulkBillingFilters])
 
   useEffect(() => {
@@ -5770,7 +5849,8 @@ function App() {
   }, [bulkBillingVisibleColumns])
 
   useEffect(() => {
-    try { saveMioStateKey('caseMioBulkInvoiceFilters', JSON.stringify(bulkInvoiceFilters || DEFAULT_BULK_INVOICE_FILTERS)) } catch {}
+    // Preserve categorical/date filters, but never persist text entered into searchable columns.
+    try { saveMioStateKey('caseMioBulkInvoiceFilters', JSON.stringify(persistentBulkInvoiceFilters(bulkInvoiceFilters))) } catch {}
   }, [bulkInvoiceFilters])
 
   useEffect(() => {
@@ -5917,7 +5997,7 @@ function App() {
     setOrderRows((current) => current.some((row) => deletedIds.has(String(row?.id || ''))) ? current.filter((row) => !deletedIds.has(String(row?.id || ''))) : current)
   }, [deletedOrderRowIds])
   useEffect(() => { try { saveMioStateKey('caseMioOrderExpandedIds', JSON.stringify(orderExpandedIds || [])) } catch {} }, [orderExpandedIds])
-  useEffect(() => { try { saveMioStateKey('caseMioOrderFilters', JSON.stringify(orderFilters || {})) } catch {} }, [orderFilters])
+  useEffect(() => { try { saveMioStateKey('caseMioOrderFilters', JSON.stringify(clearTransientSearchFields(orderFilters, ['search']))) } catch {} }, [orderFilters])
 
   useEffect(() => {
     const updateToday = () => setOrderAutomationToday(dateToInputValue(new Date()))
@@ -6185,9 +6265,11 @@ function App() {
   }, [matterTimelineWindowDays])
 
   useEffect(() => {
-    try { localStorage.setItem('matterPageSearch', matterPageSearch || '') } catch {}
-    saveMioStateKey('matterPageSearch', matterPageSearch || '')
-  }, [matterPageSearch])
+    // Remove the legacy persisted search value. Page-level search text is deliberately
+    // transient; non-search Matters filters continue to save in their own keys.
+    try { localStorage.removeItem('matterPageSearch') } catch {}
+    try { saveMioStateKey('matterPageSearch', '') } catch {}
+  }, [])
 
   useEffect(() => {
     const serviceState = {
@@ -6564,12 +6646,13 @@ function App() {
   useEffect(() => { safeSetLocalStorage('caseMioLitigationOrganizationMode', litigationOrganizationMode || 'chronological') }, [litigationOrganizationMode])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneOpen', litigationDocumentPaneOpen ? 'true' : 'false') }, [litigationDocumentPaneOpen])
   useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPanePosition', JSON.stringify(litigationDocumentPanePosition || {})) }, [litigationDocumentPanePosition])
-  useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneFilters', JSON.stringify(litigationDocumentPaneFilters || {})) }, [litigationDocumentPaneFilters])
+  useEffect(() => { safeSetLocalStorage('caseMioLitigationDocumentPaneFilters', JSON.stringify(clearTransientSearchFields(litigationDocumentPaneFilters, ['search']))) }, [litigationDocumentPaneFilters])
   useEffect(() => {
-    safeSetLocalStorage('caseMioLitigationPartyTableFiltersV250', JSON.stringify(litigationPartyTableFilters || {}))
-    safeSetLocalStorage('caseMioLitigationPartyTableFilters', JSON.stringify(litigationPartyTableFilters || {}))
+    const savedFilters = clearTransientSearchFields(litigationPartyTableFilters, ['search'])
+    safeSetLocalStorage('caseMioLitigationPartyTableFiltersV250', JSON.stringify(savedFilters))
+    safeSetLocalStorage('caseMioLitigationPartyTableFilters', JSON.stringify(savedFilters))
   }, [litigationPartyTableFilters])
-  useEffect(() => { safeSetLocalStorage('caseMioEfileFolderTableFiltersV250', JSON.stringify(efileFolderTableFilters || {})) }, [efileFolderTableFilters])
+  useEffect(() => { safeSetLocalStorage('caseMioEfileFolderTableFiltersV250', JSON.stringify(clearTransientSearchFields(efileFolderTableFilters, ['search']))) }, [efileFolderTableFilters])
   useEffect(() => { safeSetLocalStorage('caseMioServiceInboxSettingsTabV250', serviceInboxSettingsTab || 'tags') }, [serviceInboxSettingsTab])
 
   useEffect(() => {
@@ -29873,6 +29956,8 @@ useEffect(() => {
       return (data.value || []).map((attachment) => ({
         id: attachment.id || '',
         name: attachment.name || 'Attachment',
+        actual_name_verified: Boolean(verifiedServicePdfFileName(attachment.name || '')),
+        file_name_source: 'outlook_attachment',
         content_type: attachment.contentType || '',
         size: attachment.size || 0,
         is_inline: Boolean(attachment.isInline),
@@ -29908,6 +29993,8 @@ useEffect(() => {
     return {
       ...attachment,
       name: full.name || attachment.name || 'Attachment',
+      actual_name_verified: Boolean(verifiedServicePdfFileName(full.name || attachment.name || '')),
+      file_name_source: attachment.file_name_source || 'outlook_attachment',
       content_type: contentType,
       size: full.size || attachment.size || 0,
       content_url: contentUrl,
@@ -30011,51 +30098,61 @@ useEffect(() => {
   function fileNameFromServiceUrl(url = '') {
     try {
       const parsed = new URL(url)
+      const queryKeys = ['originalFileName', 'original_file_name', 'fileName', 'filename', 'documentName', 'document_name', 'download', 'name']
+      for (const key of queryKeys) {
+        const candidate = verifiedServicePdfFileName(decodeURIComponent(parsed.searchParams.get(key) || ''))
+        if (candidate) return candidate.slice(0, 190)
+      }
       const tail = decodeURIComponent((parsed.pathname || '').split('/').filter(Boolean).pop() || '')
-      return tail && tail.includes('.') ? tail.replace(/[\/:*?"<>|]/g, ' ').slice(0, 160) : ''
+      return verifiedServicePdfFileName(tail).slice(0, 190)
     } catch {
       return ''
     }
   }
 
   function serviceDocumentNameFromLink(link) {
-    if (!link) return ''
-    const candidates = [link.name, link.label, fileNameFromServiceUrl(link.url)].map((value) => String(value || '').trim())
-    const usable = candidates.find((value) => value && /\.pdf$/i.test(value))
-      || candidates.find((value) => value && /pdf|document|download|filing|file[- ]?stamped/i.test(value) && !/^https?:/i.test(value))
-      || ''
-    if (!usable) return ''
-    return usable
-      .replace(/download\/select the pdf to fill this from the pdf name/ig, '')
-      .replace(/[\\/:*?"<>|]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 160)
+    return safeServiceDocumentNameFromLink(link)
   }
 
   function extractServiceFilingLinks(html = '') {
     const text = String(html || '')
     const links = []
-    const addLink = (url, label = '') => {
+    const addLink = (url, label = '', metadata = {}) => {
       const cleanUrl = decodeServiceHtmlEntity(url || '').trim()
       if (!/^https?:\/\//i.test(cleanUrl)) return
       if (links.some((item) => item.url === cleanUrl)) return
       const cleanLabel = decodeServiceHtmlEntity(String(label || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
-      const guessedName = fileNameFromServiceUrl(cleanUrl)
-      const lower = `${cleanUrl} ${cleanLabel}`.toLowerCase()
+      const metadataName = verifiedServicePdfFileName(metadata.downloadName || metadata.title || metadata.ariaLabel || '')
+      const guessedName = metadataName || fileNameFromServiceUrl(cleanUrl)
+      const lower = `${cleanUrl} ${cleanLabel} ${metadataName}`.toLowerCase()
       const likelyPdf = lower.includes('.pdf') || lower.includes('document') || lower.includes('download') || lower.includes('efile') || lower.includes('tyler')
       links.push({
         id: `link-${links.length + 1}`,
         url: cleanUrl,
         label: cleanLabel || guessedName || (likelyPdf ? 'Download eFile document/PDF' : 'Open link'),
-        name: guessedName || cleanLabel || (likelyPdf ? 'eFile document/PDF' : 'Link'),
+        name: guessedName || '',
+        fileName: guessedName || '',
+        original_file_name: guessedName || '',
+        file_name_verified: Boolean(guessedName),
         likely_pdf: likelyPdf
       })
     }
 
-    const anchorRegex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+    const anchorRegex = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi
     let match
-    while ((match = anchorRegex.exec(text))) addLink(match[1], match[2])
+    while ((match = anchorRegex.exec(text))) {
+      const attrs = match[1] || ''
+      const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i)
+      if (!hrefMatch) continue
+      const downloadMatch = attrs.match(/\bdownload\s*=\s*["']([^"']+)["']/i)
+      const titleMatch = attrs.match(/\btitle\s*=\s*["']([^"']+)["']/i)
+      const ariaMatch = attrs.match(/\baria-label\s*=\s*["']([^"']+)["']/i)
+      addLink(hrefMatch[1], match[2], {
+        downloadName: downloadMatch?.[1] || '',
+        title: titleMatch?.[1] || '',
+        ariaLabel: ariaMatch?.[1] || ''
+      })
+    }
 
     const urlRegex = /(https?:\/\/[^\s"'<>]+)/gi
     while ((match = urlRegex.exec(text))) addLink(match[1], '')
@@ -30083,17 +30180,34 @@ useEffect(() => {
 
   function extractAcceptedPdfNameFromEmailHtml(html = '') {
     const raw = String(html || '')
-    const plain = htmlToPlainText(raw).replace(/\u00a0/g, ' ')
-    const clean = (value) => decodeServiceHtmlEntity(String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
-      .replace(/[\\/:*?"<>|]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    const plain = htmlToPlainText(raw).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim()
+    const candidates = []
 
-    const leadDocumentMatch = raw.match(/Lead\s+Document[\s\S]{0,800}?<t[dh][^>]*>([^<]*?\.pdf)\s*<\/t[dh]>/i)
-      || raw.match(/Document\s+Details[\s\S]{0,1200}?([A-Z0-9][^<>\r\n]{2,180}\.pdf)/i)
-      || plain.match(/Lead\s+Document\s*:?[\s\r\n]*([\s\S]{2,220}?\.pdf)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|$))/i)
-      || plain.match(/Document\s+Details[\s\S]{0,600}?([A-Z0-9][\s\S]{2,180}?\.pdf)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|$))/i)
-    return leadDocumentMatch ? clean(leadDocumentMatch[1]) : ''
+    const rowRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi
+    let rowMatch
+    while ((rowMatch = rowRegex.exec(raw))) {
+      const cells = Array.from(rowMatch[1].matchAll(/<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi))
+        .map((match) => htmlToPlainText(match[1]).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+      const firstCell = cells[0] || ''
+      if (/^(?:Lead\s+Document(?!\s+Page\s+Count)|Original\s+File\s+Name|Document\s+File\s+Name|File\s+Name)\s*:?\s*$/i.test(firstCell) && cells[1]) {
+        candidates.push(cells[1])
+        continue
+      }
+      const rowText = htmlToPlainText(rowMatch[1]).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim()
+      const leadValue = rowText.match(/^Lead\s+Document(?!\s+Page\s+Count)\s*:?[\s-]*(.+)$/i)
+        || rowText.match(/^(?:Original\s+File\s+Name|Document\s+File\s+Name|File\s+Name)\s*:?[\s-]*(.+)$/i)
+      if (leadValue?.[1]) candidates.push(leadValue[1])
+    }
+
+    const rawMatches = [
+      raw.match(/Lead\s+Document(?!\s+Page\s+Count)[\s\S]{0,900}?([A-Z0-9][^<>\r\n]{1,220}\.pdf)/i),
+      raw.match(/(?:Original\s+File\s+Name|Document\s+File\s+Name|File\s+Name)[\s\S]{0,500}?([A-Z0-9][^<>\r\n]{1,220}\.pdf)/i),
+      plain.match(/Lead\s+Document(?!\s+Page\s+Count)\s*:?\s*([\s\S]{1,240}?)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|Service\s+Contacts|$))/i),
+      plain.match(/(?:Original\s+File\s+Name|Document\s+File\s+Name|File\s+Name)\s*:?\s*([\s\S]{1,240}?)(?=\s*(?:Lead\s+Document\s+Page\s+Count|File\s+Stamped\s+Copy|Service\s+Contacts|$))/i)
+    ]
+    rawMatches.forEach((candidate) => { if (candidate?.[1]) candidates.push(candidate[1]) })
+    return candidates.map(verifiedServicePdfFileName).find(Boolean) || ''
   }
 
   function enhanceServiceFilingLinksWithPdfName(links = [], html = '') {
@@ -30117,26 +30231,26 @@ useEffect(() => {
       .replace(/[\\/:*?"<>|]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-    return cleaned || 'efile-document.pdf'
+    return cleaned
   }
 
   function bestServiceLocalPdfBaseName(row = {}, file = {}) {
-    const rowName = cleanServicePdfBaseName(row.extracted_pdf_name || '')
-    const fileName = cleanServicePdfBaseName(file.name || '')
-    const rowLooksBad = !rowName || /viewdocuments\.aspx|efile[- ]?document|download|select the pdf/i.test(rowName)
-    return rowLooksBad ? (fileName || rowName || 'efile-document.pdf') : rowName
+    // The browser-selected/downloaded file is the strongest source of the actual
+    // eFile filename. Never replace it with a description or a URL-derived guess.
+    return verifiedServicePdfFileName(file.name || '') || verifiedServicePdfFileName(row.extracted_pdf_name || '')
   }
 
   function ensurePdfExtension(name = '') {
     const clean = String(name || '').trim().replace(/\.+$/g, '')
-    if (!clean) return 'efile-document.pdf'
+    if (!clean) return ''
     if (/\.pdf$/i.test(clean)) return clean
     return `${clean}.pdf`
   }
 
   function makeServicePdfDocumentName(rowOrMessage, baseName = '') {
-    const pdfName = ensurePdfExtension(cleanServicePdfBaseName(baseName || rowOrMessage?.extracted_pdf_name || rowOrMessage?.suggested_document_name || 'efile-document.pdf'))
-    return `${serviceEmailReceivedDatePrefix(rowOrMessage)} ${pdfName}`.replace(/[\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
+    // Service Inbox files keep the actual eFile filename. Filing date and Filing
+    // Description remain separate metadata and must not silently rename the PDF.
+    return verifiedServicePdfFileName(baseName || rowOrMessage?.extracted_pdf_name || '')
   }
 
   function makeAcceptedDocumentName(message, attachments = [], filingLinks = [], html = '') {
@@ -30144,7 +30258,7 @@ useEffect(() => {
     const attachmentName = attachment?.name ? String(attachment.name) : ''
     const extractedHtmlName = extractAcceptedPdfNameFromEmailHtml(html)
     const linkName = safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks))
-    const baseName = attachmentName || extractedHtmlName || linkName || 'efile-document.pdf'
+    const baseName = verifiedServicePdfFileName(attachmentName) || extractedHtmlName || linkName || ''
     return makeServicePdfDocumentName(message, baseName).slice(0, 190)
   }
 
@@ -30180,7 +30294,52 @@ useEffect(() => {
   }
 
   function serviceReviewFileName(row = {}) {
-    return row.extracted_pdf_name || primaryServicePdfAttachment(row)?.name || safeServiceDocumentNameFromLink(primaryServiceFilingLink(row)) || row.suggested_document_name || ''
+    const attachment = primaryServicePdfAttachment(row)
+    return resolveServiceActualPdfFileName(row, attachment).name
+  }
+
+  function fileNameFromContentDisposition(headerValue = '') {
+    const raw = String(headerValue || '')
+    if (!raw) return ''
+    const encoded = raw.match(/filename\*\s*=\s*(?:UTF-8''|)([^;]+)/i)?.[1] || ''
+    const quoted = raw.match(/filename\s*=\s*"([^"]+)"/i)?.[1]
+      || raw.match(/filename\s*=\s*'([^']+)'/i)?.[1]
+      || raw.match(/filename\s*=\s*([^;]+)/i)?.[1]
+      || ''
+    for (const candidate of [encoded, quoted]) {
+      if (!candidate) continue
+      let decoded = String(candidate).trim().replace(/^['"]|['"]$/g, '')
+      try { decoded = decodeURIComponent(decoded) } catch {}
+      const verified = verifiedServicePdfFileName(decoded)
+      if (verified) return verified
+    }
+    return ''
+  }
+
+  function resolveServiceActualPdfFileName(row = {}, attachment = null) {
+    const attachmentCandidate = attachment?.actual_name_verified === false
+      ? ''
+      : verifiedServicePdfFileName(attachment?.file?.name || attachment?.blob?.name || attachment?.name || '')
+    if (attachmentCandidate) {
+      return { name: attachmentCandidate, source: attachment?.file_name_source || (attachment?.file || attachment?.blob?.name ? 'selected_file' : 'attachment') }
+    }
+
+    const rowCandidate = verifiedServicePdfFileName(row.extracted_pdf_name || row.efile_actual_file_name || '')
+    const rowSource = String(row.extracted_pdf_name_source || row.efile_file_name_source || '').toLowerCase()
+    const trustedSources = new Set(['manual', 'email_lead_document', 'outlook_attachment', 'selected_file', 'local_file', 'content_disposition', 'download_metadata', 'download_attribute', 'url_filename'])
+    const rowIsTrusted = row.extracted_pdf_name_manual === true || row.extracted_pdf_name_verified === true || trustedSources.has(rowSource)
+    const descriptionName = verifiedServicePdfFileName(row.efile_filing_description || '')
+    const legacyLooksIndependent = rowCandidate && !rowSource && (!descriptionName || rowCandidate.toLowerCase() !== descriptionName.toLowerCase())
+    if (rowCandidate && (rowIsTrusted || legacyLooksIndependent)) return { name: rowCandidate, source: rowSource || 'legacy_extracted_name' }
+
+    const linkCandidate = safeServiceDocumentNameFromLink(primaryServiceFilingLink(row))
+    if (linkCandidate) return { name: linkCandidate, source: 'link_metadata' }
+    return { name: '', source: '' }
+  }
+
+  function missingActualServiceFileNameMessage(row = {}) {
+    const description = String(row.efile_filing_description || '').trim()
+    return `Mio could not verify the PDF's actual eFile filename${description ? ` for “${description}”` : ''}. Mio will not substitute the Filing Description, a Tyler URL, “Filer_Information.pdf,” a date-prefixed name, or any other generated name. Open/download the eFile PDF and select that file, or enter its exact filename in “Actual file name from eFile,” then click Bill and save again. No file was saved, billed, or moved.`
   }
 
   function caseFilingDefinitionByKey(key = '') {
@@ -30793,11 +30952,11 @@ useEffect(() => {
     const suggestedMatterId = inferServiceEmailMatter(message)
     const categoryLabel = serviceEmailPhaseLabel(actionGroup)
     const efileMetadata = extractEfileEmailMetadata(bodyContent || bodyPreview || '', message.receivedDateTime || '')
-    const filingDescriptionName = efileMetadata.filingDescription ? ensurePdfExtension(efileMetadata.filingDescription) : ''
     const leadDocumentName = extractAcceptedPdfNameFromEmailHtml(bodyContent || bodyPreview || '')
-    const docName = ['accepted', 'notification_service'].includes(actionGroup)
-      ? makeServicePdfDocumentName({ ...message, receivedDateTime: efileMetadata.submittedAt || message.receivedDateTime }, filingDescriptionName || leadDocumentName || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || 'efile-document.pdf').slice(0, 190)
-      : ''
+    const linkDocumentName = safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks))
+    const actualFileName = leadDocumentName || linkDocumentName || ''
+    const actualFileNameSource = leadDocumentName ? 'email_lead_document' : (linkDocumentName ? 'link_metadata' : '')
+    const docName = ['accepted', 'notification_service'].includes(actionGroup) ? actualFileName : ''
     const summary = actionGroup === 'no_response'
       ? 'Predicted no response needed. Review the guess, then mark/move to Read.'
       : actionGroup === 'response_mark_read'
@@ -30842,7 +31001,9 @@ useEffect(() => {
       filing_date: efileMetadata.filingDate || '',
       document_field_values: efileMetadata.filingDate ? { filing_date: efileMetadata.filingDate } : {},
       suggested_save_path: suggestedMatterId && matterEfileFolders[suggestedMatterId] ? matterEfileFolders[suggestedMatterId] : '',
-      extracted_pdf_name: leadDocumentName || safeServiceDocumentNameFromLink(primaryServiceFilingLink(filingLinks)) || filingDescriptionName || '',
+      extracted_pdf_name: actualFileName,
+      extracted_pdf_name_source: actualFileNameSource,
+      extracted_pdf_name_verified: Boolean(actualFileName),
       // Accepted e-file and Notification of Service use the independent Filing Tags library.
       // General document tags remain available separately and are never regenerated for these filings.
       document_tag_ids: [],
@@ -31496,13 +31657,14 @@ useEffect(() => {
   }
 
   async function uploadServicePdfToOneDriveFolder(row, fileName, blob) {
-    if (!blob || !fileName) return null
+    if (!blob) return null
+    const cleanName = verifiedServicePdfFileName(fileName)
+    if (!cleanName) throw new Error(missingActualServiceFileNameMessage(row))
     const safeBlob = await normalizeServicePdfBlob(blob, blob?.type || blob?.content_type || 'application/pdf')
     if (!safeBlob) throw new Error('The selected PDF content could not be converted into a file for OneDrive.')
     const savePath = serviceEmailSavePath(row)
     const folder = await resolveExistingGraphEfileFolder(row)
     if (!folder?.id) return null
-    const cleanName = String(fileName || 'efile-document.pdf').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
     try {
       const result = await graphFetch(`/me/drive/items/${encodeURIComponent(folder.id)}:/${encodeURIComponent(cleanName)}:/content`, {
         method: 'PUT',
@@ -31554,7 +31716,7 @@ useEffect(() => {
       return !attachment?.blob && !attachment?.file && !attachment?.content_url && primaryServiceFilingLink(row)
     })
     if (!needsSource.length || !window.showOpenFilePicker) return {}
-    const useBulkPicker = window.confirm(`${needsSource.length} filing/service email(s) have eFile PDF links that Chrome may block Case Controller from reading directly.\n\nIf you already opened/downloaded those PDFs from the eFile links, click OK to select all downloaded PDFs at once. Case Controller will match them to the rows, rename them, save them to the Matter Table efile folder in OneDrive, and then move the emails to Read.\n\nClick Cancel to let Mio try direct download first.`)
+    const useBulkPicker = window.confirm(`${needsSource.length} filing/service email(s) have eFile PDF links that Chrome may block Case Controller from reading directly.\n\nIf you already opened/downloaded those PDFs from the eFile links, click OK to select all downloaded PDFs at once. Case Controller will match them to the rows and preserve each selected PDF's exact filename when saving it to the Matter Table efile folder in OneDrive. It will not generate filenames from the Filing Description or URL.\n\nClick Cancel to let Mio try direct download first.`)
     if (!useBulkPicker) return {}
     try {
       const handles = await window.showOpenFilePicker({
@@ -31579,6 +31741,8 @@ useEffect(() => {
           byRow[row.id] = {
             id: `bulk-local-${row.id}-${Date.now()}`,
             name: file.name,
+            actual_name_verified: Boolean(verifiedServicePdfFileName(file.name || '')),
+            file_name_source: 'selected_file',
             content_type: file.type || 'application/pdf',
             size: file.size || 0,
             is_inline: false,
@@ -31626,12 +31790,9 @@ useEffect(() => {
     if (!targetDir || /\{Matter\}|\{matter\}|\$\{handle\.name\}|\{handle\.name\}/.test(targetDir)) {
       throw new Error('Set the Matter efile folder on this row first. The local helper needs the exact Windows folder path shown in the Matter efile folder field.')
     }
-    const rowDocName = String(currentRow.suggested_document_name || '').trim()
-    const baseName = cleanServicePdfBaseName(currentRow.extracted_pdf_name || safeServiceDocumentNameFromLink(link) || link.fileName || link.name || 'efile-document.pdf')
-    const targetFileName = ensurePdfExtension(rowDocName || makeServicePdfDocumentName(currentRow, baseName))
-      .replace(/[\/:*?"<>|]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    const actualFile = resolveServiceActualPdfFileName(currentRow)
+    if (!actualFile.name) throw new Error(missingActualServiceFileNameMessage(currentRow))
+    const targetFileName = actualFile.name
 
     let result
     try {
@@ -31639,7 +31800,7 @@ useEffect(() => {
         sourceUrl: link.url,
         targetDir,
         fileName: targetFileName,
-        expectedPdfName: baseName,
+        expectedPdfName: targetFileName,
         subject: currentRow.subject || '',
         receivedAt: currentRow.received_at || '',
         matterLabel: currentRow.suggested_matter_id ? matterLabel(currentRow.suggested_matter_id) : '',
@@ -31649,12 +31810,18 @@ useEffect(() => {
       throw new Error(`Optional local save helper failed: ${error.message || error}. The online version can continue without the helper by using browser folder access.`)
     }
 
-    const savedFileName = result.fileName || targetFileName
+    const helperFileName = verifiedServicePdfFileName(result.fileName || '')
+    if (helperFileName && helperFileName.toLowerCase() !== targetFileName.toLowerCase()) {
+      throw new Error(`The local helper reported “${helperFileName}” instead of the verified eFile filename “${targetFileName}.” Mio stopped before billing or moving the email.`)
+    }
+    const savedFileName = targetFileName
     const dataUrl = result.dataUrl || ''
     const blob = dataUrl ? await dataUrlToBlob(dataUrl) : new Blob([], { type: 'application/pdf' })
     const attachment = {
       id: `helper-${Date.now()}`,
       name: savedFileName,
+      actual_name_verified: true,
+      file_name_source: actualFile.source || 'existing_verified_name',
       content_type: 'application/pdf',
       size: result.size || blob.size || 0,
       is_inline: false,
@@ -31666,13 +31833,17 @@ useEffect(() => {
     await createServiceEmailDocumentRecord({
       ...currentRow,
       suggested_document_name: savedFileName,
-      extracted_pdf_name: cleanServicePdfBaseName(savedFileName),
+      extracted_pdf_name: savedFileName,
+      extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
+      extracted_pdf_name_verified: true,
       filing_tag_ids: serviceEmailDocumentTagIds(currentRow)
     }, savedFileName, blob)
 
     setServiceEmailRows((rows) => rows.map((item) => item.id === currentRow.id ? {
       ...item,
-      extracted_pdf_name: cleanServicePdfBaseName(savedFileName),
+      extracted_pdf_name: savedFileName,
+      extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
+      extracted_pdf_name_verified: true,
       suggested_document_name: savedFileName,
       saved_pdf_name: savedFileName,
       saved_pdf_at: new Date().toISOString(),
@@ -31934,19 +32105,18 @@ async function chooseAndSaveMatterEfileFolder(row) {
         updatedAttachments = attachments.map((item) => item.id === primary.id ? loadedPrimary : item)
       }
       const link = primaryServiceFilingLink(row)
-      const fallbackName = row.extracted_pdf_name || link?.fileName || link?.name || fileNameFromServiceUrl(link?.url || '') || ''
-      const docName = loadedPrimary?.name
-        ? `${serviceEmailReceivedDatePrefix(row)} ${String(loadedPrimary.name).replace(/[\/:*?"<>|]/g, ' ').slice(0, 160)}`
-        : (fallbackName ? `${serviceEmailReceivedDatePrefix(row)} ${String(fallbackName).replace(/[\/:*?"<>|]/g, ' ').slice(0, 160)}` : '')
+      const actualFile = resolveServiceActualPdfFileName(row, loadedPrimary)
       setServiceEmailRows((rows) => rows.map((item) => item.id === rowId ? {
         ...item,
         has_attachments: updatedAttachments.length > 0 || item.has_attachments || Boolean(link),
         attachments: updatedAttachments,
-        extracted_pdf_name: loadedPrimary?.name || item.extracted_pdf_name || fallbackName || '',
-        suggested_document_name: docName || item.suggested_document_name || ''
+        extracted_pdf_name: actualFile.name || item.extracted_pdf_name || '',
+        extracted_pdf_name_source: actualFile.source || item.extracted_pdf_name_source || '',
+        extracted_pdf_name_verified: Boolean(actualFile.name) || item.extracted_pdf_name_verified === true,
+        suggested_document_name: actualFile.name || item.suggested_document_name || ''
       } : item))
-      if (loadedPrimary?.name) {
-        setSelectedPdfPreviewName(loadedPrimary.name)
+      if (actualFile.name || loadedPrimary?.name) {
+        setSelectedPdfPreviewName(actualFile.name || loadedPrimary.name)
         setSelectedPdfPreviewUrl(loadedPrimary.content_url || '')
       }
       return loadedPrimary || null
@@ -31980,11 +32150,26 @@ async function chooseAndSaveMatterEfileFolder(row) {
       const base64 = data?.file_base64 || data?.content_base64 || data?.base64 || data?.body_base64 || ''
       const blob = base64ToServiceBlob(base64, data?.content_type || data?.mime_type || 'application/pdf')
       if (!blob || blob.size < 20) throw new Error(data?.message || 'Edge function returned no PDF bytes.')
-      const returnedName = cleanServicePdfBaseName(data?.file_name || data?.filename || safeName)
+      const metadataName = [
+        data?.original_file_name,
+        data?.originalFileName,
+        data?.source_file_name,
+        data?.sourceFileName,
+        data?.content_disposition_filename,
+        data?.contentDispositionFilename,
+        data?.download_file_name,
+        data?.downloadFileName
+      ].map(verifiedServicePdfFileName).find(Boolean) || ''
+      const returnedName = verifiedServicePdfFileName(data?.file_name || data?.filename || '')
+      const knownActualName = verifiedServicePdfFileName(safeName)
+      const actualName = metadataName || returnedName || knownActualName || ''
+      const displayName = actualName || 'efile-download.pdf'
       const objectUrl = URL.createObjectURL(blob)
       return {
         id: `edge-downloaded-${Date.now()}`,
-        name: returnedName,
+        name: displayName,
+        actual_name_verified: Boolean(actualName),
+        file_name_source: metadataName ? 'download_metadata' : (returnedName ? 'download_metadata' : (knownActualName ? 'existing_verified_name' : 'download_fallback')),
         content_type: blob.type || 'application/pdf',
         size: blob.size,
         is_inline: false,
@@ -32004,10 +32189,10 @@ async function chooseAndSaveMatterEfileFolder(row) {
       setServiceEmailScanNote('No eFile download link was found in this email. Open the email in Outlook and confirm the blue Download Document link is visible in the message body.')
       return null
     }
-    const guessedName = row.extracted_pdf_name || safeServiceDocumentNameFromLink(link) || link.fileName || link.name || 'efile-document.pdf'
-    const safeName = cleanServicePdfBaseName(guessedName)
+    const knownActual = resolveServiceActualPdfFileName(row).name
+    const downloadHint = knownActual || 'efile-download.pdf'
 
-    let attachment = await downloadServiceFilingLinkThroughEdgeFunction(row, link, safeName)
+    let attachment = await downloadServiceFilingLinkThroughEdgeFunction(row, link, downloadHint)
 
     if (!attachment) {
       try {
@@ -32018,9 +32203,14 @@ async function chooseAndSaveMatterEfileFolder(row) {
         const blob = await response.blob()
         const type = blob.type || 'application/pdf'
         const objectUrl = URL.createObjectURL(blob)
+        const dispositionName = fileNameFromContentDisposition(response.headers.get('content-disposition') || '')
+        const urlName = fileNameFromServiceUrl(response.url || link.url)
+        const actualName = dispositionName || urlName || knownActual || ''
         attachment = {
           id: `downloaded-${Date.now()}`,
-          name: safeName,
+          name: actualName || 'efile-download.pdf',
+          actual_name_verified: Boolean(actualName),
+          file_name_source: dispositionName ? 'content_disposition' : (urlName ? 'url_filename' : (knownActual ? 'existing_verified_name' : 'download_fallback')),
           content_type: type,
           size: blob.size,
           is_inline: false,
@@ -32038,25 +32228,28 @@ async function chooseAndSaveMatterEfileFolder(row) {
       }
     }
 
-    const docName = makeServicePdfDocumentName(row, attachment.name || safeName)
+    const actualFile = resolveServiceActualPdfFileName(row, attachment)
     setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? {
       ...item,
       has_attachments: true,
       attachments: [attachment, ...((item.attachments || []).filter((att) => att.id !== attachment.id && att.name !== attachment.name))],
-      extracted_pdf_name: attachment.name || safeName,
-      suggested_document_name: docName || item.suggested_document_name
+      extracted_pdf_name: actualFile.name || item.extracted_pdf_name || '',
+      extracted_pdf_name_source: actualFile.source || item.extracted_pdf_name_source || '',
+      extracted_pdf_name_verified: Boolean(actualFile.name) || item.extracted_pdf_name_verified === true,
+      suggested_document_name: actualFile.name || item.suggested_document_name || ''
     } : item))
-    setSelectedPdfPreviewName(attachment.name || safeName)
+    setSelectedPdfPreviewName(actualFile.name || attachment.name || 'eFile PDF')
     setSelectedPdfPreviewUrl(attachment.content_url || '')
-    setServiceEmailScanNote(`Downloaded ${attachment.name || safeName}. Review it, then save/process it.`)
+    setServiceEmailScanNote(actualFile.name
+      ? `Downloaded ${actualFile.name}. Mio will preserve that exact filename when saving.`
+      : 'Downloaded the PDF bytes, but the server did not provide a verifiable original filename. Mio will not save, bill, or move this email until you select the downloaded PDF or enter the exact filename shown by eFile.')
     return attachment
   }
 
   async function pickLocalServicePdfAttachment(row) {
     try {
-      const targetName = ensurePdfExtension(String(row?.suggested_document_name || makeServicePdfDocumentName(row, row?.extracted_pdf_name || 'efile-document.pdf')).trim())
       const targetFolder = serviceEmailSavePath(row) || '(the Matter efile folder shown on this row)'
-      window.alert(`Case Controller could not directly read the eFile PDF link, so Chrome needs you to select the already-downloaded PDF as the SOURCE FILE.\n\nDo not type a new filename here. Pick the PDF that was downloaded from the eFile link.\n\nAfter you pick it, Case Controller will copy it as:\n${targetName}\n\nInto:\n${targetFolder}`)
+      window.alert(`Case Controller could not verify the original filename from the eFile link, so Chrome needs you to select the already-downloaded PDF.\n\nPick the actual PDF downloaded from eFile. Mio will preserve that file's exact filename; it will not rename it from the Filing Description, Tyler URL, date, or any generated text.\n\nDestination folder:\n${targetFolder}`)
       let file = null
       if (window.showOpenFilePicker) {
         const [handle] = await window.showOpenFilePicker({
@@ -32079,10 +32272,17 @@ async function chooseAndSaveMatterEfileFolder(row) {
       }
       if (!file) return null
       const objectUrl = URL.createObjectURL(file)
-      const safeName = bestServiceLocalPdfBaseName(row, file)
+      const safeName = verifiedServicePdfFileName(file.name || '')
+      if (!safeName) {
+        try { URL.revokeObjectURL(objectUrl) } catch {}
+        window.alert(`The selected file is named “${file.name || '(blank)'},” which does not look like a verifiable original eFile filename. Mio did not save, bill, or move the email. Select the actual eFile PDF, or type its exact filename in the Actual file name from eFile field.`)
+        return null
+      }
       const attachment = {
         id: `local-${Date.now()}`,
         name: safeName,
+        actual_name_verified: true,
+        file_name_source: 'selected_file',
         content_type: file.type || 'application/pdf',
         size: file.size || 0,
         is_inline: false,
@@ -32090,17 +32290,18 @@ async function chooseAndSaveMatterEfileFolder(row) {
         content_loaded: true,
         blob: file
       }
-      const docName = makeServicePdfDocumentName(row, safeName)
       setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? {
         ...item,
         has_attachments: true,
         attachments: [attachment, ...((item.attachments || []).filter((att) => att.id !== attachment.id && att.name !== attachment.name))],
         extracted_pdf_name: safeName,
-        suggested_document_name: docName
+        extracted_pdf_name_source: 'selected_file',
+        extracted_pdf_name_verified: true,
+        suggested_document_name: safeName
       } : item))
       setSelectedPdfPreviewName(safeName)
       setSelectedPdfPreviewUrl(objectUrl)
-      setServiceEmailScanNote(`Selected ${safeName}. The app can now save it to the matter efile folder.`)
+      setServiceEmailScanNote(`Selected ${safeName}. Mio will preserve that exact filename when it saves the PDF.`)
       return attachment
     } catch (error) {
       if (error?.name !== 'AbortError') setServiceEmailScanNote(`Could not select the local PDF: ${error.message || error}`)
@@ -32207,22 +32408,26 @@ async function chooseAndSaveMatterEfileFolder(row) {
       throw new Error('The PDF was not selected or loaded. Open/download the eFile PDF if needed, click Bill and save again, and choose that PDF when Chrome asks. No file was saved, billed, or moved.')
     }
 
-    // Build the target name ONLY from the row's document name / eFile PDF name. Do not keep
-    // Chrome's downloaded filename if the row already knows the right date-prefixed filename.
-    const attachmentSourceName = attachment?.name || attachment?.file?.name || attachment?.blob?.name || ''
-    const bestBaseName = cleanServicePdfBaseName(
-      currentRow.extracted_pdf_name ||
-      attachmentSourceName ||
-      currentRow.suggested_document_name ||
-      'efile-document.pdf'
-    )
-    const rowDocName = String(currentRow.suggested_document_name || '').trim()
-    const rowDocNameIsUsable = /^\d{2}\.\d{2}\.\d{2}\s+.+\.pdf$/i.test(rowDocName)
-      && !/viewdocuments\.aspx|efile[- ]?document|download|select the pdf/i.test(rowDocName)
-    const fileName = ensurePdfExtension(rowDocNameIsUsable ? rowDocName : makeServicePdfDocumentName(currentRow, bestBaseName))
-      .replace(/[\\/:*?"<>|]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    // Never manufacture a filename. The target must come from an actual Outlook/eFile
+    // filename, a user-selected local file, or the exact filename manually confirmed in
+    // the review field. Filing Description is separate metadata and is never a fallback.
+    let actualFile = resolveServiceActualPdfFileName(currentRow, attachment)
+    if (!actualFile.name && options.allowPick !== false) {
+      const pickedAttachment = await pickLocalServicePdfAttachment(currentRow)
+      if (pickedAttachment) {
+        attachment = pickedAttachment
+        actualFile = resolveServiceActualPdfFileName(currentRow, attachment)
+      }
+    }
+    if (!actualFile.name) throw new Error(missingActualServiceFileNameMessage(currentRow))
+    const fileName = actualFile.name
+    const savedAttachment = {
+      ...attachment,
+      original_download_name: attachment?.name || '',
+      name: fileName,
+      actual_name_verified: true,
+      file_name_source: actualFile.source || 'existing_verified_name'
+    }
 
     let blob = await normalizeServicePdfBlob(attachment.blob || attachment.file || null, attachment.content_type || 'application/pdf')
     if (!blob && attachment.content_url) {
@@ -32255,13 +32460,17 @@ async function chooseAndSaveMatterEfileFolder(row) {
       await createServiceEmailDocumentRecord({
         ...currentRow,
         suggested_document_name: fileName,
-        extracted_pdf_name: bestBaseName,
+        extracted_pdf_name: fileName,
+        extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
+        extracted_pdf_name_verified: true,
         filing_tag_ids: serviceEmailDocumentTagIds(currentRow)
       }, fileName, blob, savedInfo)
 
       setServiceEmailRows((rows) => rows.map((item) => item.id === currentRow.id ? {
         ...item,
-        extracted_pdf_name: bestBaseName,
+        extracted_pdf_name: fileName,
+        extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
+        extracted_pdf_name_verified: true,
         suggested_document_name: fileName,
         saved_pdf_name: fileName,
         saved_pdf_at: new Date().toISOString(),
@@ -32269,9 +32478,9 @@ async function chooseAndSaveMatterEfileFolder(row) {
         saved_pdf_onedrive_path: savedInfo?.oneDrivePath || '',
         saved_pdf_web_url: savedInfo?.webUrl || '',
         has_attachments: true,
-        attachments: [attachment, ...((item.attachments || []).filter((att) => (att.id || att.name) !== (attachment.id || attachment.name)))]
+        attachments: [savedAttachment, ...((item.attachments || []).filter((att) => (att.id || att.name) !== (attachment.id || attachment.name)))]
       } : item))
-      setServiceEmailScanNote(`Saved ${fileName} to ${savedInfo?.oneDrivePath ? 'OneDrive' : 'the selected matter efile folder'} and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
+      setServiceEmailScanNote(`Saved ${fileName} using the verified original eFile filename to ${savedInfo?.oneDrivePath ? 'OneDrive' : 'the selected matter efile folder'} and added it to Documents with tag: ${serviceEmailDocumentTagLabel(currentRow)}.`)
       return { ok: true, verified: savedInfo?.verified !== false, fileName, savedPath: savedInfo?.savedPath || '', oneDrivePath: savedInfo?.oneDrivePath || '', webUrl: savedInfo?.webUrl || '', driveItemId: savedInfo?.driveItemId || '' }
     } catch (error) {
       if (error?.name === 'AbortError') return false
@@ -33662,8 +33871,31 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
                   </LabeledField>
                   <LabeledField label="Save folder (Settings > Matter Table > Efile Folder)"><div style={{ display: 'grid', gap: 4 }}><div style={{ display: 'flex', gap: 6 }}><input value={showSavedFilingReviewRows ? (active.saved_path || saveFolder) : saveFolder} readOnly placeholder="No efile folder selected" style={{ width: '100%' }} />{!showSavedFilingReviewRows && <button type="button" onClick={() => chooseAndSaveMatterEfileFolder(active)} style={{ whiteSpace: 'nowrap' }}>{saveFolder ? 'Change folder' : 'Choose folder'}</button>}</div><div style={{ fontSize: 11, color: saveFolder ? '#166534' : '#991b1b' }}>{saveFolder ? 'Folder selection is saved to the Matter Table. Mio will use only this existing folder.' : 'Choose an existing folder before saving. Mio will not create one.'}</div></div></LabeledField>
-                  <LabeledField label="File name from eFile"><input value={serviceReviewFileName(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { extracted_pdf_name: e.target.value })} /></LabeledField>
-                  <LabeledField label="Document name (Filing Description)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
+                  <LabeledField label="Actual file name from eFile">
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      <input
+                        value={active.extracted_pdf_name_manual ? (active.extracted_pdf_name || '') : (serviceReviewFileName(active) || active.extracted_pdf_name || '')}
+                        disabled={showSavedFilingReviewRows}
+                        onChange={(e) => {
+                          const enteredName = e.target.value
+                          const verifiedName = verifiedServicePdfFileName(enteredName)
+                          updateServiceEmailRow(active.id, {
+                            extracted_pdf_name: enteredName,
+                            extracted_pdf_name_manual: true,
+                            extracted_pdf_name_source: 'manual',
+                            extracted_pdf_name_verified: Boolean(verifiedName),
+                            suggested_document_name: verifiedName || ''
+                          })
+                        }}
+                      />
+                      {serviceReviewFileName(active) ? (
+                        <div style={{ fontSize: 11, color: '#166534' }}>Mio will save exactly “{serviceReviewFileName(active)}.” Filing Description is metadata only and will not rename the PDF.</div>
+                      ) : (
+                        <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 700 }}>Actual eFile filename not verified. Mio will not save, bill, or move this email until the filename is read from eFile/the PDF or entered here.</div>
+                      )}
+                    </div>
+                  </LabeledField>
+                  <LabeledField label="Filing Description (not the file name)"><input value={active.efile_filing_description || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { efile_filing_description: e.target.value })} /></LabeledField>
                   <LabeledField label="Filing date (Date/Time Submitted)"><input type="date" value={active.filing_date || active.document_field_values?.filing_date || ''} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filing_date: e.target.value, document_field_values: { ...(active.document_field_values || {}), filing_date: e.target.value } })} /></LabeledField>
                   <LabeledField label="Filed by"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><select value={serviceReviewEffectiveFilerId(active)} disabled={showSavedFilingReviewRows} onChange={(e) => updateServiceEmailRow(active.id, { filed_by_person_id: e.target.value, filed_by_manual: true })} style={{ flex: 1, minWidth: 0 }}><option value="">Choose filer...</option>{serviceReviewFilerOptions(active).map((person) => <option key={person.id} value={person.id}>{person.name}{person.type ? ` — ${person.type}` : ''}</option>)}</select><button type="button" disabled={showSavedFilingReviewRows} onClick={() => { const matter = matters.find((item) => String(item.id) === String(resolveServiceEmailMatterId(active))); if (!matter) { alert('Select a matter before adding a filer.'); return } editMatter(matter); setMatterWindowTab('parties') }} style={{ whiteSpace: 'nowrap' }}>Add filer</button></div></LabeledField>
                   <LabeledField label="Filing Tag (full hierarchy)"><div style={{ display: 'flex', gap: 6, minWidth: 0 }}><button type="button" disabled={showSavedFilingReviewRows} onClick={() => openServiceReviewTagPicker(active)} style={{ flex: 1, minWidth: 0, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{serviceEmailDocumentLeafTagId({ ...active, filing_tag_ids: tagIds }) ? filingTagFullName(serviceEmailDocumentLeafTagId({ ...active, filing_tag_ids: tagIds })) : 'Choose Filing Tag...'}</button><button type="button" disabled={showSavedFilingReviewRows} onClick={() => createAndAttachServiceReviewTag(active)}>New Filing Tag</button></div></LabeledField>
@@ -33685,14 +33917,14 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" onClick={() => emailClientForServiceRow(active)} title="Email this filing to the client">✉ Client</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
-                <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || active.suggested_document_name || active.subject}</div>
+                <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || serviceReviewFileName(active) || active.efile_filing_description || active.subject}</div>
                 <div style={{ border: '1px dashed #94a3b8', borderRadius: 8, minHeight: 620, overflow: 'hidden' }}>{selectedPdfPreviewUrl ? <iframe title="Filing PDF preview" src={selectedPdfPreviewUrl} style={{ width: '100%', height: 620, border: 0 }} /> : <div style={{ padding: 30, color: '#64748b', textAlign: 'center' }}>Loading or awaiting the PDF preview. Click Reload PDF preview if needed.</div>}</div>
               </section>
             </> : <div style={{ padding: 40, textAlign: 'center', color: '#64748b' }}>{showSavedFilingReviewRows ? 'No emails have been saved in this session.' : `No ${isNotice ? 'notification-of-service' : 'accepted'} emails remain in this review queue.`}</div>}
           </div>
           <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', maxHeight: '82vh', overflow: 'auto', position: 'sticky', top: 0 }}>
             <h3 style={{ marginTop: 0 }}>TOC</h3>
-            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.filing_date ? new Date(`${row.filing_date}T12:00:00`).toLocaleDateString() : (row.received_at ? new Date(row.received_at).toLocaleDateString() : '')}</div><div style={{ fontWeight: 700, marginBottom: 4 }}>{row.efile_filing_description || row.suggested_document_name || row.subject || 'Email'}</div><div style={{ fontSize: 11, color: '#64748b', marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || row.subject || ''}</div>{!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy} style={{ width: '100%' }}>Move to Read only</button></div>}</div>)}
+            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.filing_date ? new Date(`${row.filing_date}T12:00:00`).toLocaleDateString() : (row.received_at ? new Date(row.received_at).toLocaleDateString() : '')}</div><div style={{ fontWeight: 700, marginBottom: 4 }}>{row.efile_filing_description || row.suggested_document_name || row.subject || 'Email'}</div><div style={{ fontSize: 11, color: serviceReviewFileName(row) ? '#64748b' : '#991b1b', fontWeight: serviceReviewFileName(row) ? 400 : 700, marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || 'Actual filename not verified'}</div>{!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy} style={{ width: '100%' }}>Move to Read only</button></div>}</div>)}
             {!rows.length && <div style={{ color: '#64748b', padding: 12, textAlign: 'center' }}>No emails to show.</div>}
           </aside>
         </div>
