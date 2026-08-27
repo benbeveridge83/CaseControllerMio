@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V251'
+const MIO_APP_VERSION = 'Mio V252'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -2599,6 +2599,7 @@ function App() {
   const [session, setSession] = useState(null)
   const [authChecked, setAuthChecked] = useState(false)
   const explicitSignOutRef = useRef(false)
+  const supabaseSessionRefreshRef = useRef(null)
   const [currentTeamMember, setCurrentTeamMember] = useState(null)
   const [userAccessChecked, setUserAccessChecked] = useState(false)
   const [loginBlockedMessage, setLoginBlockedMessage] = useState('')
@@ -4167,6 +4168,63 @@ function App() {
   const mioBillingRelationalSavingRef = useRef({})
   const serviceEmailBillingRecoveryRanRef = useRef('')
 
+  function isSupabaseUnauthorizedError(error) {
+    if (!error) return false
+    const status = Number(error?.status || error?.statusCode || error?.context?.status || 0)
+    const code = String(error?.code || '').toUpperCase()
+    const message = String(error?.message || error?.error_description || error?.details || error || '').toLowerCase()
+    return status === 401 || code === 'PGRST301' || code === '401' || message.includes('jwt expired') || message.includes('invalid jwt') || message.includes('invalid claim') || message.includes('not authenticated') || message.includes('authentication required')
+  }
+
+  async function getFreshSupabaseSession({ force = false, sessionHint = null } = {}) {
+    let current = sessionHint || null
+    if (!current) {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+      current = data?.session || null
+    }
+    if (!current) return null
+
+    const expiresAtMs = Number(current?.expires_at || 0) * 1000
+    const expiresSoon = Boolean(expiresAtMs && expiresAtMs <= Date.now() + 120000)
+    if (!force && !expiresSoon) return current
+
+    if (!supabaseSessionRefreshRef.current) {
+      supabaseSessionRefreshRef.current = (async () => {
+        const { data, error } = await supabase.auth.refreshSession()
+        if (error) throw error
+        if (!data?.session) throw new Error('Supabase did not return a refreshed session.')
+        return data.session
+      })().finally(() => {
+        supabaseSessionRefreshRef.current = null
+      })
+    }
+    return await supabaseSessionRefreshRef.current
+  }
+
+  async function runSupabaseRequestWithAuthRetry(requestFactory, label = 'Supabase request') {
+    if (typeof requestFactory !== 'function') throw new Error(`${label} is missing its request function.`)
+    try {
+      const fresh = await getFreshSupabaseSession({ sessionHint: session })
+      if (fresh?.access_token && fresh.access_token !== session?.access_token) setSession(fresh)
+    } catch (error) {
+      console.warn(`${label}: session freshness check failed before request.`, error)
+    }
+
+    let result = await requestFactory()
+    if (!result?.error || !isSupabaseUnauthorizedError(result.error)) return result
+
+    try {
+      const refreshed = await getFreshSupabaseSession({ force: true, sessionHint: session })
+      if (!refreshed) return result
+      if (refreshed.access_token !== session?.access_token) setSession(refreshed)
+      result = await requestFactory()
+    } catch (refreshError) {
+      console.warn(`${label}: authentication refresh failed.`, refreshError)
+    }
+    return result
+  }
+
   function parseMioStoredValue(record, fallback = null) {
     if (!record) return fallback
     if (record.json_value !== null && record.json_value !== undefined) return record.json_value
@@ -4529,35 +4587,52 @@ function App() {
       origin: snapshot.origin,
       updated_at: snapshot.exported_at
     }))
-    if (!rows.length) return
-    const { error } = await supabase.from('case_mio_user_state').upsert(rows, { onConflict: 'user_id,key' })
-    if (error) console.warn('Initial local-to-Supabase state migration failed:', error)
+    if (!rows.length) return true
+    const { error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('case_mio_user_state').upsert(rows, { onConflict: 'user_id,key' }),
+      'Initial local-to-Supabase state migration'
+    )
+    if (error) {
+      console.warn('Initial local-to-Supabase state migration failed:', error)
+      return false
+    }
+    return true
   }
 
   async function loadMioCloudStateFromSupabase(userId) {
-    if (!userId || mioCloudStateLoadingRef.current) return
+    if (!userId || mioCloudStateLoadingRef.current) return false
     mioCloudStateLoadingRef.current = true
+    let loadedSuccessfully = false
     try {
-      const { data, error } = await supabase
-        .from('case_mio_user_state')
-        .select('key,raw_value,json_value,updated_at')
-        .eq('user_id', userId)
+      const { data, error } = await runSupabaseRequestWithAuthRetry(
+        () => supabase
+          .from('case_mio_user_state')
+          .select('key,raw_value,json_value,updated_at')
+          .eq('user_id', userId),
+        'Mio cloud state load'
+      )
 
       if (error) {
-        console.warn('Cloud state load failed. Run the case_mio_user_state SQL migration, then reload.', error)
-        return
+        console.warn('Cloud state load failed. Mio will keep the browser copy and will not overwrite cloud state while authentication is unavailable.', error)
+        return false
       }
 
       if (!Array.isArray(data) || !data.length) {
-        await migrateExistingLocalStateToSupabase(userId)
-        return
+        loadedSuccessfully = await migrateExistingLocalStateToSupabase(userId)
+        return loadedSuccessfully
       }
 
       mioCloudStateSkipSaveRef.current = true
       data.forEach((record) => applyMioCloudStateRecord(record))
       window.setTimeout(() => { mioCloudStateSkipSaveRef.current = false }, 750)
+      loadedSuccessfully = true
+      return true
     } finally {
-      mioCloudStateLoadedRef.current = true
+      // A failed/unauthorized cloud read must never mark the cloud as loaded.
+      // Doing so allows initial empty/default browser state (including Workflow)
+      // to overwrite the real saved cloud copy after a stale-token failure.
+      mioCloudStateLoadedRef.current = loadedSuccessfully
+      if (!loadedSuccessfully) mioCloudStateSkipSaveRef.current = false
       mioCloudStateLoadingRef.current = false
     }
   }
@@ -4577,14 +4652,17 @@ function App() {
       if (typeof parsed !== 'string') jsonValue = parsed
     } catch {}
 
-    const { error } = await supabase.from('case_mio_user_state').upsert({
-      user_id: session.user.id,
-      key,
-      raw_value: rawValue,
-      json_value: jsonValue,
-      origin: window.location.origin,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id,key' })
+    const { error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('case_mio_user_state').upsert({
+        user_id: session.user.id,
+        key,
+        raw_value: rawValue,
+        json_value: jsonValue,
+        origin: window.location.origin,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id,key' }),
+      `Cloud state save (${key})`
+    )
 
     if (error) {
       console.warn(`Cloud save failed for ${key}; keeping browser fallback for this session.`, error)
@@ -5421,7 +5499,16 @@ function App() {
           window[lookupKey],
           new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase session lookup timed out.')), AUTH_BOOT_TIMEOUT_MS))
         ])
-        finishAuthCheck(result?.data?.session || null)
+        let recoveredSession = result?.data?.session || null
+        if (recoveredSession) {
+          try {
+            recoveredSession = await getFreshSupabaseSession({ sessionHint: recoveredSession })
+          } catch (refreshError) {
+            console.warn('Stored Supabase session is no longer usable; showing login instead of starting Mio with a stale token.', refreshError)
+            recoveredSession = null
+          }
+        }
+        finishAuthCheck(recoveredSession)
       } catch (error) {
         console.warn('Unable to recover Supabase session without blocking startup.', error)
         finishAuthCheck(null)
@@ -5435,13 +5522,17 @@ function App() {
 
     recoverStoredSession()
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       // Supabase Auth holds its session lock while this callback runs. Defer
       // React state changes so effects that query Supabase cannot inherit that lock.
       clearTimeout(authEventTimer)
       authEventTimer = window.setTimeout(() => {
         if (!mounted) return
         if (nextSession) explicitSignOutRef.current = false
+        if (event === 'SIGNED_OUT') {
+          loadedSessionUserRef.current = ''
+          mioCloudStateLoadedRef.current = false
+        }
         finishAuthCheck(nextSession || null)
       }, 0)
     })
@@ -5453,6 +5544,37 @@ function App() {
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (!session?.user?.id) return
+    let disposed = false
+    let inFlight = false
+
+    const maintainSession = async () => {
+      if (disposed || inFlight) return
+      inFlight = true
+      try {
+        const fresh = await getFreshSupabaseSession({ sessionHint: session })
+        if (!disposed && fresh?.access_token && fresh.access_token !== session?.access_token) setSession(fresh)
+      } catch (error) {
+        console.warn('Mio could not refresh the Supabase session before it expired.', error)
+      } finally {
+        inFlight = false
+      }
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') maintainSession()
+    }
+    const interval = window.setInterval(maintainSession, 60000)
+    document.addEventListener('visibilitychange', onVisibility)
+    maintainSession()
+    return () => {
+      disposed = true
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [session?.user?.id, session?.access_token])
 
   useEffect(() => {
     saveMioStateKey('caseMioDocumentEventRules', JSON.stringify(documentEventRules))
@@ -6217,14 +6339,29 @@ function App() {
 
   useEffect(() => {
     const email = session?.user?.email || ''
-    if (!email) {
+    const userId = String(session?.user?.id || '')
+    const accessToken = String(session?.access_token || '')
+    if (!email || !userId) {
       loadedSessionUserRef.current = ''
       setUserAccessChecked(false)
       return
     }
-    if (loadedSessionUserRef.current === email) return
-    loadedSessionUserRef.current = email
+    // Include the access token in the load key. If Supabase refreshes a stale JWT,
+    // the same user must be allowed to retry the reads that failed with 401.
+    const sessionLoadKey = `${userId}:${accessToken.slice(-24)}`
+    if (loadedSessionUserRef.current === sessionLoadKey) return
+    loadedSessionUserRef.current = sessionLoadKey
     ;(async () => {
+      try {
+        const fresh = await getFreshSupabaseSession({ sessionHint: session })
+        if (fresh?.access_token && fresh.access_token !== accessToken) {
+          setSession(fresh)
+          return
+        }
+      } catch (error) {
+        console.warn('Initial Mio data load could not validate the Supabase session.', error)
+      }
+
       const member = await checkCurrentUserAccess(email)
       if (isClientPortalMember(member)) {
         const clientMatters = await fetchClientPortalMatters(email)
@@ -6233,10 +6370,14 @@ function App() {
         mioCloudStateLoadedRef.current = true
       } else {
         await fetchInitialData()
-        await loadMioCloudStateFromSupabase(session?.user?.id)
+        const cloudLoaded = await loadMioCloudStateFromSupabase(userId)
+        if (!cloudLoaded) {
+          // Permit a later TOKEN_REFRESHED event to retry this same user's load.
+          loadedSessionUserRef.current = ''
+        }
       }
     })()
-  }, [session?.user?.email, session?.user?.id])
+  }, [session?.user?.email, session?.user?.id, session?.access_token])
 
   useEffect(() => {
     if (!session?.user?.email || !userAccessChecked || !isClientPortalMember()) return
@@ -22696,7 +22837,10 @@ async function updateTeamCell(memberId, field, value) {
   async function loadAllSupabasePages(buildQuery, pageSize = 1000) {
     const rows = []
     for (let from = 0; from < 100000; from += pageSize) {
-      const { data, error } = await buildQuery().range(from, from + pageSize - 1)
+      const { data, error } = await runSupabaseRequestWithAuthRetry(
+        () => buildQuery().range(from, from + pageSize - 1),
+        `Supabase paginated load ${from}-${from + pageSize - 1}`
+      )
       if (error) throw error
       const pageRows = Array.isArray(data) ? data : []
       rows.push(...pageRows)
