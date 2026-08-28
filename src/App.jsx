@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V258'
+const MIO_APP_VERSION = 'Mio V259'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -2882,7 +2882,7 @@ function App() {
   const [clioSnapshotLastImport, setClioSnapshotLastImport] = useState(null)
   const [clioSnapshotLoadAttempted, setClioSnapshotLoadAttempted] = useState(false)
   const [snapshotGraphMetric, setSnapshotGraphMetric] = useState('matter_trust_funds')
-  const [snapshotGraphShowInvoices, setSnapshotGraphShowInvoices] = useState(false)
+  const [snapshotGraphShowInvoices, setSnapshotGraphShowInvoices] = useState(() => localStorage.getItem('caseMioSnapshotGraphShowInvoicesV259') !== 'false')
   const [snapshotGraphSelectedMatterNumbers, setSnapshotGraphSelectedMatterNumbers] = useState([])
   const [snapshotGraphMinimumAmount, setSnapshotGraphMinimumAmount] = useState('')
   const [snapshotBarMetrics, setSnapshotBarMetrics] = useState(['matter_trust_funds', 'outstanding_balance'])
@@ -2892,7 +2892,8 @@ function App() {
   const [clioGraphMatterStatusFilters, setClioGraphMatterStatusFilters] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioGraphMatterStatusFiltersV120') || '[]') } catch { return [] } })
   const [clioGraphGroupingMode, setClioGraphGroupingMode] = useState(() => localStorage.getItem('caseMioClioGraphGroupingModeV120') || 'matter')
   const [financialGraphShowZeroLine, setFinancialGraphShowZeroLine] = useState(() => localStorage.getItem('caseMioFinancialGraphShowZeroLineV120') !== 'false')
-  const [withdrawingFinancialSeries, setWithdrawingFinancialSeries] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioWithdrawingFinancialSeriesV120') || '[]') } catch { return [] } })
+  const [financialGraphHover, setFinancialGraphHover] = useState(null)
+  const financialGraphHoverCloseTimerRef = useRef(null)
   const [requestedReliefCellEditor, setRequestedReliefCellEditor] = useState(null)
   const [requestedReliefTocOpen, setRequestedReliefTocOpen] = useState(true)
   const [matterRequestedReliefView, setMatterRequestedReliefView] = useState(() => localStorage.getItem('caseMioMatterRequestedReliefViewV120') || 'events')
@@ -5568,7 +5569,7 @@ function App() {
   useEffect(() => { saveMioStateKey('caseMioClioGraphCaseTypeFilters', JSON.stringify(clioGraphCaseTypeFilters || [])) }, [clioGraphCaseTypeFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphGroupingModeV120', clioGraphGroupingMode) }, [clioGraphGroupingMode])
   useEffect(() => { saveMioStateKey('caseMioFinancialGraphShowZeroLineV120', String(financialGraphShowZeroLine)) }, [financialGraphShowZeroLine])
-  useEffect(() => { saveMioStateKey('caseMioWithdrawingFinancialSeriesV120', JSON.stringify(withdrawingFinancialSeries || [])) }, [withdrawingFinancialSeries])
+  useEffect(() => { localStorage.setItem('caseMioSnapshotGraphShowInvoicesV259', String(snapshotGraphShowInvoices)) }, [snapshotGraphShowInvoices])
   useEffect(() => { saveMioStateKey('caseMioMatterRequestedReliefViewV120', matterRequestedReliefView) }, [matterRequestedReliefView])
 
   function toggleMultiValue(current, value, setter) {
@@ -5754,7 +5755,7 @@ function App() {
 
   async function loadBillingRelationalData(userId, options = {}) {
     const force = Boolean(options.force)
-    if (!userId || mioBillingRelationalLoadedRef.current === userId) return true
+    if (!userId || (!force && mioBillingRelationalLoadedRef.current === userId)) return true
     if (mioBillingRelationalLoadRef.current.promise) return mioBillingRelationalLoadRef.current.promise
     if (supabaseBackgroundRequestPaused(force)) return false
     if (!force && Date.now() - Number(mioBillingRelationalLoadRef.current.lastAttemptAt || 0) < 15000) return false
@@ -23318,9 +23319,19 @@ async function updateTeamCell(memberId, field, value) {
 
   async function recordInvoiceEvent(invoice, eventType, details = {}, amount = null, providerEventId = '') {
     if (!invoice?.id || !session?.user?.id) return
+    const cleanProviderEventId = providerEventId ? String(providerEventId) : ''
+    if (cleanProviderEventId) {
+      const { data: existingEvent, error: lookupError } = await supabase
+        .from('mio_invoice_events')
+        .select('id')
+        .eq('provider_event_id', cleanProviderEventId)
+        .limit(1)
+        .maybeSingle()
+      if (!lookupError && existingEvent?.id) return
+    }
     const payload = { invoice_id: invoice.id, user_id: session.user.id, event_type: eventType, details, occurred_at: new Date().toISOString() }
     if (amount !== null && amount !== undefined) payload.amount = financeNumber(amount)
-    if (providerEventId) payload.provider_event_id = String(providerEventId)
+    if (cleanProviderEventId) payload.provider_event_id = cleanProviderEventId
     const { error } = await supabase.from('mio_invoice_events').insert(payload)
     if (error && String(error.code || '') !== '23505') console.warn('Invoice audit event could not be saved:', error)
   }
@@ -46997,7 +47008,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     if (page !== 'billing') return
     // Bulk/Firm Billing is Mio-only. Do not call the Clio API merely because the
     // Billing page opened; load Clio only when a Clio-specific tab is selected.
-    const clioTabs = new Set(['clio_billing', 'client_billing_fields', 'financial_snapshots', 'snapshot_graphs', 'client_bar_graph'])
+    const clioTabs = new Set(['clio_billing', 'client_billing_fields', 'financial_snapshots'])
     if (!clioTabs.has(billingTab)) return
     if (clioBillingLoading) return
     loadOpenClioMattersIntoState()
@@ -47157,14 +47168,20 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     )
   }
 
-  function renderClioGraph(seriesList, { small = false, invoiceMarkers = [], onSeriesHide = null } = {}) {
-    const allGraphPoints = seriesList.flatMap((series) => series.points || [])
-    const allDates = allGraphPoints.map((point) => new Date(point.date).getTime()).filter((value) => Number.isFinite(value))
+  function renderClioGraph(seriesList, { small = false, invoiceMarkers = [], onSeriesHide = null, extendToToday = false } = {}) {
+    const cleanSeries = Array.isArray(seriesList) ? seriesList : []
+    const markerList = Array.isArray(invoiceMarkers) ? invoiceMarkers.filter((marker) => marker?.date && Number.isFinite(new Date(marker.date).getTime())) : []
+    const allGraphPoints = cleanSeries.flatMap((series) => series.points || [])
+    const allDates = [
+      ...allGraphPoints.map((point) => new Date(point.date).getTime()),
+      ...markerList.map((marker) => new Date(marker.date).getTime()),
+      ...(extendToToday ? [new Date(`${financeDateOnly(new Date().toISOString())}T23:59:59`).getTime()] : [])
+    ].filter((value) => Number.isFinite(value))
     const allBalances = allGraphPoints.map((point) => Number(point.balance)).filter((value) => Number.isFinite(value))
     const graphHasData = allDates.length > 0 && allBalances.length > 0
     const graphWidth = 960
     const graphHeight = small ? 280 : 390
-    const graphPadding = { top: 24, right: 28, bottom: 52, left: 82 }
+    const graphPadding = { top: 28, right: 28, bottom: 52, left: 82 }
     const minDate = graphHasData ? Math.min(...allDates) : Date.now() - 86400000
     const maxDate = graphHasData ? Math.max(...allDates) : Date.now()
     const minBalance = graphHasData ? Math.min(...allBalances, financialGraphShowZeroLine ? 0 : Math.min(...allBalances)) : 0
@@ -47183,45 +47200,134 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     const shortDate = (value) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minBalance + ratio * ySpan)
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
-    const markerList = Array.isArray(invoiceMarkers) ? invoiceMarkers.filter((marker) => marker?.date && Number.isFinite(new Date(marker.date).getTime())) : []
+    const sortedSeriesPoints = (series) => (series?.points || [])
+      .filter((point) => Number.isFinite(new Date(point.date).getTime()) && Number.isFinite(Number(point.balance)))
+      .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime())
+
+    const seriesBalanceAtDate = (series, dateValue) => {
+      const points = sortedSeriesPoints(series)
+      if (!points.length) return 0
+      const target = new Date(dateValue).getTime()
+      if (!Number.isFinite(target) || target <= new Date(points[0].date).getTime()) return Number(points[0].balance)
+      if (target >= new Date(points[points.length - 1].date).getTime()) return Number(points[points.length - 1].balance)
+      for (let index = 1; index < points.length; index += 1) {
+        const rightTime = new Date(points[index].date).getTime()
+        if (target > rightTime) continue
+        const left = points[index - 1]
+        const right = points[index]
+        const leftTime = new Date(left.date).getTime()
+        const ratio = Math.max(0, Math.min(1, (target - leftTime) / Math.max(1, rightTime - leftTime)))
+        return Number(left.balance) + (Number(right.balance) - Number(left.balance)) * ratio
+      }
+      return Number(points[points.length - 1].balance)
+    }
+
+    const hoverPointForEvent = (event, series, explicitPoint = null) => {
+      if (explicitPoint) return explicitPoint
+      const svg = event?.currentTarget?.ownerSVGElement || event?.currentTarget?.closest?.('svg')
+      const rect = svg?.getBoundingClientRect?.()
+      if (!rect?.width) return sortedSeriesPoints(series).slice(-1)[0] || null
+      const scaledPlotLeft = rect.left + (plotLeft / graphWidth) * rect.width
+      const scaledPlotWidth = (plotWidth / graphWidth) * rect.width
+      const ratio = Math.max(0, Math.min(1, (event.clientX - scaledPlotLeft) / Math.max(1, scaledPlotWidth)))
+      const targetTime = minDate + ratio * xSpan
+      return { date: new Date(targetTime).toISOString(), balance: seriesBalanceAtDate(series, targetTime) }
+    }
+
+    const showSeriesHover = (event, series, explicitPoint = null) => {
+      if (financialGraphHoverCloseTimerRef.current) clearTimeout(financialGraphHoverCloseTimerRef.current)
+      const point = hoverPointForEvent(event, series, explicitPoint)
+      setFinancialGraphHover({
+        x: event.clientX,
+        y: event.clientY,
+        series_id: String(series.matter_id || ''),
+        display_number: series.display_number || 'Matter',
+        mio_matter_ids: Array.isArray(series.mio_matter_ids) ? series.mio_matter_ids.map(String) : [],
+        matter_names: Array.isArray(series.matter_names) ? series.matter_names : [],
+        point_date: point?.date || '',
+        point_balance: Number(point?.balance || 0)
+      })
+    }
+
+    const scheduleSeriesHoverClose = () => {
+      if (financialGraphHoverCloseTimerRef.current) clearTimeout(financialGraphHoverCloseTimerRef.current)
+      financialGraphHoverCloseTimerRef.current = window.setTimeout(() => setFinancialGraphHover(null), 500)
+    }
+
+    const markerStackCounts = new Map()
+    const placedMarkers = markerList.map((marker, markerIndex) => {
+      const seriesIndex = cleanSeries.findIndex((series) => String(series.matter_id || '') === String(marker.series_id || ''))
+      if (seriesIndex < 0) return null
+      const series = cleanSeries[seriesIndex]
+      const balance = seriesBalanceAtDate(series, marker.date)
+      const stackKey = `${marker.series_id}|${financeDateOnly(marker.date)}`
+      const stackIndex = markerStackCounts.get(stackKey) || 0
+      markerStackCounts.set(stackKey, stackIndex + 1)
+      const lineY = yForBalance(balance)
+      const iconY = Math.max(plotTop + 2, Math.min(plotBottom - 13, lineY - 5.5 - (stackIndex % 4) * 14))
+      return { ...marker, markerIndex, series, seriesIndex, x: xForDate(marker.date), lineY, iconY, color: graphColors[seriesIndex % graphColors.length] }
+    }).filter(Boolean)
+
+    const hoverMatterRows = financialGraphHover
+      ? (financialGraphHover.mio_matter_ids || []).map((matterId) => {
+          const matter = matters.find((row) => String(row.id) === String(matterId))
+          return matter ? { id: String(matter.id), name: formatMatterOption(matter), status: matterWithdrawalStatus(matter) } : null
+        }).filter(Boolean)
+      : []
+
+    const tooltipViewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200
+    const tooltipViewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800
+    const tooltipLeft = financialGraphHover ? Math.max(10, Math.min(tooltipViewportWidth - 350, Number(financialGraphHover.x || 0) + 14)) : 0
+    const tooltipTop = financialGraphHover ? Math.max(10, Math.min(tooltipViewportHeight - 220, Number(financialGraphHover.y || 0) + 14)) : 0
+
     if (!graphHasData) return <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>No graph data loaded yet.</div>
     return (
       <div>
         <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
-          <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Clio graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
+          <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Mio financial graph" style={{ width: '100%', minWidth: 760, display: 'block' }}>
             <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
             {financialGraphShowZeroLine && minBalance <= 0 && maxBalance >= 0 && <line x1={plotLeft} x2={plotRight} y1={yForBalance(0)} y2={yForBalance(0)} stroke="#111827" strokeWidth="1.5" />}
-            {yTicks.map((tick, index) => {
-              const y = yForBalance(tick)
-              return <g key={`y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g>
-            })}
+            {yTicks.map((tick, index) => { const y = yForBalance(tick); return <g key={`y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g> })}
             <line x1={plotLeft} x2={plotRight} y1={plotBottom} y2={plotBottom} stroke="#94a3b8" />
             <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
             <text x={plotLeft} y={graphHeight - 18} fontSize="12" fill="#64748b">{shortDate(minDate)}</text>
             <text x={plotRight} y={graphHeight - 18} textAnchor="end" fontSize="12" fill="#64748b">{shortDate(maxDate)}</text>
             <text x={plotLeft - 56} y={plotTop + 8} fontSize="12" fill="#64748b" transform={`rotate(-90 ${plotLeft - 56} ${plotTop + 8})`}>Dollar</text>
-            {seriesList.map((series, seriesIndex) => {
-              const points = (series.points || []).filter((point) => Number.isFinite(Number(point.balance)))
+            {cleanSeries.map((series, seriesIndex) => {
+              const points = sortedSeriesPoints(series)
               if (!points.length) return null
               const path = points.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'} ${xForDate(point.date)} ${yForBalance(point.balance)}`).join(' ')
               const color = graphColors[seriesIndex % graphColors.length]
               const canHide = typeof onSeriesHide === 'function'
               const hide = () => { if (canHide) onSeriesHide(series) }
-              return <g key={series.matter_id || series.display_number || seriesIndex} onClick={hide} style={{ cursor: canHide ? 'pointer' : 'default' }}><path d={path} fill="none" stroke={color} strokeWidth="3.5" opacity="0.01" /><path d={path} fill="none" stroke={color} strokeWidth="2.5"><title>{series.display_number}{canHide ? ' - click to hide this line' : ''}</title></path>{points.map((point, pointIndex) => <circle key={`${series.matter_id}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3" fill={color}><title>{series.display_number}: {shortDate(point.date)} {money(point.balance)}{canHide ? ' - click to hide this line' : ''}</title></circle>)}</g>
-            })}
-            {markerList.map((marker, markerIndex) => {
-              const x = xForDate(marker.date)
-              return <g key={`invoice-marker-${markerIndex}`}>
-                <rect x={x - 4} y={plotTop + 6} width="8" height="8" fill="#111827" stroke="#fff" strokeWidth="1"><title>{marker.label || 'Invoice sent'}: {shortDate(marker.date)}{marker.amount ? ` total ${money(marker.amount)}` : ''}{marker.balance ? ` balance ${money(marker.balance)}` : ''}</title></rect>
-                <line x1={x} x2={x} y1={plotTop + 16} y2={plotBottom} stroke="#111827" strokeDasharray="3 4" opacity="0.18" />
+              return <g key={series.matter_id || series.display_number || seriesIndex}>
+                <path d={path} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onMouseEnter={(event) => showSeriesHover(event, series)} onMouseMove={(event) => showSeriesHover(event, series)} onMouseLeave={scheduleSeriesHoverClose} onClick={hide} style={{ cursor: canHide ? 'pointer' : 'default' }} />
+                <path d={path} fill="none" stroke={color} strokeWidth="2.5" pointerEvents="none"><title>{series.display_number}{canHide ? ' - click to hide this line' : ''}</title></path>
+                {points.map((point, pointIndex) => <circle key={`${series.matter_id}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3.5" fill={color} onMouseEnter={(event) => showSeriesHover(event, series, point)} onMouseMove={(event) => showSeriesHover(event, series, point)} onMouseLeave={scheduleSeriesHoverClose}><title>{series.display_number}: {shortDate(point.date)} {money(point.balance)}</title></circle>)}
               </g>
             })}
+            {placedMarkers.map((marker) => (
+              <g key={`invoice-marker-${marker.invoice_id}-${marker.date}-${marker.markerIndex}`} onMouseEnter={(event) => showSeriesHover(event, marker.series, { date: marker.date, balance: seriesBalanceAtDate(marker.series, marker.date) })} onMouseLeave={scheduleSeriesHoverClose} style={{ cursor: 'help' }}>
+                {Math.abs((marker.iconY + 5.5) - marker.lineY) > 2 && <line x1={marker.x} x2={marker.x} y1={marker.lineY} y2={marker.iconY + 5.5} stroke={marker.color} strokeWidth="1" opacity="0.65" />}
+                <rect x={marker.x - 8} y={marker.iconY} width="16" height="11" rx="1.5" fill="#fff" stroke={marker.color} strokeWidth="2" />
+                <path d={`M ${marker.x - 7} ${marker.iconY + 1.5} L ${marker.x} ${marker.iconY + 7} L ${marker.x + 7} ${marker.iconY + 1.5}`} fill="none" stroke={marker.color} strokeWidth="1.25" />
+                <title>{marker.label || 'Invoice sent'}: {shortDate(marker.date)}{marker.amount ? ` total ${money(marker.amount)}` : ''}{marker.balance ? ` balance ${money(marker.balance)}` : ''}{marker.recipient ? ` to ${marker.recipient}` : ''}</title>
+              </g>
+            ))}
           </svg>
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 10 }}>
-          {seriesList.map((series, index) => <label key={series.matter_id || index} title={typeof onSeriesHide === 'function' ? 'Uncheck to hide this line from the graph' : ''} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}>{typeof onSeriesHide === 'function' && <input type="checkbox" checked onChange={() => onSeriesHide(series)} />}<span style={{ width: 10, height: 10, borderRadius: 999, background: graphColors[index % graphColors.length], display: 'inline-block' }} />{series.display_number}</label>)}
-          {!!markerList.length && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}><span style={{ width: 10, height: 10, background: '#111827', display: 'inline-block' }} />Invoice sent</span>}
+          {cleanSeries.map((series, index) => <label key={series.matter_id || index} title={typeof onSeriesHide === 'function' ? 'Uncheck to hide this line from the graph' : ''} style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}>{typeof onSeriesHide === 'function' && <input type="checkbox" checked onChange={() => onSeriesHide(series)} />}<span style={{ width: 10, height: 10, borderRadius: 999, background: graphColors[index % graphColors.length], display: 'inline-block' }} />{series.display_number}</label>)}
+          {!!placedMarkers.length && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}><span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>✉</span>Invoice sent from Mio</span>}
         </div>
+        {financialGraphHover && (
+          <div onMouseEnter={() => { if (financialGraphHoverCloseTimerRef.current) clearTimeout(financialGraphHoverCloseTimerRef.current) }} onMouseLeave={scheduleSeriesHoverClose} style={{ position: 'fixed', left: tooltipLeft, top: tooltipTop, zIndex: 25000, width: 330, maxWidth: 'calc(100vw - 20px)', padding: 12, borderRadius: 10, border: '1px solid #94a3b8', background: '#fff', boxShadow: '0 12px 34px rgba(15,23,42,0.24)', color: '#0f172a' }}>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 2 }}>Financial graph line</div>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>{financialGraphHover.display_number}</div>
+            {financialGraphHover.point_date && <div style={{ marginTop: 4, fontSize: 12 }}>{shortDate(financialGraphHover.point_date)} • <strong>{money(financialGraphHover.point_balance)}</strong></div>}
+            {hoverMatterRows.length ? <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{hoverMatterRows.map((matterRow) => <div key={matterRow.id} style={{ borderTop: '1px solid #e2e8f0', paddingTop: 8 }}><div style={{ fontWeight: 750, fontSize: 12 }}>{matterRow.name}</div><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginTop: 5 }}><span style={{ fontSize: 11, color: matterRow.status === 'withdrawing' ? '#b91c1c' : '#166534', fontWeight: 800 }}>{matterRow.status === 'withdrawing' ? 'WITHDRAWING' : 'NOT WITHDRAWING'}</span><button type="button" onClick={(event) => { event.stopPropagation(); updateMatterWithdrawalStatus(matterRow.id, matterRow.status === 'withdrawing' ? 'not_withdrawing' : 'withdrawing') }}>{matterRow.status === 'withdrawing' ? 'Mark not withdrawing' : 'Mark withdrawing'}</button></div></div>)}</div> : <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>This historical line is not linked to a Mio matter, so its withdrawal status cannot be changed here.</div>}
+          </div>
+        )}
       </div>
     )
   }
@@ -48954,39 +49060,169 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return labels[metric] || metric
   }
 
+  function mioFinancialGraphMatterKey(matter) {
+    if (!matter) return ''
+    const numbered = billingMatterNumber(matter) || matter.clio_matter_number || matter.clio_display_number || matter.cause_number || matter.case_number || ''
+    if (numbered) return normalizeClioMatterNumber(numbered) || String(numbered)
+    return `mio:${String(matter.id || matter.name || '')}`
+  }
+
+  function financialGraphRowMatter(row) {
+    if (!row) return null
+    return matterForSnapshotRow(row)
+  }
+
+  function financialGraphRowMatterKey(row) {
+    const linkedMatter = financialGraphRowMatter(row)
+    if (linkedMatter) return mioFinancialGraphMatterKey(linkedMatter)
+    return normalizeClioMatterNumber(row?.clio_matter_number || row?.display_number || row?.matter_name || '') || String(row?.mio_matter_id || row?.id || '')
+  }
+
+  function financialGraphRowClientName(row) {
+    const linkedMatter = financialGraphRowMatter(row)
+    return String((linkedMatter ? matterClientName(linkedMatter) : '') || row?.clio_client_name || row?.client_name || 'Unknown client').trim() || 'Unknown client'
+  }
+
+  function latestMioInvoiceForGraphMatter(matter) {
+    return financeInvoicesForMatter(matter)
+      .filter((invoice) => invoice?.status !== 'void')
+      .sort((left, right) => String(right.emailed_at || right.issue_date || right.created_at || '').localeCompare(String(left.emailed_at || left.issue_date || left.created_at || '')))[0] || null
+  }
+
+  function mioCurrentFinancialGraphRows() {
+    const snapshotDate = financeDateOnly(new Date().toISOString())
+    return (matters || []).map((matter) => {
+      const matterId = String(matter.id || '')
+      if (!matterId) return null
+      const finance = bulkFinanceByMatterId.get(matterId) || clientFinanceNumbers(matter)
+      const latestInvoice = latestMioInvoiceForGraphMatter(matter)
+      const opening = mioFinanceOpeningBalances?.[matterId] || finance.snapshot || {}
+      return {
+        id: `mio-current:${matterId}:${snapshotDate}`,
+        user_id: session?.user?.id || '',
+        snapshot_date: snapshotDate,
+        mio_matter_id: matterId,
+        clio_matter_number: billingMatterNumber(matter) || matter.cause_number || matter.case_number || matter.name || matterId,
+        clio_client_name: matterClientName(matter) || latestInvoice?.client_name || '',
+        matter_name: formatMatterOption(matter),
+        case_type: clioFixedCaseTypeForMioMatter(matter),
+        case_status: matter.case_status || matter.status || '',
+        matter_status: matter.matter_status || matter.status || '',
+        matter_trust_funds: financeNumber(finance.trust),
+        work_in_progress: financeNumber(finance.wip),
+        outstanding_balance: financeNumber(finance.outstanding),
+        invoice_total: financeNumber(latestInvoice?.total),
+        invoice_balance: latestInvoice ? invoiceBalanceAmount(latestInvoice) : 0,
+        paid_amount: latestInvoice ? invoicePaidAmount(latestInvoice) : 0,
+        invoice_sent_at: latestInvoice?.emailed_at || null,
+        minimum_balance: financeNumber(finance.minimumBalance),
+        initial_retainer: financeNumber(opening.initial_retainer ?? clioInitialRetainersByMatterId?.[matterId] ?? matter.initial_retainer ?? matter.retainer_amount),
+        source_report_name: 'Mio live financial data',
+        source_kind: 'mio_live',
+        is_mio_generated: true
+      }
+    }).filter(Boolean)
+  }
+
+  function mioOpeningFinancialGraphRows() {
+    const cutoverDate = financeDateOnly(activeMioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
+    return (matters || []).map((matter) => {
+      const matterId = String(matter.id || '')
+      const opening = latestTrustSnapshotForMatter(matter)
+      if (!matterId || !opening || !cutoverDate) return null
+      return {
+        ...opening,
+        id: `mio-opening:${matterId}:${cutoverDate}`,
+        snapshot_date: cutoverDate,
+        mio_matter_id: matterId,
+        clio_matter_number: billingMatterNumber(matter) || matter.cause_number || matter.case_number || matter.name || matterId,
+        clio_client_name: matterClientName(matter) || opening.clio_client_name || '',
+        matter_name: formatMatterOption(matter),
+        case_type: clioFixedCaseTypeForMioMatter(matter),
+        case_status: matter.case_status || matter.status || '',
+        matter_status: matter.matter_status || matter.status || '',
+        matter_trust_funds: financeNumber(opening.matter_trust_funds ?? opening.trust_running_balance ?? opening.trust),
+        work_in_progress: financeNumber(opening.work_in_progress ?? opening.wip),
+        outstanding_balance: financeNumber(opening.outstanding_balance ?? opening.outstanding),
+        minimum_balance: financeNumber(opening.minimum_balance ?? clioMinimumBalancesByMatterId?.[matterId]),
+        initial_retainer: financeNumber(opening.initial_retainer ?? clioInitialRetainersByMatterId?.[matterId]),
+        source_report_name: 'Mio fixed opening record',
+        source_kind: 'mio_opening',
+        is_mio_generated: true
+      }
+    }).filter(Boolean)
+  }
+
+  function mioFinancialGraphRows() {
+    const cutoverDate = financeDateOnly(activeMioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
+    const preCutoverRows = (clioSnapshotRows || [])
+      .filter((row) => {
+        const rowDate = financeDateOnly(row?.snapshot_date)
+        return !!rowDate && (!cutoverDate || rowDate <= cutoverDate)
+      })
+      .map((row) => {
+        const linkedMatter = financialGraphRowMatter(row)
+        return linkedMatter ? {
+          ...row,
+          mio_matter_id: String(linkedMatter.id || row.mio_matter_id || ''),
+          matter_name: formatMatterOption(linkedMatter),
+          clio_client_name: matterClientName(linkedMatter) || row.clio_client_name || '',
+          case_type: clioFixedCaseTypeForMioMatter(linkedMatter),
+          case_status: linkedMatter.case_status || linkedMatter.status || row.case_status || '',
+          matter_status: linkedMatter.matter_status || linkedMatter.status || row.matter_status || '',
+          source_kind: 'clio_pre_cutover'
+        } : { ...row, source_kind: 'clio_pre_cutover' }
+      })
+    const rows = [...preCutoverRows, ...mioOpeningFinancialGraphRows(), ...mioCurrentFinancialGraphRows()]
+    const byMatterDate = new Map()
+    rows.forEach((row) => {
+      const key = financialGraphRowMatterKey(row)
+      const date = financeDateOnly(row?.snapshot_date)
+      if (!key || !date) return
+      const mapKey = `${key}|${date}`
+      const existing = byMatterDate.get(mapKey)
+      const incomingPriority = row.source_kind === 'mio_live' ? 3 : row.source_kind === 'mio_opening' ? 2 : 1
+      const existingPriority = existing?.source_kind === 'mio_live' ? 3 : existing?.source_kind === 'mio_opening' ? 2 : 1
+      if (!existing || incomingPriority >= existingPriority) byMatterDate.set(mapKey, row)
+    })
+    return Array.from(byMatterDate.values()).sort((left, right) => String(left.snapshot_date || '').localeCompare(String(right.snapshot_date || '')))
+  }
+
   function filteredSnapshotRowsForGraph() {
     const from = clioBalanceFrom ? new Date(`${clioBalanceFrom}T00:00:00`).getTime() : -Infinity
     const to = clioBalanceTo ? new Date(`${clioBalanceTo}T23:59:59`).getTime() : Infinity
-    let rowsToFilter = clioSnapshotRows || []
+    let rowsToFilter = mioFinancialGraphRows()
     if (clioGraphDatePreset === 'currently') {
       const latestByMatter = new Map()
       rowsToFilter.forEach((row) => {
-        const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
-        if (!matterNo) return
+        const matterKey = financialGraphRowMatterKey(row)
+        if (!matterKey) return
         const ts = new Date(row.snapshot_date).getTime()
         if (!Number.isFinite(ts)) return
-        const current = latestByMatter.get(matterNo)
-        if (!current || ts > current.ts) latestByMatter.set(matterNo, { row, ts })
+        const current = latestByMatter.get(matterKey)
+        if (!current || ts > current.ts) latestByMatter.set(matterKey, { row, ts })
       })
       rowsToFilter = Array.from(latestByMatter.values()).map((item) => item.row)
     }
     return rowsToFilter.filter((row) => {
-      const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
-      if (!matterNo) return false
+      const matterKey = financialGraphRowMatterKey(row)
+      if (!matterKey) return false
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts) || ts < from || ts > to) return false
-      const normalizedCaseStatus = snapshotRowCaseStatus(row).trim().toLowerCase()
-      const linkedMatter = matterForSnapshotRow(row)
+      const linkedMatter = financialGraphRowMatter(row)
+      const normalizedCaseStatus = String(linkedMatter?.case_status || snapshotRowCaseStatus(row) || '').trim().toLowerCase()
       const normalizedMatterStatus = String(linkedMatter?.matter_status || row.matter_status || '').trim().toLowerCase()
       const selectedCaseStatuses = (clioGraphCaseStatusFilters || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean)
       if (selectedCaseStatuses.includes('__none__')) return false
       if (selectedCaseStatuses.length && !selectedCaseStatuses.includes(normalizedCaseStatus)) return false
-      if ((clioGraphMatterStatusFilters || []).length && !(clioGraphMatterStatusFilters || []).map((value) => String(value).trim().toLowerCase()).includes(normalizedMatterStatus)) return false
-      if (clioGraphMappingFilter === 'mapped' && !row.mio_matter_id) return false
-      if (clioGraphMappingFilter === 'unmapped' && row.mio_matter_id) return false
+      const selectedMatterStatuses = (clioGraphMatterStatusFilters || []).map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+      if (selectedMatterStatuses.includes('__none__')) return false
+      if (selectedMatterStatuses.length && !selectedMatterStatuses.includes(normalizedMatterStatus)) return false
+      if (clioGraphMappingFilter === 'mapped' && !linkedMatter) return false
+      if (clioGraphMappingFilter === 'unmapped' && linkedMatter) return false
       const activeTypes = activeClioGraphCaseTypeFilters.includes('all') ? ['all'] : activeClioGraphCaseTypeFilters
       if (!activeTypes.includes('all')) {
-        const rowType = String(row.case_type || clioMatterFixedCaseType({ display_number: row.clio_matter_number, description: row.case_type || row.matter_status || '' }) || 'Other')
+        const rowType = String(linkedMatter ? clioFixedCaseTypeForMioMatter(linkedMatter) : (row.case_type || 'Other'))
         if (!activeTypes.includes(rowType)) return false
       }
       return true
@@ -48994,12 +49230,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function snapshotGraphMatterLabel(row) {
-    const clioLabel = row.clio_matter_number || 'Matter'
-    const mioMatter = row.mio_matter_id ? matters.find((matter) => String(matter.id) === String(row.mio_matter_id)) : null
-    const mioLabel = mioMatter ? formatMatterOption(mioMatter) : ''
+    const linkedMatter = financialGraphRowMatter(row)
+    const clioLabel = row?.clio_matter_number || linkedMatter?.cause_number || 'Matter'
+    const mioLabel = linkedMatter ? formatMatterOption(linkedMatter) : (row?.matter_name || '')
     if (clioGraphMatterLabelMode === 'mio') return mioLabel || clioLabel
     if (clioGraphMatterLabelMode === 'both') return mioLabel ? `${mioLabel} / ${clioLabel}` : clioLabel
-    return clioLabel
+    return clioLabel || mioLabel
   }
 
   function snapshotGraphMatterOptions(metric = snapshotGraphMetric) {
@@ -49008,13 +49244,29 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const hasMinimum = String(snapshotGraphMinimumAmount || '').trim() !== '' && Number.isFinite(minimum)
     const byMatter = new Map()
     rows.forEach((row) => {
-      const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
-      if (!matterNo) return
-      const groupKey = clioGraphGroupingMode === 'client' ? String(row.clio_client_name || row.client_name || 'Unknown client') : matterNo
+      const matterKey = financialGraphRowMatterKey(row)
+      if (!matterKey) return
+      const clientName = financialGraphRowClientName(row)
+      const groupKey = clioGraphGroupingMode === 'client' ? clientName : matterKey
       const ts = new Date(row.snapshot_date).getTime()
       const value = snapshotGraphValueForMetric(row, metric)
+      const linkedMatter = financialGraphRowMatter(row)
       const existing = byMatter.get(groupKey)
-      if (!existing || ts > existing.ts) byMatter.set(groupKey, { matterNo: groupKey, label: clioGraphGroupingMode === 'client' ? groupKey : snapshotGraphMatterLabel(row), client: row.clio_client_name || '', value, ts })
+      const matterIds = new Set(existing?.mio_matter_ids || [])
+      if (linkedMatter?.id) matterIds.add(String(linkedMatter.id))
+      if (!existing || ts > existing.ts) {
+        byMatter.set(groupKey, {
+          matterNo: groupKey,
+          label: clioGraphGroupingMode === 'client' ? clientName : snapshotGraphMatterLabel(row),
+          client: clientName,
+          value,
+          ts,
+          mio_matter_id: linkedMatter?.id ? String(linkedMatter.id) : '',
+          mio_matter_ids: Array.from(matterIds)
+        })
+      } else {
+        existing.mio_matter_ids = Array.from(matterIds)
+      }
     })
     return Array.from(byMatter.values())
       .filter((item) => !hasMinimum || Number(item.value || 0) >= minimum)
@@ -49022,46 +49274,117 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function snapshotGraphSeries() {
-    const optionSet = new Set(snapshotGraphMatterOptions(snapshotGraphMetric).map((option) => option.matterNo))
+    const optionSet = new Set(snapshotGraphMatterOptions(snapshotGraphMetric).map((option) => String(option.matterNo)))
     const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
     const rows = filteredSnapshotRowsForGraph()
     const bySeries = new Map()
     rows.forEach((row) => {
-      const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
-      if (!matterNo) return
-      const key = clioGraphGroupingMode === 'client' ? String(row.clio_client_name || row.client_name || 'Unknown client') : matterNo
+      const matterKey = financialGraphRowMatterKey(row)
+      if (!matterKey) return
+      const clientName = financialGraphRowClientName(row)
+      const key = clioGraphGroupingMode === 'client' ? clientName : matterKey
       if (!selectedSet.has(key) || !optionSet.has(key)) return
-      if (!bySeries.has(key)) bySeries.set(key, { matter_id: key, display_number: clioGraphGroupingMode === 'client' ? key : snapshotGraphMatterLabel(row), pointsByDate: new Map() })
-      const date = row.snapshot_date
+      const linkedMatter = financialGraphRowMatter(row)
+      if (!bySeries.has(key)) bySeries.set(key, {
+        matter_id: key,
+        display_number: clioGraphGroupingMode === 'client' ? clientName : snapshotGraphMatterLabel(row),
+        pointsByDate: new Map(),
+        mioMatterIds: new Set(),
+        matterNames: new Map()
+      })
+      const date = financeDateOnly(row.snapshot_date)
       const value = snapshotGraphValueForMetric(row, snapshotGraphMetric)
       const series = bySeries.get(key)
-      series.pointsByDate.set(date, Number(series.pointsByDate.get(date) || 0) + value)
+      if (linkedMatter?.id) {
+        series.mioMatterIds.add(String(linkedMatter.id))
+        series.matterNames.set(String(linkedMatter.id), formatMatterOption(linkedMatter))
+      }
+      if (clioGraphGroupingMode === 'client') series.pointsByDate.set(date, Number(series.pointsByDate.get(date) || 0) + value)
+      else series.pointsByDate.set(date, value)
     })
-    return Array.from(bySeries.values()).map((series) => ({ matter_id: series.matter_id, display_number: series.display_number, points: Array.from(series.pointsByDate.entries()).map(([date,balance]) => ({ date, balance })).sort((a,b) => String(a.date).localeCompare(String(b.date))) }))
+    return Array.from(bySeries.values()).map((series) => ({
+      matter_id: series.matter_id,
+      display_number: series.display_number,
+      mio_matter_ids: Array.from(series.mioMatterIds),
+      matter_names: Array.from(series.matterNames.entries()).map(([id, name]) => ({ id, name })),
+      points: Array.from(series.pointsByDate.entries()).map(([date, balance]) => ({ date, balance })).sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    }))
   }
 
   function snapshotGraphInvoiceMarkers() {
     if (!snapshotGraphShowInvoices) return []
-    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(normalizeClioMatterNumber).filter(Boolean))
-    return filteredSnapshotRowsForGraph()
-      .filter((row) => selectedSet.has(normalizeClioMatterNumber(row.clio_matter_number)) && row.invoice_sent_at)
-      .map((row) => ({
-        date: row.invoice_sent_at,
-        label: `${row.clio_matter_number || 'Matter'} invoice sent`,
-        amount: Number(row.invoice_total || 0),
-        balance: Number(row.invoice_balance || 0)
-      }))
+    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
+    const from = clioBalanceFrom ? new Date(`${clioBalanceFrom}T00:00:00`).getTime() : -Infinity
+    const to = clioBalanceTo ? new Date(`${clioBalanceTo}T23:59:59`).getTime() : Infinity
+    const markers = []
+    const dedupe = new Set()
+    ;(mioInvoices || []).forEach((invoice) => {
+      const matter = billingInvoiceMatter(invoice)
+      if (!matter) return
+      const clientName = matterClientName(matter) || invoice.client_name || 'Unknown client'
+      const seriesId = clioGraphGroupingMode === 'client' ? clientName : mioFinancialGraphMatterKey(matter)
+      if (!selectedSet.has(seriesId)) return
+      const history = Array.isArray(invoice.email_history) ? invoice.email_history.filter((entry) => entry?.sent_at) : []
+      const sends = history.length ? history : (invoice.emailed_at ? [{ sent_at: invoice.emailed_at, recipient_email: invoice.recipient_email, subject: invoice.email_subject }] : [])
+      sends.forEach((entry) => {
+        const sentAt = entry.sent_at || invoice.emailed_at
+        const sentTs = new Date(sentAt).getTime()
+        if (!Number.isFinite(sentTs) || sentTs < from || sentTs > to) return
+        const key = `${invoice.id}|${sentAt}|${entry.recipient_email || invoice.recipient_email || ''}`
+        if (dedupe.has(key)) return
+        dedupe.add(key)
+        markers.push({
+          date: sentAt,
+          series_id: seriesId,
+          matter_id: String(matter.id || ''),
+          matter_name: formatMatterOption(matter),
+          invoice_id: String(invoice.id || ''),
+          invoice_number: invoice.invoice_number || 'Invoice',
+          invoice_type: invoice.invoice_type || 'service_invoice',
+          label: `${formatMatterOption(matter)} — ${invoice.invoice_number || 'Invoice'} sent`,
+          amount: financeNumber(invoice.total),
+          balance: invoiceBalanceAmount(invoice),
+          recipient: entry.recipient_email || invoice.recipient_email || '',
+          subject: entry.subject || invoice.email_subject || ''
+        })
+      })
+    })
+    return markers.sort((left, right) => String(left.date).localeCompare(String(right.date)))
+  }
+
+  async function refreshMioFinancialGraphData() {
+    setClioSnapshotLoading(true)
+    setClioSnapshotError('')
+    try {
+      const tasks = [
+        loadMioInvoicesFromDatabase({ force: true }),
+        loadMioInvoiceEventsFromDatabase({ force: true }),
+        loadLawPayWorkspace({ force: true }),
+        loadClioFinancialSnapshots({ ignoreDateFilters: true })
+      ]
+      if (session?.user?.id) tasks.push(loadBillingRelationalData(session.user.id, { force: true }))
+      const results = await Promise.allSettled(tasks)
+      const failures = results.filter((result) => result.status === 'rejected')
+      if (failures.length === results.length) throw failures[0].reason || new Error('Mio graph data could not be refreshed.')
+    } catch (error) {
+      setClioSnapshotError(error?.message || String(error))
+    } finally {
+      setClioSnapshotLoading(false)
+    }
   }
 
   function renderClioSnapshotGraphPanel() {
     const options = snapshotGraphMatterOptions()
-    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers)
+    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String))
     const series = snapshotGraphSeries()
     const invoiceMarkers = snapshotGraphInvoiceMarkers()
+    const graphRows = filteredSnapshotRowsForGraph()
+    const graphExtendsToToday = !clioBalanceTo || financeDateOnly(clioBalanceTo) >= financeDateOnly(new Date().toISOString())
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
-        <h2 style={{ marginTop: 0 }}>Financial Snapshot Graphs</h2>
-        <p style={{ color: '#64748b' }}>Graphs read from the saved Supabase financial snapshot table. This avoids rebuilding history from live Clio calls.</p>
+        <h2 style={{ marginTop: 0 }}>Mio Financial Snapshot Graphs</h2>
+        <p style={{ color: '#64748b' }}>The graph now uses Mio as the live financial source. Clio rows are used only for history through the fixed {activeMioBillingCutoverDate} cutover; Mio generates the current endpoint, current balances, and every sent-invoice envelope after cutover.</p>
+        <div style={{ padding: 10, marginBottom: 12, border: '1px solid #bbf7d0', borderRadius: 9, background: '#f0fdf4', color: '#166534' }}><strong>Mio-only finance graph is active.</strong> The line extends through today, and invoice envelopes come from Mio invoice email history rather than Clio snapshots.</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
           <label>
             <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis field</div>
@@ -49094,36 +49417,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               <option value="custom">Custom</option>
             </select>
           </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>From date</div>
-            <input type="date" value={clioBalanceFrom} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} />
-          </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>To date</div>
-            <input type="date" value={clioBalanceTo} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} />
-          </label>
+          <label><div style={{ fontSize: 12, color: '#64748b' }}>From date</div><input type="date" value={clioBalanceFrom} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceFrom(event.target.value)} style={{ width: '100%' }} /></label>
+          <label><div style={{ fontSize: 12, color: '#64748b' }}>To date</div><input type="date" value={clioBalanceTo} disabled={clioGraphDatePreset !== 'custom'} onChange={(event) => setClioBalanceTo(event.target.value)} style={{ width: '100%' }} /></label>
           <MultiCheckboxFilter label="Case status" options={clioCaseStatusOptions} selected={clioGraphCaseStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphCaseStatusFilters, value, setClioGraphCaseStatusFilters)} onAll={() => setClioGraphCaseStatusFilters([])} onNone={() => setClioGraphCaseStatusFilters(['__none__'])} />
           <MultiCheckboxFilter label="Matter status" options={clioMatterStatusOptions} selected={clioGraphMatterStatusFilters} onToggle={(value) => toggleMultiValue(clioGraphMatterStatusFilters, value, setClioGraphMatterStatusFilters)} onAll={() => setClioGraphMatterStatusFilters([])} onNone={() => setClioGraphMatterStatusFilters(['__none__'])} />
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Mapped / unmapped</div>
-            <select value={clioGraphMappingFilter} onChange={(event) => setClioGraphMappingFilter(event.target.value)} style={{ width: '100%' }}>
-              <option value="all">All Clio matters</option>
-              <option value="mapped">Mapped Mio matters only</option>
-              <option value="unmapped">Unmapped Clio matters only</option>
-            </select>
-          </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Matter names shown as</div>
-            <select value={clioGraphMatterLabelMode} onChange={(event) => setClioGraphMatterLabelMode(event.target.value)} style={{ width: '100%' }}>
-              <option value="clio">Clio names</option>
-              <option value="mio">Mio names</option>
-              <option value="both">Mio / Clio names</option>
-            </select>
-          </label>
-          <label>
-            <div style={{ fontSize: 12, color: '#64748b' }}>Only show matters at or above</div>
-            <input type="number" step="100" value={snapshotGraphMinimumAmount} onChange={(event) => setSnapshotGraphMinimumAmount(event.target.value)} placeholder="Dollar amount" style={{ width: '100%' }} />
-          </label>
+          <label><div style={{ fontSize: 12, color: '#64748b' }}>Mio link status</div><select value={clioGraphMappingFilter} onChange={(event) => setClioGraphMappingFilter(event.target.value)} style={{ width: '100%' }}><option value="all">All graph matters</option><option value="mapped">Mio matters only</option><option value="unmapped">Unmapped historical rows only</option></select></label>
+          <label><div style={{ fontSize: 12, color: '#64748b' }}>Matter names shown as</div><select value={clioGraphMatterLabelMode} onChange={(event) => setClioGraphMatterLabelMode(event.target.value)} style={{ width: '100%' }}><option value="clio">Cause / Clio number</option><option value="mio">Mio matter name</option><option value="both">Mio / cause number</option></select></label>
+          <label><div style={{ fontSize: 12, color: '#64748b' }}>Only show matters at or above</div><input type="number" step="100" value={snapshotGraphMinimumAmount} onChange={(event) => setSnapshotGraphMinimumAmount(event.target.value)} placeholder="Dollar amount" style={{ width: '100%' }} /></label>
           <details style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, background: '#fff' }}>
             <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Case types ({activeClioGraphCaseTypeFilters.includes('all') ? 'All' : activeClioGraphCaseTypeFilters.length})</summary>
             <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflow: 'auto', marginTop: 8 }}>
@@ -49133,27 +49433,28 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </details>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-          <button type="button" onClick={loadClioFinancialSnapshots} disabled={clioSnapshotLoading}>Load saved snapshots</button>
-          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled>Clio refresh disabled</button>
+          <button type="button" onClick={refreshMioFinancialGraphData} disabled={clioSnapshotLoading}>{clioSnapshotLoading ? 'Refreshing Mio data…' : 'Refresh Mio graph'}</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 5).map((row) => row.matterNo))}>Select first 5 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 15).map((row) => row.matterNo))}>Select first 15 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.map((row) => row.matterNo))}>Select all shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers([])} disabled={!snapshotGraphSelectedMatterNumbers.length}>Clear selected</button>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>Group by <select value={clioGraphGroupingMode} onChange={(event) => { setClioGraphGroupingMode(event.target.value); setSnapshotGraphSelectedMatterNumbers([]) }}><option value="matter">Matters</option><option value="client">Clients (combine all matters)</option></select></label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={financialGraphShowZeroLine} onChange={(event) => setFinancialGraphShowZeroLine(event.target.checked)} /> Show $0 line</label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={snapshotGraphShowInvoices} onChange={(event) => setSnapshotGraphShowInvoices(event.target.checked)} /> Show invoice sent markers</label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={snapshotGraphShowInvoices} onChange={(event) => setSnapshotGraphShowInvoices(event.target.checked)} /> Show invoice sent envelopes</label>
           <strong>{snapshotGraphSelectedMatterNumbers.length} selected; {options.length} shown by filter</strong>
-          <span style={{ color: '#64748b' }}>{clioSnapshotRows.length ? `${clioSnapshotRows.length} saved snapshot row(s) loaded for ${clioBalanceFrom || 'beginning'} to ${clioBalanceTo || 'today'}.` : 'No saved snapshot rows loaded yet.'}</span>
+          <span style={{ color: '#64748b' }}>{graphRows.length} graph point row(s) loaded through {clioBalanceTo || financeDateOnly(new Date().toISOString())}{snapshotGraphShowInvoices ? `; ${invoiceMarkers.length} sent-invoice envelope(s).` : '.'}</span>
         </div>
+        {clioSnapshotError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 9, padding: 10, marginBottom: 10 }}>{clioSnapshotError}</div>}
         <div style={{ maxHeight: 230, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
-          {options.map((option) => (
-            <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}>
-              <input type="checkbox" checked={selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => current.includes(option.matterNo) ? current.filter((value) => value !== option.matterNo) : [...current, option.matterNo])} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawingFinancialSeries.includes(String(option.matterNo)) ? ' — WITHDRAWING' : ''}
-            </label>
-          ))}
+          {options.map((option) => {
+            const matterIds = option.mio_matter_ids || (option.mio_matter_id ? [option.mio_matter_id] : [])
+            const withdrawing = matterIds.some((matterId) => matterWithdrawalStatus(matterId) === 'withdrawing')
+            return <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}><input type="checkbox" checked={selectedSet.has(String(option.matterNo))} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => current.map(String).includes(String(option.matterNo)) ? current.filter((value) => String(value) !== String(option.matterNo)) : [...current, option.matterNo])} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawing ? ' — WITHDRAWING' : ''}</label>
+          })}
         </div>
+        {snapshotGraphShowInvoices && !invoiceMarkers.length && <div style={{ marginBottom: 10, padding: 9, border: '1px solid #fde68a', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}>No Mio invoice sends match the selected graph lines and date range. Mio currently has {(mioInvoices || []).filter(invoiceHasBeenEmailed).length} sent invoice record(s) available.</div>}
         <h3 style={{ marginBottom: 8 }}>{snapshotGraphMetricLabel()}</h3>
-        {renderClioGraph(series, { invoiceMarkers, onSeriesHide: (seriesToHide) => setSnapshotGraphSelectedMatterNumbers((current) => current.filter((value) => normalizeClioMatterNumber(value) !== normalizeClioMatterNumber(seriesToHide?.matter_id))) })}
+        {renderClioGraph(series, { invoiceMarkers, extendToToday: graphExtendsToToday, onSeriesHide: (seriesToHide) => setSnapshotGraphSelectedMatterNumbers((current) => current.filter((value) => String(value) !== String(seriesToHide?.matter_id))) })}
       </div>
     )
   }
@@ -49245,17 +49546,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function latestSnapshotRowsForBarGraph() {
-    const optionSet = new Set(snapshotGraphMatterOptions(snapshotBarSortMetric).map((option) => option.matterNo))
-    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(normalizeClioMatterNumber).filter(Boolean))
+    const optionSet = new Set(snapshotGraphMatterOptions(snapshotBarSortMetric).map((option) => String(option.matterNo)))
+    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
     const latestByMatter = new Map()
     filteredSnapshotRowsForGraph().forEach((row) => {
-      const matterNo = normalizeClioMatterNumber(row.clio_matter_number)
-      if (!matterNo || !optionSet.has(matterNo)) return
-      if (selectedSet.size && !selectedSet.has(matterNo)) return
+      const matterNo = financialGraphRowMatterKey(row)
+      if (!matterNo || !optionSet.has(String(matterNo))) return
+      if (selectedSet.size && !selectedSet.has(String(matterNo))) return
       const ts = new Date(row.snapshot_date).getTime()
       if (!Number.isFinite(ts)) return
-      const current = latestByMatter.get(matterNo)
-      if (!current || ts > current.ts) latestByMatter.set(matterNo, { row, ts })
+      const current = latestByMatter.get(String(matterNo))
+      if (!current || ts > current.ts) latestByMatter.set(String(matterNo), { row, ts })
     })
     return Array.from(latestByMatter.values()).map((item) => item.row)
   }
@@ -49289,11 +49590,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5']
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minValue + ratio * ySpan)
     const options = snapshotGraphMatterOptions(snapshotBarSortMetric)
-    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(normalizeClioMatterNumber).filter(Boolean))
+    const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Client Bar Graph</h2>
-        <p style={{ color: '#64748b' }}>Vertical bar graph using the latest saved snapshot for each matter. The bars for one client/matter touch each other, then Mio leaves a gap before the next matter.</p>
+        <p style={{ color: '#64748b' }}>Vertical bar graph using each matter's latest Mio balance. Pre-cutover Clio history remains read-only; the displayed latest values come from Mio.</p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
           <label>
             <div style={{ fontSize: 12, color: '#64748b' }}>Date range</div>
@@ -49319,8 +49620,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </details>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-          <button type="button" onClick={loadClioFinancialSnapshots} disabled={clioSnapshotLoading}>Load saved snapshots</button>
-          <button type="button" onClick={importCurrentClioFinancialValuesFromReports} disabled>Clio refresh disabled</button>
+          <button type="button" onClick={refreshMioFinancialGraphData} disabled={clioSnapshotLoading}>{clioSnapshotLoading ? 'Refreshing Mio data…' : 'Refresh Mio graph'}</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 5).map((row) => row.matterNo))}>Select first 5 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.slice(0, 15).map((row) => row.matterNo))}>Select first 15 shown</button>
           <button type="button" onClick={() => setSnapshotGraphSelectedMatterNumbers(options.map((row) => row.matterNo))}>Select all shown</button>
@@ -49328,13 +49628,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <strong>{snapshotGraphSelectedMatterNumbers.length || options.length} selected/shown; {options.length} available</strong>
         </div>
         <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
-          {options.map((option) => <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}><input type="checkbox" checked={!selectedSet.size || selectedSet.has(option.matterNo)} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => { const clean = current.map(normalizeClioMatterNumber).filter(Boolean); if (!clean.length) return options.filter((item) => item.matterNo !== option.matterNo).map((item) => item.matterNo); return clean.includes(option.matterNo) ? clean.filter((value) => value !== option.matterNo) : [...clean, option.matterNo] })} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawingFinancialSeries.includes(String(option.matterNo)) ? ' — WITHDRAWING' : ''}</label>)}
+          {options.map((option) => {
+            const matterIds = option.mio_matter_ids || (option.mio_matter_id ? [option.mio_matter_id] : [])
+            const withdrawing = matterIds.some((matterId) => matterWithdrawalStatus(matterId) === 'withdrawing')
+            return <label key={option.matterNo} style={{ display: 'block', padding: '5px 8px', borderBottom: '1px solid #f1f5f9' }}><input type="checkbox" checked={!selectedSet.size || selectedSet.has(String(option.matterNo))} onChange={() => setSnapshotGraphSelectedMatterNumbers((current) => { const clean = current.map(String).filter(Boolean); if (!clean.length) return options.filter((item) => String(item.matterNo) !== String(option.matterNo)).map((item) => item.matterNo); return clean.includes(String(option.matterNo)) ? clean.filter((value) => String(value) !== String(option.matterNo)) : [...clean, option.matterNo] })} /> {option.label}{option.client && clioGraphGroupingMode !== 'client' ? ` (${option.client})` : ''}{withdrawing ? ' — WITHDRAWING' : ''}</label>
+          })}
         </div>
         {!sortedRows.length ? <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569' }}>No bar graph data loaded yet. Click Load saved snapshots.</div> : (
           <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, background: '#fff' }}>
             <svg viewBox={`0 0 ${graphWidth} ${graphHeight}`} role="img" aria-label="Client bar graph" style={{ width: '100%', minWidth: Math.min(graphWidth, 1200), display: 'block' }}>
               <rect x="0" y="0" width={graphWidth} height={graphHeight} fill="#fff" />
-              {financialGraphShowZeroLine && minBalance <= 0 && maxBalance >= 0 && <line x1={plotLeft} x2={plotRight} y1={yForBalance(0)} y2={yForBalance(0)} stroke="#111827" strokeWidth="1.5" />}
+              {financialGraphShowZeroLine && minValue <= 0 && maxValue >= 0 && <line x1={plotLeft} x2={plotRight} y1={yForValue(0)} y2={yForValue(0)} stroke="#111827" strokeWidth="1.5" />}
             {yTicks.map((tick, index) => { const y = yForValue(tick); return <g key={`bar-y-${index}`}><line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="#e5e7eb" /><text x={plotLeft - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#64748b">{money(tick)}</text></g> })}
               <line x1={plotLeft} x2={plotRight} y1={zeroY} y2={zeroY} stroke="#94a3b8" />
               <line x1={plotLeft} x2={plotLeft} y1={plotTop} y2={plotBottom} stroke="#94a3b8" />
@@ -50946,7 +51250,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             Financial Snapshots
           </button>
           <button type="button" style={tabButtonStyle('snapshot_graphs')} onClick={() => setBillingTab('snapshot_graphs')}>
-            Snapshot Graphs
+            Mio Snapshot Graphs
           </button>
           <button type="button" style={tabButtonStyle('client_bar_graph')} onClick={() => setBillingTab('client_bar_graph')}>
             Client Bar Graph
