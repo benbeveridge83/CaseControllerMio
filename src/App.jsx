@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V257'
+const MIO_APP_VERSION = 'Mio V258'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -2754,6 +2754,12 @@ function App() {
   const [authChecked, setAuthChecked] = useState(false)
   const explicitSignOutRef = useRef(false)
   const supabaseSessionRefreshRef = useRef(null)
+  const supabaseRequestBackoffUntilRef = useRef(0)
+  const supabaseLastTransportWarningAtRef = useRef(0)
+  const initialDataRetryTimerRef = useRef(null)
+  const initialDataRetryAttemptRef = useRef(0)
+  const [supabaseRecoveryTick, setSupabaseRecoveryTick] = useState(0)
+  const mioTabIdRef = useRef((typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `mio-tab-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const [currentTeamMember, setCurrentTeamMember] = useState(null)
   const [userAccessChecked, setUserAccessChecked] = useState(false)
   const [loginBlockedMessage, setLoginBlockedMessage] = useState('')
@@ -2929,6 +2935,10 @@ function App() {
   const [lawPayBusy, setLawPayBusy] = useState(false)
   const [lawPayMessage, setLawPayMessage] = useState('')
   const lawPayRefreshInFlightRef = useRef(null)
+  const lawPayLastSilentSyncAtRef = useRef(0)
+  const lawPayWorkspaceLoadRef = useRef({ promise: null, lastSuccessAt: 0 })
+  const mioInvoiceLoadRef = useRef({ promise: null, lastSuccessAt: 0 })
+  const mioInvoiceEventsLoadRef = useRef({ promise: null, lastSuccessAt: 0 })
   const [lawPayForm, setLawPayForm] = useState({
     matter_id: '',
     account_key: 'operating',
@@ -4356,7 +4366,9 @@ function App() {
   const mioCloudStateSaveTimersRef = useRef({})
   const mioCloudStateSkipSaveRef = useRef(false)
   const mioCloudStateLastValuesRef = useRef({})
+  const mioCloudStateWriteQueueRef = useRef(Promise.resolve())
   const mioBillingRelationalLoadedRef = useRef('')
+  const mioBillingRelationalLoadRef = useRef({ promise: null, lastAttemptAt: 0 })
   const mioBillingRelationalSavingRef = useRef({})
   const serviceEmailBillingRecoveryRanRef = useRef('')
 
@@ -4369,8 +4381,9 @@ function App() {
   }
 
   function isSupabaseAuthTransportError(error) {
+    const status = Number(error?.status || error?.statusCode || error?.context?.status || 0)
     const message = String(error?.message || error?.error_description || error || '').toLowerCase()
-    return message.includes('failed to fetch') || message.includes('networkerror') || message.includes('network request failed') || message.includes('load failed') || message.includes('cors') || message.includes('err_failed')
+    return status === 408 || status === 429 || status >= 500 || message.includes('failed to fetch') || message.includes('networkerror') || message.includes('network request failed') || message.includes('load failed') || message.includes('cors') || message.includes('err_failed') || message.includes('timeout')
   }
 
   function supabaseAuthStorageKeys(storage) {
@@ -4416,11 +4429,39 @@ function App() {
     if (reason) console.warn('Cleared stale Supabase browser session:', reason)
   }
 
-  function storedSupabaseSessionNeedsLogin() {
-    const snapshot = readStoredSupabaseSessionSnapshot()
-    if (!snapshot?.session) return false
-    const expiresAtMs = Number(snapshot.session.expires_at || 0) * 1000
-    return Boolean(expiresAtMs && expiresAtMs <= Date.now() + 15000)
+  function noteSupabaseTransportFailure(error, label = 'Supabase request') {
+    if (!isSupabaseAuthTransportError(error)) return false
+    const now = Date.now()
+    // A browser often reports an upstream 5xx/522 as a CORS or Failed-to-fetch error
+    // because the gateway error response has no normal REST CORS headers. Pause noisy
+    // background reads so one temporary outage cannot become a request storm.
+    supabaseRequestBackoffUntilRef.current = Math.max(supabaseRequestBackoffUntilRef.current || 0, now + 30000)
+    if (now - Number(supabaseLastTransportWarningAtRef.current || 0) > 15000) {
+      supabaseLastTransportWarningAtRef.current = now
+      console.warn(`${label}: Supabase is temporarily unavailable. Mio is using its last saved/browser data and will retry after a short pause.`, error)
+    }
+    return true
+  }
+
+  function supabaseBackgroundRequestPaused(force = false) {
+    return !force && Date.now() < Number(supabaseRequestBackoffUntilRef.current || 0)
+  }
+
+  function claimMioBackgroundLease(name, ttlMs = 90000) {
+    if (typeof window === 'undefined' || !window.localStorage) return true
+    const key = `caseMioBackgroundLeaseV258:${String(name || 'default')}`
+    const now = Date.now()
+    const owner = mioTabIdRef.current
+    try {
+      const current = JSON.parse(window.localStorage.getItem(key) || 'null')
+      if (current?.owner && current.owner !== owner && Number(current.expires_at || 0) > now) return false
+      const next = { owner, expires_at: now + Math.max(5000, Number(ttlMs) || 90000) }
+      window.localStorage.setItem(key, JSON.stringify(next))
+      const verified = JSON.parse(window.localStorage.getItem(key) || 'null')
+      return verified?.owner === owner
+    } catch {
+      return true
+    }
   }
 
   async function getFreshSupabaseSession({ force = false, sessionHint = null } = {}) {
@@ -4430,11 +4471,9 @@ function App() {
       if (error) throw error
       current = data?.session || null
     }
-    if (!current) return null
-
-    const expiresAtMs = Number(current?.expires_at || 0) * 1000
-    const expiresSoon = Boolean(expiresAtMs && expiresAtMs <= Date.now() + 120000)
-    if (!force && !expiresSoon) return current
+    // In a browser Supabase's built-in autoRefreshToken/visibility handling owns
+    // normal refreshes. Manual rotation is reserved for one retry after a real 401.
+    if (!force || !current) return current
 
     if (!supabaseSessionRefreshRef.current) {
       supabaseSessionRefreshRef.current = (async () => {
@@ -4451,25 +4490,65 @@ function App() {
 
   async function runSupabaseRequestWithAuthRetry(requestFactory, label = 'Supabase request') {
     if (typeof requestFactory !== 'function') throw new Error(`${label} is missing its request function.`)
+    let result
     try {
-      const fresh = await getFreshSupabaseSession({ sessionHint: session })
-      if (fresh?.access_token && fresh.access_token !== session?.access_token) setSession(fresh)
+      result = await requestFactory()
     } catch (error) {
-      console.warn(`${label}: session freshness check failed before request.`, error)
+      noteSupabaseTransportFailure(error, label)
+      return { data: null, error }
     }
 
-    let result = await requestFactory()
-    if (!result?.error || !isSupabaseUnauthorizedError(result.error)) return result
+    if (!result?.error) return result
+    if (noteSupabaseTransportFailure(result.error, label)) return result
+    if (!isSupabaseUnauthorizedError(result.error)) return result
 
+    // Retry exactly once after an actual 401/JWT failure. Do not refresh before
+    // every query and do not refresh in response to generic network/CORS errors.
     try {
-      const refreshed = await getFreshSupabaseSession({ force: true, sessionHint: session })
+      const refreshed = await getFreshSupabaseSession({ force: true })
       if (!refreshed) return result
       if (refreshed.access_token !== session?.access_token) setSession(refreshed)
-      result = await requestFactory()
+      try {
+        result = await requestFactory()
+      } catch (retryError) {
+        noteSupabaseTransportFailure(retryError, `${label} retry`)
+        return { data: null, error: retryError }
+      }
+      if (result?.error) noteSupabaseTransportFailure(result.error, `${label} retry`)
     } catch (refreshError) {
+      noteSupabaseTransportFailure(refreshError, `${label} authentication refresh`)
       console.warn(`${label}: authentication refresh failed.`, refreshError)
     }
     return result
+  }
+
+  function handleSupabaseLoadError(label, error) {
+    const transient = noteSupabaseTransportFailure(error, label) || isSupabaseUnauthorizedError(error)
+    console.warn(`${label} failed${transient ? '; keeping the last saved/browser data' : ''}:`, error)
+    if (!transient) alert(`${label}: ${error?.message || error}`)
+    return transient
+  }
+
+  async function fetchMioAuthenticatedApi(url, options = {}) {
+    const execute = async () => {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+      const token = data?.session?.access_token || ''
+      const headers = { ...(options.headers || {}) }
+      if (token) headers.Authorization = `Bearer ${token}`
+      return await fetch(url, { ...options, credentials: options.credentials || 'include', headers })
+    }
+
+    let response = await execute()
+    if (response.status !== 401) return response
+    try {
+      const refreshed = await getFreshSupabaseSession({ force: true })
+      if (refreshed?.access_token && refreshed.access_token !== session?.access_token) setSession(refreshed)
+      response = await execute()
+    } catch (error) {
+      console.warn(`Authenticated API retry failed for ${url}:`, error)
+    }
+    return response
   }
 
   function parseMioStoredValue(record, fallback = null) {
@@ -4914,17 +4993,26 @@ function App() {
       if (typeof parsed !== 'string') jsonValue = parsed
     } catch {}
 
-    const { error } = await runSupabaseRequestWithAuthRetry(
-      () => supabase.from('case_mio_user_state').upsert({
-        user_id: session.user.id,
-        key,
-        raw_value: rawValue,
-        json_value: jsonValue,
-        origin: window.location.origin,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'user_id,key' }),
-      `Cloud state save (${key})`
-    )
+    if (supabaseBackgroundRequestPaused(false) && !options.throwOnError) {
+      try { window.localStorage.setItem(key, rawValue) } catch {}
+      return false
+    }
+
+    const writePromise = mioCloudStateWriteQueueRef.current
+      .catch(() => null)
+      .then(() => runSupabaseRequestWithAuthRetry(
+        () => supabase.from('case_mio_user_state').upsert({
+          user_id: session.user.id,
+          key,
+          raw_value: rawValue,
+          json_value: jsonValue,
+          origin: window.location.origin,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id,key' }),
+        `Cloud state save (${key})`
+      ))
+    mioCloudStateWriteQueueRef.current = writePromise.then(() => null, () => null)
+    const { error } = await writePromise
 
     if (error) {
       console.warn(`Cloud save failed for ${key}; keeping browser fallback for this session.`, error)
@@ -5664,33 +5752,55 @@ function App() {
     return { defaults, matterRates }
   }
 
-  async function loadBillingRelationalData(userId) {
-    if (!userId || mioBillingRelationalLoadedRef.current === userId) return
-    try {
-      const [{ data: entryRows, error: entryError }, { data: rateRows, error: rateError }] = await Promise.all([
-        supabase.from('mio_billing_entries').select('*').eq('user_id', userId).order('entry_date', { ascending: false }),
-        supabase.from('mio_billing_rates').select('*').eq('user_id', userId)
-      ])
-      if (entryError) throw entryError
-      if (rateError) throw rateError
-      const privateNotes = {}
-      const entries = (entryRows || []).map((row) => {
-        const entry = billingEntryFromRelationalRow(row)
-        if (row.private_note) privateNotes[entry.id] = row.private_note
-        return entry
-      })
-      const { defaults, matterRates } = billingRateRowsToState(rateRows || [])
-      mergeBillingEntriesIntoState(entries)
-      if (entries.length) {
-        window.setTimeout(() => saveMioStateKey('caseMioBillingEntries', JSON.stringify(mergeBillingEntriesForState(entries, readBrowserBillingEntriesFallback()))), 250)
+  async function loadBillingRelationalData(userId, options = {}) {
+    const force = Boolean(options.force)
+    if (!userId || mioBillingRelationalLoadedRef.current === userId) return true
+    if (mioBillingRelationalLoadRef.current.promise) return mioBillingRelationalLoadRef.current.promise
+    if (supabaseBackgroundRequestPaused(force)) return false
+    if (!force && Date.now() - Number(mioBillingRelationalLoadRef.current.lastAttemptAt || 0) < 15000) return false
+    mioBillingRelationalLoadRef.current.lastAttemptAt = Date.now()
+
+    const promise = (async () => {
+      try {
+        const [entryResult, rateResult] = await Promise.all([
+          runSupabaseRequestWithAuthRetry(
+            () => supabase.from('mio_billing_entries').select('*').eq('user_id', userId).order('entry_date', { ascending: false }),
+            'Billing entries load'
+          ),
+          runSupabaseRequestWithAuthRetry(
+            () => supabase.from('mio_billing_rates').select('*').eq('user_id', userId),
+            'Billing rates load'
+          )
+        ])
+        if (entryResult.error) throw entryResult.error
+        if (rateResult.error) throw rateResult.error
+        const entryRows = entryResult.data || []
+        const rateRows = rateResult.data || []
+        const privateNotes = {}
+        const entries = entryRows.map((row) => {
+          const entry = billingEntryFromRelationalRow(row)
+          if (row.private_note) privateNotes[entry.id] = row.private_note
+          return entry
+        })
+        const { defaults, matterRates } = billingRateRowsToState(rateRows)
+        mergeBillingEntriesIntoState(entries)
+        if (entries.length) {
+          window.setTimeout(() => saveMioStateKey('caseMioBillingEntries', JSON.stringify(mergeBillingEntriesForState(entries, readBrowserBillingEntriesFallback()))), 250)
+        }
+        setBillingPrivateNotes((current) => ({ ...current, ...privateNotes }))
+        setBillingRates(defaults)
+        setMatterBillingRates(matterRates)
+        mioBillingRelationalLoadedRef.current = userId
+        return true
+      } catch (error) {
+        noteSupabaseTransportFailure(error, 'Billing relational load')
+        console.warn('Billing relational load failed. Using cloud-state/browser fallback for billing.', error)
+        return false
       }
-      setBillingPrivateNotes((current) => ({ ...current, ...privateNotes }))
-      setBillingRates(defaults)
-      setMatterBillingRates(matterRates)
-      mioBillingRelationalLoadedRef.current = userId
-    } catch (error) {
-      console.warn('Billing relational load failed. Using cloud-state/browser fallback for billing.', error)
-    }
+    })()
+    mioBillingRelationalLoadRef.current.promise = promise
+    try { return await promise }
+    finally { mioBillingRelationalLoadRef.current.promise = null }
   }
 
   async function saveBillingEntryToRelational(entry, privateNoteValue = '') {
@@ -5740,7 +5850,7 @@ function App() {
     let mounted = true
     let authTimeout = null
     let authEventTimer = null
-    const AUTH_BOOT_TIMEOUT_MS = 8000
+    const AUTH_BOOT_TIMEOUT_MS = 10000
 
     const finishAuthCheck = (nextSession = null) => {
       if (!mounted) return
@@ -5751,16 +5861,7 @@ function App() {
 
     const recoverStoredSession = async () => {
       try {
-        // Do not let getSession() automatically exchange an already-expired refresh token during boot.
-        // If Auth is temporarily unreachable, browsers surface the failed refresh as a misleading CORS error
-        // and Mio can get stuck between a stale token, repeated 401s, and the login screen.
-        if (storedSupabaseSessionNeedsLogin()) {
-          clearStoredSupabaseAuthSession('saved access token was already expired at startup')
-          finishAuthCheck(null)
-          return
-        }
-        try { supabase.auth.stopAutoRefresh?.() } catch {}
-        const lookupKey = '__caseMioSupabaseSessionLookupV217'
+        const lookupKey = '__caseMioSupabaseSessionLookupV258'
         if (!window[lookupKey]) {
           window[lookupKey] = supabase.auth.getSession().finally(() => {
             window.setTimeout(() => { window[lookupKey] = null }, 0)
@@ -5770,38 +5871,28 @@ function App() {
           window[lookupKey],
           new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase session lookup timed out.')), AUTH_BOOT_TIMEOUT_MS))
         ])
-        let recoveredSession = result?.data?.session || null
-        if (recoveredSession) {
-          try {
-            recoveredSession = await getFreshSupabaseSession({ sessionHint: recoveredSession })
-          } catch (refreshError) {
-            console.warn('Stored Supabase session is no longer usable; showing login instead of starting Mio with a stale token.', refreshError)
-            if (isSupabaseAuthTransportError(refreshError) || isSupabaseUnauthorizedError(refreshError)) {
-              clearStoredSupabaseAuthSession('stored-session refresh failed')
-            }
-            recoveredSession = null
-          }
-        }
-        finishAuthCheck(recoveredSession)
+        finishAuthCheck(result?.data?.session || null)
       } catch (error) {
-        console.warn('Unable to recover Supabase session without blocking startup.', error)
-        if (isSupabaseAuthTransportError(error) || String(error?.message || '').includes('session lookup timed out')) {
-          clearStoredSupabaseAuthSession('startup session lookup failed')
-        }
-        finishAuthCheck(null)
+        // Never delete a refresh token merely because Supabase is temporarily slow.
+        // A still-valid local access token may keep Mio usable until the managed
+        // browser auto-refresh succeeds.
+        console.warn('Unable to recover the Supabase session immediately.', error)
+        const stored = readStoredSupabaseSessionSnapshot()?.session || null
+        const expiresAtMs = Number(stored?.expires_at || 0) * 1000
+        finishAuthCheck(stored && (!expiresAtMs || expiresAtMs > Date.now() + 15000) ? stored : null)
       }
     }
 
     authTimeout = setTimeout(() => {
-      console.warn('Supabase authentication startup timed out; showing the login screen instead of remaining stuck.')
+      console.warn('Supabase authentication startup timed out; using the login screen rather than remaining stuck.')
       finishAuthCheck(null)
     }, AUTH_BOOT_TIMEOUT_MS + 500)
 
     recoverStoredSession()
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      // Supabase Auth holds its session lock while this callback runs. Defer
-      // React state changes so effects that query Supabase cannot inherit that lock.
+      // Keep the callback synchronous and defer React state work. Supabase's
+      // browser client manages foreground-aware refresh and cross-tab locking.
       clearTimeout(authEventTimer)
       authEventTimer = window.setTimeout(() => {
         if (!mounted) return
@@ -5809,6 +5900,9 @@ function App() {
         if (event === 'SIGNED_OUT') {
           loadedSessionUserRef.current = ''
           mioCloudStateLoadedRef.current = false
+          initialDataRetryAttemptRef.current = 0
+          if (initialDataRetryTimerRef.current) window.clearTimeout(initialDataRetryTimerRef.current)
+          initialDataRetryTimerRef.current = null
         }
         finishAuthCheck(nextSession || null)
       }, 0)
@@ -5821,42 +5915,6 @@ function App() {
       listener?.subscription?.unsubscribe?.()
     }
   }, [])
-
-  useEffect(() => {
-    if (!session?.user?.id) return
-    let disposed = false
-    let inFlight = false
-
-    const maintainSession = async () => {
-      if (disposed || inFlight) return
-      inFlight = true
-      try {
-        const fresh = await getFreshSupabaseSession({ sessionHint: session })
-        if (!disposed && fresh?.access_token && fresh.access_token !== session?.access_token) setSession(fresh)
-      } catch (error) {
-        console.warn('Mio could not refresh the Supabase session before it expired.', error)
-        const expiresAtMs = Number(session?.expires_at || 0) * 1000
-        if ((isSupabaseAuthTransportError(error) || isSupabaseUnauthorizedError(error)) && expiresAtMs && expiresAtMs <= Date.now() + 15000) {
-          clearStoredSupabaseAuthSession('session expired and could not be refreshed')
-          if (!disposed) setSession(null)
-        }
-      } finally {
-        inFlight = false
-      }
-    }
-
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') maintainSession()
-    }
-    const interval = window.setInterval(maintainSession, 60000)
-    document.addEventListener('visibilitychange', onVisibility)
-    maintainSession()
-    return () => {
-      disposed = true
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [session?.user?.id, session?.access_token])
 
   useEffect(() => {
     saveMioStateKey('caseMioDocumentEventRules', JSON.stringify(documentEventRules))
@@ -6087,11 +6145,12 @@ function App() {
     if (!financialPageOpen) return
     let cancelled = false
     const loadRecordedPayments = async () => {
-      if (cancelled) return
-      await loadLawPayWorkspace()
-      await loadMioInvoicesFromDatabase()
+      if (cancelled || document.visibilityState !== 'visible') return
+      if (supabaseBackgroundRequestPaused(false)) return
+      if (!claimMioBackgroundLease('finance-recorded-payments', 90000)) return
+      await Promise.all([loadLawPayWorkspace(), loadMioInvoicesFromDatabase()])
     }
-    const intervalId = window.setInterval(loadRecordedPayments, 30000)
+    const intervalId = window.setInterval(() => { loadRecordedPayments().catch(() => {}) }, 120000)
     const onFocus = () => { loadRecordedPayments().catch(() => {}) }
     window.addEventListener('focus', onFocus)
     return () => {
@@ -6630,44 +6689,49 @@ function App() {
   useEffect(() => {
     const email = session?.user?.email || ''
     const userId = String(session?.user?.id || '')
-    const accessToken = String(session?.access_token || '')
     if (!email || !userId) {
       loadedSessionUserRef.current = ''
       setUserAccessChecked(false)
+      initialDataRetryAttemptRef.current = 0
+      if (initialDataRetryTimerRef.current) window.clearTimeout(initialDataRetryTimerRef.current)
+      initialDataRetryTimerRef.current = null
       return
     }
-    // Include the access token in the load key. If Supabase refreshes a stale JWT,
-    // the same user must be allowed to retry the reads that failed with 401.
-    const sessionLoadKey = `${userId}:${accessToken.slice(-24)}`
+    // A token refresh must not reload every Mio table. The Supabase client already
+    // applies the new JWT internally; load the application once per signed-in user.
+    const sessionLoadKey = userId
     if (loadedSessionUserRef.current === sessionLoadKey) return
     loadedSessionUserRef.current = sessionLoadKey
     ;(async () => {
-      try {
-        const fresh = await getFreshSupabaseSession({ sessionHint: session })
-        if (fresh?.access_token && fresh.access_token !== accessToken) {
-          setSession(fresh)
-          return
-        }
-      } catch (error) {
-        console.warn('Initial Mio data load could not validate the Supabase session.', error)
-      }
-
       const member = await checkCurrentUserAccess(email)
       if (isClientPortalMember(member)) {
         const clientMatters = await fetchClientPortalMatters(email)
         const permittedIds = (clientMatters || []).map((matter) => String(matter.id))
         await loadSharedEnforcementDocuments(permittedIds)
         mioCloudStateLoadedRef.current = true
+        initialDataRetryAttemptRef.current = 0
       } else {
         await fetchInitialData()
         const cloudLoaded = await loadMioCloudStateFromSupabase(userId)
-        if (!cloudLoaded) {
-          // Permit a later TOKEN_REFRESHED event to retry this same user's load.
-          loadedSessionUserRef.current = ''
+        if (cloudLoaded) {
+          initialDataRetryAttemptRef.current = 0
+          if (initialDataRetryTimerRef.current) window.clearTimeout(initialDataRetryTimerRef.current)
+          initialDataRetryTimerRef.current = null
+        } else if (!initialDataRetryTimerRef.current) {
+          // One bounded retry after an upstream timeout; not one reload per token.
+          initialDataRetryAttemptRef.current += 1
+          const retryDelay = Math.min(60000, 15000 * initialDataRetryAttemptRef.current)
+          initialDataRetryTimerRef.current = window.setTimeout(() => {
+            initialDataRetryTimerRef.current = null
+            if (loadedSessionUserRef.current === userId) {
+              loadedSessionUserRef.current = ''
+              setSupabaseRecoveryTick((tick) => tick + 1)
+            }
+          }, retryDelay)
         }
       }
     })()
-  }, [session?.user?.email, session?.user?.id, session?.access_token])
+  }, [session?.user?.email, session?.user?.id, supabaseRecoveryTick])
 
   useEffect(() => {
     if (!session?.user?.email || !userAccessChecked || !isClientPortalMember()) return
@@ -7283,16 +7347,14 @@ function App() {
   }
 
   async function fetchInitialData() {
-    // Keep initial Supabase reads sequential so the auth token lock is not hit by
-    // several table requests at the same time immediately after login/reload.
-    await fetchTeam()
-    await fetchClients()
-    await fetchMatters()
-    await fetchCourts()
-    await fetchSettings()
-    await fetchAiDocumentSettings()
-    await fetchEvents()
-    await fetchTasks()
+    // Keep initial Supabase reads sequential and stop the batch after an upstream
+    // transport failure. One unavailable endpoint must not fan out into dozens of
+    // duplicate CORS/522 requests across every open Mio tab.
+    const steps = [fetchTeam, fetchClients, fetchMatters, fetchCourts, fetchSettings, fetchAiDocumentSettings, fetchEvents, fetchTasks]
+    for (const step of steps) {
+      if (supabaseBackgroundRequestPaused(false)) break
+      await step()
+    }
   }
 
   function normalizedMemberPages(member) {
@@ -7351,9 +7413,12 @@ function App() {
   async function checkCurrentUserAccess(email) {
     setLoginBlockedMessage('')
     setUserAccessChecked(false)
-    const { data, error } = await supabase.from('team_members').select('*').ilike('email', email).limit(1).maybeSingle()
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('team_members').select('*').ilike('email', email).limit(1).maybeSingle(),
+      'Current user access load'
+    )
     if (error) {
-      console.log(error.message)
+      handleSupabaseLoadError('Current user access load', error)
       setCurrentTeamMember(null)
       setUserAccessChecked(true)
       return null
@@ -7442,7 +7507,6 @@ function App() {
     // A stale refresh token can keep firing while the user is trying to log in.
     // Remove only Supabase auth-session keys before password sign-in; normal Mio filter/preferences remain intact.
     clearStoredSupabaseAuthSession('starting a fresh password sign-in')
-    try { supabase.auth.stopAutoRefresh?.() } catch {}
 
     let data = null
     let error = null
@@ -7519,68 +7583,69 @@ function App() {
   }
 
   async function fetchTeam() {
-    const { data, error } = await supabase
-      .from('team_members')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('team_members').select('*').order('created_at', { ascending: false }),
+      'Team members load'
+    )
+    if (error) handleSupabaseLoadError('Team members load', error)
     else setTeam(data || [])
   }
 
   async function fetchClients() {
-    const { data, error } = await supabase
-      .from('clients')
-      .select('*')
-      .order('created_at', { ascending: false })
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('clients').select('*').order('created_at', { ascending: false }),
+      'Clients load'
+    )
+    if (error) handleSupabaseLoadError('Clients load', error)
     else setClients(data || [])
   }
 
   async function fetchMatters() {
-    const { data, error } = await supabase
-      .from('matters')
-      .select(`
-        *,
-        clients(first_name, last_name, email, phone, address, city, state, zip, notes, is_active),
-        courts(
-          court_name,
-          county,
-          court_phone,
-          court_address,
-          court_coordinator,
-          court_coordinator_email,
-          court_coordinator_phone,
-          court_website,
-          court_docket
-        )
-      `)
-      .order('created_at', { ascending: false })
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase
+        .from('matters')
+        .select(`
+          *,
+          clients(first_name, last_name, email, phone, address, city, state, zip, notes, is_active),
+          courts(
+            court_name,
+            county,
+            court_phone,
+            court_address,
+            court_coordinator,
+            court_coordinator_email,
+            court_coordinator_phone,
+            court_website,
+            court_docket
+          )
+        `)
+        .order('created_at', { ascending: false }),
+      'Matters load'
+    )
+    if (error) handleSupabaseLoadError('Matters load', error)
     else setMatters(data || [])
   }
 
   async function fetchCourts() {
-    const { data, error } = await supabase
-      .from('courts')
-      .select('*')
-      .order('court_name', { ascending: true })
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase.from('courts').select('*').order('court_name', { ascending: true }),
+      'Courts load'
+    )
+    if (error) handleSupabaseLoadError('Courts load', error)
     else setCourts(data || [])
   }
 
   async function fetchSettings() {
-    const { data, error } = await supabase
-      .from('setting_options')
-      .select('*')
-      .order('category', { ascending: true })
-      .order('sort_order', { ascending: true, nullsFirst: false })
-      .order('name', { ascending: true })
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase
+        .from('setting_options')
+        .select('*')
+        .order('category', { ascending: true })
+        .order('sort_order', { ascending: true, nullsFirst: false })
+        .order('name', { ascending: true }),
+      'Settings load'
+    )
+    if (error) handleSupabaseLoadError('Settings load', error)
     else setSettings(data || [])
   }
 
@@ -7589,99 +7654,101 @@ function App() {
     const userId = session.user.id
 
     const [tagRulesResult, fieldDefinitionsResult, fieldTagRulesResult] = await Promise.all([
-      supabase
-        .from('document_ai_tag_rules')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('document_field_definitions')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('document_field_tag_rules')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
+      runSupabaseRequestWithAuthRetry(
+        () => supabase.from('document_ai_tag_rules').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        'Document AI tag rules load'
+      ),
+      runSupabaseRequestWithAuthRetry(
+        () => supabase.from('document_field_definitions').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        'Document field definitions load'
+      ),
+      runSupabaseRequestWithAuthRetry(
+        () => supabase.from('document_field_tag_rules').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+        'Document field tag rules load'
+      )
     ])
 
-    if (tagRulesResult.error) alert(tagRulesResult.error.message)
+    if (tagRulesResult.error) handleSupabaseLoadError('Document AI tag rules load', tagRulesResult.error)
     else setAiTagRules(tagRulesResult.data || [])
 
-    if (fieldDefinitionsResult.error) alert(fieldDefinitionsResult.error.message)
+    if (fieldDefinitionsResult.error) handleSupabaseLoadError('Document field definitions load', fieldDefinitionsResult.error)
     else setDocumentFieldDefinitions(fieldDefinitionsResult.data || [])
 
-    if (fieldTagRulesResult.error) alert(fieldTagRulesResult.error.message)
+    if (fieldTagRulesResult.error) handleSupabaseLoadError('Document field tag rules load', fieldTagRulesResult.error)
     else setDocumentFieldTagRules(fieldTagRulesResult.data || [])
   }
 
   async function fetchEvents() {
-    const { data, error } = await supabase
-      .from('calendar_events')
-      .select(`
-        *,
-        matters(
-          id,
-          name,
-          cause_number,
-          case_status,
-          matter_status,
-          clients(first_name, last_name),
-          courts(
-            court_name,
-            county,
-            court_phone,
-            court_address,
-            court_coordinator,
-            court_coordinator_email,
-            court_coordinator_phone,
-            court_website,
-            court_docket
-          )
-        ),
-        team_members(first_name, last_name)
-      `)
-      .order('start_date', { ascending: true })
-      .order('start_time', { ascending: true })
-      .range(0, 4999)
-
-    if (error) alert(error.message)
+    const { data, error } = await runSupabaseRequestWithAuthRetry(
+      () => supabase
+        .from('calendar_events')
+        .select(`
+          *,
+          matters(
+            id,
+            name,
+            cause_number,
+            case_status,
+            matter_status,
+            clients(first_name, last_name),
+            courts(
+              court_name,
+              county,
+              court_phone,
+              court_address,
+              court_coordinator,
+              court_coordinator_email,
+              court_coordinator_phone,
+              court_website,
+              court_docket
+            )
+          ),
+          team_members(first_name, last_name)
+        `)
+        .order('start_date', { ascending: true })
+        .order('start_time', { ascending: true })
+        .range(0, 4999),
+      'Calendar events load'
+    )
+    if (error) handleSupabaseLoadError('Calendar events load', error)
     else setEvents(data || [])
   }
 
   async function fetchTasks() {
-    const { data: taskData, error: taskError } = await supabase
-      .from('tasks')
-      .select(`
-        *,
-        matters(
-          id,
-          name,
-          cause_number,
-          notes,
-          opposing_party,
-          opposing_counsel,
-          opposing_counsel_email,
-          opposing_counsel_phone,
-          clients(first_name, last_name, email, phone, address, city, state, zip),
-          courts(
-            court_name,
-            county,
-            court_phone,
-            court_address,
-            court_coordinator,
-            court_coordinator_email,
-            court_coordinator_phone,
-            court_website,
-            court_docket
+    const { data: taskData, error: taskError } = await runSupabaseRequestWithAuthRetry(
+      () => supabase
+        .from('tasks')
+        .select(`
+          *,
+          matters(
+            id,
+            name,
+            cause_number,
+            notes,
+            opposing_party,
+            opposing_counsel,
+            opposing_counsel_email,
+            opposing_counsel_phone,
+            clients(first_name, last_name, email, phone, address, city, state, zip),
+            courts(
+              court_name,
+              county,
+              court_phone,
+              court_address,
+              court_coordinator,
+              court_coordinator_email,
+              court_coordinator_phone,
+              court_website,
+              court_docket
+            )
           )
-        )
-      `)
-      .order('created_at', { ascending: true })
+        `)
+        .order('created_at', { ascending: true }),
+      'Tasks load'
+    )
 
     if (taskError) {
-      alert(taskError.message)
+      handleSupabaseLoadError('Tasks load', taskError)
       return
     }
 
@@ -7696,18 +7763,21 @@ function App() {
       return
     }
 
-    const [{ data: assignments }, { data: comments }, { data: files }, { data: views }] = await Promise.all([
-      supabase.from('task_assignments').select('*, team_members(first_name, last_name, email)').in('task_id', taskIds),
-      supabase.from('task_comments').select('*, team_members(first_name, last_name, email)').in('task_id', taskIds).order('created_at', { ascending: true }),
-      supabase.from('task_files').select('*').in('task_id', taskIds),
-      supabase.from('task_views').select('*').in('task_id', taskIds)
+    const [assignmentsResult, commentsResult, filesResult, viewsResult] = await Promise.all([
+      runSupabaseRequestWithAuthRetry(() => supabase.from('task_assignments').select('*, team_members(first_name, last_name, email)').in('task_id', taskIds), 'Task assignments load'),
+      runSupabaseRequestWithAuthRetry(() => supabase.from('task_comments').select('*, team_members(first_name, last_name, email)').in('task_id', taskIds).order('created_at', { ascending: true }), 'Task comments load'),
+      runSupabaseRequestWithAuthRetry(() => supabase.from('task_files').select('*').in('task_id', taskIds), 'Task files load'),
+      runSupabaseRequestWithAuthRetry(() => supabase.from('task_views').select('*').in('task_id', taskIds), 'Task views load')
     ])
 
+    ;[assignmentsResult, commentsResult, filesResult, viewsResult].forEach((result, index) => {
+      if (result.error) handleSupabaseLoadError(['Task assignments load', 'Task comments load', 'Task files load', 'Task views load'][index], result.error)
+    })
     setTasks(taskData || [])
-    setTaskAssignments(assignments || [])
-    setTaskComments(comments || [])
-    setTaskFiles(files || [])
-    setTaskViews(views || [])
+    if (!assignmentsResult.error) setTaskAssignments(assignmentsResult.data || [])
+    if (!commentsResult.error) setTaskComments(commentsResult.data || [])
+    if (!filesResult.error) setTaskFiles(filesResult.data || [])
+    if (!viewsResult.error) setTaskViews(viewsResult.data || [])
   }
 
 
@@ -23361,41 +23431,68 @@ async function updateTeamCell(memberId, field, value) {
     return rows
   }
 
-  async function loadMioInvoicesFromDatabase() {
-    if (!session?.user?.id) return
-    let data
-    try {
-      data = await loadAllSupabasePages(() => supabase.from('mio_invoices').select('*').order('issue_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: true }))
-    } catch (error) { console.warn('Could not load database invoice records:', error); return }
-    if (!Array.isArray(data) || !data.length) return []
-    let databaseRows = data.map(invoiceFromDatabaseRow)
-    // Safe systemic repair: an unpaid, unsent invoice containing only opening WIP
-    // is voided when another preserved invoice already consumed the same frozen opening WIP.
-    // Paid or emailed invoices take priority; mixed or paid/sent invoices are never auto-voided.
-    if (matters?.length) {
-      const repair = await repairSafeDuplicateOpeningWipInvoices(databaseRows, { silent: page !== 'billing' || billingTab !== 'bulk_billing' })
-      databaseRows = repair.invoiceSource
-    }
-    // Supabase is authoritative for every persisted invoice ID. A browser cache
-    // must never resurrect a database-voided invoice as Draft or Outstanding.
-    setMioInvoices((current) => {
-      const databaseIds = new Set(databaseRows.map((invoice) => String(invoice.id || '')).filter(Boolean))
-      const localOnlyRows = (current || []).filter((invoice) => !databaseIds.has(String(invoice?.id || '')))
-      return mergeMioInvoiceState(databaseRows, localOnlyRows)
-    })
-    return databaseRows
+  async function loadMioInvoicesFromDatabase(options = {}) {
+    if (!session?.user?.id) return []
+    const force = Boolean(options.force)
+    const cacheMs = Number(options.cacheMs || 15000)
+    const ref = mioInvoiceLoadRef.current
+    if (ref.promise) return ref.promise
+    if (!force && ref.lastSuccessAt && Date.now() - ref.lastSuccessAt < cacheMs) return mioInvoices || []
+    if (supabaseBackgroundRequestPaused(force)) return mioInvoices || []
+
+    const promise = (async () => {
+      try {
+        const data = await loadAllSupabasePages(() => supabase.from('mio_invoices').select('*').order('issue_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: true }))
+        if (!Array.isArray(data)) return mioInvoices || []
+        let databaseRows = data.map(invoiceFromDatabaseRow)
+        // Safe systemic repair: an unpaid, unsent invoice containing only opening WIP
+        // is voided when another preserved invoice already consumed the same frozen opening WIP.
+        if (databaseRows.length && matters?.length) {
+          const repair = await repairSafeDuplicateOpeningWipInvoices(databaseRows, { silent: page !== 'billing' || billingTab !== 'bulk_billing' })
+          databaseRows = repair.invoiceSource
+        }
+        setMioInvoices((current) => {
+          const databaseIds = new Set(databaseRows.map((invoice) => String(invoice.id || '')).filter(Boolean))
+          const localOnlyRows = (current || []).filter((invoice) => !databaseIds.has(String(invoice?.id || '')))
+          return mergeMioInvoiceState(databaseRows, localOnlyRows)
+        })
+        ref.lastSuccessAt = Date.now()
+        return databaseRows
+      } catch (error) {
+        noteSupabaseTransportFailure(error, 'Invoice database load')
+        console.warn('Could not load database invoice records; using Mio browser/cloud-state fallback:', error)
+        return mioInvoices || []
+      }
+    })()
+    ref.promise = promise
+    try { return await promise }
+    finally { ref.promise = null }
   }
 
-  async function loadMioInvoiceEventsFromDatabase() {
+  async function loadMioInvoiceEventsFromDatabase(options = {}) {
     if (!session?.user?.id) return []
-    try {
-      const data = await loadAllSupabasePages(() => supabase.from('mio_invoice_events').select('*').eq('user_id', session.user.id).order('occurred_at', { ascending: false }).order('id', { ascending: true }))
-      setMioInvoiceEvents(data)
-      return data
-    } catch (error) {
-      console.warn('Could not load invoice history:', error)
-      return []
-    }
+    const force = Boolean(options.force)
+    const cacheMs = Number(options.cacheMs || 15000)
+    const ref = mioInvoiceEventsLoadRef.current
+    if (ref.promise) return ref.promise
+    if (!force && ref.lastSuccessAt && Date.now() - ref.lastSuccessAt < cacheMs) return mioInvoiceEvents || []
+    if (supabaseBackgroundRequestPaused(force)) return mioInvoiceEvents || []
+
+    const promise = (async () => {
+      try {
+        const data = await loadAllSupabasePages(() => supabase.from('mio_invoice_events').select('*').eq('user_id', session.user.id).order('occurred_at', { ascending: false }).order('id', { ascending: true }))
+        setMioInvoiceEvents(data)
+        ref.lastSuccessAt = Date.now()
+        return data
+      } catch (error) {
+        noteSupabaseTransportFailure(error, 'Invoice history load')
+        console.warn('Could not load invoice history; keeping the last saved history:', error)
+        return mioInvoiceEvents || []
+      }
+    })()
+    ref.promise = promise
+    try { return await promise }
+    finally { ref.promise = null }
   }
 
   function billingInvoiceMatter(invoice) {
@@ -25558,7 +25655,7 @@ async function updateTeamCell(memberId, field, value) {
       {!!pendingLawPayPayments.length && <section style={{ border: '2px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e', padding: 12 }}><strong>Pending LawPay payment{pendingLawPayPayments.length === 1 ? '' : 's'}: {money(pendingLawPayTotal)}</strong><div style={{ marginTop: 4 }}>LawPay has authorized the payment, so Mio shows it immediately as pending. It is not added to trust or applied to an invoice until LawPay reports COMPLETED/settled.</div>{pendingLawPayPayments.map((transaction) => <div key={transaction.id || transaction.gateway_transaction_id} style={{ marginTop: 5, fontSize: 12 }}>{transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : 'Pending'} — {money(financeNumber(transaction.amount_cents) / 100 || transaction.amount)} — {transaction.status || 'Pending'} — {transaction.reference || 'LawPay payment'}</div>)}</section>}
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc', padding: 12 }}><strong>Trust position</strong><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 8, marginTop: 8 }}><div>Trust − minimum: <strong>{money(finance.trustMinusMinimum)}</strong></div><div>Trust − minimum − outstanding: <strong>{money(finance.trustMinusMinimumMinusOutstanding)}</strong></div><div>Trust − minimum − WIP: <strong>{money(finance.trustMinusMinimumMinusWip)}</strong></div><div>Trust − minimum − WIP − outstanding: <strong>{money(finance.trustMinusMinimumMinusWipMinusOutstanding)}</strong></div></div></section>
       {showTrustRequestForm && renderTrustRequestForm(matter, finance)}
-      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Mio-only data sources</h3><div><strong>Opening balances:</strong> {finance.snapshot ? `frozen as of ${finance.snapshot.snapshot_date}` : 'started at $0 for this matter'}</div><div><strong>Trust activity:</strong> completed LawPay payments and Mio ledger entries</div><div><strong>Invoices and WIP:</strong> Mio invoices and billing entries only</div><div style={{ marginTop: 6, color: '#166534', fontWeight: 800 }}>Later Clio snapshots cannot change these balances.</div><button type="button" onClick={() => { loadLawPayWorkspace(); loadMioInvoicesFromDatabase(); refreshLawPayFinancialData({ silent: false }).catch(() => {}) }} disabled={lawPayBusy} style={{ marginTop: 10 }}>{lawPayBusy ? 'Refreshing…' : 'Refresh Mio & LawPay'}</button></section></div>}
+      {clientFinanceView === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}><section className="card"><h3 style={{ marginTop: 0 }}>Financial workflow</h3><ol style={{ marginBottom: 0, lineHeight: 1.7 }}><li>Time and expenses accumulate as WIP.</li><li>Create an invoice from WIP.</li><li>Apply available retainer funds from trust to the invoice.</li><li>Any unpaid remainder stays in Outstanding balance.</li></ol></section><section className="card"><h3 style={{ marginTop: 0 }}>Mio-only data sources</h3><div><strong>Opening balances:</strong> {finance.snapshot ? `frozen as of ${finance.snapshot.snapshot_date}` : 'started at $0 for this matter'}</div><div><strong>Trust activity:</strong> completed LawPay payments and Mio ledger entries</div><div><strong>Invoices and WIP:</strong> Mio invoices and billing entries only</div><div style={{ marginTop: 6, color: '#166534', fontWeight: 800 }}>Later Clio snapshots cannot change these balances.</div><button type="button" onClick={() => { loadLawPayWorkspace({ force: true }); loadMioInvoicesFromDatabase({ force: true }); refreshLawPayFinancialData({ silent: false }).catch(() => {}) }} disabled={lawPayBusy} style={{ marginTop: 10 }}>{lawPayBusy ? 'Refreshing…' : 'Refresh Mio & LawPay'}</button></section></div>}
       {clientFinanceView === 'trust' && renderClientFinanceTrustLedger(matter, finance)}
       {clientFinanceView === 'invoices' && renderClientFinanceInvoices(matter, finance)}
       {clientFinanceView === 'wip' && renderClientFinanceWip(matter, finance)}
@@ -46868,7 +46965,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       setClioBillingLoading(true)
       setClioBillingError('')
       try {
-        const response = await fetch('/api/clio/matters?status=open', { credentials: 'include' })
+        const response = await fetchMioAuthenticatedApi('/api/clio/matters?status=open', { credentials: 'include' })
         const text = await response.text()
         let data = {}
         try { data = text ? JSON.parse(text) : {} } catch { data = { message: text } }
@@ -46898,6 +46995,10 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
 
   useEffect(() => {
     if (page !== 'billing') return
+    // Bulk/Firm Billing is Mio-only. Do not call the Clio API merely because the
+    // Billing page opened; load Clio only when a Clio-specific tab is selected.
+    const clioTabs = new Set(['clio_billing', 'client_billing_fields', 'financial_snapshots', 'snapshot_graphs', 'client_bar_graph'])
+    if (!clioTabs.has(billingTab)) return
     if (clioBillingLoading) return
     loadOpenClioMattersIntoState()
   }, [page, billingTab])
@@ -46929,7 +47030,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       params.set('minimum_balances', JSON.stringify(clioMinimumBalancesByMatterId || {}))
       if (clioBalanceFrom) params.set('from', clioBalanceFrom)
       if (clioBalanceTo) params.set('to', clioBalanceTo)
-      const response = await fetch(`/api/clio/balance-history?${params.toString()}`, { credentials: 'include' })
+      const response = await fetchMioAuthenticatedApi(`/api/clio/balance-history?${params.toString()}`, { credentials: 'include' })
       const data = await response.json()
       if (!response.ok) {
         setClioBalanceError(data?.error || data?.message || 'Could not load Clio balance history.')
@@ -47410,7 +47511,7 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       params.set('matter_ids', ids.join(','))
       if (clioBalanceFrom) params.set('from', clioBalanceFrom)
       if (clioBalanceTo) params.set('to', clioBalanceTo)
-      const response = await fetch(`/api/clio/client-billing-fields?${params.toString()}`, { credentials: 'include' })
+      const response = await fetchMioAuthenticatedApi(`/api/clio/client-billing-fields?${params.toString()}`, { credentials: 'include' })
       const data = await response.json()
       if (!response.ok) {
         setClioClientBillingError(data?.error || data?.message || 'Could not load client billing fields.')
@@ -48015,7 +48116,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const response = await fetch('/api/clio/financial-field-acquisition?action=contacts_index')
+      const response = await fetchMioAuthenticatedApi('/api/clio/financial-field-acquisition?action=contacts_index')
       const payload = await response.json().catch(() => ({}))
       if (!response.ok || payload?.error) throw new Error(payload?.error || payload?.message || `Contact index failed with ${response.status}`)
       const contacts = Array.isArray(payload.contacts) ? payload.contacts : []
@@ -48092,7 +48193,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const response = await fetch('/api/clio/financial-field-acquisition?action=bills_index')
+      const response = await fetchMioAuthenticatedApi('/api/clio/financial-field-acquisition?action=bills_index')
       const payload = await response.json().catch(() => ({}))
       if (!response.ok || payload?.error) throw new Error(payload?.error || payload?.message || `Bills index failed with ${response.status}`)
       const bills = Array.isArray(payload.bills) ? payload.bills : []
@@ -48194,7 +48295,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const response = await fetch('/api/clio/report-snapshots?action=list')
+      const response = await fetchMioAuthenticatedApi('/api/clio/report-snapshots?action=list')
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || data?.message || `Report list failed with ${response.status}`)
       const reports = Array.isArray(data.reports) ? data.reports : []
@@ -48211,7 +48312,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     if (MIO_ONLY_FINANCE_MODE) throw new Error('Mio-only finance mode blocks Clio financial snapshot imports.')
     if (!session?.user?.id) throw new Error('You must be logged in to save snapshots to Supabase.')
     if (!report?.id) throw new Error('No report selected.')
-    const response = await fetch(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
+    const response = await fetchMioAuthenticatedApi(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
     const text = await response.text()
     if (!response.ok) throw new Error(text.slice(0, 500) || `Report download failed with ${response.status}`)
     const reportRows = parseClioCsv(text)
@@ -48243,7 +48344,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
   async function getClioSnapshotReportsForImport() {
     if (Array.isArray(clioSnapshotReports) && clioSnapshotReports.length) return clioSnapshotReports
-    const response = await fetch('/api/clio/report-snapshots?action=list')
+    const response = await fetchMioAuthenticatedApi('/api/clio/report-snapshots?action=list')
     const data = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(data?.error || data?.message || `Report list failed with ${response.status}`)
     const reports = Array.isArray(data.reports) ? data.reports : []
@@ -48263,7 +48364,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   async function downloadSnapshotRowsFromReport(report, snapshotDate) {
-    const response = await fetch(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
+    const response = await fetchMioAuthenticatedApi(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
     const text = await response.text()
     if (!response.ok) throw new Error(text.slice(0, 500) || `Report download failed with ${response.status}`)
     const reportRows = parseClioCsv(text)
@@ -48372,7 +48473,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const combined = new Map()
       let downloadedReports = 0
       for (const report of [...trustReports, ...matterBalanceReports, ...accountsReceivableReports]) {
-        const response = await fetch(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
+        const response = await fetchMioAuthenticatedApi(`/api/clio/report-snapshots?action=download&id=${encodeURIComponent(report.id)}`)
         const text = await response.text()
         if (!response.ok) throw new Error(text.slice(0, 500) || `Report download failed with ${response.status}`)
         const reportRows = parseClioCsv(text)
@@ -48774,7 +48875,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const response = await fetch('/api/clio/report-snapshots?action=create_matter_balance_all_dates')
+      const response = await fetchMioAuthenticatedApi('/api/clio/report-snapshots?action=create_matter_balance_all_dates')
       const data = await response.json().catch(() => ({}))
       if (!response.ok || data?.error) {
         const attemptText = Array.isArray(data?.attempts) ? data.attempts.map((a) => `${a.label || 'attempt'}: ${a.status || ''} ${a.error || ''}`).join(' | ') : ''
@@ -48799,7 +48900,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     setClioSnapshotLoading(true)
     setClioSnapshotError('')
     try {
-      const response = await fetch('/api/clio/financial-field-acquisition?action=audit_v36')
+      const response = await fetchMioAuthenticatedApi('/api/clio/financial-field-acquisition?action=audit_v36')
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data?.error || data?.message || `v36 audit failed with ${response.status}`)
       const summary = data?.field_matrix?.map((row) => `${row.acquired ? 'YES' : 'NO'} ${row.field}: ${row.source}`).join('\n') || JSON.stringify(data, null, 2).slice(0, 1500)
@@ -50203,28 +50304,50 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     })
   }
 
-  async function loadLawPayWorkspace() {
-    try {
-      const [settingsResult, requestsResult, transactionsResult] = await Promise.all([
-        supabase.from('lawpay_settings').select('*').eq('id', 1).maybeSingle(),
-        supabase.from('lawpay_payment_requests').select('*').order('created_at', { ascending: false }).limit(100),
-        supabase.from('lawpay_transactions').select('*').order('occurred_at', { ascending: false }).limit(200)
-      ])
-      if (!settingsResult.error && settingsResult.data) {
-        setLawPaySettings((current) => ({ ...current, ...settingsResult.data }))
+  async function loadLawPayWorkspace(options = {}) {
+    const force = Boolean(options.force)
+    const cacheMs = Number(options.cacheMs || 15000)
+    const ref = lawPayWorkspaceLoadRef.current
+    if (ref.promise) return ref.promise
+    if (!force && ref.lastSuccessAt && Date.now() - ref.lastSuccessAt < cacheMs) return true
+    if (supabaseBackgroundRequestPaused(force)) return false
+
+    const promise = (async () => {
+      try {
+        const [settingsResult, requestsResult, transactionsResult] = await Promise.all([
+          runSupabaseRequestWithAuthRetry(() => supabase.from('lawpay_settings').select('*').eq('id', 1).maybeSingle(), 'LawPay settings load'),
+          runSupabaseRequestWithAuthRetry(() => supabase.from('lawpay_payment_requests').select('*').order('created_at', { ascending: false }).limit(100), 'LawPay requests load'),
+          runSupabaseRequestWithAuthRetry(() => supabase.from('lawpay_transactions').select('*').order('occurred_at', { ascending: false }).limit(200), 'LawPay transactions load')
+        ])
+        if (!settingsResult.error && settingsResult.data) setLawPaySettings((current) => ({ ...current, ...settingsResult.data }))
+        if (!requestsResult.error) setLawPayPaymentRequests(requestsResult.data || [])
+        if (!transactionsResult.error) setLawPayTransactions(transactionsResult.data || [])
+        if (!requestsResult.error && !transactionsResult.error) await reconcileLawPayInvoicePayments(requestsResult.data || [], transactionsResult.data || [])
+        const firstError = settingsResult.error || requestsResult.error || transactionsResult.error
+        if (firstError) throw firstError
+        ref.lastSuccessAt = Date.now()
+        return true
+      } catch (error) {
+        noteSupabaseTransportFailure(error, 'LawPay workspace load')
+        console.warn('Load LawPay workspace failed; keeping the last saved LawPay data:', error)
+        return false
       }
-      if (!requestsResult.error) setLawPayPaymentRequests(requestsResult.data || [])
-      if (!transactionsResult.error) setLawPayTransactions(transactionsResult.data || [])
-      if (!requestsResult.error && !transactionsResult.error) await reconcileLawPayInvoicePayments(requestsResult.data || [], transactionsResult.data || [])
-    } catch (error) {
-      console.error('Load LawPay workspace failed:', error)
-    }
+    })()
+    ref.promise = promise
+    try { return await promise }
+    finally { ref.promise = null }
   }
 
   async function refreshLawPayFinancialData(options = {}) {
     if (!session?.user?.id) return null
     if (lawPayRefreshInFlightRef.current) return lawPayRefreshInFlightRef.current
     const silent = !!options.silent
+    const now = Date.now()
+    if (silent && now - Number(lawPayLastSilentSyncAtRef.current || 0) < 120000) return { ok: true, skipped: 'cooldown' }
+    if (silent && supabaseBackgroundRequestPaused(false)) return { ok: true, skipped: 'supabase_backoff' }
+    if (silent && !claimMioBackgroundLease('lawpay-live-sync', 120000)) return { ok: true, skipped: 'another_tab' }
+    if (silent) lawPayLastSilentSyncAtRef.current = now
+
     const refreshPromise = (async () => {
       if (!silent) {
         setLawPayBusy(true)
@@ -50233,27 +50356,29 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       let syncData = null
       let syncWarning = ''
       try {
-        // Show payments Mio has already recorded immediately. A slow or unavailable
-        // gateway check must never prevent the database invoice/transaction data from loading.
-        await loadMioInvoicesFromDatabase()
-        await loadLawPayWorkspace()
+        // One deduplicated read of recorded data before the gateway check.
+        await Promise.all([
+          loadMioInvoicesFromDatabase({ force: !silent }),
+          loadLawPayWorkspace({ force: !silent })
+        ])
+        if (supabaseBackgroundRequestPaused(false)) throw new Error('Supabase is temporarily unavailable; Mio kept the last saved billing data.')
         const recentStart = new Date(Date.now() - (14 * 24 * 60 * 60 * 1000)).toISOString()
         const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'sync_events', page_size: 25, start_date: recentStart } })
         if (error) throw error
         if (!data?.ok) throw new Error(data?.error || 'LawPay event sync failed.')
         syncData = data
-        await loadLawPayWorkspace()
-        await loadMioInvoicesFromDatabase()
+        // Refresh once after a successful gateway sync; do not repeatedly reread on failure.
+        await Promise.all([
+          loadLawPayWorkspace({ force: true }),
+          loadMioInvoicesFromDatabase({ force: true })
+        ])
       } catch (error) {
         syncWarning = error?.message || String(error)
-        // Re-read Mio's authoritative tables even when the live gateway call fails.
-        // This keeps webhook-recorded payments visible in Finances.
-        await loadLawPayWorkspace()
-        await loadMioInvoicesFromDatabase()
-        if (silent) console.warn('Live LawPay check failed; recorded Mio payments were still loaded:', error)
+        noteSupabaseTransportFailure(error, 'LawPay financial refresh')
+        if (silent) console.warn('Live LawPay check failed; Mio retained the last recorded payment data:', error)
       } finally {
         if (!silent) setLawPayMessage(syncWarning
-          ? `Recorded payments are loaded. The live LawPay check could not finish: ${syncWarning}`
+          ? `Mio kept the recorded billing data. The live refresh could not finish: ${syncWarning}`
           : `LawPay is current. Checked ${syncData?.processed || 0} gateway event(s).`)
         if (!silent) setLawPayBusy(false)
         lawPayRefreshInFlightRef.current = null
@@ -50501,7 +50626,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   function openBulkInvoiceLedger() {
     setBulkInvoiceLedgerOpen(true)
     setBulkInvoiceColumnMenuOpen(false)
-    Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase(), loadLawPayWorkspace()]).catch(() => {})
+    Promise.all([loadMioInvoicesFromDatabase({ force: true }), loadMioInvoiceEventsFromDatabase({ force: true }), loadLawPayWorkspace({ force: true })]).catch(() => {})
   }
 
   function renderBulkInvoiceLedger() {
@@ -50566,7 +50691,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const tableWidth = Math.max(700, columns.reduce((sum, column) => sum + column.width, 0))
     return <div style={{ position: 'fixed', inset: 0, zIndex: 12100, background: 'rgba(15,23,42,.58)', padding: 16, overflow: 'auto' }}>
       <section style={{ width: 'min(1780px,98vw)', minHeight: 400, maxHeight: '95vh', overflow: 'auto', margin: '0 auto', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.38)', padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>All invoices</h2><div className="hint">One row per invoice. Pending LawPay authorizations are shown separately and are not counted as paid until completed.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => Promise.all([loadMioInvoicesFromDatabase(), loadMioInvoiceEventsFromDatabase(), loadLawPayWorkspace()])}>Refresh</button><button type="button" onClick={() => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS })}>Clear filters</button><div style={{ position: 'relative' }}><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen((open) => !open)}>Columns ({columns.length}/{BULK_INVOICE_COLUMNS.length}) ▾</button>{bulkInvoiceColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 2, width: 250, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkInvoiceVisibleColumns(Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>{BULK_INVOICE_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkInvoiceVisibleColumns[column.key] !== false} onChange={() => setBulkInvoiceVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}</div>}</div><button type="button" onClick={() => setBulkInvoiceLedgerOpen(false)}>Close</button></div></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>All invoices</h2><div className="hint">One row per invoice. Pending LawPay authorizations are shown separately and are not counted as paid until completed.</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => Promise.all([loadMioInvoicesFromDatabase({ force: true }), loadMioInvoiceEventsFromDatabase({ force: true }), loadLawPayWorkspace({ force: true })])}>Refresh</button><button type="button" onClick={() => setBulkInvoiceFilters({ ...DEFAULT_BULK_INVOICE_FILTERS })}>Clear filters</button><div style={{ position: 'relative' }}><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen((open) => !open)}>Columns ({columns.length}/{BULK_INVOICE_COLUMNS.length}) ▾</button>{bulkInvoiceColumnMenuOpen && <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 2, width: 250, maxHeight: 390, overflow: 'auto', background: '#fff', border: '1px solid #94a3b8', borderRadius: 8, padding: 10, boxShadow: '0 12px 28px rgba(15,23,42,.2)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setBulkInvoiceVisibleColumns({ ...DEFAULT_BULK_INVOICE_VISIBLE_COLUMNS })}>All</button><button type="button" onClick={() => setBulkInvoiceVisibleColumns(Object.fromEntries(BULK_INVOICE_COLUMNS.map((column) => [column.key, false])))}>None</button><button type="button" onClick={() => setBulkInvoiceColumnMenuOpen(false)} style={{ marginLeft: 'auto' }}>Done</button></div>{BULK_INVOICE_COLUMNS.map((column) => <label key={column.key} style={{ display: 'block', padding: '5px 2px' }}><input type="checkbox" checked={bulkInvoiceVisibleColumns[column.key] !== false} onChange={() => setBulkInvoiceVisibleColumns((current) => ({ ...current, [column.key]: current[column.key] === false }))} /> {column.label}</label>)}</div>}</div><button type="button" onClick={() => setBulkInvoiceLedgerOpen(false)}>Close</button></div></div>
         <div style={{ margin: '12px 0', color: '#475569' }}>{rows.length} of {(mioInvoices || []).length} invoice{(mioInvoices || []).length === 1 ? '' : 's'} shown.</div>
         <div style={{ overflowX: 'auto' }}><table style={{ width: tableWidth, minWidth: tableWidth, borderCollapse: 'collapse' }}><thead><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ width: column.width, minWidth: column.width, padding: 8, textAlign: ['total','paidAmount','pendingAmount','balance'].includes(column.key) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{column.key === 'actions' ? column.label : <button type="button" onClick={() => toggleSort(column.key)} style={{ border: 0, padding: 0, background: 'transparent', fontWeight: 900 }}>{column.label}{bulkInvoiceSort.field === column.key ? (bulkInvoiceSort.direction === 'asc' ? ' ▲' : ' ▼') : ''}</button>}</th>)}</tr><tr style={{ background: '#f8fafc' }}>{columns.map((column) => <th key={column.key} style={{ padding: '0 6px 8px', borderBottom: '1px solid #cbd5e1' }}>{renderFilter(column)}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.invoice.id}>{columns.map((column) => renderCell(row, column))}</tr>)}{!rows.length && <tr><td colSpan={Math.max(1, columns.length)} className="empty">No invoices match the selected filters.</td></tr>}</tbody></table></div>
       </section>
