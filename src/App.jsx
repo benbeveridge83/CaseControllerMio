@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V254'
+const MIO_APP_VERSION = 'Mio V257'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -90,14 +90,15 @@ function caseFilingRoleLabel(key = '') {
 const BULK_BILLING_COLUMNS = [
   { key: 'matter', label: 'Matter', width: 300 },
   { key: 'trust', label: 'Trust', width: 105 },
-  { key: 'outstanding', label: 'OB', width: 90 },
+  { key: 'outstanding', label: 'OB (Work performed)', width: 150 },
+  { key: 'outstandingTrust', label: 'OB (Trust)', width: 115 },
   { key: 'pending', label: 'Pending', width: 110 },
   { key: 'wip', label: 'WIP', width: 90 },
   { key: 'minimum', label: 'Min bal', width: 105 },
   { key: 'trustMinusMinimum', label: 'Trust − min', width: 135 },
-  { key: 'trustMinusMinimumMinusOutstanding', label: 'Trust − min − OB', width: 165 },
+  { key: 'trustMinusMinimumMinusOutstanding', label: 'Trust − min − Work OB', width: 190 },
   { key: 'trustMinusMinimumMinusWip', label: 'Trust − min − WIP', width: 170 },
-  { key: 'trustMinusMinimumMinusWipMinusOutstanding', label: 'Trust − min − WIP − OB', width: 205 },
+  { key: 'trustMinusMinimumMinusWipMinusOutstanding', label: 'Trust − min − WIP − Work OB', width: 230 },
   { key: 'retainerTarget', label: 'Retainer target', width: 145 },
   { key: 'replenishment', label: 'Replenishment', width: 140 },
   { key: 'actions', label: 'Actions', width: 260 }
@@ -601,6 +602,7 @@ const appPages = [
   { value: 'matter_timelines', label: 'Matter Timelines' },
   { value: 'tasks', label: 'Tasks' },
   { value: 'billing', label: 'Billing' },
+  { value: 'google_ads', label: 'Marketing' },
   { value: 'lawpay', label: 'LawPay' },
   { value: 'efile', label: 'eFile' },
   { value: 'banking', label: 'Accounts' },
@@ -657,6 +659,7 @@ const screenSaverBasePages = [
   { value: 'matter_timelines', label: 'Matter Timelines', page: 'matter_timelines' },
   { value: 'tasks', label: 'Tasks', page: 'tasks' },
   { value: 'billing', label: 'Billing', page: 'billing' },
+  { value: 'google_ads', label: 'Marketing', page: 'google_ads' },
   { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
   { value: 'litigation_tracks', label: 'Litigation Tracks', page: 'litigation_tracks' },
@@ -679,6 +682,107 @@ const screenSaverBasePages = [
   { value: 'settings', label: 'Settings', page: 'settings' }
 ]
 
+
+function googleAdsSafeNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function googleAdsFormatMoney(value) {
+  return googleAdsSafeNumber(value).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+}
+
+function googleAdsFormatPercent(value) {
+  return `${(googleAdsSafeNumber(value) * 100).toFixed(1)}%`
+}
+
+function buildGoogleAdsAudit(report = {}) {
+  const overview = report?.overview || {}
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : []
+  const searchTerms = Array.isArray(report?.searchTerms) ? report.searchTerms : []
+  const conversions = Array.isArray(report?.conversionActions) ? report.conversionActions : []
+  const findings = []
+  const spend = googleAdsSafeNumber(overview.cost)
+  const clicks = googleAdsSafeNumber(overview.clicks)
+  const leads = googleAdsSafeNumber(overview.conversions)
+  const cpc = googleAdsSafeNumber(overview.averageCpc)
+  const ctr = googleAdsSafeNumber(overview.ctr)
+
+  const add = (severity, title, detail, action = '') => findings.push({ id: `${severity}-${findings.length + 1}`, severity, title, detail, action })
+
+  if (spend > 0 && leads <= 0) {
+    add('critical', 'Spend with no recorded conversions', `${googleAdsFormatMoney(spend)} has been spent in this period and Google Ads reports no primary conversions. That can mean no leads were generated, conversion tracking is not recording them, or both.`, 'Verify phone and form conversion actions first, then reduce waste in search terms and keywords before increasing budget.')
+  }
+  if (clicks >= 10 && leads <= 0) {
+    add('critical', 'Enough clicks to investigate traffic quality', `${clicks.toLocaleString()} clicks produced no recorded conversion. Review the actual search terms rather than judging performance from keywords alone.`, 'Add negatives for irrelevant searches and tighten expensive phrase-match keywords where the search terms show weak intent.')
+  }
+  if (cpc >= 15) add('warning', 'High average click cost', `Average CPC is ${googleAdsFormatMoney(cpc)}. Legal clicks can be expensive, but at this level every weak search term matters.`, 'Prioritize search-term exclusions and exact/phrase targeting around high-intent local searches.')
+  if (ctr > 0 && ctr < 0.03) add('warning', 'Low search engagement', `Overall CTR is ${googleAdsFormatPercent(ctr)}. Low CTR can indicate weak ad relevance, broad targeting, or poor alignment between queries and ad copy.`, 'Review campaign/ad-group structure and make ad copy closely match the case type and location being searched.')
+
+  campaigns
+    .filter((row) => googleAdsSafeNumber(row.cost) >= Math.max(25, spend * 0.10) && googleAdsSafeNumber(row.conversions) <= 0)
+    .sort((a, b) => googleAdsSafeNumber(b.cost) - googleAdsSafeNumber(a.cost))
+    .slice(0, 6)
+    .forEach((row) => add('warning', `${row.name || 'Campaign'} is spending without a lead`, `${row.name || 'Campaign'} spent ${googleAdsFormatMoney(row.cost)} on ${googleAdsSafeNumber(row.clicks)} clicks with no recorded conversions.`, 'Review this campaign’s search terms, bidding, locations, schedule, and conversion goals before allowing it to keep spending unchanged.'))
+
+  const wasteTerms = searchTerms
+    .filter((row) => googleAdsSafeNumber(row.cost) >= 10 && googleAdsSafeNumber(row.conversions) <= 0)
+    .sort((a, b) => googleAdsSafeNumber(b.cost) - googleAdsSafeNumber(a.cost))
+  if (wasteTerms.length) {
+    const waste = wasteTerms.reduce((sum, row) => sum + googleAdsSafeNumber(row.cost), 0)
+    add('warning', 'Search-term waste is visible', `${wasteTerms.length} search term${wasteTerms.length === 1 ? '' : 's'} spent at least $10 each without a conversion, totaling ${googleAdsFormatMoney(waste)}.`, 'Review the Search Terms tab and exclude terms that do not reflect someone actively looking to hire the firm.')
+  }
+
+  const primaryConversions = conversions.filter((row) => row.primaryForGoal)
+  const inactivePrimary = primaryConversions.filter((row) => String(row.status || '').toUpperCase() !== 'ENABLED')
+  if (inactivePrimary.length) add('critical', 'A primary conversion action is not enabled', `${inactivePrimary.map((row) => row.name).join(', ')} ${inactivePrimary.length === 1 ? 'is' : 'are'} marked primary but not enabled.`, 'Fix or remove inactive primary conversion actions so bidding is not optimizing toward a broken goal.')
+  if (conversions.length && !primaryConversions.length) add('critical', 'No primary conversion action was found', 'The account returned conversion actions, but none is marked as a primary goal.', 'Make the actual lead actions primary: successful form submissions and qualified phone calls.')
+
+  if (!findings.length && spend > 0) add('good', 'No obvious account-level red flag', 'The high-level metrics do not show an obvious failure under the current rule checks. Search-term quality and individual campaign performance still need review.', 'Continue into Campaigns, Search Terms, Keywords, and Conversions before changing budget.')
+  if (!spend && report?.fetchedAt) add('info', 'No spend in selected period', 'Google Ads returned no spend for this date range.', 'Confirm the selected account, campaign status, and date range.')
+  return findings
+}
+
+const BEVERIDGE_FACEBOOK_PAGE_URL = 'https://www.facebook.com/BeveridgeBlawg/'
+
+function buildMetaAdsAudit(report = {}) {
+  const overview = report?.overview || {}
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : []
+  const ads = Array.isArray(report?.ads) ? report.ads : []
+  const findings = []
+  const spend = googleAdsSafeNumber(overview.spend)
+  const clicks = googleAdsSafeNumber(overview.inlineLinkClicks || overview.clicks)
+  const leads = googleAdsSafeNumber(overview.leads)
+  const leadSignals = googleAdsSafeNumber(overview.leadSignals)
+  const ctr = googleAdsSafeNumber(overview.linkCtr || overview.ctr)
+  const frequency = googleAdsSafeNumber(overview.frequency)
+  const add = (severity, title, detail, action = '') => findings.push({ id: `meta-${severity}-${findings.length + 1}`, severity, title, detail, action })
+
+  if (spend > 0 && leadSignals <= 0) {
+    add('critical', 'Meta spend with no reported lead signal', `${googleAdsFormatMoney(spend)} has been spent in this period and Meta reports no lead, contact, appointment, or messaging lead signal.`, 'Confirm the campaign objective and lead tracking first, then review the highest-spend campaigns and ads before increasing budget.')
+  }
+  if (clicks >= 10 && leadSignals <= 0) {
+    add('critical', 'Traffic is not producing a reported inquiry', `${clicks.toLocaleString()} link/traffic clicks produced no reported lead signal.`, 'Review landing-page fit, instant-form completion, audience quality, and whether the campaigns are optimized for leads rather than traffic or engagement.')
+  }
+  if (ctr > 0 && ctr < 0.01) add('warning', 'Low link engagement', `Link CTR is ${googleAdsFormatPercent(ctr)}.`, 'Review the hook, creative, audience, and offer; low link CTR often means the ad is not generating enough qualified interest.')
+  if (frequency >= 4) add('warning', 'Audience may be seeing the ads repeatedly', `Average frequency is ${frequency.toFixed(1)} in this date range.`, 'Check whether performance worsens as frequency rises and rotate creative or broaden the appropriate audience before simply spending more.')
+
+  campaigns
+    .filter((row) => googleAdsSafeNumber(row.spend) >= Math.max(25, spend * 0.10) && googleAdsSafeNumber(row.leadSignals) <= 0)
+    .sort((a, b) => googleAdsSafeNumber(b.spend) - googleAdsSafeNumber(a.spend))
+    .slice(0, 6)
+    .forEach((row) => add('warning', `${row.name || 'Campaign'} is spending without a lead signal`, `${row.name || 'Campaign'} spent ${googleAdsFormatMoney(row.spend)} with no reported lead/contact/message/appointment signal.`, 'Review the campaign objective, audience, placements, creative, and lead path before allowing this spend to continue unchanged.'))
+
+  const wasteAds = ads.filter((row) => googleAdsSafeNumber(row.spend) >= 10 && googleAdsSafeNumber(row.leadSignals) <= 0).sort((a, b) => googleAdsSafeNumber(b.spend) - googleAdsSafeNumber(a.spend))
+  if (wasteAds.length) {
+    const waste = wasteAds.reduce((sum, row) => sum + googleAdsSafeNumber(row.spend), 0)
+    add('warning', 'Non-converting ad spend is visible', `${wasteAds.length} ad${wasteAds.length === 1 ? '' : 's'} spent at least $10 with no reported lead signal, totaling ${googleAdsFormatMoney(waste)}.`, 'Compare those ads with the best performers and pause/replace weak creative only after confirming tracking is working.')
+  }
+
+  if (!findings.length && spend > 0) add('good', 'No obvious Meta account-level red flag', 'The high-level Meta metrics do not show an obvious failure under the current rule checks.', 'Continue into Campaigns, Ad Sets, Ads, Platforms, Devices, and Regions before changing budget.')
+  if (!spend && report?.fetchedAt) add('info', 'No Meta spend in selected period', 'Meta returned no spend for this date range.', 'Confirm the selected ad account, campaign status, and date range.')
+  return findings
+}
 
 function mergeInventoryColumns(storedColumns = []) {
   const stored = Array.isArray(storedColumns) ? storedColumns : []
@@ -2689,6 +2793,28 @@ function App() {
   const serviceInboxAutoScanRef = useRef(false)
 
   const [billingTab, setBillingTab] = useState('firm_billing')
+  const [marketingPlatform, setMarketingPlatform] = useState('overview')
+  const [marketingAiAudit, setMarketingAiAudit] = useState('')
+  const [marketingAiLoading, setMarketingAiLoading] = useState(false)
+  const [marketingError, setMarketingError] = useState('')
+  const [googleAdsTab, setGoogleAdsTab] = useState('overview')
+  const [googleAdsDays, setGoogleAdsDays] = useState(30)
+  const [googleAdsStatus, setGoogleAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null })
+  const [googleAdsReport, setGoogleAdsReport] = useState(null)
+  const [googleAdsLoading, setGoogleAdsLoading] = useState(false)
+  const [googleAdsStatusLoading, setGoogleAdsStatusLoading] = useState(false)
+  const [googleAdsError, setGoogleAdsError] = useState('')
+  const [googleAdsAiAudit, setGoogleAdsAiAudit] = useState('')
+  const [googleAdsAiLoading, setGoogleAdsAiLoading] = useState(false)
+  const [metaAdsTab, setMetaAdsTab] = useState('overview')
+  const [metaAdsDays, setMetaAdsDays] = useState(30)
+  const [metaAdsStatus, setMetaAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null, page: null })
+  const [metaAdsReport, setMetaAdsReport] = useState(null)
+  const [metaAdsLoading, setMetaAdsLoading] = useState(false)
+  const [metaAdsStatusLoading, setMetaAdsStatusLoading] = useState(false)
+  const [metaAdsError, setMetaAdsError] = useState('')
+  const [metaAdsAiAudit, setMetaAdsAiAudit] = useState('')
+  const [metaAdsAiLoading, setMetaAdsAiLoading] = useState(false)
   const [bankAccounts, setBankAccounts] = useState([])
   const [bankTransactions, setBankTransactions] = useState([])
   const [bankConnections, setBankConnections] = useState([])
@@ -3457,7 +3583,8 @@ function App() {
   const [bulkBillingResult, setBulkBillingResult] = useState('')
   const [bulkWipReview, setBulkWipReview] = useState({ open: false, matter_ids: [], drafts: {}, approved_ids: [], invoice_by_matter: {} })
   const [bulkWipProgress, setBulkWipProgress] = useState('')
-  const [bulkOutstandingInvoiceReview, setBulkOutstandingInvoiceReview] = useState({ open: false, rows: [], skipped: [], progress: '' })
+  const [bulkOutstandingInvoiceReview, setBulkOutstandingInvoiceReview] = useState({ open: false, mode: 'all', rows: [], skipped: [], progress: '' })
+  const [bulkOutstandingInvoiceTypePicker, setBulkOutstandingInvoiceTypePicker] = useState({ open: false, matter_ids: [] })
   const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)
   const [bulkInvoiceFilters, setBulkInvoiceFilters] = useState(() => {
     // Keep real filters (type/status/date), but never restore per-column text searches.
@@ -3478,6 +3605,7 @@ function App() {
   const bulkBillingFloatingScrollRef = useRef(null)
   const bulkBillingScrollSyncRef = useRef(false)
   const bulkInvoiceSequenceRef = useRef(0)
+  const duplicateOpeningWipRepairInFlightRef = useRef(null)
   const billingEntriesRef = useRef([])
   // Opening balances are now a one-time Mio record. Clio rows remain available
   // only in read-only history and can never alter current financial balances.
@@ -5877,6 +6005,11 @@ function App() {
       loadMioInvoiceEventsFromDatabase()
     }
   }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.id || !(matters || []).length || !(mioInvoices || []).length) return
+    repairSafeDuplicateOpeningWipInvoices(mioInvoices, { silent: true }).catch((error) => console.warn('Duplicate opening-WIP startup repair could not finish:', error))
+  }, [session?.user?.id, (matters || []).length, (mioInvoices || []).length, mioFinanceOpeningBalances])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
@@ -22645,6 +22778,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function invoiceBalanceAmount(invoice) {
+    if (invoice?.status === 'void') return 0
     return Math.max(0, Number((financeNumber(invoice?.total) - invoicePaidAmount(invoice)).toFixed(2)))
   }
 
@@ -22661,24 +22795,117 @@ async function updateTeamCell(memberId, field, value) {
       .sort((a, b) => String(b.issue_date || b.created_at || '').localeCompare(String(a.issue_date || a.created_at || '')))
   }
 
+  function invoiceLineIsOpeningWip(line = {}) {
+    const description = String(line?.description || '')
+    return line?.source_kind === 'snapshot_wip' || (!line?.billing_entry_id && /(?:mio opening wip|prior clio wip|opening wip balance|unbilled work from (?:the )?latest financial snapshot|opening balance[^\n]*wip)/i.test(description))
+  }
+
+  function invoiceOpeningWipAmount(invoice = {}) {
+    const lines = Array.isArray(invoice.line_items) ? invoice.line_items : []
+    const itemizedOpeningAmount = lines.filter(invoiceLineIsOpeningWip).reduce((sum, line) => sum + Math.max(0, financeNumber(line?.amount)), 0)
+    if (itemizedOpeningAmount > 0.005) return Number(itemizedOpeningAmount.toFixed(2))
+    return Number(Math.max(0, financeNumber(invoice.source_wip_amount)).toFixed(2))
+  }
+
   function openingWipOnlyInvoice(invoice = {}) {
     const lines = Array.isArray(invoice.line_items) ? invoice.line_items : []
-    return invoice.invoice_type !== 'trust_request' && financeNumber(invoice.source_wip_amount) > 0.005 && !!lines.length && lines.every((line) => line?.source_kind === 'snapshot_wip' && !line?.billing_entry_id)
+    if (invoice.invoice_type === 'trust_request' || !lines.length || invoiceOpeningWipAmount(invoice) <= 0.005) return false
+    return lines.every(invoiceLineIsOpeningWip) && Math.abs(lines.reduce((sum, line) => sum + Math.max(0, financeNumber(line.amount)), 0) - financeNumber(invoice.total)) <= 0.01
+  }
+
+  function invoiceHasBeenEmailed(invoice = {}) {
+    return !!invoice.emailed_at || !!(Array.isArray(invoice.email_history) && invoice.email_history.length)
+  }
+
+  function openingWipInvoiceCommitmentPriority(invoice = {}) {
+    if (invoicePaidAmount(invoice) > 0.005) return 0
+    if (invoiceHasBeenEmailed(invoice)) return 1
+    if (invoice.status !== 'draft') return 2
+    return 3
+  }
+
+  function invoiceBelongsToOpeningWipSnapshot(invoice = {}, snapshot = null) {
+    const snapshotDate = financeDateOnly(snapshot?.snapshot_date || activeMioBillingCutoverDate)
+    const taggedSnapshotDate = financeDateOnly(invoice?.source_snapshot_date)
+    // Newer Mio invoices record the exact opening snapshot they consumed. Honor that
+    // tag first so an invoice tied to a different snapshot cannot affect this one.
+    if (taggedSnapshotDate && snapshotDate) return taggedSnapshotDate === snapshotDate
+    const invoiceDate = financeDateOnly(invoice?.issue_date || invoice?.created_at || invoice?.updated_at)
+    // Legacy opening-WIP invoices may not have source_snapshot_date. Only treat them
+    // as candidates when they were created after the frozen opening snapshot.
+    return !snapshotDate || (!!invoiceDate && invoiceDate > snapshotDate)
+  }
+
+  function openingWipInvoiceAnalysisForMatter(matter, invoiceSource = mioInvoices, options = {}) {
+    const snapshot = latestTrustSnapshotForMatter(matter)
+    const openingWip = Math.max(0, financeNumber(snapshot?.work_in_progress))
+    const excludeInvoiceId = String(options.excludeInvoiceId || '')
+    const empty = {
+      hasOpeningSnapshot: !!snapshot,
+      openingWip,
+      remainingOpeningWip: openingWip,
+      duplicateInvoiceIds: new Set(),
+      safeAutoVoidInvoiceIds: new Set(),
+      partialDuplicateInvoices: [],
+      acceptedInvoiceNumbers: [],
+      allocations: new Map()
+    }
+    // A missing/zero opening record is not enough evidence to auto-classify old invoices.
+    if (!snapshot || openingWip <= 0.005) return empty
+    let remainingOpeningWip = openingWip
+    const duplicateInvoiceIds = new Set()
+    const safeAutoVoidInvoiceIds = new Set()
+    const partialDuplicateInvoices = []
+    const acceptedInvoiceNumbers = []
+    const allocations = new Map()
+    financeInvoicesForMatter(matter, invoiceSource)
+      .filter((invoice) => invoice?.invoice_type !== 'trust_request' && String(invoice?.id || '') !== excludeInvoiceId && invoiceOpeningWipAmount(invoice) > 0.005 && invoiceBelongsToOpeningWipSnapshot(invoice, snapshot))
+      .sort((left, right) => openingWipInvoiceCommitmentPriority(left) - openingWipInvoiceCommitmentPriority(right) || String(left.created_at || left.issue_date || '').localeCompare(String(right.created_at || right.issue_date || '')) || String(left.invoice_number || '').localeCompare(String(right.invoice_number || '')) || String(left.id || '').localeCompare(String(right.id || '')))
+      .forEach((invoice) => {
+        const sourceAmount = invoiceOpeningWipAmount(invoice)
+        const allocatedAmount = Math.min(remainingOpeningWip, sourceAmount)
+        const duplicateAmount = Math.max(0, Number((sourceAmount - allocatedAmount).toFixed(2)))
+        remainingOpeningWip = Math.max(0, Number((remainingOpeningWip - allocatedAmount).toFixed(2)))
+        allocations.set(String(invoice.id), { sourceAmount, allocatedAmount, duplicateAmount })
+        if (allocatedAmount > 0.005) acceptedInvoiceNumbers.push(invoice.invoice_number || String(invoice.id || ''))
+        if (duplicateAmount <= 0.005) return
+        const entirelyDuplicate = allocatedAmount <= 0.005
+        if (entirelyDuplicate && openingWipOnlyInvoice(invoice)) {
+          duplicateInvoiceIds.add(String(invoice.id))
+          if (invoicePaidAmount(invoice) <= 0.005 && !invoiceHasBeenEmailed(invoice) && !invoice?.payment_url && !invoice?.payment_request_id && !pendingLawPayPaymentsForInvoice(invoice).length) safeAutoVoidInvoiceIds.add(String(invoice.id))
+          return
+        }
+        partialDuplicateInvoices.push({ invoice, allocatedAmount, duplicateAmount })
+      })
+    return {
+      hasOpeningSnapshot: true,
+      openingWip,
+      remainingOpeningWip,
+      duplicateInvoiceIds,
+      safeAutoVoidInvoiceIds,
+      partialDuplicateInvoices,
+      acceptedInvoiceNumbers,
+      allocations
+    }
   }
 
   function duplicateOpeningWipInvoiceIdsForMatter(matter, invoiceSource = mioInvoices) {
-    const snapshot = latestTrustSnapshotForMatter(matter)
-    let remainingOpeningWip = Math.max(0, financeNumber(snapshot?.work_in_progress))
-    const duplicates = new Set()
-    financeInvoicesForMatter(matter, invoiceSource)
-      .filter(openingWipOnlyInvoice)
-      .sort((a, b) => String(a.created_at || a.issue_date || '').localeCompare(String(b.created_at || b.issue_date || '')))
-      .forEach((invoice) => {
-        const sourceAmount = Math.max(0, financeNumber(invoice.source_wip_amount))
-        if (sourceAmount <= remainingOpeningWip + 0.005) remainingOpeningWip = Math.max(0, remainingOpeningWip - sourceAmount)
-        else duplicates.add(String(invoice.id))
-      })
-    return duplicates
+    return openingWipInvoiceAnalysisForMatter(matter, invoiceSource).duplicateInvoiceIds
+  }
+
+  function remainingOpeningWipForMatter(matter, invoiceSource = mioInvoices, excludeInvoiceId = '') {
+    return openingWipInvoiceAnalysisForMatter(matter, invoiceSource, { excludeInvoiceId }).remainingOpeningWip
+  }
+
+  function assertOpeningWipAvailableForLines(matter, lines = [], invoiceSource = mioInvoices, excludeInvoiceId = '') {
+    const requested = Number((lines || []).filter(invoiceLineIsOpeningWip).reduce((sum, line) => sum + Math.max(0, financeNumber(line?.amount)), 0).toFixed(2))
+    if (requested <= 0.005) return
+    const analysis = openingWipInvoiceAnalysisForMatter(matter, invoiceSource, { excludeInvoiceId })
+    if (!analysis.hasOpeningSnapshot) return
+    if (requested > analysis.remainingOpeningWip + 0.005) {
+      const prior = analysis.acceptedInvoiceNumbers.filter(Boolean).join(', ')
+      throw new Error(`Mio stopped a duplicate opening-WIP invoice. This draft requests ${money(requested)} of opening WIP, but only ${money(analysis.remainingOpeningWip)} remains uninvoiced.${prior ? ` Existing invoice(s): ${prior}.` : ''} Refresh Bulk Billing before continuing.`)
+    }
   }
 
   function lawPayRawObject(transaction = {}) {
@@ -22815,7 +23042,7 @@ async function updateTeamCell(memberId, field, value) {
     return labels[transaction?.transaction_type] || 'Trust transaction'
   }
 
-  function clientFinanceNumbers(matter) {
+  function clientFinanceNumbers(matter, invoiceSource = mioInvoices) {
     const snapshot = latestTrustSnapshotForMatter(matter)
     const hasSnapshot = !!snapshot
     const snapshotTrust = hasSnapshot ? financeNumber(snapshot?.matter_trust_funds ?? snapshot?.trust_running_balance) : 0
@@ -22826,11 +23053,21 @@ async function updateTeamCell(memberId, field, value) {
     // The cutover snapshot is a frozen opening balance. Mio adds only its own
     // still-uninvoiced entries after that date; later Clio rows never reset finance.
     const newerUninvoicedEntries = uninvoicedEntries.filter(financeBillingEntryAfterCutover)
-    const invoices = financeInvoicesForMatter(matter)
-    const duplicateInvoiceIds = duplicateOpeningWipInvoiceIdsForMatter(matter)
-    const serviceInvoices = invoices.filter((invoice) => invoice.invoice_type !== 'trust_request' && !duplicateInvoiceIds.has(String(invoice.id)))
+    const invoices = financeInvoicesForMatter(matter, invoiceSource)
+    const openingWipAnalysis = openingWipInvoiceAnalysisForMatter(matter, invoices)
+    const duplicateInvoiceIds = openingWipAnalysis.duplicateInvoiceIds
+    const partialDuplicateInvoiceIds = new Set((openingWipAnalysis.partialDuplicateInvoices || []).map((item) => String(item?.invoice?.id || '')).filter(Boolean))
+    const blockedOpeningWipInvoiceIds = new Set([...duplicateInvoiceIds, ...partialDuplicateInvoiceIds])
+    const trustRequestInvoices = invoices.filter((invoice) => invoice.invoice_type === 'trust_request')
+    const unpaidTrustRequestBalance = trustRequestInvoices.reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
+    const draftTrustRequestBalance = trustRequestInvoices.filter((invoice) => invoice?.status === 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
+    const serviceInvoices = invoices.filter((invoice) => invoice.invoice_type !== 'trust_request' && !blockedOpeningWipInvoiceIds.has(String(invoice.id)))
     const newerInvoices = serviceInvoices.filter((invoice) => !hasSnapshot || financeRowAfterSnapshot(invoice, snapshot))
-    const convertedSnapshotWip = newerInvoices.reduce((sum, invoice) => sum + financeNumber(invoice.source_wip_amount), 0)
+    // Count every accepted opening-WIP allocation, including the accepted portion of
+    // a mixed invoice that is temporarily blocked because another portion is duplicated.
+    // This keeps the displayed WIP from reappearing while the problematic invoice is reviewed.
+    const convertedSnapshotWip = Array.from(openingWipAnalysis.allocations?.values?.() || [])
+      .reduce((sum, allocation) => sum + Math.max(0, financeNumber(allocation?.allocatedAmount)), 0)
     const clioBaselineWip = Math.max(0, hasSnapshot ? snapshotWip - convertedSnapshotWip : 0)
     const mioPostCutoverWip = billingTotals(newerUninvoicedEntries).amount
     const wip = clioBaselineWip + mioPostCutoverWip
@@ -22839,6 +23076,7 @@ async function updateTeamCell(memberId, field, value) {
     const snapshotOutstandingPayments = activeSnapshotOutstandingPayments(currentLedgerRows, matter?.id)
       .reduce((sum, row) => sum + financeNumber(row.amount), 0)
     const outstanding = Math.max(0, (hasSnapshot ? snapshotOutstanding : 0) - snapshotOutstandingPayments) + newerInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
+    const outstandingTrust = trustRequestInvoices.filter((invoice) => invoice?.status !== 'draft').reduce((sum, invoice) => sum + invoiceBalanceAmount(invoice), 0)
     const ledgerDelta = currentLedgerRows.reduce((sum, row) => {
       return sum + (row.direction === 'out' ? -financeNumber(row.amount) : financeNumber(row.amount))
     }, 0)
@@ -22851,6 +23089,7 @@ async function updateTeamCell(memberId, field, value) {
     const trust = Math.max(0, snapshotTrust + ledgerDelta)
     const safeWip = Math.max(0, wip)
     const safeOutstanding = Math.max(0, outstanding)
+    const safeOutstandingTrust = Math.max(0, outstandingTrust)
     return {
       snapshot,
       snapshotTrust,
@@ -22863,6 +23102,9 @@ async function updateTeamCell(memberId, field, value) {
       minimumBalance,
       wip: safeWip,
       outstanding: safeOutstanding,
+      outstandingTrust: safeOutstandingTrust,
+      unpaidTrustRequestBalance: Math.max(0, unpaidTrustRequestBalance),
+      draftTrustRequestBalance: Math.max(0, draftTrustRequestBalance),
       trustMinusMinimum: trust - minimumBalance,
       trustMinusMinimumMinusOutstanding: trust - minimumBalance - safeOutstanding,
       trustMinusMinimumMinusWip: trust - minimumBalance - safeWip,
@@ -22870,8 +23112,13 @@ async function updateTeamCell(memberId, field, value) {
       uninvoicedEntries: newerUninvoicedEntries,
       invoices,
       serviceInvoices,
+      trustRequestInvoices,
       duplicateInvoiceIds,
+      partialDuplicateInvoiceIds,
+      blockedOpeningWipInvoiceIds,
       duplicateInvoices: invoices.filter((invoice) => duplicateInvoiceIds.has(String(invoice.id))),
+      partialDuplicateInvoices: openingWipAnalysis.partialDuplicateInvoices,
+      blockedOpeningWipInvoices: invoices.filter((invoice) => blockedOpeningWipInvoiceIds.has(String(invoice.id))),
       ledgerRows,
       currentLedgerRows,
       financialSnapshotResolved: MIO_ONLY_FINANCE_MODE || hasSnapshot
@@ -22894,6 +23141,16 @@ async function updateTeamCell(memberId, field, value) {
     }
   }
 
+  function outstandingTrustBreakdownForMatter(matter, preparedFinance = null) {
+    const finance = preparedFinance || clientFinanceNumbers(matter)
+    const invoiceRows = (finance.trustRequestInvoices || [])
+      .filter((invoice) => invoice.status !== 'draft')
+      .map((invoice) => ({ invoice, label: invoice.invoice_number || 'Unnumbered trust request', balance: invoiceBalanceAmount(invoice), issue_date: invoice.issue_date || invoice.created_at || '' }))
+      .filter((row) => row.balance > 0.005)
+      .sort((left, right) => String(left.issue_date).localeCompare(String(right.issue_date)) || left.label.localeCompare(right.label))
+    return { invoiceRows, total: Number(invoiceRows.reduce((sum, row) => sum + row.balance, 0).toFixed(2)) }
+  }
+
   function matterRetainerTarget(matter, preparedFinance = null) {
     const override = financeNumber(retainerReplenishmentTargets?.[String(matter?.id || '')], NaN)
     if (Number.isFinite(override) && override >= 0) return override
@@ -22910,7 +23167,10 @@ async function updateTeamCell(memberId, field, value) {
 
   function matterReplenishmentAmount(matter, preparedFinance = null) {
     const finance = preparedFinance || clientFinanceNumbers(matter)
-    return Math.max(0, matterRetainerTarget(matter, finance) - finance.trust)
+    // Any existing unpaid trust request already reserves these funds, including a
+    // draft left behind by a failed or interrupted send. Subtract all non-void unpaid
+    // requests so repeated bulk replenishment runs cannot create overlapping requests.
+    return Math.max(0, matterRetainerTarget(matter, finance) - finance.trust - finance.unpaidTrustRequestBalance)
   }
 
   function setMatterRetainerTarget(matter, rawValue) {
@@ -22946,7 +23206,7 @@ async function updateTeamCell(memberId, field, value) {
     const total = financeNumber(invoice.total)
     const trustPaid = activeTrustPaymentsForInvoice(invoice).reduce((sum, row) => sum + financeNumber(row.amount), 0)
     const amountPaid = Math.min(total, Math.max(0, financeNumber(invoice.amount_paid), trustPaid))
-    const balance = Math.max(0, Number((total - amountPaid).toFixed(2)))
+    const balance = invoice.status === 'void' ? 0 : Math.max(0, Number((total - amountPaid).toFixed(2)))
     const status = invoice.status === 'void' || invoice.status === 'draft' ? invoice.status : balance <= 0.005 ? 'paid' : 'outstanding'
     return {
       id: invoice.id,
@@ -22995,6 +23255,80 @@ async function updateTeamCell(memberId, field, value) {
     if (error && String(error.code || '') !== '23505') console.warn('Invoice audit event could not be saved:', error)
   }
 
+  async function repairSafeDuplicateOpeningWipInvoices(invoiceSource = mioInvoices, options = {}) {
+    if (!session?.user?.id || !Array.isArray(invoiceSource) || !invoiceSource.length || !matters?.length) return { invoiceSource: Array.isArray(invoiceSource) ? invoiceSource : [], voided: [], failed: [] }
+    if (duplicateOpeningWipRepairInFlightRef.current) return duplicateOpeningWipRepairInFlightRef.current
+    const repairPromise = (async () => {
+      const candidates = []
+      for (const matter of matters || []) {
+        const analysis = openingWipInvoiceAnalysisForMatter(matter, invoiceSource)
+        for (const invoiceId of analysis.safeAutoVoidInvoiceIds) {
+          const invoice = invoiceSource.find((row) => String(row?.id || '') === String(invoiceId))
+          if (!invoice || invoice.status === 'void') continue
+          candidates.push({ matter, invoice, preservedInvoiceNumbers: analysis.acceptedInvoiceNumbers.filter((number) => number && String(number) !== String(invoice.invoice_number || '')) })
+        }
+      }
+      if (!candidates.length) return { invoiceSource, voided: [], failed: [] }
+      const replacements = new Map()
+      const voided = []
+      const failed = []
+      for (const candidate of candidates) {
+        const { matter, invoice, preservedInvoiceNumbers } = candidate
+        try {
+          // Re-read and re-check each invoice immediately before changing it. This prevents
+          // an invoice from being auto-voided if a payment, email, or LawPay link was added
+          // after the duplicate scan began.
+          const { data: currentData, error: currentError } = await supabase
+            .from('mio_invoices')
+            .select('*')
+            .eq('id', invoice.id)
+            .eq('user_id', session.user.id)
+            .single()
+          if (currentError) throw currentError
+          const currentInvoice = invoiceFromDatabaseRow(currentData)
+          const currentSource = invoiceSource.map((row) => String(row?.id || '') === String(currentInvoice.id) ? currentInvoice : row)
+          const currentAnalysis = openingWipInvoiceAnalysisForMatter(matter, currentSource)
+          if (!currentAnalysis.safeAutoVoidInvoiceIds.has(String(currentInvoice.id))) {
+            replacements.set(String(currentInvoice.id), currentInvoice)
+            failed.push(`${currentInvoice.invoice_number || currentInvoice.id}: changed after the scan and no longer qualifies for automatic voiding`)
+            continue
+          }
+          const now = new Date().toISOString()
+          let updateQuery = supabase
+            .from('mio_invoices')
+            .update({ status: 'void', balance: 0, updated_at: now })
+            .eq('id', currentInvoice.id)
+            .eq('user_id', session.user.id)
+          if (currentInvoice.updated_at) updateQuery = updateQuery.eq('updated_at', currentInvoice.updated_at)
+          const { data, error } = await updateQuery.select('*').maybeSingle()
+          if (error) throw error
+          if (!data) throw new Error('The invoice changed while the repair was running; Mio left it unchanged for review.')
+          const saved = invoiceFromDatabaseRow(data)
+          replacements.set(String(saved.id), saved)
+          voided.push(saved)
+          await recordInvoiceEvent(saved, 'duplicate_opening_wip_auto_voided', {
+            reason: 'Opening WIP was already included on another preserved invoice',
+            preserved_invoice_numbers: preservedInvoiceNumbers,
+            duplicate_source_wip_amount: invoiceOpeningWipAmount(currentInvoice),
+            matter_name: matter?.name || currentInvoice.matter_name || ''
+          })
+        } catch (error) {
+          failed.push(`${invoice.invoice_number || invoice.id}: ${error?.message || error}`)
+        }
+      }
+      const repairedSource = invoiceSource.map((invoice) => replacements.get(String(invoice.id)) || invoice)
+      if (voided.length) {
+        setMioInvoices((current) => (current || []).map((invoice) => replacements.get(String(invoice.id)) || invoice))
+        if (!options.silent) setBulkBillingResult(`${voided.length} unpaid, unsent duplicate opening-WIP invoice${voided.length === 1 ? '' : 's'} without an active LawPay link or pending payment ${voided.length === 1 ? 'was' : 'were'} safely voided for all affected matters. ${voided.map((invoice) => invoice.invoice_number).join(', ')}.`)
+      }
+      if (failed.length && !options.silent) setBulkBillingResult(`Duplicate-opening-WIP repair completed with ${failed.length} item${failed.length === 1 ? '' : 's'} needing review: ${failed.join(' | ')}`)
+      return { invoiceSource: repairedSource, voided, failed }
+    })()
+    duplicateOpeningWipRepairInFlightRef.current = repairPromise
+    try { return await repairPromise }
+    finally { duplicateOpeningWipRepairInFlightRef.current = null }
+  }
+
   async function persistMioInvoiceRecord(invoice, eventType = '', details = {}) {
     if (!session?.user?.id) throw new Error('Sign in before creating or updating an invoice.')
     const originalId = String(invoice?.id || '')
@@ -23034,7 +23368,14 @@ async function updateTeamCell(memberId, field, value) {
       data = await loadAllSupabasePages(() => supabase.from('mio_invoices').select('*').order('issue_date', { ascending: false }).order('created_at', { ascending: false }).order('id', { ascending: true }))
     } catch (error) { console.warn('Could not load database invoice records:', error); return }
     if (!Array.isArray(data) || !data.length) return []
-    const databaseRows = data.map(invoiceFromDatabaseRow)
+    let databaseRows = data.map(invoiceFromDatabaseRow)
+    // Safe systemic repair: an unpaid, unsent invoice containing only opening WIP
+    // is voided when another preserved invoice already consumed the same frozen opening WIP.
+    // Paid or emailed invoices take priority; mixed or paid/sent invoices are never auto-voided.
+    if (matters?.length) {
+      const repair = await repairSafeDuplicateOpeningWipInvoices(databaseRows, { silent: page !== 'billing' || billingTab !== 'bulk_billing' })
+      databaseRows = repair.invoiceSource
+    }
     // Supabase is authoritative for every persisted invoice ID. A browser cache
     // must never resurrect a database-voided invoice as Draft or Outstanding.
     setMioInvoices((current) => {
@@ -23304,6 +23645,13 @@ async function updateTeamCell(memberId, field, value) {
 
   async function sendInvoiceDocumentEmail(matter, invoice, options = {}) {
     if (!matter) throw new Error('The invoice matter could not be found.')
+    if (invoice?.invoice_type !== 'trust_request' && invoiceOpeningWipAmount(invoice) > 0.005) {
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      const latestStoredInvoice = latestInvoiceSource.find((row) => String(row?.id || '') === String(invoice?.id || ''))
+      if (latestStoredInvoice?.status === 'void') throw new Error(`${invoice.invoice_number || 'This invoice'} was voided because it duplicated opening WIP and cannot be sent.`)
+      assertOpeningWipAvailableForLines(matter, invoice.line_items || [], latestInvoiceSource, invoice.id)
+    }
     const recipient = String(options.recipient_email || invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '').trim()
     let sender = String(options.sender_email || invoice.sender_email || DEFAULT_BILLING_SENDER_EMAIL).trim()
     if (!recipient) throw new Error('Enter a recipient email address.')
@@ -23419,7 +23767,7 @@ async function updateTeamCell(memberId, field, value) {
       amount: Number(Math.max(0, financeNumber(line.amount)).toFixed(2))
     })).filter((line) => line.amount > 0.005)
     const total = Number(lineItems.reduce((sum, line) => sum + financeNumber(line.amount), 0).toFixed(2))
-    const snapshotAmount = lineItems.filter((line) => line.source_kind === 'snapshot_wip' || (!line.billing_entry_id && /unbilled work from latest financial snapshot/i.test(String(line.description || '')))).reduce((sum, line) => sum + financeNumber(line.amount), 0)
+    const snapshotAmount = lineItems.filter(invoiceLineIsOpeningWip).reduce((sum, line) => sum + financeNumber(line.amount), 0)
     return {
       ...baseInvoice,
       ...draft,
@@ -23460,6 +23808,11 @@ async function updateTeamCell(memberId, field, value) {
     if (total <= 0.005) return alert('The invoice must contain at least one line item with an amount greater than zero.')
     setInvoiceDocumentBusy(true)
     try {
+      const matter = billingInvoiceMatter(selectedFinanceInvoice)
+      if (!matter) throw new Error('The invoice matter could not be found.')
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      assertOpeningWipAvailableForLines(matter, invoiceEditDraft.line_items || [], latestInvoiceSource)
       const invoiceNumber = await reserveMioInvoiceNumber()
       const approved = invoiceFromEditDraft({ ...invoiceEditDraft, invoice_number: invoiceNumber }, { ...selectedFinanceInvoice, invoice_number: invoiceNumber, amount_paid: 0 }, 'outstanding')
       const saved = await persistMioInvoiceRecord(approved, 'invoice_created', { source: 'reviewed_work_in_progress', line_item_count: approved.line_items.length, approved_before_creation: true })
@@ -23480,6 +23833,11 @@ async function updateTeamCell(memberId, field, value) {
     if (edited.total <= 0.005) return alert('The invoice must contain at least one line item with an amount greater than zero. Use Delete invoice if the invoice is no longer needed.')
     setInvoiceDocumentBusy(true)
     try {
+      const matter = billingInvoiceMatter(selectedFinanceInvoice)
+      if (!matter) throw new Error('The invoice matter could not be found.')
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      assertOpeningWipAvailableForLines(matter, edited.line_items || [], latestInvoiceSource, selectedFinanceInvoice.id)
       const saved = await persistMioInvoiceRecord(edited, 'invoice_edited', { prior_total: financeNumber(selectedFinanceInvoice.total), new_total: edited.total, prior_line_count: (selectedFinanceInvoice.line_items || []).length, new_line_count: edited.line_items.length })
       await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items, selectedFinanceInvoice.line_items || [])
       setSelectedFinanceInvoice(saved)
@@ -23496,6 +23854,13 @@ async function updateTeamCell(memberId, field, value) {
     if (!window.confirm(`Approve ${invoice.invoice_number} and make it an outstanding invoice?`)) return
     setInvoiceDocumentBusy(true)
     try {
+      const matter = billingInvoiceMatter(invoice)
+      if (!matter) throw new Error('The invoice matter could not be found.')
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      const latestStoredInvoice = latestInvoiceSource.find((row) => String(row?.id || '') === String(invoice.id))
+      if (latestStoredInvoice?.status === 'void') throw new Error(`${invoice.invoice_number} was voided because it duplicated opening WIP.`)
+      assertOpeningWipAvailableForLines(matter, invoice.line_items || [], latestInvoiceSource, invoice.id)
       const saved = await persistMioInvoiceRecord({ ...invoice, status: 'outstanding', balance: invoiceBalanceAmount(invoice), updated_at: new Date().toISOString() }, 'invoice_approved', {})
       if (String(saved.id) !== String(invoice.id)) await syncBillingEntryInvoiceLinks(saved.id, saved.invoice_number, saved.line_items || [], invoice.line_items || [])
       setSelectedFinanceInvoice(saved)
@@ -23744,7 +24109,15 @@ async function updateTeamCell(memberId, field, value) {
 
   async function applyTrustToInvoice(matter, invoice) {
     if (invoice?.invoice_type === 'trust_request') return alert('A trust replenishment request records funds coming into trust; it cannot be paid from the trust account.')
-    if (duplicateOpeningWipInvoiceIdsForMatter(matter).has(String(invoice?.id))) return alert('This invoice is flagged as a duplicate opening-WIP invoice. Review and delete/void it instead of paying it.')
+    if (invoiceOpeningWipAmount(invoice) > 0.005) {
+      try {
+        const databaseRows = await loadMioInvoicesFromDatabase()
+        const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+        const latestStoredInvoice = latestInvoiceSource.find((row) => String(row?.id || '') === String(invoice?.id || ''))
+        if (latestStoredInvoice?.status === 'void') throw new Error(`${invoice.invoice_number || 'This invoice'} was voided because it duplicated opening WIP and cannot be paid from trust.`)
+        assertOpeningWipAvailableForLines(matter, invoice.line_items || [], latestInvoiceSource, invoice.id)
+      } catch (error) { return alert(error?.message || String(error)) }
+    }
     const balance = invoiceBalanceAmount(invoice)
     const trustAvailable = clientFinanceNumbers(matter).trust
     if (balance <= 0.005) return alert('This invoice is already paid.')
@@ -23855,7 +24228,7 @@ async function updateTeamCell(memberId, field, value) {
       amount_paid: 0,
       balance: amount,
       source_snapshot_date: (bulkFinanceByMatterId.get(String(matter.id)) || clientFinanceNumbers(matter)).snapshot?.snapshot_date || '',
-      source_wip_amount: cleanLines.filter((line) => !line.billing_entry_id).reduce((sum, line) => sum + line.amount, 0),
+      source_wip_amount: cleanLines.filter(invoiceLineIsOpeningWip).reduce((sum, line) => sum + line.amount, 0),
       line_items: cleanLines.map(({ id, ...line }) => line),
       created_at: now.toISOString(),
       updated_at: now.toISOString()
@@ -23864,6 +24237,9 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function createReviewedWipInvoice(matter, lines, { trackReview = true, linkEntries = true } = {}) {
+    const databaseRows = await loadMioInvoicesFromDatabase()
+    const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+    assertOpeningWipAvailableForLines(matter, lines, latestInvoiceSource)
     const invoice = buildReviewedWipInvoice(matter, lines, await reserveMioInvoiceNumber())
     const entryIds = new Set((invoice.line_items || []).map((line) => String(line.billing_entry_id || '')).filter(Boolean))
     const saved = await persistMioInvoiceRecord(invoice, 'invoice_created', { source: 'bulk_wip_review', line_item_count: invoice.line_items.length })
@@ -23945,7 +24321,13 @@ async function updateTeamCell(memberId, field, value) {
 
   async function payInvoiceFromTrustWithoutPrompt(matter, invoice) {
     if (invoice?.invoice_type === 'trust_request') throw new Error('Trust requests cannot be paid from trust funds.')
-    if (duplicateOpeningWipInvoiceIdsForMatter(matter).has(String(invoice?.id))) throw new Error('This duplicate opening-WIP invoice must be reviewed and voided, not paid.')
+    if (invoiceOpeningWipAmount(invoice) > 0.005) {
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
+      const latestStoredInvoice = latestInvoiceSource.find((row) => String(row?.id || '') === String(invoice?.id || ''))
+      if (latestStoredInvoice?.status === 'void') throw new Error(`${invoice.invoice_number || 'This invoice'} was voided because it duplicated opening WIP and cannot be paid from trust.`)
+      assertOpeningWipAvailableForLines(matter, invoice.line_items || [], latestInvoiceSource, invoice.id)
+    }
     const trustAvailable = clientFinanceNumbers(matter).trust
     const amount = Math.min(invoiceBalanceAmount(invoice), trustAvailable)
     if (amount <= 0.005) throw new Error('No available trust funds can be applied to this invoice.')
@@ -24175,12 +24557,16 @@ async function updateTeamCell(memberId, field, value) {
     const prepared = []
     let saved = []
     try {
+      const databaseRows = await loadMioInvoicesFromDatabase()
+      const latestInvoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
       const candidates = remainingIds.map((matterId, order) => {
         const matter = matters.find((row) => String(row.id) === matterId)
         if (!matter) { failures.push(`Matter ${matterId}: matter record not found`); return null }
         const lines = review.drafts?.[matterId] || []
         const total = lines.reduce((sum, line) => sum + Math.max(0, financeNumber(line.amount)), 0)
         if (total <= 0.005) { failures.push(`${matterClientName(matter) || matter.name || matterId}: no billable amount remains`); return null }
+        try { assertOpeningWipAvailableForLines(matter, lines, latestInvoiceSource) }
+        catch (error) { failures.push(`${matterClientName(matter) || matter.name || matterId}: ${error?.message || error}`); return null }
         return { matterId, matter, lines, order }
       }).filter(Boolean)
       let cursor = 0
@@ -24299,58 +24685,122 @@ async function updateTeamCell(memberId, field, value) {
     } finally { setBulkBillingBusy(false) }
   }
 
-  function bulkOutstandingInvoiceDraft(invoice, matter) {
-    const template = renderBillingTemplate('service_invoice', {
+  function bulkOutstandingReviewModeLabel(mode = 'all') {
+    if (mode === 'trust') return 'OB (Trust)'
+    if (mode === 'services') return 'OB (Work performed)'
+    return 'All OB'
+  }
+
+  function bulkOutstandingReviewModeHint(mode = 'all') {
+    if (mode === 'trust') return 'Every sendable unpaid trust replenishment request, recipient, message, amount, and attachment is on this one scrolling page.'
+    if (mode === 'services') return 'Every sendable unpaid work-performed invoice, recipient, message, amount, and attachment is on this one scrolling page.'
+    return 'Every sendable unpaid work-performed invoice and trust replenishment request is on this one scrolling page.'
+  }
+
+  function bulkOutstandingInvoiceDraft(invoice, matter, invoiceSource = mioInvoices) {
+    const isTrust = invoice?.invoice_type === 'trust_request'
+    const finance = clientFinanceNumbers(matter, invoiceSource)
+    const hasOtherTrustRequest = (finance.trustRequestInvoices || []).some((row) => String(row.id) !== String(invoice.id))
+    const looksLikeReplenishment = (invoice.line_items || []).some((line) => /replenish/i.test(String(line?.description || '')))
+    const templateKey = isTrust ? (hasOtherTrustRequest || looksLikeReplenishment ? 'replenishment' : 'initial_trust') : 'service_invoice'
+    const template = renderBillingTemplate(templateKey, {
       client_name: matterClientName(matter) || invoice.client_name || 'Client',
       matter_name: matter.name || invoice.matter_name || 'Matter',
       invoice_number: invoice.invoice_number,
       amount: money(invoiceBalanceAmount(invoice)),
       due_date: invoice.due_date || '',
-      minimum_balance: money(clientFinanceNumbers(matter).minimumBalance),
+      trust_balance: money(finance.trust),
+      minimum_balance: money(finance.minimumBalance),
+      retainer_target: money(matterRetainerTarget(matter, finance)),
       payment_link: invoice.payment_url || ''
     })
     return {
       id: String(invoice.id),
       matter_id: String(invoice.matter_id || ''),
       invoice,
+      review_type: isTrust ? 'trust' : 'services',
       included: true,
       recipient_email: invoice.recipient_email || matterClientEmail(matter) || clientEmailForMatter(matter) || '',
       sender_email: DEFAULT_BILLING_SENDER_EMAIL,
       subject: invoice.email_subject || template.subject,
-      message: template.body,
+      message: invoice.email_message || template.body,
       send_status: 'ready',
       send_error: ''
     }
   }
 
-  async function openBulkOutstandingInvoiceReview(matterIds = []) {
+  async function openBulkOutstandingInvoiceReview(matterIds = [], mode = 'all') {
+    const normalizedMode = mode === 'trust' || mode === 'services' ? mode : 'all'
     const selectedIds = new Set((matterIds || []).map(String))
     if (!selectedIds.size) return alert('Check at least one matter first.')
+    setBulkOutstandingInvoiceTypePicker({ open: false, matter_ids: [] })
     setBulkBillingBusy(true)
-    setBulkBillingResult('Loading the latest outstanding invoices for review…')
+    const modeLabel = bulkOutstandingReviewModeLabel(normalizedMode)
+    setBulkBillingResult(`Loading the latest ${modeLabel} invoices for review…`)
     try {
       const databaseRows = await loadMioInvoicesFromDatabase()
       const invoiceSource = Array.isArray(databaseRows) && databaseRows.length ? mergeMioInvoiceState(databaseRows, mioInvoices || []) : (mioInvoices || [])
-      const reviewRows = invoiceSource
-        .filter((invoice) => selectedIds.has(String(invoice?.matter_id || '')) && invoice?.invoice_type !== 'trust_request' && !['draft','void'].includes(invoice?.status) && invoiceBalanceAmount(invoice) > 0.005)
-        .map((invoice) => {
-          const matter = matters.find((row) => String(row.id) === String(invoice.matter_id))
-          if (!matter || duplicateOpeningWipInvoiceIdsForMatter(matter, invoiceSource).has(String(invoice.id))) return null
-          return { matter, draft: bulkOutstandingInvoiceDraft(invoice, matter) }
-        })
-        .filter(Boolean)
-        .sort((left, right) => (matterClientName(left.matter) || left.matter.name || '').localeCompare(matterClientName(right.matter) || right.matter.name || '') || String(left.draft.invoice.issue_date || '').localeCompare(String(right.draft.invoice.issue_date || '')))
-        .map((row) => row.draft)
-      const mattersWithInvoice = new Set(reviewRows.map((row) => row.matter_id))
-      const skipped = [...selectedIds].map((matterId) => {
+      const preparedByMatter = []
+      const reviewItems = []
+      for (const matterId of selectedIds) {
         const matter = matters.find((row) => String(row.id) === matterId)
-        if (!matter || mattersWithInvoice.has(matterId)) return null
-        const finance = clientFinanceNumbers(matter)
-        if (finance.outstanding <= 0.005) return { matter_id: matterId, label: `${matterClientName(matter) || matter.name}: no outstanding balance` }
-        return { matter_id: matterId, label: `${matterClientName(matter) || matter.name}: ${money(finance.outstanding)} is shown as outstanding, but no sendable Mio services invoice is linked to that balance` }
-      }).filter(Boolean)
-      setBulkOutstandingInvoiceReview({ open: true, rows: reviewRows, skipped, progress: reviewRows.length ? `${reviewRows.length} outstanding services invoice${reviewRows.length === 1 ? '' : 's'} loaded. Review every email below before sending.` : 'No sendable outstanding services invoices were found.' })
-      setBulkBillingResult(reviewRows.length ? `${reviewRows.length} outstanding services invoice${reviewRows.length === 1 ? '' : 's'} ready for review.` : 'No sendable outstanding services invoices were found for the checked matters.')
+        if (!matter) continue
+        const finance = clientFinanceNumbers(matter, invoiceSource)
+        const services = outstandingBreakdownForMatter(matter, finance)
+        const trust = outstandingTrustBreakdownForMatter(matter, finance)
+        preparedByMatter.push({ matterId, matter, finance, services, trust })
+        if (normalizedMode !== 'trust') {
+          for (const item of services.invoiceRows) reviewItems.push({ matter, invoice: item.invoice })
+        }
+        if (normalizedMode !== 'services') {
+          for (const item of trust.invoiceRows) reviewItems.push({ matter, invoice: item.invoice })
+        }
+      }
+      const reviewRows = reviewItems
+        .map(({ matter, invoice }) => ({ matter, draft: bulkOutstandingInvoiceDraft(invoice, matter, invoiceSource) }))
+        .sort((left, right) => (matterClientName(left.matter) || left.matter.name || '').localeCompare(matterClientName(right.matter) || right.matter.name || '') || String(left.draft.invoice.issue_date || '').localeCompare(String(right.draft.invoice.issue_date || '')) || String(left.draft.invoice.invoice_number || '').localeCompare(String(right.draft.invoice.invoice_number || '')))
+        .map((row) => row.draft)
+
+      const skipped = []
+      for (const prepared of preparedByMatter) {
+        const { matterId, matter, finance, services, trust } = prepared
+        const clientMatterLabel = matterClientName(matter) || matter.name || 'Matter'
+        let matchingBalanceFound = false
+        if (normalizedMode !== 'trust') {
+          if (services.total > 0.005) matchingBalanceFound = true
+          if (services.openingBalance > 0.005) skipped.push({
+            id: `${matterId}:services-opening`, matter_id: matterId, kind: 'services',
+            label: `${clientMatterLabel}: ${money(services.openingBalance)} of OB (Work performed) is opening A/R without an itemized sendable Mio invoice`,
+            detail: 'Match that opening balance to a Mio invoice or create the missing invoice before Mio can attach and email it.'
+          })
+          const serviceInvoiceTotal = services.invoiceRows.reduce((sum, item) => sum + item.balance, 0)
+          const unexplainedServiceBalance = Math.max(0, Number((finance.outstanding - services.openingBalance - serviceInvoiceTotal).toFixed(2)))
+          if (unexplainedServiceBalance > 0.005) skipped.push({
+            id: `${matterId}:services-unlinked`, matter_id: matterId, kind: 'services',
+            label: `${clientMatterLabel}: ${money(unexplainedServiceBalance)} of OB (Work performed) is not linked to a sendable services invoice`,
+            detail: 'Open the matter finances and reconcile the invoice linkage before sending.'
+          })
+        }
+        if (normalizedMode !== 'services') {
+          if (trust.total > 0.005) matchingBalanceFound = true
+          const unexplainedTrustBalance = Math.max(0, Number((finance.outstandingTrust - trust.total).toFixed(2)))
+          if (unexplainedTrustBalance > 0.005) skipped.push({
+            id: `${matterId}:trust-unlinked`, matter_id: matterId, kind: 'trust',
+            label: `${clientMatterLabel}: ${money(unexplainedTrustBalance)} of OB (Trust) is not linked to a sendable trust request`,
+            detail: 'Open the trust-request invoice and reconcile its status before trying to send it again.'
+          })
+        }
+        const hasAnyReviewRow = reviewRows.some((row) => row.matter_id === matterId)
+        if (!matchingBalanceFound && !hasAnyReviewRow) skipped.push({
+          id: `${matterId}:none`, matter_id: matterId, kind: 'none',
+          label: `${clientMatterLabel}: no ${modeLabel} balance is currently outstanding`, detail: ''
+        })
+      }
+      const progress = reviewRows.length
+        ? `${reviewRows.length} ${modeLabel} invoice${reviewRows.length === 1 ? '' : 's'} loaded. Review every email below before sending.`
+        : `No sendable ${modeLabel} invoices were found.`
+      setBulkOutstandingInvoiceReview({ open: true, mode: normalizedMode, rows: reviewRows, skipped, progress })
+      setBulkBillingResult(reviewRows.length ? `${reviewRows.length} ${modeLabel} invoice${reviewRows.length === 1 ? '' : 's'} ready for review.` : `No sendable ${modeLabel} invoices were found for the checked matters.`)
     } catch (error) {
       alert(`Mio could not load the outstanding invoices. ${error?.message || error}`)
       setBulkBillingResult(`Outstanding invoice review could not be opened. ${error?.message || error}`)
@@ -24367,7 +24817,12 @@ async function updateTeamCell(memberId, field, value) {
     const invalid = rows.find((row) => !String(row.recipient_email || '').trim() || !String(row.subject || '').trim() || !String(row.message || '').trim())
     if (invalid) return alert(`Complete the recipient, subject, and message for ${invalid.invoice?.invoice_number || 'every checked invoice'} before sending.`)
     const total = rows.reduce((sum, row) => sum + invoiceBalanceAmount(row.invoice), 0)
-    if (!window.confirm(`Send ${rows.length} outstanding invoice email${rows.length === 1 ? '' : 's'} totaling ${money(total)}? Each email will include its invoice PDF and operating-account LawPay link.`)) return
+    const trustCount = rows.filter((row) => row.review_type === 'trust' || row.invoice?.invoice_type === 'trust_request').length
+    const serviceCount = rows.length - trustCount
+    const paymentLinkLabel = trustCount && serviceCount
+      ? 'the appropriate Trust/IOLTA or Operating LawPay link for that invoice'
+      : trustCount ? 'its Trust/IOLTA LawPay link' : 'its Operating-account LawPay link'
+    if (!window.confirm(`Send ${rows.length} outstanding invoice email${rows.length === 1 ? '' : 's'} totaling ${money(total)}? Each email will include its invoice PDF and ${paymentLinkLabel}.`)) return
     setBulkBillingBusy(true)
     let sentCount = 0
     const failures = []
@@ -24393,43 +24848,87 @@ async function updateTeamCell(memberId, field, value) {
     setBulkBillingBusy(false)
   }
 
+  function renderBulkOutstandingInvoiceTypePicker() {
+    if (!bulkOutstandingInvoiceTypePicker.open) return null
+    const selectedIds = new Set((bulkOutstandingInvoiceTypePicker.matter_ids || []).map(String))
+    const selectedMatters = (matters || []).filter((matter) => selectedIds.has(String(matter.id)))
+    const totals = selectedMatters.reduce((result, matter) => {
+      const finance = clientFinanceNumbers(matter)
+      result.services += finance.outstanding
+      result.trust += finance.outstandingTrust
+      return result
+    }, { services: 0, trust: 0 })
+    const cards = [
+      { mode: 'all', title: 'All OB', amount: totals.services + totals.trust, description: 'Review both unpaid work-performed invoices and unpaid trust replenishment requests.' },
+      { mode: 'trust', title: 'OB (Trust)', amount: totals.trust, description: 'Review only invoices requesting funds to replenish the client trust/IOLTA account.' },
+      { mode: 'services', title: 'OB (Work performed)', amount: totals.services, description: 'Review only invoices for legal services and expenses already performed.' }
+    ]
+    return <div style={{ position: 'fixed', inset: 0, zIndex: 12150, background: 'rgba(15,23,42,.58)', padding: 18, display: 'grid', placeItems: 'center' }}>
+      <section style={{ width: 'min(900px,96vw)', background: '#fff', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.4)', padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap' }}>
+          <div><h2 style={{ margin: 0 }}>Choose outstanding-balance invoices to review</h2><div className="hint">{selectedMatters.length} checked matter{selectedMatters.length === 1 ? '' : 's'}. This choice only controls which invoice types appear on the review-and-send page.</div></div>
+          <button type="button" onClick={() => setBulkOutstandingInvoiceTypePicker({ open: false, matter_ids: [] })}>Cancel</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 14, marginTop: 18 }}>
+          {cards.map((card) => <button key={card.mode} type="button" onClick={() => openBulkOutstandingInvoiceReview([...selectedIds], card.mode)} style={{ minHeight: 180, textAlign: 'left', padding: 18, border: '2px solid #93c5fd', borderRadius: 12, background: '#f8fbff', cursor: 'pointer' }}>
+            <div style={{ fontSize: 19, fontWeight: 900, color: '#1e3a8a' }}>{card.title}</div>
+            <div style={{ fontSize: 28, fontWeight: 900, margin: '10px 0 8px', color: card.amount > 0.005 ? '#166534' : '#64748b' }}>{money(card.amount)}</div>
+            <div style={{ color: '#475569', lineHeight: 1.45 }}>{card.description}</div>
+          </button>)}
+        </div>
+        <div style={{ marginTop: 14, padding: 10, borderRadius: 9, background: '#fffbeb', border: '1px solid #f59e0b', color: '#92400e' }}>The totals above are the balances currently shown in Bulk Billing. The next page verifies the latest database records and separately identifies any balance that has no sendable invoice attached.</div>
+      </section>
+    </div>
+  }
+
   function renderBulkOutstandingInvoiceReview() {
     if (!bulkOutstandingInvoiceReview.open) return null
+    const mode = bulkOutstandingInvoiceReview.mode === 'trust' || bulkOutstandingInvoiceReview.mode === 'services' ? bulkOutstandingInvoiceReview.mode : 'all'
+    const modeLabel = bulkOutstandingReviewModeLabel(mode)
     const rows = bulkOutstandingInvoiceReview.rows || []
     const checkedRows = rows.filter((row) => row.included && row.send_status !== 'sent')
     const checkedTotal = checkedRows.reduce((sum, row) => sum + invoiceBalanceAmount(row.invoice), 0)
     const senderOptions = financeSenderOptions()
+    const skippedHeading = mode === 'trust' ? 'Checked matters without a sendable OB (Trust) invoice' : mode === 'services' ? 'Checked matters without a sendable OB (Work performed) invoice' : 'Checked matters with an outstanding-balance issue'
+    const emptyText = mode === 'trust' ? 'No outstanding trust-request invoices are available for the checked matters.' : mode === 'services' ? 'No outstanding work-performed invoices are available for the checked matters.' : 'No outstanding Mio invoices are available for the checked matters.'
     return <div style={{ position: 'fixed', inset: 0, zIndex: 12200, background: 'rgba(15,23,42,.58)', padding: 16 }}>
       <section style={{ width: 'min(1320px,98vw)', height: '95vh', overflow: 'auto', margin: '0 auto', background: '#f8fafc', borderRadius: 14, boxShadow: '0 24px 70px rgba(15,23,42,.4)' }}>
         <div style={{ position: 'sticky', top: 0, zIndex: 8, background: '#fff', borderBottom: '1px solid #cbd5e1', padding: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap' }}>
-            <div><h2 style={{ margin: 0 }}>Outstanding invoice email review — all selected matters</h2><div className="hint">Every sendable non-trust invoice, recipient, subject, message, amount, and attachment summary is on this one scrolling page.</div><div style={{ marginTop: 6, fontWeight: 900 }}>{rows.length} invoices loaded • {checkedRows.length} checked to send • {money(checkedTotal)} checked balance</div></div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: row.send_status !== 'sent' })) }))} disabled={bulkBillingBusy}>Check all unsent</button><button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: false })) }))} disabled={bulkBillingBusy}>Uncheck all</button><button type="button" className="btnPrimary" onClick={sendBulkOutstandingInvoices} disabled={bulkBillingBusy || !checkedRows.length}>{bulkBillingBusy ? 'Sending…' : `Send ${checkedRows.length} reviewed invoice${checkedRows.length === 1 ? '' : 's'}`}</button><button type="button" onClick={() => setBulkOutstandingInvoiceReview({ open: false, rows: [], skipped: [], progress: '' })} disabled={bulkBillingBusy}>Close</button></div>
+            <div><h2 style={{ margin: 0 }}>{modeLabel} email review — all selected matters</h2><div className="hint">{bulkOutstandingReviewModeHint(mode)}</div><div style={{ marginTop: 6, fontWeight: 900 }}>{rows.length} invoice{rows.length === 1 ? '' : 's'} loaded • {checkedRows.length} checked to send • {money(checkedTotal)} checked balance</div></div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: row.send_status !== 'sent' })) }))} disabled={bulkBillingBusy}>Check all unsent</button>
+              <button type="button" onClick={() => setBulkOutstandingInvoiceReview((current) => ({ ...current, rows: (current.rows || []).map((row) => ({ ...row, included: false })) }))} disabled={bulkBillingBusy}>Uncheck all</button>
+              <button type="button" className="btnPrimary" onClick={sendBulkOutstandingInvoices} disabled={bulkBillingBusy || !checkedRows.length}>{bulkBillingBusy ? 'Sending…' : `Send ${checkedRows.length} reviewed invoice${checkedRows.length === 1 ? '' : 's'}`}</button>
+              <button type="button" onClick={() => setBulkOutstandingInvoiceReview({ open: false, mode: 'all', rows: [], skipped: [], progress: '' })} disabled={bulkBillingBusy}>Close</button>
+            </div>
           </div>
           {bulkOutstandingInvoiceReview.progress && <div style={{ marginTop: 10, border: '1px solid #bfdbfe', borderRadius: 8, padding: 9, color: '#1e3a8a', background: '#eff6ff', fontWeight: 700 }}>{bulkOutstandingInvoiceReview.progress}</div>}
         </div>
         <div style={{ display: 'grid', gap: 16, padding: 16 }}>
-          {!!bulkOutstandingInvoiceReview.skipped?.length && <section style={{ border: '1px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e', padding: 12 }}><strong>Checked matters without a sendable services invoice</strong><ul style={{ marginBottom: 0 }}>{bulkOutstandingInvoiceReview.skipped.map((item) => <li key={item.matter_id}>{item.label}. Snapshot-only balances must first be matched to or created as a Mio invoice before Mio can attach and send an invoice.</li>)}</ul></section>}
+          {!!bulkOutstandingInvoiceReview.skipped?.length && <section style={{ border: '1px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e', padding: 12 }}><strong>{skippedHeading}</strong><ul style={{ marginBottom: 0 }}>{bulkOutstandingInvoiceReview.skipped.map((item) => <li key={item.id || `${item.matter_id}:${item.kind || 'skip'}`}><strong>{item.label}</strong>{item.detail ? ` — ${item.detail}` : ''}</li>)}</ul></section>}
           {rows.map((row, index) => {
             const invoice = row.invoice
             const matter = matters.find((item) => String(item.id) === String(row.matter_id))
             const lineItems = Array.isArray(invoice.line_items) ? invoice.line_items : []
+            const isTrust = row.review_type === 'trust' || invoice.invoice_type === 'trust_request'
+            const typeLabel = isTrust ? 'OB (Trust)' : 'OB (Work performed)'
             return <section key={row.id} style={{ border: `2px solid ${row.send_status === 'sent' ? '#86efac' : row.send_status === 'error' ? '#fca5a5' : row.included ? '#93c5fd' : '#cbd5e1'}`, borderRadius: 12, background: '#fff', overflow: 'hidden', opacity: row.included || row.send_status === 'sent' ? 1 : 0.7 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'start', flexWrap: 'wrap', padding: 14, background: row.send_status === 'sent' ? '#f0fdf4' : '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}><input type="checkbox" aria-label={`Send ${invoice.invoice_number}`} checked={!!row.included} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { included: event.target.checked })} style={{ marginTop: 4 }} /><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>INVOICE {index + 1} OF {rows.length}</div><h3 style={{ margin: '3px 0' }}>{matterClientName(matter) || invoice.client_name || 'Client'}</h3><div style={{ fontWeight: 800 }}>{matter?.name || invoice.matter_name || 'Matter'} • {invoice.invoice_number}</div><div style={{ color: '#64748b', fontSize: 12 }}>Issued {invoice.issue_date || '—'} • Due {invoice.due_date || 'upon receipt'}{invoice.emailed_at ? ` • Last sent ${new Date(invoice.emailed_at).toLocaleString()}` : ' • Not previously sent'}</div></div></div>
-                <div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>AMOUNT TO REQUEST</div><div style={{ fontSize: 28, fontWeight: 900 }}>{money(invoiceBalanceAmount(invoice))}</div><div style={{ color: '#64748b', fontSize: 12 }}>Invoice total {money(invoice.total)} • Paid {money(invoicePaidAmount(invoice))}</div><button type="button" onClick={() => openInvoicePdf(invoice)} disabled={bulkBillingBusy} style={{ marginTop: 7 }}>Preview PDF</button></div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'start' }}><input type="checkbox" aria-label={`Send ${invoice.invoice_number}`} checked={!!row.included} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { included: event.target.checked })} style={{ marginTop: 4 }} /><div><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}><span style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>INVOICE {index + 1} OF {rows.length}</span><span style={{ display: 'inline-flex', borderRadius: 999, padding: '3px 8px', background: isTrust ? '#ecfdf5' : '#eff6ff', color: isTrust ? '#047857' : '#1d4ed8', border: `1px solid ${isTrust ? '#6ee7b7' : '#93c5fd'}`, fontSize: 11, fontWeight: 900 }}>{typeLabel}</span></div><h3 style={{ margin: '3px 0' }}>{matterClientName(matter) || invoice.client_name || 'Client'}</h3><div style={{ fontWeight: 800 }}>{matter?.name || invoice.matter_name || 'Matter'} • {invoice.invoice_number}</div><div style={{ color: '#64748b', fontSize: 12 }}>Issued {invoice.issue_date || '—'} • Due {invoice.due_date || 'upon receipt'}{invoice.emailed_at ? ` • Last sent ${new Date(invoice.emailed_at).toLocaleString()}` : ' • Not previously sent'}</div></div></div>
+                <div style={{ textAlign: 'right' }}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{isTrust ? 'TRUST AMOUNT TO REQUEST' : 'WORK BALANCE DUE'}</div><div style={{ fontSize: 28, fontWeight: 900 }}>{money(invoiceBalanceAmount(invoice))}</div><div style={{ color: '#64748b', fontSize: 12 }}>Invoice total {money(invoice.total)} • Paid {money(invoicePaidAmount(invoice))}</div><button type="button" onClick={() => openInvoicePdf(invoice)} disabled={bulkBillingBusy} style={{ marginTop: 7 }}>Preview PDF</button></div>
               </div>
               <div style={{ padding: 14, display: 'grid', gap: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(260px,1fr)', gap: 10 }}><LabeledField label="To"><input type="email" value={row.recipient_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { recipient_email: event.target.value })} placeholder="Client email required" /></LabeledField><LabeledField label="From"><select value={row.sender_email} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { sender_email: event.target.value })}>{senderOptions.map((email) => <option key={email} value={email}>{email}</option>)}</select></LabeledField></div>
                 <LabeledField label="Subject"><input value={row.subject} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { subject: event.target.value })} style={{ width: '100%' }} /></LabeledField>
                 <LabeledField label="Email message"><textarea value={row.message} disabled={bulkBillingBusy || row.send_status === 'sent'} onChange={(event) => updateBulkOutstandingInvoiceReviewRow(row.id, { message: event.target.value })} rows={4} style={{ width: '100%', resize: 'vertical' }} /></LabeledField>
-                <details><summary style={{ cursor: 'pointer', fontWeight: 800 }}>Invoice attachment details — {lineItems.length} line item{lineItems.length === 1 ? '' : 's'}, {money(invoice.total)} total</summary><div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ padding: 7, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lineItems.map((line, lineIndex) => <tr key={`${row.id}:${line.billing_entry_id || lineIndex}`}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.date || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.professional || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.description || 'Professional services'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '—' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '—' : money(line.rate)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}{!lineItems.length && <tr><td colSpan="6" className="empty">No itemized lines are stored on this invoice.</td></tr>}</tbody></table></div></details>
+                <details><summary style={{ cursor: 'pointer', fontWeight: 800 }}>Invoice attachment details — {lineItems.length} line item{lineItems.length === 1 ? '' : 's'}, {money(invoice.total)} total</summary><div style={{ overflowX: 'auto', marginTop: 8 }}><table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse' }}><thead><tr>{['Date','Professional','Description','Hours','Rate','Amount'].map((label) => <th key={label} style={{ padding: 7, textAlign: ['Hours','Rate','Amount'].includes(label) ? 'right' : 'left', borderBottom: '1px solid #cbd5e1' }}>{label}</th>)}</tr></thead><tbody>{lineItems.map((line, lineIndex) => <tr key={`${row.id}:${line.billing_entry_id || lineIndex}`}><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.date || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.professional || '—'}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7' }}>{line.description || (isTrust ? 'Trust / IOLTA retainer replenishment' : 'Professional services')}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.hours === '' || line.hours === undefined ? '—' : financeNumber(line.hours).toFixed(2)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{line.rate === '' || line.rate === undefined ? '—' : money(line.rate)}</td><td style={{ padding: 7, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(line.amount)}</td></tr>)}{!lineItems.length && <tr><td colSpan="6" className="empty">No itemized lines are stored on this invoice.</td></tr>}</tbody></table></div></details>
                 {row.send_status === 'sent' && <div style={{ border: '1px solid #86efac', borderRadius: 8, background: '#f0fdf4', color: '#166534', padding: 9, fontWeight: 800 }}>Sent to {row.invoice.recipient_email}.</div>}
                 {row.send_status === 'error' && <div style={{ border: '1px solid #fca5a5', borderRadius: 8, background: '#fff1f2', color: '#991b1b', padding: 9, fontWeight: 800 }}>Not sent: {row.send_error}</div>}
               </div>
             </section>
           })}
-          {!rows.length && <div className="empty">No outstanding non-trust Mio invoices are available for the checked matters.</div>}
+          {!rows.length && <div className="empty">{emptyText}</div>}
         </div>
       </section>
     </div>
@@ -24817,19 +25316,22 @@ async function updateTeamCell(memberId, field, value) {
       <thead><tr>{['Invoice','Type','Issued','Due','Status','Total','Paid from trust / other','Pending','Balance','Actions'].map((label) => <th key={label} style={{ textAlign: ['Total','Paid from trust / other','Pending','Balance'].includes(label) ? 'right' : 'left', padding: 9, borderBottom: '1px solid #cbd5e1', background: '#f8fafc' }}>{label}</th>)}</tr></thead>
       <tbody>{invoices.map((invoice) => {
         const duplicateOpeningWip = finance.duplicateInvoiceIds?.has(String(invoice.id))
+        const partialDuplicateOpeningWip = finance.partialDuplicateInvoiceIds?.has(String(invoice.id))
+        const openingWipProblem = duplicateOpeningWip || partialDuplicateOpeningWip
+        const partialDuplicateDetail = partialDuplicateOpeningWip ? (finance.partialDuplicateInvoices || []).find((item) => String(item?.invoice?.id || '') === String(invoice.id)) : null
         const pendingPayments = pendingLawPayPaymentsForInvoice(invoice)
         const pendingAmount = pendingPayments.reduce((sum, transaction) => sum + Math.abs(financeNumber(transaction.amount_cents) / 100 || financeNumber(transaction.amount)), 0)
-        return <tr key={invoice.id} style={{ background: duplicateOpeningWip ? '#fff1f2' : undefined }}>
+        return <tr key={invoice.id} style={{ background: duplicateOpeningWip ? '#fff1f2' : partialDuplicateOpeningWip ? '#fffbeb' : undefined }}>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', fontWeight: 800 }}><button type="button" onClick={() => openFinanceInvoice(invoice, matter)} style={{ border: 0, padding: 0, background: 'transparent', color: '#1d4ed8', textDecoration: 'underline', fontWeight: 850, cursor: 'pointer' }}>{invoice.invoice_number}</button>{invoice.emailed_at && <div style={{ color: '#166534', fontSize: 11 }}>Emailed {new Date(invoice.emailed_at).toLocaleString()}</div>}{invoice.email_error && <div style={{ color: '#b91c1c', fontSize: 11 }}>{invoice.email_error}</div>}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.invoice_type === 'trust_request' ? 'Trust request' : 'Services'}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.issue_date || '—'}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}>{invoice.due_date || 'Upon receipt'}</td>
-        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: duplicateOpeningWip ? '#fee2e2' : invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: duplicateOpeningWip ? '#991b1b' : invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{duplicateOpeningWip ? 'Duplicate — void' : invoiceStatusLabel(invoice)}</span></td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7' }}><span style={{ borderRadius: 999, padding: '3px 9px', background: duplicateOpeningWip ? '#fee2e2' : partialDuplicateOpeningWip ? '#fef3c7' : invoice.status === 'draft' ? '#dbeafe' : invoiceBalanceAmount(invoice) <= 0.005 ? '#dcfce7' : '#fef3c7', color: duplicateOpeningWip ? '#991b1b' : partialDuplicateOpeningWip ? '#92400e' : invoice.status === 'draft' ? '#1e40af' : invoiceBalanceAmount(invoice) <= 0.005 ? '#166534' : '#92400e', fontWeight: 800 }}>{duplicateOpeningWip ? 'Duplicate — void' : partialDuplicateOpeningWip ? `Partial duplicate — remove ${money(partialDuplicateDetail?.duplicateAmount || 0)}` : invoiceStatusLabel(invoice)}</span></td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoice.total)}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right' }}>{money(invoicePaidAmount(invoice))}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: pendingAmount > 0.005 ? 900 : 500, color: pendingAmount > 0.005 ? '#92400e' : undefined, background: pendingAmount > 0.005 ? '#fffbeb' : undefined }}>{money(pendingAmount)}{pendingAmount > 0.005 && <div style={{ fontSize: 11 }}>{[...new Set(pendingPayments.map((transaction) => String(transaction.status || 'Pending').toUpperCase()))].join(', ')}</div>}</td>
         <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', textAlign: 'right', fontWeight: 800 }}>{money(invoiceBalanceAmount(invoice))}</td>
-        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{duplicateOpeningWip ? 'Review / void' : invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.invoice_type !== 'trust_request' && !duplicateOpeningWip && invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
+        <td style={{ padding: 9, borderBottom: '1px solid #eef2f7', whiteSpace: 'nowrap' }}><button type="button" className={invoice.status === 'draft' ? 'btnPrimary' : ''} onClick={() => openFinanceInvoice(invoice, matter)}>{duplicateOpeningWip ? 'Review / void' : partialDuplicateOpeningWip ? 'Review / edit' : invoice.status === 'draft' ? 'Review / edit' : 'Open'}</button>{invoice.invoice_type !== 'trust_request' && !openingWipProblem && invoice.status !== 'draft' && invoiceBalanceAmount(invoice) > 0.005 && <button type="button" onClick={() => applyTrustToInvoice(matter, invoice)} disabled={finance.trust <= 0.005} style={{ marginLeft: 6 }}>Pay from trust</button>}</td>
       </tr>})}{!invoices.length && <tr><td colSpan="10" className="empty">{emptyText}</td></tr>}</tbody>
     </table></div>
     return <section className="card">
@@ -24839,7 +25341,8 @@ async function updateTeamCell(memberId, field, value) {
         <div style={{ marginTop: 5 }}>The referenced invoice is missing, belongs to another matter, is a trust request, or does not contain these activities. It is not treated as a valid services invoice.</div>
         <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{brokenGroups.map((group) => <div key={group.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: 10, border: '1px solid #fecaca', borderRadius: 8, background: '#fff' }}><div><strong>{group.reference}</strong> — {group.entries.length} {group.entries.length === 1 ? 'activity' : 'activities'}, {money(group.totals.amount)}<div style={{ fontSize: 11, marginTop: 3 }}>{group.problem?.label || 'Invalid invoice link'}</div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="btnPrimary" onClick={() => reviewBrokenBillingActivities(matter, group.entries)} disabled={invoiceDocumentBusy}>Review as new invoice</button><button type="button" onClick={() => releaseBrokenBillingActivitiesToWip(matter, group.entries)} disabled={invoiceDocumentBusy}>{invoiceDocumentBusy ? 'Repairing…' : 'Release to WIP'}</button></div></div>)}</div>
       </section>}
-      {!!finance.duplicateInvoices?.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>{finance.duplicateInvoices.length} duplicate opening-WIP invoice{finance.duplicateInvoices.length === 1 ? '' : 's'} excluded from the outstanding balance</strong><div style={{ marginTop: 5 }}>A later Clio snapshot recreated WIP that Mio had already invoiced. These invoices are blocked from bulk email and trust payment. Open each highlighted row, confirm it is the duplicate, and delete/void it to clean the audit record.</div></section>}
+      {!!finance.duplicateInvoices?.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #dc2626', borderRadius: 10, background: '#fff1f2', color: '#7f1d1d' }}><strong>{finance.duplicateInvoices.length} duplicate opening-WIP invoice{finance.duplicateInvoices.length === 1 ? '' : 's'} excluded from the outstanding balance</strong><div style={{ marginTop: 5 }}>A second invoice reused opening WIP that was already included on another preserved invoice. Mio automatically voids a duplicate only when it is unpaid, unsent, has no active LawPay link or pending payment, and contains nothing except the duplicated opening WIP. Paid, previously sent, payment-linked, or mixed invoices remain blocked and highlighted for manual review.</div></section>}
+      {!!finance.partialDuplicateInvoices?.length && <section style={{ marginTop: 12, padding: 13, border: '2px solid #f59e0b', borderRadius: 10, background: '#fffbeb', color: '#92400e' }}><strong>{finance.partialDuplicateInvoices.length} mixed invoice{finance.partialDuplicateInvoices.length === 1 ? '' : 's'} may contain duplicated opening WIP and require manual review</strong><div style={{ marginTop: 5 }}>Mio did not automatically alter these invoices because they also contain other work, were only partly duplicated, or otherwise cannot be safely voided as a whole. Open the invoice and compare its opening-WIP line to the earlier invoice before changing it.</div></section>}
       <section style={{ marginTop: 16, border: '2px solid #2563eb', borderRadius: 10, padding: 12, background: '#eff6ff' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><div><h4 style={{ margin: 0 }}>Draft invoices requiring review</h4><div className="hint">Open any draft to edit, approve, or delete it.</div></div><strong>{draftInvoices.length}</strong></div>{renderInvoiceTable(draftInvoices, 'No saved draft invoices exist for this matter.')}</section>
       <section style={{ marginTop: 16 }}><h4 style={{ margin: 0 }}>Outstanding, paid, and other invoices</h4>{renderInvoiceTable(otherInvoices, 'No approved or paid invoices exist for this matter.')}</section>
     </section>
@@ -48947,6 +49450,590 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     })
   }
 
+  async function googleAdsApiRequest(action, { method = 'GET', params = {}, body = null } = {}) {
+    const { data, error } = await supabase.auth.getSession()
+    if (error) throw error
+    const token = data?.session?.access_token || ''
+    if (!token) throw new Error('Your Mio session is not available. Sign in again and retry.')
+    const search = new URLSearchParams({ action, ...Object.fromEntries(Object.entries(params || {}).map(([key, value]) => [key, String(value)])) })
+    const response = await fetch(`/api/google-ads?${search.toString()}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {})
+      },
+      body: body ? JSON.stringify(body) : undefined
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload?.ok === false) throw new Error(payload?.error || payload?.message || `Google Ads request failed (${response.status}).`)
+    return payload
+  }
+
+  async function loadGoogleAdsStatus({ silent = false } = {}) {
+    if (!silent) setGoogleAdsStatusLoading(true)
+    setGoogleAdsError('')
+    try {
+      const result = await googleAdsApiRequest('status')
+      const next = {
+        configured: Boolean(result?.configured),
+        connected: Boolean(result?.connected),
+        missing: Array.isArray(result?.missing) ? result.missing : [],
+        account: result?.account || null,
+        serviceAccountEmail: result?.serviceAccountEmail || '',
+        apiVersion: result?.apiVersion || 'v25',
+        aiConfigured: Boolean(result?.aiConfigured),
+        error: result?.error || ''
+      }
+      setGoogleAdsStatus(next)
+      return next
+    } catch (error) {
+      const message = error?.message || 'Could not check the Google Ads connection.'
+      setGoogleAdsError(message)
+      setGoogleAdsStatus((current) => ({ ...current, connected: false, error: message }))
+      return null
+    } finally {
+      if (!silent) setGoogleAdsStatusLoading(false)
+    }
+  }
+
+  async function loadGoogleAdsReport(days = googleAdsDays) {
+    setGoogleAdsLoading(true)
+    setGoogleAdsError('')
+    setGoogleAdsAiAudit('')
+    try {
+      const result = await googleAdsApiRequest('report', { params: { days } })
+      setGoogleAdsDays(Number(result?.range?.days || days) || 30)
+      setGoogleAdsReport(result)
+      setGoogleAdsStatus((current) => ({ ...current, configured: true, connected: true, account: result?.account || current.account }))
+      return result
+    } catch (error) {
+      setGoogleAdsError(error?.message || 'Could not load Google Ads reporting data.')
+      return null
+    } finally {
+      setGoogleAdsLoading(false)
+    }
+  }
+
+  async function runGoogleAdsAiAudit() {
+    if (!googleAdsReport || googleAdsAiLoading) return
+    setGoogleAdsAiLoading(true)
+    setGoogleAdsError('')
+    try {
+      const compact = {
+        range: googleAdsReport.range,
+        account: googleAdsReport.account,
+        overview: googleAdsReport.overview,
+        campaigns: (googleAdsReport.campaigns || []).slice(0, 25),
+        searchTerms: (googleAdsReport.searchTerms || []).slice(0, 75),
+        keywords: (googleAdsReport.keywords || []).slice(0, 50),
+        conversionActions: googleAdsReport.conversionActions || [],
+        devices: googleAdsReport.devices || [],
+        warnings: googleAdsReport.warnings || []
+      }
+      const result = await googleAdsApiRequest('audit', { method: 'POST', body: { report: compact } })
+      setGoogleAdsAiAudit(String(result?.audit || '').trim())
+    } catch (error) {
+      setGoogleAdsError(error?.message || 'Could not run the AI Google Ads audit.')
+    } finally {
+      setGoogleAdsAiLoading(false)
+    }
+  }
+
+  async function metaAdsApiRequest(action, { method = 'GET', params = {}, body = null } = {}) {
+    const { data, error } = await supabase.auth.getSession()
+    if (error) throw error
+    const token = data?.session?.access_token || ''
+    if (!token) throw new Error('Your Mio session is not available. Sign in again and retry.')
+    const search = new URLSearchParams({ action, ...Object.fromEntries(Object.entries(params || {}).map(([key, value]) => [key, String(value)])) })
+    const response = await fetch(`/api/meta-ads?${search.toString()}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload?.ok === false) throw new Error(payload?.error || payload?.message || `Meta Ads request failed (${response.status}).`)
+    return payload
+  }
+
+  async function loadMetaAdsStatus({ silent = false } = {}) {
+    if (!silent) setMetaAdsStatusLoading(true)
+    setMetaAdsError('')
+    try {
+      const result = await metaAdsApiRequest('status')
+      const next = {
+        configured: Boolean(result?.configured), connected: Boolean(result?.connected),
+        missing: Array.isArray(result?.missing) ? result.missing : [], account: result?.account || null,
+        page: result?.page || { url: BEVERIDGE_FACEBOOK_PAGE_URL, label: 'Beveridge Blawg' },
+        apiVersion: result?.apiVersion || 'v25.0', aiConfigured: Boolean(result?.aiConfigured), error: result?.error || ''
+      }
+      setMetaAdsStatus(next)
+      return next
+    } catch (error) {
+      const message = error?.message || 'Could not check the Meta Ads connection.'
+      setMetaAdsError(message)
+      setMetaAdsStatus((current) => ({ ...current, connected: false, error: message }))
+      return null
+    } finally {
+      if (!silent) setMetaAdsStatusLoading(false)
+    }
+  }
+
+  async function loadMetaAdsReport(days = metaAdsDays) {
+    setMetaAdsLoading(true)
+    setMetaAdsError('')
+    setMetaAdsAiAudit('')
+    setMarketingAiAudit('')
+    try {
+      const result = await metaAdsApiRequest('report', { params: { days } })
+      setMetaAdsDays(Number(result?.range?.days || days) || 30)
+      setMetaAdsReport(result)
+      setMetaAdsStatus((current) => ({ ...current, configured: true, connected: true, account: result?.account || current.account, page: result?.page || current.page }))
+      return result
+    } catch (error) {
+      setMetaAdsError(error?.message || 'Could not load Meta Ads reporting data.')
+      return null
+    } finally {
+      setMetaAdsLoading(false)
+    }
+  }
+
+  async function runMetaAdsAiAudit() {
+    if (!metaAdsReport || metaAdsAiLoading) return
+    setMetaAdsAiLoading(true)
+    setMetaAdsError('')
+    try {
+      const compact = {
+        range: metaAdsReport.range, account: metaAdsReport.account, page: metaAdsReport.page, overview: metaAdsReport.overview,
+        campaigns: (metaAdsReport.campaigns || []).slice(0, 25), adSets: (metaAdsReport.adSets || []).slice(0, 40),
+        ads: (metaAdsReport.ads || []).slice(0, 60), platforms: metaAdsReport.platforms || [], devices: metaAdsReport.devices || [],
+        regions: (metaAdsReport.regions || []).slice(0, 30), warnings: metaAdsReport.warnings || []
+      }
+      const result = await metaAdsApiRequest('audit', { method: 'POST', body: { report: compact } })
+      setMetaAdsAiAudit(String(result?.audit || '').trim())
+    } catch (error) {
+      setMetaAdsError(error?.message || 'Could not run the AI Meta Ads audit.')
+    } finally {
+      setMetaAdsAiLoading(false)
+    }
+  }
+
+  async function runMarketingAiAudit() {
+    if ((!googleAdsReport && !metaAdsReport) || marketingAiLoading) return
+    setMarketingAiLoading(true)
+    setMarketingError('')
+    try {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) throw error
+      const token = data?.session?.access_token || ''
+      if (!token) throw new Error('Your Mio session is not available. Sign in again and retry.')
+      const response = await fetch('/api/marketing-audit', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ google: googleAdsReport, meta: metaAdsReport })
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `Marketing audit failed (${response.status}).`)
+      setMarketingAiAudit(String(payload?.audit || '').trim())
+    } catch (error) {
+      setMarketingError(error?.message || 'Could not run the cross-channel marketing audit.')
+    } finally {
+      setMarketingAiLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (page !== 'google_ads' || !session?.user?.id) return
+    let cancelled = false
+    ;(async () => {
+      const status = await loadGoogleAdsStatus({ silent: true })
+      if (!cancelled && status?.connected && !googleAdsReport) await loadGoogleAdsReport(googleAdsDays)
+    })()
+    return () => { cancelled = true }
+  }, [page, session?.user?.id])
+
+  useEffect(() => {
+    if (page !== 'google_ads' || !session?.user?.id) return
+    let cancelled = false
+    ;(async () => {
+      const status = await loadMetaAdsStatus({ silent: true })
+      if (!cancelled && status?.connected && !metaAdsReport) await loadMetaAdsReport(metaAdsDays)
+    })()
+    return () => { cancelled = true }
+  }, [page, session?.user?.id])
+
+  function renderMarketingPlatformSwitch() {
+    const options = [
+      ['overview', 'All Marketing'],
+      ['google', 'Google Ads'],
+      ['meta', 'Facebook / Instagram']
+    ]
+    return <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      {options.map(([value, label]) => <button key={value} type="button" onClick={() => setMarketingPlatform(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '9px 14px', fontWeight: 900, background: marketingPlatform === value ? '#0f172a' : '#fff', color: marketingPlatform === value ? '#fff' : '#334155' }}>{label}</button>)}
+    </div>
+  }
+
+  function renderMarketingOverviewPage() {
+    const g = googleAdsReport?.overview || {}
+    const m = metaAdsReport?.overview || {}
+    const googleSpend = googleAdsSafeNumber(g.cost)
+    const metaSpend = googleAdsSafeNumber(m.spend)
+    const googleLeads = googleAdsSafeNumber(g.conversions)
+    const metaLeads = googleAdsSafeNumber(m.leads)
+    const totalSpend = googleSpend + metaSpend
+    const reportedOutcomes = googleLeads + metaLeads
+    const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
+    const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
+    const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
+    const aiConfigured = Boolean(googleAdsStatus.aiConfigured || metaAdsStatus.aiConfigured)
+    const googleFindings = googleAdsReport ? buildGoogleAdsAudit(googleAdsReport) : []
+    const metaFindings = metaAdsReport ? buildMetaAdsAudit(metaAdsReport) : []
+    const severityStyle = (severity) => severity === 'critical'
+      ? { border: '#fecaca', background: '#fef2f2', title: '#991b1b' }
+      : severity === 'warning'
+        ? { border: '#fde68a', background: '#fffbeb', title: '#92400e' }
+        : severity === 'good'
+          ? { border: '#bbf7d0', background: '#f0fdf4', title: '#166534' }
+          : { border: '#bfdbfe', background: '#eff6ff', title: '#1e40af' }
+
+    const refreshAll = async (days = googleAdsDays || 30) => {
+      setGoogleAdsDays(days)
+      setMetaAdsDays(days)
+      setMarketingAiAudit('')
+      const jobs = []
+      if (googleAdsStatus.connected) jobs.push(loadGoogleAdsReport(days))
+      else jobs.push(loadGoogleAdsStatus().then((status) => status?.connected ? loadGoogleAdsReport(days) : null))
+      if (metaAdsStatus.connected) jobs.push(loadMetaAdsReport(days))
+      else jobs.push(loadMetaAdsStatus().then((status) => status?.connected ? loadMetaAdsReport(days) : null))
+      await Promise.all(jobs)
+    }
+
+    return <div style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
+      {renderMarketingPlatformSwitch()}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
+          <h1 style={{ margin: '3px 0 5px' }}>Paid Advertising Auditor</h1>
+          <div style={{ color: '#64748b' }}>One read-only view of Google Ads plus Facebook/Instagram Ads. Platform conversions are compared, but Mio does not assume they are qualified clients.</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => refreshAll(days)} style={{ background: googleAdsDays === days && metaAdsDays === days ? '#1d4ed8' : '#fff', color: googleAdsDays === days && metaAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
+          <button type="button" onClick={() => refreshAll(googleAdsDays || 30)} disabled={googleAdsLoading || metaAdsLoading || googleAdsStatusLoading || metaAdsStatusLoading} style={{ background: '#0f172a', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>{googleAdsLoading || metaAdsLoading || googleAdsStatusLoading || metaAdsStatusLoading ? 'Refreshing...' : 'Refresh all'}</button>
+        </div>
+      </div>
+
+      {marketingError && <div style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: 10, padding: 11, marginBottom: 12 }}><strong>Marketing audit:</strong> {marketingError}</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(165px,1fr))', gap: 10, marginBottom: 14 }}>
+        {[
+          ['Total spend', googleAdsFormatMoney(totalSpend)],
+          ['Google spend', googleAdsFormatMoney(googleSpend)],
+          ['Meta spend', googleAdsFormatMoney(metaSpend)],
+          ['Google conversions', googleLeads.toFixed(googleLeads % 1 ? 1 : 0)],
+          ['Meta lead actions', metaLeads.toFixed(metaLeads % 1 ? 1 : 0)],
+          ['Reported outcomes', reportedOutcomes.toFixed(reportedOutcomes % 1 ? 1 : 0)]
+        ].map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}
+      </div>
+
+      <section style={{ ...card, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Platform comparison</h2>
+        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr><th style={th}>Platform</th><th style={th}>Connection</th><th style={th}>Spend</th><th style={th}>Traffic clicks</th><th style={th}>Reported outcomes</th><th style={th}>Cost / outcome</th><th style={th}>Notes</th></tr></thead><tbody>
+          <tr><td style={{ ...td, fontWeight: 900 }}>Google Ads</td><td style={td}>{googleAdsStatus.connected ? 'Connected' : googleAdsStatus.configured ? 'Configured - needs attention' : 'Not connected'}</td><td style={td}>{googleAdsFormatMoney(googleSpend)}</td><td style={td}>{googleAdsSafeNumber(g.clicks).toLocaleString()}</td><td style={td}>{googleLeads}</td><td style={td}>{googleLeads > 0 ? googleAdsFormatMoney(googleSpend / googleLeads) : '-'}</td><td style={td}>Google primary conversions; verify they correspond to successful forms/calls.</td></tr>
+          <tr><td style={{ ...td, fontWeight: 900 }}>Facebook / Instagram</td><td style={td}>{metaAdsStatus.connected ? 'Connected' : metaAdsStatus.configured ? 'Configured - needs attention' : 'Not connected'}</td><td style={td}>{googleAdsFormatMoney(metaSpend)}</td><td style={td}>{googleAdsSafeNumber(m.inlineLinkClicks || m.clicks).toLocaleString()}</td><td style={td}>{metaLeads}</td><td style={td}>{metaLeads > 0 ? googleAdsFormatMoney(metaSpend / metaLeads) : '-'}</td><td style={td}>Meta lead actions are platform-reported and may not equal qualified consultations.</td></tr>
+        </tbody></table></div>
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(360px,1fr))', gap: 14, marginBottom: 14 }}>
+        <section style={{ ...card, borderColor: googleAdsStatus.connected ? '#bbf7d0' : '#fde68a' }}>
+          <h2 style={{ marginTop: 0 }}>Google Ads</h2>
+          <div><strong>{googleAdsStatus.connected ? 'Connected' : googleAdsStatus.configured ? 'Configured but not connected' : 'Connection setup required'}</strong></div>
+          <div style={{ color: '#64748b', marginTop: 5 }}>{googleAdsStatus.account?.descriptiveName || 'Google Ads account'}{googleAdsStatus.account?.id ? ` - ${googleAdsStatus.account.id}` : ''}</div>
+          {googleAdsError && <div style={{ color: '#991b1b', marginTop: 8 }}>{googleAdsError}</div>}
+          <button type="button" onClick={() => setMarketingPlatform('google')} style={{ marginTop: 10 }}>Open Google Ads audit</button>
+        </section>
+        <section style={{ ...card, borderColor: metaAdsStatus.connected ? '#bbf7d0' : '#fde68a' }}>
+          <h2 style={{ marginTop: 0 }}>Facebook / Instagram</h2>
+          <div><strong>{metaAdsStatus.connected ? 'Connected' : metaAdsStatus.configured ? 'Configured but not connected' : 'Connection setup required'}</strong></div>
+          <div style={{ color: '#64748b', marginTop: 5 }}>{metaAdsStatus.account?.name || 'Meta ad account'}{metaAdsStatus.account?.id ? ` - ${metaAdsStatus.account.id}` : ''}</div>
+          <div style={{ marginTop: 5 }}><a href={metaAdsStatus.page?.url || BEVERIDGE_FACEBOOK_PAGE_URL} target="_blank" rel="noreferrer">{metaAdsStatus.page?.label || 'Beveridge Blawg'} Facebook Page</a></div>
+          {metaAdsError && <div style={{ color: '#991b1b', marginTop: 8 }}>{metaAdsError}</div>}
+          <button type="button" onClick={() => setMarketingPlatform('meta')} style={{ marginTop: 10 }}>Open Meta Ads audit</button>
+        </section>
+      </div>
+
+      {(googleFindings.length > 0 || metaFindings.length > 0) && <section style={{ ...card, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Cross-channel flags</h2>
+        <div style={{ display: 'grid', gap: 9 }}>
+          {[...googleFindings.map((x) => ({ ...x, provider: 'Google' })), ...metaFindings.map((x) => ({ ...x, provider: 'Meta' }))].filter((x) => x.severity !== 'good').slice(0, 12).map((finding, index) => { const tone = severityStyle(finding.severity); return <div key={`${finding.provider}-${finding.id}-${index}`} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.provider}: {finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}
+        </div>
+      </section>}
+
+      <section style={card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div><h2 style={{ margin: 0 }}>Cross-channel AI audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Compares the Google and Meta reports already loaded. Read-only; it cannot change either account.</p></div>
+          <button type="button" onClick={runMarketingAiAudit} disabled={marketingAiLoading || !aiConfigured || (!googleAdsReport && !metaAdsReport)} style={{ background: aiConfigured && (googleAdsReport || metaAdsReport) ? '#1d4ed8' : '#e2e8f0', color: aiConfigured && (googleAdsReport || metaAdsReport) ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{marketingAiLoading ? 'Auditing...' : aiConfigured ? 'Run marketing audit' : 'Add OPENAI_API_KEY to enable'}</button>
+        </div>
+        {marketingAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{marketingAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>Once both accounts are connected, this can answer the practical question: where is the money going, which channel is producing real inquiry signals, and what should be changed first?</div>}
+      </section>
+    </div>
+  }
+
+  function renderMetaAdsPage() {
+    const report = metaAdsReport || {}
+    const overview = report.overview || {}
+    const findings = buildMetaAdsAudit(report)
+    const campaigns = Array.isArray(report.campaigns) ? report.campaigns : []
+    const adSets = Array.isArray(report.adSets) ? report.adSets : []
+    const ads = Array.isArray(report.ads) ? report.ads : []
+    const platforms = Array.isArray(report.platforms) ? report.platforms : []
+    const devices = Array.isArray(report.devices) ? report.devices : []
+    const regions = Array.isArray(report.regions) ? report.regions : []
+    const daily = Array.isArray(report.daily) ? report.daily : []
+    const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
+    const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
+    const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
+    const severityStyle = (severity) => severity === 'critical'
+      ? { border: '#fecaca', background: '#fef2f2', title: '#991b1b', badge: '#dc2626' }
+      : severity === 'warning'
+        ? { border: '#fde68a', background: '#fffbeb', title: '#92400e', badge: '#d97706' }
+        : severity === 'good'
+          ? { border: '#bbf7d0', background: '#f0fdf4', title: '#166534', badge: '#16a34a' }
+          : { border: '#bfdbfe', background: '#eff6ff', title: '#1e40af', badge: '#2563eb' }
+    const metricCards = [
+      ['Spend', googleAdsFormatMoney(overview.spend)],
+      ['Link clicks', googleAdsSafeNumber(overview.inlineLinkClicks || overview.clicks).toLocaleString()],
+      ['Avg. CPC', googleAdsFormatMoney(overview.cpc)],
+      ['Lead actions', googleAdsSafeNumber(overview.leads).toFixed(googleAdsSafeNumber(overview.leads) % 1 ? 1 : 0)],
+      ['Cost / lead', googleAdsSafeNumber(overview.leads) > 0 ? googleAdsFormatMoney(overview.costPerLead) : '-'],
+      ['Frequency', googleAdsSafeNumber(overview.frequency).toFixed(1)]
+    ]
+
+    return <div style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
+      {renderMarketingPlatformSwitch()}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
+          <h1 style={{ margin: '3px 0 5px' }}>Facebook / Instagram Ads Auditor</h1>
+          <div style={{ color: '#64748b' }}>Read-only Meta Marketing API reporting for campaigns tied to your ad account. Your public Page URL identifies the brand, but API access is granted through the Meta ad account.</div>
+          <div style={{ marginTop: 5 }}><a href={metaAdsStatus.page?.url || BEVERIDGE_FACEBOOK_PAGE_URL} target="_blank" rel="noreferrer">Open {metaAdsStatus.page?.label || 'Beveridge Blawg'} on Facebook</a></div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => { setMetaAdsDays(days); if (metaAdsStatus.connected) loadMetaAdsReport(days) }} style={{ background: metaAdsDays === days ? '#1d4ed8' : '#fff', color: metaAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
+          <button type="button" onClick={async () => { const status = await loadMetaAdsStatus(); if (status?.connected) await loadMetaAdsReport(metaAdsDays) }} disabled={metaAdsLoading || metaAdsStatusLoading} style={{ background: '#0f172a', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>{metaAdsLoading || metaAdsStatusLoading ? 'Refreshing...' : 'Refresh data'}</button>
+        </div>
+      </div>
+
+      {metaAdsError && <div style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: 10, padding: 11, marginBottom: 12 }}><strong>Meta Ads:</strong> {metaAdsError}</div>}
+
+      {!metaAdsStatus.configured && <section style={{ ...card, borderColor: '#fcd34d', background: '#fffbeb', marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Meta connection setup required</h2>
+        <p style={{ marginTop: 0 }}>The Mio Meta Ads page is installed. To read live Facebook/Instagram ad data, create a Meta developer app with the Marketing API and give a system user read access to the ad account. Store the token only in Vercel.</p>
+        <ol style={{ lineHeight: 1.65, marginBottom: 8 }}>
+          <li>In Meta for Developers, create/select a Business app and add the Marketing API.</li>
+          <li>In Business Settings, create a system user and assign it to the Beveridge Law Firm ad account.</li>
+          <li>Generate a system-user token with read permissions for ads/insights. This version does not call Meta mutation endpoints.</li>
+          <li>Add the server-only Vercel variables below and redeploy Mio.</li>
+        </ol>
+        <div style={{ display: 'grid', gap: 5, fontFamily: 'monospace', fontSize: 12, background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10 }}>
+          <div>META_AD_ACCOUNT_ID</div>
+          <div>META_ACCESS_TOKEN</div>
+          <div>META_APP_SECRET &nbsp; (optional; enables appsecret_proof)</div>
+          <div>META_PAGE_URL=https://www.facebook.com/BeveridgeBlawg/ &nbsp; (optional; already the default)</div>
+          <div>OPENAI_API_KEY &nbsp; (optional, enables AI audits)</div>
+        </div>
+        {metaAdsStatus.missing?.length > 0 && <div style={{ marginTop: 9, color: '#92400e' }}><strong>Still missing:</strong> {metaAdsStatus.missing.join(', ')}</div>}
+        <button type="button" onClick={() => loadMetaAdsStatus()} disabled={metaAdsStatusLoading} style={{ marginTop: 10 }}>{metaAdsStatusLoading ? 'Checking...' : 'Check connection'}</button>
+      </section>}
+
+      {metaAdsStatus.configured && <section style={{ ...card, marginBottom: 14, borderColor: metaAdsStatus.connected ? '#86efac' : '#fecaca', background: metaAdsStatus.connected ? '#f0fdf4' : '#fef2f2' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div><strong>{metaAdsStatus.connected ? 'Meta Ads connected' : 'Meta Ads configured but not connected'}</strong><div style={{ fontSize: 13, color: '#475569', marginTop: 3 }}>{metaAdsStatus.account?.name || 'Meta ad account'}{metaAdsStatus.account?.id ? ` - ${metaAdsStatus.account.id}` : ''}{metaAdsStatus.account?.currency ? ` - ${metaAdsStatus.account.currency}` : ''}</div></div>
+          <div style={{ fontSize: 12, color: '#64748b', textAlign: 'right' }}>Marketing API {metaAdsStatus.apiVersion || 'v25.0'}<br />Read-only reporting</div>
+        </div>
+      </section>}
+
+      {metaAdsStatus.connected && <>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
+          {[['overview', 'Overview'], ['campaigns', 'Campaigns'], ['adsets', 'Ad Sets'], ['ads', 'Ads'], ['delivery', 'Delivery'], ['audit', 'AI Audit'], ['settings', 'Settings']].map(([value, label]) => <button key={value} type="button" onClick={() => setMetaAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: metaAdsTab === value ? '#dbeafe' : '#fff', color: metaAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
+        </div>
+
+        {metaAdsLoading && !metaAdsReport && <div style={card}>Loading Meta Ads data...</div>}
+
+        {metaAdsReport && metaAdsTab === 'overview' && <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10 }}>{metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(320px,.8fr)', gap: 14 }}>
+            <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><h2 style={{ margin: 0 }}>Audit findings</h2><span style={{ fontSize: 12, color: '#64748b' }}>{report.range?.start} - {report.range?.end}</span></div><div style={{ display: 'grid', gap: 9, marginTop: 10 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#fff', background: tone.badge, borderRadius: 999, padding: '3px 7px', fontWeight: 900, textTransform: 'uppercase' }}>{finding.severity}</span><strong style={{ color: tone.title }}>{finding.title}</strong></div><div style={{ marginTop: 5, fontSize: 13 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 6, fontSize: 13 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}</div></section>
+            <section style={card}><h2 style={{ marginTop: 0 }}>Lead signals</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Lead actions:</strong> {googleAdsSafeNumber(overview.leads)}</div><div><strong>Messages:</strong> {googleAdsSafeNumber(overview.messages)}</div><div><strong>Contacts:</strong> {googleAdsSafeNumber(overview.contacts)}</div><div><strong>Appointments:</strong> {googleAdsSafeNumber(overview.appointments)}</div><div><strong>Landing-page views:</strong> {googleAdsSafeNumber(overview.landingPageViews)}</div></div><p style={{ color: '#64748b', fontSize: 12, marginBottom: 0 }}>Mio intentionally keeps these separate because Meta can report overlapping action types. The main "Lead actions" number is not treated as a signed client.</p></section>
+          </div>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Daily performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Date</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Frequency</th></tr></thead><tbody>{daily.map((row) => <tr key={row.date}><td style={td}>{row.date}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!daily.length && <tr><td colSpan="6" style={td}>No daily data returned.</td></tr>}</tbody></table></div></section>
+        </div>}
+
+        {metaAdsReport && metaAdsTab === 'campaigns' && <section style={card}><h2 style={{ marginTop: 0 }}>Campaign performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Objective</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Frequency</th></tr></thead><tbody>{campaigns.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.effectiveStatus || row.status || '-'}</td><td style={td}>{row.objective || '-'}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!campaigns.length && <tr><td colSpan="11" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {metaAdsReport && metaAdsTab === 'adsets' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad set performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}><thead><tr><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Frequency</th></tr></thead><tbody>{adSets.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!adSets.length && <tr><td colSpan="10" style={td}>No ad set rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {metaAdsReport && metaAdsTab === 'ads' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad performance</h2><p style={{ color: '#64748b', marginTop: -4 }}>Sorted by spend so weak creative consuming the most money is easy to spot.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={th}>Ad</th><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Flag</th></tr></thead><tbody>{ads.map((row) => { const review = googleAdsSafeNumber(row.spend) >= 10 && googleAdsSafeNumber(row.leadSignals) <= 0; return <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.adSetName}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{review ? <span style={{ color: '#b91c1c', fontWeight: 900 }}>Review</span> : '-'}</td></tr> })}{!ads.length && <tr><td colSpan="10" style={td}>No ad rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {metaAdsReport && metaAdsTab === 'delivery' && <div style={{ display: 'grid', gap: 14 }}>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Facebook vs. Instagram placement</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Platform</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Leads</th><th style={th}>Frequency</th></tr></thead><tbody>{platforms.map((row) => <tr key={row.platform}><td style={{ ...td, fontWeight: 800 }}>{row.platform}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!platforms.length && <tr><td colSpan="6" style={td}>No platform breakdown returned.</td></tr>}</tbody></table></div></section>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Device performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CPC</th><th style={th}>Leads</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={{ ...td, fontWeight: 800 }}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td></tr>)}{!devices.length && <tr><td colSpan="5" style={td}>No device breakdown returned.</td></tr>}</tbody></table></div></section>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Region performance</h2><p style={{ color: '#64748b', marginTop: -4 }}>Useful for spotting spend outside the areas you actually want to serve. Meta may suppress or limit some breakdown rows.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Region</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Leads</th></tr></thead><tbody>{regions.map((row, index) => <tr key={`${row.region}-${index}`}><td style={{ ...td, fontWeight: 800 }}>{row.region}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td></tr>)}{!regions.length && <tr><td colSpan="5" style={td}>No region breakdown returned.</td></tr>}</tbody></table></div></section>
+        </div>}
+
+        {metaAdsReport && metaAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI Meta Ads audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Reviews the loaded Facebook/Instagram data. It cannot change campaigns, audiences, budgets, or ads.</p></div><button type="button" onClick={runMetaAdsAiAudit} disabled={metaAdsAiLoading || !metaAdsStatus.aiConfigured} style={{ background: metaAdsStatus.aiConfigured ? '#1d4ed8' : '#e2e8f0', color: metaAdsStatus.aiConfigured ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{metaAdsAiLoading ? 'Auditing...' : metaAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>{metaAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{metaAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>The rule-based findings work without AI. The AI review adds campaign/ad-set/ad, placement, device, region, frequency, and tracking analysis.</div>}</section><section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section></div>}
+
+        {metaAdsReport && metaAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><h2 style={{ marginTop: 0 }}>Read-only connection</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Ad account:</strong> {metaAdsStatus.account?.name || '-'} {metaAdsStatus.account?.id ? `(${metaAdsStatus.account.id})` : ''}</div><div><strong>Business:</strong> {metaAdsStatus.account?.businessName || '-'}</div><div><strong>Meta Marketing API:</strong> {metaAdsStatus.apiVersion || 'v25.0'}</div><div><strong>Facebook Page:</strong> <a href={metaAdsStatus.page?.url || BEVERIDGE_FACEBOOK_PAGE_URL} target="_blank" rel="noreferrer">{metaAdsStatus.page?.label || 'Beveridge Blawg'}</a></div><div><strong>AI narrative audit:</strong> {metaAdsStatus.aiConfigured ? 'Enabled' : 'Not configured'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '-'}</div></div></section>{report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}<section style={card}><h2 style={{ marginTop: 0 }}>Security</h2><p style={{ marginBottom: 0 }}>The Meta access token and optional app secret stay in Vercel server environment variables. The browser gets reporting data only after the API endpoint verifies a signed-in Beveridge Law Firm Mio user. This build contains no Meta write/mutate endpoint.</p></section></div>}
+      </>}
+    </div>
+  }
+
+  function renderGoogleAdsPage() {
+    if (marketingPlatform === 'overview') return renderMarketingOverviewPage()
+    if (marketingPlatform === 'meta') return renderMetaAdsPage()
+    const report = googleAdsReport || {}
+    const overview = report.overview || {}
+    const findings = buildGoogleAdsAudit(report)
+    const campaigns = Array.isArray(report.campaigns) ? report.campaigns : []
+    const searchTerms = Array.isArray(report.searchTerms) ? report.searchTerms : []
+    const keywords = Array.isArray(report.keywords) ? report.keywords : []
+    const conversionActions = Array.isArray(report.conversionActions) ? report.conversionActions : []
+    const devices = Array.isArray(report.devices) ? report.devices : []
+    const daily = Array.isArray(report.daily) ? report.daily : []
+    const severityStyle = (severity) => severity === 'critical'
+      ? { border: '#fecaca', background: '#fef2f2', title: '#991b1b', badge: '#dc2626' }
+      : severity === 'warning'
+        ? { border: '#fde68a', background: '#fffbeb', title: '#92400e', badge: '#d97706' }
+        : severity === 'good'
+          ? { border: '#bbf7d0', background: '#f0fdf4', title: '#166534', badge: '#16a34a' }
+          : { border: '#bfdbfe', background: '#eff6ff', title: '#1e40af', badge: '#2563eb' }
+    const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
+    const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
+    const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
+    const metricCards = [
+      ['Spend', googleAdsFormatMoney(overview.cost)],
+      ['Clicks', googleAdsSafeNumber(overview.clicks).toLocaleString()],
+      ['Avg. CPC', googleAdsFormatMoney(overview.averageCpc)],
+      ['Conversions', googleAdsSafeNumber(overview.conversions).toFixed(googleAdsSafeNumber(overview.conversions) % 1 ? 1 : 0)],
+      ['Conv. rate', googleAdsFormatPercent(overview.conversionRate)],
+      ['Cost / conv.', googleAdsSafeNumber(overview.conversions) > 0 ? googleAdsFormatMoney(overview.costPerConversion) : '—']
+    ]
+    const topWaste = searchTerms.filter((row) => googleAdsSafeNumber(row.conversions) <= 0).sort((a, b) => googleAdsSafeNumber(b.cost) - googleAdsSafeNumber(a.cost)).slice(0, 10)
+
+    return <div style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
+      {renderMarketingPlatformSwitch()}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
+        <div>
+          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
+          <h1 style={{ margin: '3px 0 5px' }}>Google Ads Auditor</h1>
+          <div style={{ color: '#64748b' }}>Read-only reporting and recommendations. Mio does not change campaigns, bids, budgets, keywords, or conversion settings.</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => { setGoogleAdsDays(days); if (googleAdsStatus.connected) loadGoogleAdsReport(days) }} style={{ background: googleAdsDays === days ? '#1d4ed8' : '#fff', color: googleAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
+          <button type="button" onClick={async () => { const status = await loadGoogleAdsStatus(); if (status?.connected) await loadGoogleAdsReport(googleAdsDays) }} disabled={googleAdsLoading || googleAdsStatusLoading} style={{ background: '#0f172a', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>{googleAdsLoading || googleAdsStatusLoading ? 'Refreshing…' : 'Refresh data'}</button>
+        </div>
+      </div>
+
+      {googleAdsError && <div style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: 10, padding: 11, marginBottom: 12 }}><strong>Google Ads:</strong> {googleAdsError}</div>}
+
+      {!googleAdsStatus.configured && <section style={{ ...card, borderColor: '#fcd34d', background: '#fffbeb', marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>Connection setup required</h2>
+        <p style={{ marginTop: 0 }}>The Mio page is installed. To let it read your live Google Ads account, the server still needs Google Ads API credentials. Do not paste the service-account private key into this webpage or into the React file.</p>
+        <ol style={{ lineHeight: 1.65, marginBottom: 8 }}>
+          <li>Create or select a Google Cloud project, enable the Google Ads API, and create a service account.</li>
+          <li>In Google Ads, add the service-account email as a user under <strong>Admin → Access and security</strong>.</li>
+          <li>Obtain a Google Ads developer token from the API Center of a Google Ads manager account.</li>
+          <li>Add the server-only Vercel environment variables listed below, then redeploy Mio.</li>
+        </ol>
+        <div style={{ display: 'grid', gap: 5, fontFamily: 'monospace', fontSize: 12, background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10 }}>
+          <div>GOOGLE_ADS_CUSTOMER_ID</div>
+          <div>GOOGLE_ADS_DEVELOPER_TOKEN</div>
+          <div>GOOGLE_ADS_SERVICE_ACCOUNT_JSON</div>
+          <div>GOOGLE_ADS_LOGIN_CUSTOMER_ID &nbsp; (only if access runs through a manager account)</div>
+          <div>OPENAI_API_KEY &nbsp; (optional, enables the narrative AI audit button)</div>
+        </div>
+        {googleAdsStatus.missing?.length > 0 && <div style={{ marginTop: 9, color: '#92400e' }}><strong>Still missing:</strong> {googleAdsStatus.missing.join(', ')}</div>}
+        <button type="button" onClick={() => loadGoogleAdsStatus()} disabled={googleAdsStatusLoading} style={{ marginTop: 10 }}>{googleAdsStatusLoading ? 'Checking…' : 'Check connection'}</button>
+      </section>}
+
+      {googleAdsStatus.configured && <section style={{ ...card, marginBottom: 14, borderColor: googleAdsStatus.connected ? '#86efac' : '#fecaca', background: googleAdsStatus.connected ? '#f0fdf4' : '#fef2f2' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div><strong>{googleAdsStatus.connected ? '● Google Ads connected' : '● Google Ads configured but not connected'}</strong><div style={{ fontSize: 13, color: '#475569', marginTop: 3 }}>{googleAdsStatus.account?.descriptiveName || 'Google Ads account'}{googleAdsStatus.account?.id ? ` • ${googleAdsStatus.account.id}` : ''}{googleAdsStatus.account?.currencyCode ? ` • ${googleAdsStatus.account.currencyCode}` : ''}</div></div>
+          <div style={{ fontSize: 12, color: '#64748b', textAlign: 'right' }}>API {googleAdsStatus.apiVersion || 'v25'}{googleAdsStatus.serviceAccountEmail ? <><br />{googleAdsStatus.serviceAccountEmail}</> : null}</div>
+        </div>
+      </section>}
+
+      {googleAdsStatus.connected && <>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
+          {[['overview', 'Overview'], ['campaigns', 'Campaigns'], ['search_terms', 'Search Terms'], ['keywords', 'Keywords'], ['conversions', 'Conversions'], ['audit', 'AI Audit'], ['settings', 'Settings']].map(([value, label]) => <button key={value} type="button" onClick={() => setGoogleAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: googleAdsTab === value ? '#dbeafe' : '#fff', color: googleAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
+        </div>
+
+        {googleAdsLoading && !googleAdsReport && <div style={{ ...card }}>Loading Google Ads data…</div>}
+
+        {googleAdsReport && googleAdsTab === 'overview' && <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10 }}>
+            {metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.25fr) minmax(320px,.75fr)', gap: 14 }}>
+            <section style={card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><h2 style={{ margin: 0 }}>Audit findings</h2><span style={{ fontSize: 12, color: '#64748b' }}>{report.range?.start} → {report.range?.end}</span></div>
+              <div style={{ display: 'grid', gap: 9, marginTop: 10 }}>
+                {findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#fff', background: tone.badge, borderRadius: 999, padding: '3px 7px', fontWeight: 900, textTransform: 'uppercase' }}>{finding.severity}</span><strong style={{ color: tone.title }}>{finding.title}</strong></div><div style={{ marginTop: 5, fontSize: 13 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 6, fontSize: 13 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}
+              </div>
+            </section>
+            <section style={card}>
+              <h2 style={{ marginTop: 0 }}>Device efficiency</h2>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Conv.</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={td}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td></tr>)}{!devices.length && <tr><td colSpan="4" style={td}>No device data returned.</td></tr>}</tbody></table>
+            </section>
+          </div>
+
+          <section style={card}>
+            <h2 style={{ marginTop: 0 }}>Daily spend and leads</h2>
+            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Date</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Avg. CPC</th><th style={th}>Conversions</th><th style={th}>Cost / conv.</th></tr></thead><tbody>{daily.map((row) => <tr key={row.date}><td style={td}>{row.date}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!daily.length && <tr><td colSpan="6" style={td}>No daily data returned.</td></tr>}</tbody></table></div>
+          </section>
+
+          <section style={card}>
+            <h2 style={{ marginTop: 0 }}>Most expensive non-converting search terms</h2>
+            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Search term</th><th style={th}>Campaign</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Match</th></tr></thead><tbody>{topWaste.map((row) => <tr key={`${row.campaignId}-${row.adGroupId}-${row.searchTerm}`}><td style={{ ...td, fontWeight: 800 }}>{row.searchTerm}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{row.matchType || '—'}</td></tr>)}{!topWaste.length && <tr><td colSpan="5" style={td}>No non-converting search-term spend returned.</td></tr>}</tbody></table></div>
+          </section>
+        </div>}
+
+        {googleAdsReport && googleAdsTab === 'campaigns' && <section style={card}>
+          <h2 style={{ marginTop: 0 }}>Campaign performance</h2>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Bidding</th><th style={th}>Budget/day</th><th style={th}>Impr.</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Avg CPC</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Conv. rate</th><th style={th}>Cost/conv.</th></tr></thead><tbody>{campaigns.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.status}</td><td style={td}>{row.biddingStrategyType || '—'}</td><td style={td}>{googleAdsFormatMoney(row.dailyBudget)}</td><td style={td}>{googleAdsSafeNumber(row.impressions).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.clicks).toLocaleString()}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsFormatPercent(row.conversionRate)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!campaigns.length && <tr><td colSpan="12" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div>
+        </section>}
+
+        {googleAdsReport && googleAdsTab === 'search_terms' && <section style={card}>
+          <h2 style={{ marginTop: 0 }}>Actual search terms</h2><p style={{ color: '#64748b', marginTop: -4 }}>Sorted by spend. These are the searches people actually typed before clicking your ads.</p>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr><th style={th}>Search term</th><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Match</th><th style={th}>Impr.</th><th style={th}>Clicks</th><th style={th}>Cost</th><th style={th}>Conversions</th><th style={th}>Flag</th></tr></thead><tbody>{searchTerms.map((row) => { const spendNoLead = googleAdsSafeNumber(row.cost) >= 10 && googleAdsSafeNumber(row.conversions) <= 0; return <tr key={`${row.campaignId}-${row.adGroupId}-${row.searchTerm}`}><td style={{ ...td, fontWeight: 800 }}>{row.searchTerm}</td><td style={td}>{row.campaignName}</td><td style={td}>{row.adGroupName}</td><td style={td}>{row.matchType || '—'}</td><td style={td}>{googleAdsSafeNumber(row.impressions)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{spendNoLead ? <span style={{ color: '#b91c1c', fontWeight: 900 }}>Review</span> : '—'}</td></tr> })}{!searchTerms.length && <tr><td colSpan="9" style={td}>No search-term rows returned.</td></tr>}</tbody></table></div>
+        </section>}
+
+        {googleAdsReport && googleAdsTab === 'keywords' && <section style={card}>
+          <h2 style={{ marginTop: 0 }}>Keyword performance</h2>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}><thead><tr><th style={th}>Keyword</th><th style={th}>Match</th><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Status</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Avg CPC</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Cost/conv.</th></tr></thead><tbody>{keywords.map((row) => <tr key={`${row.campaignId}-${row.adGroupId}-${row.criterionId}`}><td style={{ ...td, fontWeight: 800 }}>{row.keyword}</td><td style={td}>{row.matchType}</td><td style={td}>{row.campaignName}</td><td style={td}>{row.adGroupName}</td><td style={td}>{row.status}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!keywords.length && <tr><td colSpan="11" style={td}>No keyword rows returned.</td></tr>}</tbody></table></div>
+        </section>}
+
+        {googleAdsReport && googleAdsTab === 'conversions' && <section style={card}>
+          <h2 style={{ marginTop: 0 }}>Conversion actions</h2><p style={{ color: '#64748b', marginTop: -4 }}>This is where we check whether Google is actually optimizing toward successful forms and phone calls.</p>
+          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}><thead><tr><th style={th}>Conversion</th><th style={th}>Type</th><th style={th}>Status</th><th style={th}>Primary</th><th style={th}>Conversions</th><th style={th}>All conversions</th></tr></thead><tbody>{conversionActions.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.type}</td><td style={td}>{row.status}</td><td style={td}>{row.primaryForGoal ? <strong style={{ color: '#166534' }}>Yes</strong> : 'No'}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.allConversions)}</td></tr>)}{!conversionActions.length && <tr><td colSpan="6" style={td}>No conversion-action rows returned. Check the report warnings below.</td></tr>}</tbody></table></div>
+        </section>}
+
+        {googleAdsReport && googleAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}>
+          <section style={card}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI account audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Uses the reporting data already loaded above. It cannot make changes to Google Ads.</p></div><button type="button" onClick={runGoogleAdsAiAudit} disabled={googleAdsAiLoading || !googleAdsStatus.aiConfigured} style={{ background: googleAdsStatus.aiConfigured ? '#1d4ed8' : '#e2e8f0', color: googleAdsStatus.aiConfigured ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{googleAdsAiLoading ? 'Auditing…' : googleAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>
+            {googleAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{googleAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>The rule-based findings below work even without an AI key. The AI audit adds a narrative review across campaigns, search terms, keywords, conversion actions, and devices.</div>}
+          </section>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section>
+        </div>}
+
+        {googleAdsReport && googleAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}>
+          <section style={card}><h2 style={{ marginTop: 0 }}>Read-only connection</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Account:</strong> {googleAdsStatus.account?.descriptiveName || '—'} {googleAdsStatus.account?.id ? `(${googleAdsStatus.account.id})` : ''}</div><div><strong>Service account:</strong> {googleAdsStatus.serviceAccountEmail || '—'}</div><div><strong>Google Ads API:</strong> {googleAdsStatus.apiVersion || 'v25'}</div><div><strong>AI narrative audit:</strong> {googleAdsStatus.aiConfigured ? 'Enabled' : 'Not configured'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '—'}</div></div></section>
+          {report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}
+          <section style={card}><h2 style={{ marginTop: 0 }}>Security</h2><p style={{ marginBottom: 0 }}>The developer token and service-account private key stay in Vercel server environment variables. The browser receives reporting data only after the Google Ads API endpoint verifies a signed-in Beveridge Law Firm Mio user.</p></section>
+        </div>}
+      </>}
+    </div>
+  }
+
   function renderBankingPage() {
     const searchText = bankSearch.trim().toLowerCase()
     const filteredTransactions = bankTransactions.filter((transaction) => {
@@ -49513,6 +50600,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         matterName: matter.name || matter.matter_name || matterClientName(matter) || 'Unnamed matter',
         trust: finance.trust,
         outstanding: finance.outstanding,
+        outstandingTrust: finance.outstandingTrust,
         pending: pendingLawPayAmountForMatter(matter),
         wip: finance.wip,
         minimum: finance.minimumBalance,
@@ -49564,13 +50652,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       if (column.key === 'matter') return <td key={column.key} style={baseStyle}><a href={matterFinanceDashboardUrl(row.matter)} target="_blank" rel="noopener noreferrer" title="Open this matter's financial dashboard in a new tab" style={{ display: 'block', color: '#111827', fontSize: 15, fontWeight: 900, lineHeight: 1.2 }}>{matterClientName(row.matter) || 'Client'}</a><div style={{ color: '#1e293b', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{row.matterName}</div>{row.matter.cause_number && <div style={{ color: '#64748b', fontSize: 11, fontWeight: 400, marginTop: 2 }}>{row.matter.cause_number}</div>}</td>
       if (column.key === 'outstanding') {
         const breakdown = outstandingBreakdownForMatter(row.matter, row.finance)
-        const popoverOpen = bulkObPopover?.matterId === String(row.matter.id)
+        const popoverOpen = bulkObPopover?.matterId === String(row.matter.id) && bulkObPopover?.kind === 'work'
         const closePopoverSoon = () => {
           window.clearTimeout(bulkObPopoverCloseTimerRef.current)
           bulkObPopoverCloseTimerRef.current = window.setTimeout(() => setBulkObPopover(null), 220)
         }
         const popover = popoverOpen && row.outstanding > 0.005 && typeof document !== 'undefined' ? createPortal(<div onMouseEnter={() => window.clearTimeout(bulkObPopoverCloseTimerRef.current)} onMouseLeave={closePopoverSoon} onClick={(event) => event.stopPropagation()} style={{ position: 'fixed', zIndex: 15000, top: bulkObPopover.top, left: bulkObPopover.left, width: 360, maxHeight: 330, overflow: 'auto', padding: 11, border: '1px solid #94a3b8', borderRadius: 9, background: '#fff', boxShadow: '0 16px 34px rgba(15,23,42,.28)', textAlign: 'left', whiteSpace: 'normal' }}>
-            <div style={{ fontWeight: 900, marginBottom: 7 }}>Outstanding balance: {money(breakdown.total)}</div>
+            <div style={{ fontWeight: 900, marginBottom: 7 }}>OB (Work performed): {money(breakdown.total)}</div>
             {breakdown.invoiceRows.map(({ invoice, label, balance, issue_date }) => <button key={invoice.id} type="button" onClick={() => openFinanceInvoice(invoice, row.matter)} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, width: '100%', padding: '8px 9px', marginBottom: 5, border: '1px solid #bfdbfe', borderRadius: 7, background: '#eff6ff', color: '#1d4ed8', textAlign: 'left' }}><span><strong>{label}</strong><br/><span style={{ fontSize: 11, color: '#64748b' }}>Issued {financeDateOnly(issue_date) || 'date unavailable'}</span></span><strong>{money(balance)}</strong></button>)}
             {breakdown.openingBalance > 0.005 && <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '8px 9px', border: '1px solid #f59e0b', borderRadius: 7, background: '#fffbeb', color: '#92400e' }}><span><strong>Mio opening A/R</strong><br/><span style={{ fontSize: 11 }}>Opening balance without an itemized Mio invoice</span></span><strong>{money(breakdown.openingBalance)}</strong></div>}
             {!breakdown.invoiceRows.length && breakdown.openingBalance <= 0.005 && <div className="empty">No unpaid invoice remains.</div>}
@@ -49578,16 +50666,37 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         return <Fragment key={column.key}><td onMouseEnter={(event) => {
           window.clearTimeout(bulkObPopoverCloseTimerRef.current)
           const rect = event.currentTarget.getBoundingClientRect()
-          setBulkObPopover({ matterId: String(row.matter.id), top: Math.max(8, Math.min(window.innerHeight - 350, rect.bottom + 3)), left: Math.max(8, Math.min(window.innerWidth - 370, rect.right - 360)) })
+          setBulkObPopover({ matterId: String(row.matter.id), kind: 'work', top: Math.max(8, Math.min(window.innerHeight - 350, rect.bottom + 3)), left: Math.max(8, Math.min(window.innerWidth - 370, rect.right - 360)) })
         }} onMouseLeave={closePopoverSoon} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap', cursor: row.outstanding > 0.005 ? 'help' : 'default' }}>
           {moneyCell(row.outstanding)}
-          {row.outstanding > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Hover for invoices</div>}
+          {row.outstanding > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Hover for work invoices</div>}
+        </td>{popover}</Fragment>
+      }
+      if (column.key === 'outstandingTrust') {
+        const breakdown = outstandingTrustBreakdownForMatter(row.matter, row.finance)
+        const popoverOpen = bulkObPopover?.matterId === String(row.matter.id) && bulkObPopover?.kind === 'trust'
+        const closePopoverSoon = () => {
+          window.clearTimeout(bulkObPopoverCloseTimerRef.current)
+          bulkObPopoverCloseTimerRef.current = window.setTimeout(() => setBulkObPopover(null), 220)
+        }
+        const popover = popoverOpen && row.outstandingTrust > 0.005 && typeof document !== 'undefined' ? createPortal(<div onMouseEnter={() => window.clearTimeout(bulkObPopoverCloseTimerRef.current)} onMouseLeave={closePopoverSoon} onClick={(event) => event.stopPropagation()} style={{ position: 'fixed', zIndex: 15000, top: bulkObPopover.top, left: bulkObPopover.left, width: 360, maxHeight: 330, overflow: 'auto', padding: 11, border: '1px solid #6ee7b7', borderRadius: 9, background: '#fff', boxShadow: '0 16px 34px rgba(15,23,42,.28)', textAlign: 'left', whiteSpace: 'normal' }}>
+          <div style={{ fontWeight: 900, marginBottom: 7 }}>OB (Trust): {money(breakdown.total)}</div>
+          {breakdown.invoiceRows.map(({ invoice, label, balance, issue_date }) => <button key={invoice.id} type="button" onClick={() => openFinanceInvoice(invoice, row.matter)} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, width: '100%', padding: '8px 9px', marginBottom: 5, border: '1px solid #6ee7b7', borderRadius: 7, background: '#ecfdf5', color: '#047857', textAlign: 'left' }}><span><strong>{label}</strong><br/><span style={{ fontSize: 11, color: '#64748b' }}>Issued {financeDateOnly(issue_date) || 'date unavailable'}</span></span><strong>{money(balance)}</strong></button>)}
+          {!breakdown.invoiceRows.length && <div className="empty">No unpaid trust request remains.</div>}
+        </div>, document.body) : null
+        return <Fragment key={column.key}><td onMouseEnter={(event) => {
+          window.clearTimeout(bulkObPopoverCloseTimerRef.current)
+          const rect = event.currentTarget.getBoundingClientRect()
+          setBulkObPopover({ matterId: String(row.matter.id), kind: 'trust', top: Math.max(8, Math.min(window.innerHeight - 350, rect.bottom + 3)), left: Math.max(8, Math.min(window.innerWidth - 370, rect.right - 360)) })
+        }} onMouseLeave={closePopoverSoon} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap', cursor: row.outstandingTrust > 0.005 ? 'help' : 'default' }}>
+          {moneyCell(row.outstandingTrust)}
+          {row.outstandingTrust > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Hover for trust requests</div>}
         </td>{popover}</Fragment>
       }
       if (column.key === 'wip') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row.wip)}{row.wip > 0.005 && <div style={{ color: '#64748b', fontSize: 10, marginTop: 2 }}>Opening {money(row.finance.clioBaselineWip)} + Mio {money(row.finance.mioPostCutoverWip)}</div>}</td>
       if (column.key === 'pending') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap', background: row.pending > 0.005 ? '#fffbeb' : undefined, color: row.pending > 0.005 ? '#92400e' : undefined, fontWeight: row.pending > 0.005 ? 900 : 500 }}>{money(row.pending)}{row.pending > 0.005 && <div style={{ fontSize: 10 }}>LawPay pending</div>}</td>
       if (column.key === 'retainerTarget') return <td key={column.key} style={{ ...baseStyle, textAlign: 'right' }}><input type="number" min="0" step="0.01" value={row.retainerTarget.toFixed(2)} onChange={(event) => setMatterRetainerTarget(row.matter, event.target.value)} style={{ width: 105, textAlign: 'right' }} /></td>
-      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay OB from trust</button></td>
+      if (column.key === 'actions') return <td key={column.key} style={{ ...baseStyle, whiteSpace: 'nowrap' }}><button type="button" onClick={() => openBulkWipReview([row.matter.id])} disabled={row.wip <= 0.005}>Review WIP</button> <button type="button" onClick={async () => { setBulkBillingBusy(true); try { const result = await payMatterOutstandingFromTrust(row.matter); if (result?.paid) setBulkBillingResult(`${row.matterName}: ${result.message} The saved balances were verified and will remain after refresh.`) } catch (error) { alert(`Mio did not apply the trust payment. ${error?.message || error}`) } finally { setBulkBillingBusy(false) } }} disabled={bulkBillingBusy || row.outstanding <= 0.005 || row.trust <= 0.005}>Pay work OB from trust</button></td>
       return <td key={column.key} style={{ ...baseStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCell(row[column.key])}</td>
     }
     const reviewRows = bulkWipReview.open ? (bulkWipReview.matter_ids || []).map((matterId) => {
@@ -49607,8 +50716,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" onClick={openBulkInvoiceLedger}>All invoices</button>
             <button type="button" className="btnPrimary" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkWipReview(selectedVisibleIds)}>Bulk WIP approve</button>
-            <button type="button" disabled={bulkBillingBusy || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all OBs with trust</button>
-            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => openBulkOutstandingInvoiceReview(selectedVisibleIds)}>Review/send all OB invoices selected</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedSnapshotIds.length} onClick={() => paySelectedOutstandingFromTrust(selectedSnapshotIds)}>Pay all work OBs with trust</button>
+            <button type="button" disabled={bulkBillingBusy || !selectedVisibleIds.length} onClick={() => setBulkOutstandingInvoiceTypePicker({ open: true, matter_ids: selectedVisibleIds })}>Review/send OB invoices selected</button>
             <button type="button" disabled={bulkBillingBusy || !selectedSnapshotIds.length} onClick={() => replenishSelectedMatters(selectedSnapshotIds)}>Replenish all selected</button>
           </div>
         </div>
@@ -49675,6 +50784,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </div>
         </div>
       </div>}
+      {renderBulkOutstandingInvoiceTypePicker()}
       {renderBulkOutstandingInvoiceReview()}
       {renderBulkInvoiceLedger()}
     </div>
@@ -50006,6 +51116,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </a>
         )}
 
+        {canOpenPage('google_ads') && (
+          <a href="#google_ads" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('google_ads') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'google_ads' ? 900 : undefined, color: page === 'google_ads' ? '#1d4ed8' : undefined }}>
+            Marketing
+          </a>
+        )}
+
         {canOpenPage('lawpay') && <a href="#lawpay" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('lawpay') }} style={{ display: 'block', marginBottom: 10 }}>LawPay</a>}
         {canOpenPage('banking') && <a href="#banking" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('banking') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'banking' ? 900 : undefined, color: page === 'banking' ? '#1d4ed8' : undefined }}>Accounts</a>}
         {canOpenPage('efile') && <a href="#efile" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('efile') }} style={{ display: 'block', marginBottom: 10 }}>eFile</a>}
@@ -50191,6 +51307,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'screensaver' && canOpenPage('screensaver') && renderScreensaverPage()}
 
         {page === 'billing' && canOpenPage('billing') && renderBillingPage()}
+
+        {page === 'google_ads' && canOpenPage('google_ads') && renderGoogleAdsPage()}
 
         {page === 'lawpay' && canOpenPage('lawpay') && renderLawPayPage()}
 
