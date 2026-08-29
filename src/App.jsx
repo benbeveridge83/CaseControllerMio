@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V259'
+const MIO_APP_VERSION = 'Mio V260'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -47168,14 +47168,15 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     )
   }
 
-  function renderClioGraph(seriesList, { small = false, invoiceMarkers = [], onSeriesHide = null, extendToToday = false } = {}) {
+  function renderClioGraph(seriesList, { small = false, invoiceMarkers = [], onSeriesHide = null, extendToToday = false, step = false } = {}) {
     const cleanSeries = Array.isArray(seriesList) ? seriesList : []
-    const markerList = Array.isArray(invoiceMarkers) ? invoiceMarkers.filter((marker) => marker?.date && Number.isFinite(new Date(marker.date).getTime())) : []
+    const pointTime = (value) => financialGraphTimestampMs(value)
+    const markerList = Array.isArray(invoiceMarkers) ? invoiceMarkers.filter((marker) => marker?.date && Number.isFinite(pointTime(marker.date))) : []
     const allGraphPoints = cleanSeries.flatMap((series) => series.points || [])
     const allDates = [
-      ...allGraphPoints.map((point) => new Date(point.date).getTime()),
-      ...markerList.map((marker) => new Date(marker.date).getTime()),
-      ...(extendToToday ? [new Date(`${financeDateOnly(new Date().toISOString())}T23:59:59`).getTime()] : [])
+      ...allGraphPoints.map((point) => pointTime(point.date)),
+      ...markerList.map((marker) => pointTime(marker.date)),
+      ...(extendToToday ? [financialGraphLocalDateIso(financeDateOnly(new Date().toISOString()), 'end') ? pointTime(financialGraphLocalDateIso(financeDateOnly(new Date().toISOString()), 'end')) : Date.now()] : [])
     ].filter((value) => Number.isFinite(value))
     const allBalances = allGraphPoints.map((point) => Number(point.balance)).filter((value) => Number.isFinite(value))
     const graphHasData = allDates.length > 0 && allBalances.length > 0
@@ -47194,28 +47195,51 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
     const plotBottom = graphHeight - graphPadding.bottom
     const plotWidth = plotRight - plotLeft
     const plotHeight = plotBottom - plotTop
-    const xForDate = (date) => plotLeft + ((new Date(date).getTime() - minDate) / xSpan) * plotWidth
+    const xForDate = (date) => plotLeft + ((pointTime(date) - minDate) / xSpan) * plotWidth
     const yForBalance = (balance) => plotBottom - ((Number(balance) - minBalance) / ySpan) * plotHeight
     const money = (value) => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD' })
-    const shortDate = (value) => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
+    const shortDate = (value) => new Date(pointTime(value)).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' })
+    const dateTimeLabel = (value) => {
+      const timestamp = pointTime(value)
+      if (!Number.isFinite(timestamp)) return ''
+      const parsed = new Date(timestamp)
+      const includesTime = parsed.getHours() !== 12 || parsed.getMinutes() !== 0 || parsed.getSeconds() !== 0
+      return parsed.toLocaleString(undefined, includesTime
+        ? { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }
+        : { month: 'short', day: 'numeric', year: 'numeric' })
+    }
     const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minBalance + ratio * ySpan)
     const graphColors = ['#0b5fff', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5', '#65a30d', '#7c2d12']
     const sortedSeriesPoints = (series) => (series?.points || [])
-      .filter((point) => Number.isFinite(new Date(point.date).getTime()) && Number.isFinite(Number(point.balance)))
-      .sort((left, right) => new Date(left.date).getTime() - new Date(right.date).getTime())
+      .filter((point) => Number.isFinite(pointTime(point.date)) && Number.isFinite(Number(point.balance)))
+      .sort((left, right) => pointTime(left.date) - pointTime(right.date))
+
+    const sourcePointAtDate = (series, dateValue) => {
+      const points = sortedSeriesPoints(series)
+      if (!points.length) return null
+      const target = pointTime(dateValue)
+      if (!Number.isFinite(target) || target <= pointTime(points[0].date)) return points[0]
+      let chosen = points[0]
+      for (const point of points) {
+        if (pointTime(point.date) > target) break
+        chosen = point
+      }
+      return chosen
+    }
 
     const seriesBalanceAtDate = (series, dateValue) => {
       const points = sortedSeriesPoints(series)
       if (!points.length) return 0
-      const target = new Date(dateValue).getTime()
-      if (!Number.isFinite(target) || target <= new Date(points[0].date).getTime()) return Number(points[0].balance)
-      if (target >= new Date(points[points.length - 1].date).getTime()) return Number(points[points.length - 1].balance)
+      const target = pointTime(dateValue)
+      if (!Number.isFinite(target) || target <= pointTime(points[0].date)) return Number(points[0].balance)
+      if (step) return Number(sourcePointAtDate(series, target)?.balance || 0)
+      if (target >= pointTime(points[points.length - 1].date)) return Number(points[points.length - 1].balance)
       for (let index = 1; index < points.length; index += 1) {
-        const rightTime = new Date(points[index].date).getTime()
+        const rightTime = pointTime(points[index].date)
         if (target > rightTime) continue
         const left = points[index - 1]
         const right = points[index]
-        const leftTime = new Date(left.date).getTime()
+        const leftTime = pointTime(left.date)
         const ratio = Math.max(0, Math.min(1, (target - leftTime) / Math.max(1, rightTime - leftTime)))
         return Number(left.balance) + (Number(right.balance) - Number(left.balance)) * ratio
       }
@@ -47231,6 +47255,10 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
       const scaledPlotWidth = (plotWidth / graphWidth) * rect.width
       const ratio = Math.max(0, Math.min(1, (event.clientX - scaledPlotLeft) / Math.max(1, scaledPlotWidth)))
       const targetTime = minDate + ratio * xSpan
+      if (step) {
+        const sourcePoint = sourcePointAtDate(series, targetTime)
+        return sourcePoint ? { ...sourcePoint, date: new Date(targetTime).toISOString(), source_date: sourcePoint.date, balance: Number(sourcePoint.balance) } : null
+      }
       return { date: new Date(targetTime).toISOString(), balance: seriesBalanceAtDate(series, targetTime) }
     }
 
@@ -47245,7 +47273,15 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
         mio_matter_ids: Array.isArray(series.mio_matter_ids) ? series.mio_matter_ids.map(String) : [],
         matter_names: Array.isArray(series.matter_names) ? series.matter_names : [],
         point_date: point?.date || '',
-        point_balance: Number(point?.balance || 0)
+        point_source_date: point?.source_date || point?.date || '',
+        point_balance: Number(point?.balance || 0),
+        point_event_label: point?.graph_event_label || '',
+        point_event_source: point?.graph_event_source || '',
+        point_event_direction: point?.graph_event_direction || '',
+        point_event_amount: financeNumber(point?.graph_event_amount),
+        point_event_reference: point?.graph_event_reference || '',
+        point_event_kind: point?.graph_event_kind || '',
+        point_events: Array.isArray(point?.graph_events) ? point.graph_events : []
       })
     }
 
@@ -47277,8 +47313,23 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
 
     const tooltipViewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200
     const tooltipViewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800
-    const tooltipLeft = financialGraphHover ? Math.max(10, Math.min(tooltipViewportWidth - 350, Number(financialGraphHover.x || 0) + 14)) : 0
-    const tooltipTop = financialGraphHover ? Math.max(10, Math.min(tooltipViewportHeight - 220, Number(financialGraphHover.y || 0) + 14)) : 0
+    const tooltipLeft = financialGraphHover ? Math.max(10, Math.min(tooltipViewportWidth - 390, Number(financialGraphHover.x || 0) + 14)) : 0
+    const tooltipTop = financialGraphHover ? Math.max(10, Math.min(tooltipViewportHeight - 300, Number(financialGraphHover.y || 0) + 14)) : 0
+    const hoverEvents = financialGraphHover
+      ? (financialGraphHover.point_events?.length
+          ? financialGraphHover.point_events
+          : financialGraphHover.point_event_label
+            ? [{
+                label: financialGraphHover.point_event_label,
+                source: financialGraphHover.point_event_source,
+                direction: financialGraphHover.point_event_direction,
+                amount: financialGraphHover.point_event_amount,
+                reference: financialGraphHover.point_event_reference,
+                kind: financialGraphHover.point_event_kind,
+                date: financialGraphHover.point_source_date
+              }]
+            : [])
+      : []
 
     if (!graphHasData) return <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, color: '#475569', background: '#fff' }}>No graph data loaded yet.</div>
     return (
@@ -47296,18 +47347,31 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
             {cleanSeries.map((series, seriesIndex) => {
               const points = sortedSeriesPoints(series)
               if (!points.length) return null
-              const path = points.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'} ${xForDate(point.date)} ${yForBalance(point.balance)}`).join(' ')
+              const pathParts = []
+              points.forEach((point, pointIndex) => {
+                const x = xForDate(point.date)
+                const y = yForBalance(point.balance)
+                if (pointIndex === 0) pathParts.push(`M ${x} ${y}`)
+                else if (step) pathParts.push(`H ${x}`, `V ${y}`)
+                else pathParts.push(`L ${x} ${y}`)
+              })
+              const path = pathParts.join(' ')
               const color = graphColors[seriesIndex % graphColors.length]
               const canHide = typeof onSeriesHide === 'function'
               const hide = () => { if (canHide) onSeriesHide(series) }
               return <g key={series.matter_id || series.display_number || seriesIndex}>
                 <path d={path} fill="none" stroke="transparent" strokeWidth="14" pointerEvents="stroke" onMouseEnter={(event) => showSeriesHover(event, series)} onMouseMove={(event) => showSeriesHover(event, series)} onMouseLeave={scheduleSeriesHoverClose} onClick={hide} style={{ cursor: canHide ? 'pointer' : 'default' }} />
-                <path d={path} fill="none" stroke={color} strokeWidth="2.5" pointerEvents="none"><title>{series.display_number}{canHide ? ' - click to hide this line' : ''}</title></path>
-                {points.map((point, pointIndex) => <circle key={`${series.matter_id}-${pointIndex}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r="3.5" fill={color} onMouseEnter={(event) => showSeriesHover(event, series, point)} onMouseMove={(event) => showSeriesHover(event, series, point)} onMouseLeave={scheduleSeriesHoverClose}><title>{series.display_number}: {shortDate(point.date)} {money(point.balance)}</title></circle>)}
+                <path d={path} fill="none" stroke={color} strokeWidth="2.5" pointerEvents="none"><title>{series.display_number}{step ? ' — trust ledger step line' : ''}{canHide ? ' - click to hide this line' : ''}</title></path>
+                {points.map((point, pointIndex) => {
+                  const carryPoint = ['baseline','range_end','current_balance'].includes(String(point.graph_event_kind || ''))
+                  if (carryPoint && points.length > 1) return null
+                  const eventText = point.graph_event_label ? ` — ${point.graph_event_label}` : ''
+                  return <circle key={`${series.matter_id}-${pointIndex}-${point.date}`} cx={xForDate(point.date)} cy={yForBalance(point.balance)} r={3.7} fill={color} onMouseEnter={(event) => showSeriesHover(event, series, point)} onMouseMove={(event) => showSeriesHover(event, series, point)} onMouseLeave={scheduleSeriesHoverClose}><title>{series.display_number}: {dateTimeLabel(point.date)} {money(point.balance)}{eventText}</title></circle>
+                })}
               </g>
             })}
             {placedMarkers.map((marker) => (
-              <g key={`invoice-marker-${marker.invoice_id}-${marker.date}-${marker.markerIndex}`} onMouseEnter={(event) => showSeriesHover(event, marker.series, { date: marker.date, balance: seriesBalanceAtDate(marker.series, marker.date) })} onMouseLeave={scheduleSeriesHoverClose} style={{ cursor: 'help' }}>
+              <g key={`invoice-marker-${marker.invoice_id}-${marker.date}-${marker.markerIndex}`} onMouseEnter={(event) => showSeriesHover(event, marker.series, { date: marker.date, balance: seriesBalanceAtDate(marker.series, marker.date), graph_event_kind: 'invoice_sent', graph_event_label: `${marker.invoice_number || 'Invoice'} sent`, graph_event_source: 'Mio invoice email history', graph_event_amount: marker.amount, graph_event_reference: marker.invoice_number || '', graph_event_direction: '' })} onMouseLeave={scheduleSeriesHoverClose} style={{ cursor: 'help' }}>
                 {Math.abs((marker.iconY + 5.5) - marker.lineY) > 2 && <line x1={marker.x} x2={marker.x} y1={marker.lineY} y2={marker.iconY + 5.5} stroke={marker.color} strokeWidth="1" opacity="0.65" />}
                 <rect x={marker.x - 8} y={marker.iconY} width="16" height="11" rx="1.5" fill="#fff" stroke={marker.color} strokeWidth="2" />
                 <path d={`M ${marker.x - 7} ${marker.iconY + 1.5} L ${marker.x} ${marker.iconY + 7} L ${marker.x + 7} ${marker.iconY + 1.5}`} fill="none" stroke={marker.color} strokeWidth="1.25" />
@@ -47321,10 +47385,22 @@ ${Array.from(new Set(missingFiles)).map((name) => `- ${name}`).join('\n')}
           {!!placedMarkers.length && <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}><span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>✉</span>Invoice sent from Mio</span>}
         </div>
         {financialGraphHover && (
-          <div onMouseEnter={() => { if (financialGraphHoverCloseTimerRef.current) clearTimeout(financialGraphHoverCloseTimerRef.current) }} onMouseLeave={scheduleSeriesHoverClose} style={{ position: 'fixed', left: tooltipLeft, top: tooltipTop, zIndex: 25000, width: 330, maxWidth: 'calc(100vw - 20px)', padding: 12, borderRadius: 10, border: '1px solid #94a3b8', background: '#fff', boxShadow: '0 12px 34px rgba(15,23,42,0.24)', color: '#0f172a' }}>
-            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 2 }}>Financial graph line</div>
+          <div onMouseEnter={() => { if (financialGraphHoverCloseTimerRef.current) clearTimeout(financialGraphHoverCloseTimerRef.current) }} onMouseLeave={scheduleSeriesHoverClose} style={{ position: 'fixed', left: tooltipLeft, top: tooltipTop, zIndex: 25000, width: 370, maxWidth: 'calc(100vw - 20px)', maxHeight: 'min(520px, calc(100vh - 20px))', overflow: 'auto', padding: 12, borderRadius: 10, border: '1px solid #94a3b8', background: '#fff', boxShadow: '0 12px 34px rgba(15,23,42,0.24)', color: '#0f172a' }}>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 2 }}>{step ? 'Trust ledger balance' : 'Financial graph line'}</div>
             <div style={{ fontWeight: 900, fontSize: 15 }}>{financialGraphHover.display_number}</div>
-            {financialGraphHover.point_date && <div style={{ marginTop: 4, fontSize: 12 }}>{shortDate(financialGraphHover.point_date)} • <strong>{money(financialGraphHover.point_balance)}</strong></div>}
+            {financialGraphHover.point_date && <div style={{ marginTop: 4, fontSize: 12 }}>{dateTimeLabel(financialGraphHover.point_date)} • <strong>{money(financialGraphHover.point_balance)}</strong></div>}
+            {!!hoverEvents.length && <div style={{ display: 'grid', gap: 7, marginTop: 9 }}>{hoverEvents.slice(0, 8).map((eventRow, index) => {
+              const direction = String(eventRow.direction || '')
+              const amount = financeNumber(eventRow.amount)
+              const amountText = direction === 'in' ? `Funds in ${money(amount)}` : direction === 'out' ? `Funds out ${money(amount)}` : amount > 0.005 ? money(amount) : ''
+              return <div key={`${eventRow.date || ''}-${eventRow.reference || ''}-${index}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, background: '#f8fafc' }}>
+                <div style={{ fontWeight: 800, fontSize: 12 }}>{eventRow.label || 'Ledger event'}</div>
+                {eventRow.matter_name && <div style={{ fontSize: 11, marginTop: 2 }}>{eventRow.matter_name}</div>}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 3, fontSize: 11, color: '#475569' }}>{eventRow.date && <span>{dateTimeLabel(eventRow.date)}</span>}{eventRow.source && <span>{eventRow.source}</span>}{amountText && <strong style={{ color: direction === 'out' ? '#b91c1c' : direction === 'in' ? '#166534' : '#334155' }}>{amountText}</strong>}</div>
+                {eventRow.reference && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{eventRow.reference}</div>}
+              </div>
+            })}{hoverEvents.length > 8 && <div style={{ fontSize: 11, color: '#64748b' }}>+ {hoverEvents.length - 8} additional ledger changes at this point</div>}</div>}
+            {step && financialGraphHover.point_source_date && financialGraphHover.point_source_date !== financialGraphHover.point_date && <div style={{ marginTop: 7, fontSize: 11, color: '#64748b' }}>Balance carried forward from the last ledger change on {dateTimeLabel(financialGraphHover.point_source_date)}.</div>}
             {hoverMatterRows.length ? <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>{hoverMatterRows.map((matterRow) => <div key={matterRow.id} style={{ borderTop: '1px solid #e2e8f0', paddingTop: 8 }}><div style={{ fontWeight: 750, fontSize: 12 }}>{matterRow.name}</div><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginTop: 5 }}><span style={{ fontSize: 11, color: matterRow.status === 'withdrawing' ? '#b91c1c' : '#166534', fontWeight: 800 }}>{matterRow.status === 'withdrawing' ? 'WITHDRAWING' : 'NOT WITHDRAWING'}</span><button type="button" onClick={(event) => { event.stopPropagation(); updateMatterWithdrawalStatus(matterRow.id, matterRow.status === 'withdrawing' ? 'not_withdrawing' : 'withdrawing') }}>{matterRow.status === 'withdrawing' ? 'Mark not withdrawing' : 'Mark withdrawing'}</button></div></div>)}</div> : <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>This historical line is not linked to a Mio matter, so its withdrawal status cannot be changed here.</div>}
           </div>
         )}
@@ -49089,8 +49165,69 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       .sort((left, right) => String(right.emailed_at || right.issue_date || right.created_at || '').localeCompare(String(left.emailed_at || left.issue_date || left.created_at || '')))[0] || null
   }
 
+  function financialGraphLocalDateIso(value, mode = 'noon') {
+    const dateOnly = financeDateOnly(value)
+    if (!dateOnly) return ''
+    const [year, month, day] = dateOnly.split('-').map(Number)
+    if (!year || !month || !day) return ''
+    const localDate = mode === 'start'
+      ? new Date(year, month - 1, day, 0, 0, 0, 0)
+      : mode === 'end'
+        ? new Date(year, month - 1, day, 23, 59, 59, 999)
+        : new Date(year, month - 1, day, 12, 0, 0, 0)
+    return Number.isNaN(localDate.getTime()) ? '' : localDate.toISOString()
+  }
+
+  function financialGraphTimestamp(value) {
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : value.toISOString()
+    if (typeof value === 'number' && Number.isFinite(value)) return new Date(value).toISOString()
+    const raw = String(value || '').trim()
+    if (!raw) return ''
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return financialGraphLocalDateIso(raw)
+    const parsed = new Date(raw)
+    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+  }
+
+  function financialGraphTimestampMs(value) {
+    const normalized = financialGraphTimestamp(value)
+    return normalized ? new Date(normalized).getTime() : NaN
+  }
+
+  function financialGraphRowAt(row) {
+    return financialGraphTimestamp(row?.graph_at || row?.snapshot_at || row?.accounting_at || row?.occurred_at || row?.created_at || row?.snapshot_date || row?.date)
+  }
+
+  function financialGraphRowTime(row) {
+    return financialGraphTimestampMs(financialGraphRowAt(row))
+  }
+
+  function financialGraphLedgerRowAt(row, index = 0) {
+    const dateOnly = financeDateOnly(row?.date || row?.snapshot_date || row?.accounting_at)
+    const preferred = row?.opening || row?.historical
+      ? financialGraphLocalDateIso(dateOnly)
+      : financialGraphTimestamp(row?.accounting_at || row?.occurred_at || row?.created_at || row?.date || row?.snapshot_date)
+    const timestamp = financialGraphTimestampMs(preferred || financialGraphLocalDateIso(dateOnly))
+    return Number.isFinite(timestamp) ? new Date(timestamp + Math.max(0, Number(index || 0))).toISOString() : ''
+  }
+
+  function financialGraphEventForLedgerRow(row, matter) {
+    const direction = String(row?.direction || '')
+    return {
+      label: row?.memo || row?.description || trustTransactionNature(row) || 'Trust ledger change',
+      source: row?.accounting_source || row?.source || (row?.historical ? 'Clio history' : 'Mio'),
+      direction,
+      amount: financeNumber(row?.amount),
+      reference: row?.reference || row?.invoice_number || '',
+      kind: row?.opening ? 'opening' : row?.historical ? 'clio_history' : 'trust_transaction',
+      matter_id: String(matter?.id || ''),
+      matter_name: matter ? formatMatterOption(matter) : '',
+      date: financialGraphLedgerRowAt(row)
+    }
+  }
+
   function mioCurrentFinancialGraphRows() {
     const snapshotDate = financeDateOnly(new Date().toISOString())
+    const graphAt = new Date().toISOString()
     return (matters || []).map((matter) => {
       const matterId = String(matter.id || '')
       if (!matterId) return null
@@ -49101,6 +49238,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         id: `mio-current:${matterId}:${snapshotDate}`,
         user_id: session?.user?.id || '',
         snapshot_date: snapshotDate,
+        graph_at: graphAt,
         mio_matter_id: matterId,
         clio_matter_number: billingMatterNumber(matter) || matter.cause_number || matter.case_number || matter.name || matterId,
         clio_client_name: matterClientName(matter) || latestInvoice?.client_name || '',
@@ -49134,6 +49272,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         ...opening,
         id: `mio-opening:${matterId}:${cutoverDate}`,
         snapshot_date: cutoverDate,
+        graph_at: financialGraphLocalDateIso(cutoverDate),
         mio_matter_id: matterId,
         clio_matter_number: billingMatterNumber(matter) || matter.cause_number || matter.case_number || matter.name || matterId,
         clio_client_name: matterClientName(matter) || opening.clio_client_name || '',
@@ -49153,7 +49292,81 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     }).filter(Boolean)
   }
 
-  function mioFinancialGraphRows() {
+  function mioTrustLedgerFinancialGraphRows() {
+    const now = new Date().toISOString()
+    const rows = []
+    ;(matters || []).forEach((matter) => {
+      const matterId = String(matter?.id || '')
+      if (!matterId) return
+      const finance = bulkFinanceByMatterId.get(matterId) || clientFinanceNumbers(matter)
+      const latestInvoice = latestMioInvoiceForGraphMatter(matter)
+      const opening = mioFinanceOpeningBalances?.[matterId] || finance.snapshot || {}
+      const base = {
+        user_id: session?.user?.id || '',
+        mio_matter_id: matterId,
+        clio_matter_number: billingMatterNumber(matter) || matter.cause_number || matter.case_number || matter.name || matterId,
+        clio_client_name: matterClientName(matter) || latestInvoice?.client_name || '',
+        matter_name: formatMatterOption(matter),
+        case_type: clioFixedCaseTypeForMioMatter(matter),
+        case_status: matter.case_status || matter.status || '',
+        matter_status: matter.matter_status || matter.status || '',
+        work_in_progress: financeNumber(finance.wip),
+        outstanding_balance: financeNumber(finance.outstanding),
+        invoice_total: financeNumber(latestInvoice?.total),
+        invoice_balance: latestInvoice ? invoiceBalanceAmount(latestInvoice) : 0,
+        paid_amount: latestInvoice ? invoicePaidAmount(latestInvoice) : 0,
+        invoice_sent_at: latestInvoice?.emailed_at || null,
+        minimum_balance: financeNumber(finance.minimumBalance),
+        initial_retainer: financeNumber(opening.initial_retainer ?? clioInitialRetainersByMatterId?.[matterId] ?? matter.initial_retainer ?? matter.retainer_amount),
+        is_mio_generated: true
+      }
+      const ledgerRows = accountingLedgerRows(matter, finance)
+      ledgerRows.forEach((ledgerRow, index) => {
+        const graphAt = financialGraphLedgerRowAt(ledgerRow, index)
+        if (!graphAt) return
+        const event = { ...financialGraphEventForLedgerRow(ledgerRow, matter), date: graphAt }
+        rows.push({
+          ...base,
+          id: `mio-ledger:${matterId}:${ledgerRow.id || index}`,
+          snapshot_date: graphAt,
+          graph_at: graphAt,
+          matter_trust_funds: financeNumber(ledgerRow.running_balance),
+          source_report_name: event.source,
+          source_kind: event.kind,
+          graph_event_label: event.label,
+          graph_event_source: event.source,
+          graph_event_direction: event.direction,
+          graph_event_amount: event.amount,
+          graph_event_reference: event.reference,
+          graph_event_kind: event.kind,
+          graph_event_matter_id: matterId,
+          graph_event_matter_name: formatMatterOption(matter)
+        })
+      })
+      const lastLedgerSource = ledgerRows.slice(-1)[0] || null
+      rows.push({
+        ...base,
+        id: `mio-current-ledger:${matterId}:${financeDateOnly(now)}`,
+        snapshot_date: now,
+        graph_at: now,
+        matter_trust_funds: financeNumber(finance.trust),
+        source_report_name: 'Mio matter accounting',
+        source_kind: 'current_balance',
+        graph_event_label: 'Current reconciled trust balance',
+        graph_event_source: 'Mio matter accounting',
+        graph_event_direction: '',
+        graph_event_amount: 0,
+        graph_event_reference: lastLedgerSource?.reference || lastLedgerSource?.invoice_number || '',
+        graph_event_kind: 'current_balance',
+        graph_event_matter_id: matterId,
+        graph_event_matter_name: formatMatterOption(matter)
+      })
+    })
+    return rows.sort((left, right) => financialGraphRowTime(left) - financialGraphRowTime(right) || String(left.id || '').localeCompare(String(right.id || '')))
+  }
+
+  function mioFinancialGraphRows(metric = snapshotGraphMetric) {
+    if (metric === 'matter_trust_funds') return mioTrustLedgerFinancialGraphRows()
     const cutoverDate = financeDateOnly(activeMioBillingCutoverDate || DEFAULT_MIO_BILLING_CUTOVER_DATE)
     const preCutoverRows = (clioSnapshotRows || [])
       .filter((row) => {
@@ -49162,7 +49375,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       })
       .map((row) => {
         const linkedMatter = financialGraphRowMatter(row)
-        return linkedMatter ? {
+        const mapped = linkedMatter ? {
           ...row,
           mio_matter_id: String(linkedMatter.id || row.mio_matter_id || ''),
           matter_name: formatMatterOption(linkedMatter),
@@ -49172,6 +49385,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           matter_status: linkedMatter.matter_status || linkedMatter.status || row.matter_status || '',
           source_kind: 'clio_pre_cutover'
         } : { ...row, source_kind: 'clio_pre_cutover' }
+        return { ...mapped, graph_at: financialGraphLocalDateIso(mapped.snapshot_date) }
       })
     const rows = [...preCutoverRows, ...mioOpeningFinancialGraphRows(), ...mioCurrentFinancialGraphRows()]
     const byMatterDate = new Map()
@@ -49185,30 +49399,16 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const existingPriority = existing?.source_kind === 'mio_live' ? 3 : existing?.source_kind === 'mio_opening' ? 2 : 1
       if (!existing || incomingPriority >= existingPriority) byMatterDate.set(mapKey, row)
     })
-    return Array.from(byMatterDate.values()).sort((left, right) => String(left.snapshot_date || '').localeCompare(String(right.snapshot_date || '')))
+    return Array.from(byMatterDate.values()).sort((left, right) => financialGraphRowTime(left) - financialGraphRowTime(right))
   }
 
-  function filteredSnapshotRowsForGraph() {
-    const from = clioBalanceFrom ? new Date(`${clioBalanceFrom}T00:00:00`).getTime() : -Infinity
-    const to = clioBalanceTo ? new Date(`${clioBalanceTo}T23:59:59`).getTime() : Infinity
-    let rowsToFilter = mioFinancialGraphRows()
-    if (clioGraphDatePreset === 'currently') {
-      const latestByMatter = new Map()
-      rowsToFilter.forEach((row) => {
-        const matterKey = financialGraphRowMatterKey(row)
-        if (!matterKey) return
-        const ts = new Date(row.snapshot_date).getTime()
-        if (!Number.isFinite(ts)) return
-        const current = latestByMatter.get(matterKey)
-        if (!current || ts > current.ts) latestByMatter.set(matterKey, { row, ts })
-      })
-      rowsToFilter = Array.from(latestByMatter.values()).map((item) => item.row)
-    }
-    return rowsToFilter.filter((row) => {
+  function filteredSnapshotRowsForGraph(metric = snapshotGraphMetric) {
+    const from = clioBalanceFrom ? financialGraphTimestampMs(financialGraphLocalDateIso(clioBalanceFrom, 'start')) : -Infinity
+    const to = clioBalanceTo ? financialGraphTimestampMs(financialGraphLocalDateIso(clioBalanceTo, 'end')) : Infinity
+    const rowsToFilter = mioFinancialGraphRows(metric)
+    const staticFiltered = rowsToFilter.filter((row) => {
       const matterKey = financialGraphRowMatterKey(row)
       if (!matterKey) return false
-      const ts = new Date(row.snapshot_date).getTime()
-      if (!Number.isFinite(ts) || ts < from || ts > to) return false
       const linkedMatter = financialGraphRowMatter(row)
       const normalizedCaseStatus = String(linkedMatter?.case_status || snapshotRowCaseStatus(row) || '').trim().toLowerCase()
       const normalizedMatterStatus = String(linkedMatter?.matter_status || row.matter_status || '').trim().toLowerCase()
@@ -49225,8 +49425,68 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         const rowType = String(linkedMatter ? clioFixedCaseTypeForMioMatter(linkedMatter) : (row.case_type || 'Other'))
         if (!activeTypes.includes(rowType)) return false
       }
-      return true
+      return Number.isFinite(financialGraphRowTime(row))
     })
+
+    if (clioGraphDatePreset === 'currently') {
+      const latestByMatter = new Map()
+      staticFiltered.forEach((row) => {
+        const matterKey = financialGraphRowMatterKey(row)
+        const ts = financialGraphRowTime(row)
+        const current = latestByMatter.get(matterKey)
+        if (!current || ts > current.ts) latestByMatter.set(matterKey, { row, ts })
+      })
+      return Array.from(latestByMatter.values()).map((item) => item.row)
+    }
+
+    const byMatter = new Map()
+    staticFiltered.forEach((row) => {
+      const key = financialGraphRowMatterKey(row)
+      if (!byMatter.has(key)) byMatter.set(key, [])
+      byMatter.get(key).push(row)
+    })
+    const result = []
+    byMatter.forEach((matterRows) => {
+      const sorted = [...matterRows].sort((left, right) => financialGraphRowTime(left) - financialGraphRowTime(right) || String(left.id || '').localeCompare(String(right.id || '')))
+      const inRange = sorted.filter((row) => {
+        const ts = financialGraphRowTime(row)
+        return ts >= from && ts <= to
+      })
+      if (metric === 'matter_trust_funds' && Number.isFinite(from)) {
+        const prior = sorted.filter((row) => financialGraphRowTime(row) < from).slice(-1)[0]
+        if (prior) result.push({
+          ...prior,
+          id: `${prior.id || 'row'}:range-start:${clioBalanceFrom}`,
+          snapshot_date: new Date(from).toISOString(),
+          graph_at: new Date(from).toISOString(),
+          graph_event_label: 'Balance carried into selected date range',
+          graph_event_source: prior.graph_event_source || prior.source_report_name || 'Matter accounting',
+          graph_event_direction: '',
+          graph_event_amount: 0,
+          graph_event_reference: '',
+          graph_event_kind: 'baseline',
+          graph_baseline: true
+        })
+      }
+      result.push(...inRange)
+      if (metric === 'matter_trust_funds' && Number.isFinite(to)) {
+        const lastAtOrBefore = sorted.filter((row) => financialGraphRowTime(row) <= to).slice(-1)[0]
+        if (lastAtOrBefore && financialGraphRowTime(lastAtOrBefore) < to) result.push({
+          ...lastAtOrBefore,
+          id: `${lastAtOrBefore.id || 'row'}:range-end:${clioBalanceTo}`,
+          snapshot_date: new Date(to).toISOString(),
+          graph_at: new Date(to).toISOString(),
+          graph_event_label: 'Balance carried through selected date range',
+          graph_event_source: lastAtOrBefore.graph_event_source || lastAtOrBefore.source_report_name || 'Matter accounting',
+          graph_event_direction: '',
+          graph_event_amount: 0,
+          graph_event_reference: '',
+          graph_event_kind: 'range_end',
+          graph_range_end: true
+        })
+      }
+    })
+    return result.sort((left, right) => financialGraphRowTime(left) - financialGraphRowTime(right) || String(left.id || '').localeCompare(String(right.id || '')))
   }
 
   function snapshotGraphMatterLabel(row) {
@@ -49238,84 +49498,159 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     return clioLabel || mioLabel
   }
 
-  function snapshotGraphMatterOptions(metric = snapshotGraphMetric) {
-    const rows = filteredSnapshotRowsForGraph()
+  function snapshotGraphMatterOptions(metric = snapshotGraphMetric, preparedRows = null) {
+    const rows = Array.isArray(preparedRows) ? preparedRows : filteredSnapshotRowsForGraph(metric)
     const minimum = Number(snapshotGraphMinimumAmount)
     const hasMinimum = String(snapshotGraphMinimumAmount || '').trim() !== '' && Number.isFinite(minimum)
-    const byMatter = new Map()
+    const latestByMatter = new Map()
     rows.forEach((row) => {
       const matterKey = financialGraphRowMatterKey(row)
-      if (!matterKey) return
+      const ts = financialGraphRowTime(row)
+      if (!matterKey || !Number.isFinite(ts)) return
+      const existing = latestByMatter.get(matterKey)
+      if (!existing || ts >= existing.ts) latestByMatter.set(matterKey, { row, ts, matterKey })
+    })
+    const byGroup = new Map()
+    latestByMatter.forEach(({ row, ts, matterKey }) => {
       const clientName = financialGraphRowClientName(row)
       const groupKey = clioGraphGroupingMode === 'client' ? clientName : matterKey
-      const ts = new Date(row.snapshot_date).getTime()
-      const value = snapshotGraphValueForMetric(row, metric)
       const linkedMatter = financialGraphRowMatter(row)
-      const existing = byMatter.get(groupKey)
-      const matterIds = new Set(existing?.mio_matter_ids || [])
-      if (linkedMatter?.id) matterIds.add(String(linkedMatter.id))
-      if (!existing || ts > existing.ts) {
-        byMatter.set(groupKey, {
-          matterNo: groupKey,
-          label: clioGraphGroupingMode === 'client' ? clientName : snapshotGraphMatterLabel(row),
-          client: clientName,
-          value,
-          ts,
-          mio_matter_id: linkedMatter?.id ? String(linkedMatter.id) : '',
-          mio_matter_ids: Array.from(matterIds)
-        })
-      } else {
-        existing.mio_matter_ids = Array.from(matterIds)
-      }
+      const value = snapshotGraphValueForMetric(row, metric)
+      if (!byGroup.has(groupKey)) byGroup.set(groupKey, {
+        matterNo: groupKey,
+        label: clioGraphGroupingMode === 'client' ? clientName : snapshotGraphMatterLabel(row),
+        client: clientName,
+        value: 0,
+        ts,
+        mio_matter_id: linkedMatter?.id ? String(linkedMatter.id) : '',
+        mio_matter_ids: []
+      })
+      const group = byGroup.get(groupKey)
+      group.value += value
+      group.ts = Math.max(group.ts || 0, ts)
+      if (linkedMatter?.id && !group.mio_matter_ids.includes(String(linkedMatter.id))) group.mio_matter_ids.push(String(linkedMatter.id))
+      if (!group.mio_matter_id && linkedMatter?.id) group.mio_matter_id = String(linkedMatter.id)
     })
-    return Array.from(byMatter.values())
+    return Array.from(byGroup.values())
       .filter((item) => !hasMinimum || Number(item.value || 0) >= minimum)
       .sort((a, b) => a.label.localeCompare(b.label))
   }
 
-  function snapshotGraphSeries() {
-    const optionSet = new Set(snapshotGraphMatterOptions(snapshotGraphMetric).map((option) => String(option.matterNo)))
+  function snapshotGraphPointFromRow(row, metric, linkedMatter = financialGraphRowMatter(row)) {
+    const date = financialGraphRowAt(row)
+    return {
+      date,
+      balance: snapshotGraphValueForMetric(row, metric),
+      graph_event_label: row.graph_event_label || '',
+      graph_event_source: row.graph_event_source || row.source_report_name || '',
+      graph_event_direction: row.graph_event_direction || '',
+      graph_event_amount: financeNumber(row.graph_event_amount),
+      graph_event_reference: row.graph_event_reference || '',
+      graph_event_kind: row.graph_event_kind || '',
+      graph_event_matter_id: String(linkedMatter?.id || row.mio_matter_id || ''),
+      graph_event_matter_name: linkedMatter ? formatMatterOption(linkedMatter) : (row.matter_name || '')
+    }
+  }
+
+  function snapshotGraphSeries(preparedRows = null, preparedOptions = null) {
+    const metric = snapshotGraphMetric
+    const rows = Array.isArray(preparedRows) ? preparedRows : filteredSnapshotRowsForGraph(metric)
+    const options = Array.isArray(preparedOptions) ? preparedOptions : snapshotGraphMatterOptions(metric, rows)
+    const optionSet = new Set(options.map((option) => String(option.matterNo)))
     const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
-    const rows = filteredSnapshotRowsForGraph()
-    const bySeries = new Map()
+    const matterStreams = new Map()
     rows.forEach((row) => {
       const matterKey = financialGraphRowMatterKey(row)
       if (!matterKey) return
-      const clientName = financialGraphRowClientName(row)
-      const key = clioGraphGroupingMode === 'client' ? clientName : matterKey
-      if (!selectedSet.has(key) || !optionSet.has(key)) return
       const linkedMatter = financialGraphRowMatter(row)
-      if (!bySeries.has(key)) bySeries.set(key, {
-        matter_id: key,
-        display_number: clioGraphGroupingMode === 'client' ? clientName : snapshotGraphMatterLabel(row),
-        pointsByDate: new Map(),
-        mioMatterIds: new Set(),
-        matterNames: new Map()
+      const clientName = financialGraphRowClientName(row)
+      if (!matterStreams.has(matterKey)) matterStreams.set(matterKey, {
+        matterKey,
+        clientName,
+        linkedMatter,
+        displayNumber: snapshotGraphMatterLabel(row),
+        points: []
       })
-      const date = financeDateOnly(row.snapshot_date)
-      const value = snapshotGraphValueForMetric(row, snapshotGraphMetric)
-      const series = bySeries.get(key)
-      if (linkedMatter?.id) {
-        series.mioMatterIds.add(String(linkedMatter.id))
-        series.matterNames.set(String(linkedMatter.id), formatMatterOption(linkedMatter))
-      }
-      if (clioGraphGroupingMode === 'client') series.pointsByDate.set(date, Number(series.pointsByDate.get(date) || 0) + value)
-      else series.pointsByDate.set(date, value)
+      const point = snapshotGraphPointFromRow(row, metric, linkedMatter)
+      if (point.date && Number.isFinite(financialGraphTimestampMs(point.date))) matterStreams.get(matterKey).points.push(point)
     })
-    return Array.from(bySeries.values()).map((series) => ({
-      matter_id: series.matter_id,
-      display_number: series.display_number,
-      mio_matter_ids: Array.from(series.mioMatterIds),
-      matter_names: Array.from(series.matterNames.entries()).map(([id, name]) => ({ id, name })),
-      points: Array.from(series.pointsByDate.entries()).map(([date, balance]) => ({ date, balance })).sort((a, b) => String(a.date).localeCompare(String(b.date)))
-    }))
+    matterStreams.forEach((stream) => stream.points.sort((left, right) => financialGraphTimestampMs(left.date) - financialGraphTimestampMs(right.date)))
+
+    if (clioGraphGroupingMode !== 'client') {
+      return Array.from(matterStreams.values())
+        .filter((stream) => selectedSet.has(String(stream.matterKey)) && optionSet.has(String(stream.matterKey)))
+        .map((stream) => ({
+          matter_id: stream.matterKey,
+          display_number: stream.displayNumber,
+          mio_matter_ids: stream.linkedMatter?.id ? [String(stream.linkedMatter.id)] : [],
+          matter_names: stream.linkedMatter?.id ? [{ id: String(stream.linkedMatter.id), name: formatMatterOption(stream.linkedMatter) }] : [],
+          points: stream.points
+        }))
+    }
+
+    const clients = new Map()
+    matterStreams.forEach((stream) => {
+      const clientName = stream.clientName
+      if (!selectedSet.has(String(clientName)) || !optionSet.has(String(clientName))) return
+      if (!clients.has(clientName)) clients.set(clientName, [])
+      clients.get(clientName).push(stream)
+    })
+    return Array.from(clients.entries()).map(([clientName, streams]) => {
+      const timestamps = Array.from(new Set(streams.flatMap((stream) => stream.points.map((point) => financialGraphTimestampMs(point.date))).filter(Number.isFinite))).sort((a, b) => a - b)
+      const points = timestamps.map((timestamp) => {
+        let total = 0
+        const graphEvents = []
+        streams.forEach((stream) => {
+          let currentPoint = null
+          stream.points.forEach((point) => {
+            const pointTs = financialGraphTimestampMs(point.date)
+            if (pointTs <= timestamp) currentPoint = point
+          })
+          if (currentPoint) total += financeNumber(currentPoint.balance)
+          stream.points.filter((point) => financialGraphTimestampMs(point.date) === timestamp).forEach((point) => {
+            if (!point.graph_event_label || ['baseline','range_end','current_balance'].includes(String(point.graph_event_kind || ''))) return
+            graphEvents.push({
+              label: point.graph_event_label,
+              source: point.graph_event_source,
+              direction: point.graph_event_direction,
+              amount: point.graph_event_amount,
+              reference: point.graph_event_reference,
+              kind: point.graph_event_kind,
+              matter_id: point.graph_event_matter_id,
+              matter_name: point.graph_event_matter_name,
+              date: point.date
+            })
+          })
+        })
+        const singleEvent = graphEvents.length === 1 ? graphEvents[0] : null
+        return {
+          date: new Date(timestamp).toISOString(),
+          balance: Number(total.toFixed(2)),
+          graph_events: graphEvents,
+          graph_event_label: singleEvent?.label || (graphEvents.length > 1 ? `${graphEvents.length} trust ledger changes` : ''),
+          graph_event_source: singleEvent?.source || '',
+          graph_event_direction: singleEvent?.direction || '',
+          graph_event_amount: singleEvent?.amount || 0,
+          graph_event_reference: singleEvent?.reference || '',
+          graph_event_kind: singleEvent?.kind || (graphEvents.length > 1 ? 'multiple_events' : '')
+        }
+      })
+      const matterIds = streams.map((stream) => String(stream.linkedMatter?.id || '')).filter(Boolean)
+      return {
+        matter_id: clientName,
+        display_number: clientName,
+        mio_matter_ids: [...new Set(matterIds)],
+        matter_names: streams.filter((stream) => stream.linkedMatter?.id).map((stream) => ({ id: String(stream.linkedMatter.id), name: formatMatterOption(stream.linkedMatter) })),
+        points
+      }
+    })
   }
 
   function snapshotGraphInvoiceMarkers() {
     if (!snapshotGraphShowInvoices) return []
     const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
-    const from = clioBalanceFrom ? new Date(`${clioBalanceFrom}T00:00:00`).getTime() : -Infinity
-    const to = clioBalanceTo ? new Date(`${clioBalanceTo}T23:59:59`).getTime() : Infinity
+    const from = clioBalanceFrom ? financialGraphTimestampMs(financialGraphLocalDateIso(clioBalanceFrom, 'start')) : -Infinity
+    const to = clioBalanceTo ? financialGraphTimestampMs(financialGraphLocalDateIso(clioBalanceTo, 'end')) : Infinity
     const markers = []
     const dedupe = new Set()
     ;(mioInvoices || []).forEach((invoice) => {
@@ -49328,7 +49663,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const sends = history.length ? history : (invoice.emailed_at ? [{ sent_at: invoice.emailed_at, recipient_email: invoice.recipient_email, subject: invoice.email_subject }] : [])
       sends.forEach((entry) => {
         const sentAt = entry.sent_at || invoice.emailed_at
-        const sentTs = new Date(sentAt).getTime()
+        const sentTs = financialGraphTimestampMs(sentAt)
         if (!Number.isFinite(sentTs) || sentTs < from || sentTs > to) return
         const key = `${invoice.id}|${sentAt}|${entry.recipient_email || invoice.recipient_email || ''}`
         if (dedupe.has(key)) return
@@ -49360,7 +49695,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         loadMioInvoicesFromDatabase({ force: true }),
         loadMioInvoiceEventsFromDatabase({ force: true }),
         loadLawPayWorkspace({ force: true }),
-        loadClioFinancialSnapshots({ ignoreDateFilters: true })
+        loadClioFinancialSnapshots({ ignoreDateFilters: true }),
+        loadClioHistoricalFinancialArchive()
       ]
       if (session?.user?.id) tasks.push(loadBillingRelationalData(session.user.id, { force: true }))
       const results = await Promise.allSettled(tasks)
@@ -49374,17 +49710,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
   }
 
   function renderClioSnapshotGraphPanel() {
-    const options = snapshotGraphMatterOptions()
+    const graphRows = filteredSnapshotRowsForGraph(snapshotGraphMetric)
+    const options = snapshotGraphMatterOptions(snapshotGraphMetric, graphRows)
     const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String))
-    const series = snapshotGraphSeries()
+    const series = snapshotGraphSeries(graphRows, options)
     const invoiceMarkers = snapshotGraphInvoiceMarkers()
-    const graphRows = filteredSnapshotRowsForGraph()
     const graphExtendsToToday = !clioBalanceTo || financeDateOnly(clioBalanceTo) >= financeDateOnly(new Date().toISOString())
     return (
       <div style={{ border: '1px solid #d7e0ea', borderRadius: 12, padding: 16, background: '#fff' }}>
         <h2 style={{ marginTop: 0 }}>Mio Financial Snapshot Graphs</h2>
-        <p style={{ color: '#64748b' }}>The graph now uses Mio as the live financial source. Clio rows are used only for history through the fixed {activeMioBillingCutoverDate} cutover; Mio generates the current endpoint, current balances, and every sent-invoice envelope after cutover.</p>
-        <div style={{ padding: 10, marginBottom: 12, border: '1px solid #bbf7d0', borderRadius: 9, background: '#f0fdf4', color: '#166534' }}><strong>Mio-only finance graph is active.</strong> The line extends through today, and invoice envelopes come from Mio invoice email history rather than Clio snapshots.</div>
+        <p style={{ color: '#64748b' }}>The graph uses the same trust ledger as each matter's Accounting page. Pre-cutover Clio trust transactions, the fixed Mio opening record, LawPay receipts, Mio trust transfers, reversals, refunds, and adjustments are shown in chronological order.</p>
+        <div style={{ padding: 10, marginBottom: 12, border: '1px solid #bbf7d0', borderRadius: 9, background: '#f0fdf4', color: '#166534' }}><strong>Trust-ledger step graph is active.</strong> For Matter trust funds, each horizontal segment carries the balance forward and each vertical step is an actual funds-in or funds-out ledger event. Invoice envelopes still come from Mio invoice email history.</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'end', marginBottom: 12 }}>
           <label>
             <div style={{ fontSize: 12, color: '#64748b' }}>Y-axis field</div>
@@ -49442,7 +49778,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={financialGraphShowZeroLine} onChange={(event) => setFinancialGraphShowZeroLine(event.target.checked)} /> Show $0 line</label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={snapshotGraphShowInvoices} onChange={(event) => setSnapshotGraphShowInvoices(event.target.checked)} /> Show invoice sent envelopes</label>
           <strong>{snapshotGraphSelectedMatterNumbers.length} selected; {options.length} shown by filter</strong>
-          <span style={{ color: '#64748b' }}>{graphRows.length} graph point row(s) loaded through {clioBalanceTo || financeDateOnly(new Date().toISOString())}{snapshotGraphShowInvoices ? `; ${invoiceMarkers.length} sent-invoice envelope(s).` : '.'}</span>
+          <span style={{ color: '#64748b' }}>{graphRows.length} {snapshotGraphMetric === 'matter_trust_funds' ? 'accounting-ledger step point' : 'graph point'} row(s) loaded through {clioBalanceTo || financeDateOnly(new Date().toISOString())}{snapshotGraphShowInvoices ? `; ${invoiceMarkers.length} sent-invoice envelope(s).` : '.'}</span>
         </div>
         {clioSnapshotError && <div style={{ border: '1px solid #fecaca', background: '#fff1f2', color: '#991b1b', borderRadius: 9, padding: 10, marginBottom: 10 }}>{clioSnapshotError}</div>}
         <div style={{ maxHeight: 230, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
@@ -49454,7 +49790,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         </div>
         {snapshotGraphShowInvoices && !invoiceMarkers.length && <div style={{ marginBottom: 10, padding: 9, border: '1px solid #fde68a', borderRadius: 8, background: '#fffbeb', color: '#92400e' }}>No Mio invoice sends match the selected graph lines and date range. Mio currently has {(mioInvoices || []).filter(invoiceHasBeenEmailed).length} sent invoice record(s) available.</div>}
         <h3 style={{ marginBottom: 8 }}>{snapshotGraphMetricLabel()}</h3>
-        {renderClioGraph(series, { invoiceMarkers, extendToToday: graphExtendsToToday, onSeriesHide: (seriesToHide) => setSnapshotGraphSelectedMatterNumbers((current) => current.filter((value) => String(value) !== String(seriesToHide?.matter_id))) })}
+        {renderClioGraph(series, { invoiceMarkers, extendToToday: graphExtendsToToday, step: snapshotGraphMetric === 'matter_trust_funds', onSeriesHide: (seriesToHide) => setSnapshotGraphSelectedMatterNumbers((current) => current.filter((value) => String(value) !== String(seriesToHide?.matter_id))) })}
       </div>
     )
   }
@@ -49549,11 +49885,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const optionSet = new Set(snapshotGraphMatterOptions(snapshotBarSortMetric).map((option) => String(option.matterNo)))
     const selectedSet = new Set(snapshotGraphSelectedMatterNumbers.map(String).filter(Boolean))
     const latestByMatter = new Map()
-    filteredSnapshotRowsForGraph().forEach((row) => {
+    filteredSnapshotRowsForGraph(snapshotBarSortMetric).forEach((row) => {
       const matterNo = financialGraphRowMatterKey(row)
       if (!matterNo || !optionSet.has(String(matterNo))) return
       if (selectedSet.size && !selectedSet.has(String(matterNo))) return
-      const ts = new Date(row.snapshot_date).getTime()
+      const ts = financialGraphRowTime(row)
       if (!Number.isFinite(ts)) return
       const current = latestByMatter.get(String(matterNo))
       if (!current || ts > current.ts) latestByMatter.set(String(matterNo), { row, ts })
