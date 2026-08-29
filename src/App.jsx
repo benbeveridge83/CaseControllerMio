@@ -2892,6 +2892,7 @@ function App() {
   const [clioGraphMatterStatusFilters, setClioGraphMatterStatusFilters] = useState(() => { try { return JSON.parse(localStorage.getItem('caseMioClioGraphMatterStatusFiltersV120') || '[]') } catch { return [] } })
   const [clioGraphGroupingMode, setClioGraphGroupingMode] = useState(() => localStorage.getItem('caseMioClioGraphGroupingModeV120') || 'matter')
   const [financialGraphShowZeroLine, setFinancialGraphShowZeroLine] = useState(() => localStorage.getItem('caseMioFinancialGraphShowZeroLineV120') !== 'false')
+  const [withdrawingFinancialSeries, setWithdrawingFinancialSeries] = useState([])
   const [financialGraphHover, setFinancialGraphHover] = useState(null)
   const financialGraphHoverCloseTimerRef = useRef(null)
   const [requestedReliefCellEditor, setRequestedReliefCellEditor] = useState(null)
