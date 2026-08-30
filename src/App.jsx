@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V263'
+const MIO_APP_VERSION = 'Mio V264'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -54126,6 +54126,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
 
   function renderGoogleAdsPage() {
+    // Marketing is one shared workspace. Restore the platform router that was
+    // accidentally dropped when the V263 Drafting Studio changes were merged.
+    if (marketingPlatform === 'overview') return renderMarketingOverviewPage()
+    if (marketingPlatform === 'meta') return renderMetaAdsPage()
+
     const report = googleAdsReport || {}
     const overview = report.overview || {}
     const findings = buildGoogleAdsAudit(report)
@@ -54192,6 +54197,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const selectedNegativeAdGroup = adGroups.find((row) => String(row.id) === String(googleAdsManualNegative.adGroupId))
 
     return <div style={{ maxWidth: 1600, margin: '0 auto', padding: '0 12px 36px' }}>
+      {renderMarketingPlatformSwitch()}
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 14 }}>
         <div><h1 style={{ margin: 0 }}>Google Ads Optimization Console</h1><p style={{ color: '#64748b', margin: '5px 0 0', maxWidth: 920 }}>Mio diagnoses the funnel, proposes changes, and applies nothing until an authorized firm user approves the exact live change.</p></div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
