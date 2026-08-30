@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V260'
+const MIO_APP_VERSION = 'Mio V263'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -743,6 +743,155 @@ function buildGoogleAdsAudit(report = {}) {
   return findings
 }
 
+
+const GOOGLE_ADS_LEGAL_BENCHMARK_2026 = Object.freeze({
+  label: 'Attorneys & Legal Services — 2026 search benchmark',
+  ctr: 0.0587,
+  averageCpc: 9.87,
+  conversionRate: 0.0555,
+  costPerLead: 131.63,
+  source: 'WordStream 2026 legal-services benchmark (category table)',
+  sourceUrl: 'https://adbenchly.com/cost/attorneys-and-legal-services/'
+})
+
+function aggregateGoogleAdsRows(rows = []) {
+  const totals = (Array.isArray(rows) ? rows : []).reduce((sum, row) => ({
+    impressions: sum.impressions + googleAdsSafeNumber(row.impressions),
+    clicks: sum.clicks + googleAdsSafeNumber(row.clicks),
+    cost: sum.cost + googleAdsSafeNumber(row.cost),
+    conversions: sum.conversions + googleAdsSafeNumber(row.conversions),
+    allConversions: sum.allConversions + googleAdsSafeNumber(row.allConversions)
+  }), { impressions: 0, clicks: 0, cost: 0, conversions: 0, allConversions: 0 })
+  return {
+    ...totals,
+    ctr: totals.impressions > 0 ? totals.clicks / totals.impressions : 0,
+    averageCpc: totals.clicks > 0 ? totals.cost / totals.clicks : 0,
+    conversionRate: totals.clicks > 0 ? totals.conversions / totals.clicks : 0,
+    costPerConversion: totals.conversions > 0 ? totals.cost / totals.conversions : 0
+  }
+}
+
+function googleAdsSearchTermIntent(searchTerm = '') {
+  const term = String(searchTerm || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  const practiceSignals = ['custody', 'divorce', 'family law', 'father', 'fathers rights', "father's rights", 'modification', 'enforcement', 'appeal', 'mandamus', 'sapcr', 'visitation', 'conservator', 'child support', 'protective order']
+  const strongLowIntent = ['free', 'pro bono', 'legal aid', 'low income', 'cheap lawyer', 'cheap attorney', 'diy', 'do it yourself', 'forms online', 'form online', 'papers online', 'template', 'pdf form']
+  const researchSignals = ['what is', 'definition', 'statute', 'rules', 'law code', 'requirements', 'how to file', 'filing for', 'court form', 'custody form', 'custody papers']
+  const hasPractice = practiceSignals.some((value) => term.includes(value))
+  const hasStrongLowIntent = strongLowIntent.some((value) => term.includes(value))
+  const hasResearch = researchSignals.some((value) => term.includes(value))
+  const looksLikeCompetitor = /\b(attorney|lawyer|law office|law firm)\b/.test(term) && !hasPractice && term.split(' ').length <= 6
+  if (looksLikeCompetitor) return { kind: 'competitor', confidence: 'high', label: 'Likely competitor/name search', suggestedMatchType: 'EXACT' }
+  if (hasStrongLowIntent) return { kind: 'low_intent', confidence: 'high', label: 'Likely poor-fit or free/DIY intent', suggestedMatchType: 'EXACT' }
+  if (hasResearch) return { kind: 'research', confidence: 'medium', label: 'Likely research intent', suggestedMatchType: 'EXACT' }
+  if (/\b(attorney|lawyer|law firm|consultation|near me)\b/.test(term) && hasPractice) return { kind: 'hire', confidence: 'high', label: 'High hiring intent', suggestedMatchType: 'EXACT' }
+  return { kind: 'unknown', confidence: 'low', label: 'Needs review', suggestedMatchType: 'EXACT' }
+}
+
+function googleAdsMutationSummary(mutation = {}) {
+  const type = String(mutation.type || '')
+  if (type === 'campaign_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Enable'} campaign “${mutation.campaignName || mutation.campaignId}”`
+  if (type === 'campaign_budget') return `Set “${mutation.campaignName || 'campaign'}” budget to ${googleAdsFormatMoney(mutation.dailyBudget)} per day`
+  if (type === 'ad_group_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Enable'} ad group “${mutation.adGroupName || mutation.adGroupId}”`
+  if (type === 'ad_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Enable'} ad “${mutation.adName || mutation.adId}”`
+  if (type === 'keyword_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Enable'} keyword “${mutation.keyword || mutation.criterionId}”`
+  if (type === 'remove_keyword') return `Remove keyword “${mutation.keyword || mutation.criterionId}”`
+  if (type === 'add_keyword') return `Add ${String(mutation.matchType || 'EXACT').toLowerCase()} keyword “${mutation.keyword}” to “${mutation.adGroupName || mutation.adGroupId}”`
+  if (type === 'add_negative_keyword') return `Add ${String(mutation.matchType || 'EXACT').toLowerCase()} negative “${mutation.keyword}” to ${mutation.scope === 'ad_group' ? `ad group “${mutation.adGroupName || mutation.adGroupId}”` : `campaign “${mutation.campaignName || mutation.campaignId}”`}`
+  if (type === 'remove_negative_keyword') return `Remove negative keyword “${mutation.keyword || ''}”`
+  if (type === 'conversion_primary') return `Make “${mutation.conversionName || mutation.conversionActionId}” ${mutation.primaryForGoal ? 'primary' : 'secondary'}`
+  if (type === 'conversion_status') return `${mutation.status === 'ENABLED' ? 'Enable' : 'Hide'} conversion action “${mutation.conversionName || mutation.conversionActionId}”`
+  return type || 'Google Ads change'
+}
+
+function buildGoogleAdsOptimizationSuggestions(report = {}) {
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : []
+  const keywords = Array.isArray(report?.keywords) ? report.keywords : []
+  const searchTerms = Array.isArray(report?.searchTerms) ? report.searchTerms : []
+  const conversions = Array.isArray(report?.conversionActions) ? report.conversionActions : []
+  const negatives = Array.isArray(report?.negativeKeywords) ? report.negativeKeywords : []
+  const suggestions = []
+  const existingCampaignNegatives = new Set(negatives.filter((row) => row.scope === 'campaign').map((row) => `${row.campaignId}:${String(row.keyword || '').trim().toLowerCase()}:${String(row.matchType || '').toUpperCase()}`))
+  const add = (item) => suggestions.push({ confidence: 'medium', severity: 'warning', ...item })
+
+  conversions.filter((row) => row.primaryForGoal && String(row.status || '').toUpperCase() !== 'ENABLED').forEach((row) => add({
+    id: `conversion-secondary-${row.id}`, severity: 'critical', confidence: 'high', category: 'Conversion tracking',
+    title: `Stop bidding toward inactive conversion: ${row.name}`,
+    detail: `${row.name} is marked primary but its status is ${row.status || 'not enabled'}. That can contaminate bidding signals.`,
+    actionLabel: 'Authorize: make secondary',
+    mutation: { type: 'conversion_primary', conversionActionId: row.id, resourceName: row.resourceName, conversionName: row.name, primaryForGoal: false }
+  }))
+  conversions.filter((row) => !row.primaryForGoal && String(row.status || '').toUpperCase() === 'ENABLED' && googleAdsSafeNumber(row.allConversions) > 0).forEach((row) => add({
+    id: `conversion-primary-${row.id}`, severity: 'info', confidence: 'medium', category: 'Conversion tracking',
+    title: `Review whether ${row.name} should be primary`,
+    detail: `${row.name} recorded ${googleAdsSafeNumber(row.allConversions)} all-conversion event(s) but is secondary. Only promote it if it represents a real lead.`,
+    actionLabel: 'Authorize: make primary',
+    mutation: { type: 'conversion_primary', conversionActionId: row.id, resourceName: row.resourceName, conversionName: row.name, primaryForGoal: true }
+  }))
+
+  campaigns.filter((row) => String(row.status || '').toUpperCase() === 'ENABLED' && googleAdsSafeNumber(row.conversions) <= 0 && googleAdsSafeNumber(row.clicks) >= 8 && googleAdsSafeNumber(row.cost) >= Math.max(75, GOOGLE_ADS_LEGAL_BENCHMARK_2026.costPerLead * 0.6)).forEach((row) => add({
+    id: `campaign-pause-${row.id}`, severity: 'critical', confidence: 'high', category: 'Campaign control',
+    title: `Pause ${row.name} while it is repaired`,
+    detail: `${row.name} spent ${googleAdsFormatMoney(row.cost)} on ${googleAdsSafeNumber(row.clicks)} clicks with no recorded conversion in this period.`,
+    actionLabel: 'Authorize: pause campaign', estimatedWaste: googleAdsSafeNumber(row.cost),
+    mutation: { type: 'campaign_status', campaignId: row.id, campaignName: row.name, status: 'PAUSED' }
+  }))
+
+  keywords.filter((row) => String(row.status || '').toUpperCase() === 'ENABLED' && googleAdsSafeNumber(row.conversions) <= 0 && googleAdsSafeNumber(row.clicks) >= 8 && googleAdsSafeNumber(row.cost) >= 50).forEach((row) => add({
+    id: `keyword-pause-${row.adGroupId}-${row.criterionId}`, severity: 'warning', confidence: 'high', category: 'Keyword efficiency',
+    title: `Pause weak keyword: ${row.keyword}`,
+    detail: `${row.keyword} spent ${googleAdsFormatMoney(row.cost)} on ${googleAdsSafeNumber(row.clicks)} clicks without a conversion.`,
+    actionLabel: 'Authorize: pause keyword', estimatedWaste: googleAdsSafeNumber(row.cost),
+    mutation: { type: 'keyword_status', adGroupId: row.adGroupId, criterionId: row.criterionId, keyword: row.keyword, status: 'PAUSED' }
+  }))
+  keywords.filter((row) => String(row.status || '').toUpperCase() === 'PAUSED' && googleAdsSafeNumber(row.conversions) > 0).forEach((row) => add({
+    id: `keyword-enable-${row.adGroupId}-${row.criterionId}`, severity: 'info', confidence: 'medium', category: 'Keyword efficiency',
+    title: `Review paused converting keyword: ${row.keyword}`,
+    detail: `${row.keyword} recorded ${googleAdsSafeNumber(row.conversions)} conversion(s) in the selected period but is paused. Confirm lead quality before resuming.`,
+    actionLabel: 'Authorize: enable keyword',
+    mutation: { type: 'keyword_status', adGroupId: row.adGroupId, criterionId: row.criterionId, keyword: row.keyword, status: 'ENABLED' }
+  }))
+
+  searchTerms.filter((row) => googleAdsSafeNumber(row.conversions) <= 0 && googleAdsSafeNumber(row.clicks) > 0 && googleAdsSafeNumber(row.cost) >= 5).forEach((row) => {
+    const intent = googleAdsSearchTermIntent(row.searchTerm)
+    const negativeKey = `${row.campaignId}:${String(row.searchTerm || '').trim().toLowerCase()}:${intent.suggestedMatchType}`
+    if (['competitor', 'low_intent'].includes(intent.kind) && !existingCampaignNegatives.has(negativeKey)) add({
+      id: `negative-${row.campaignId}-${String(row.searchTerm || '').toLowerCase()}`, severity: intent.kind === 'competitor' ? 'warning' : 'critical', confidence: intent.confidence, category: 'Search-term waste',
+      title: `Block search: ${row.searchTerm}`,
+      detail: `${intent.label}. It spent ${googleAdsFormatMoney(row.cost)} with no conversion. Exact negative matching limits the block to this search intent.`,
+      actionLabel: 'Authorize: add exact negative', estimatedWaste: googleAdsSafeNumber(row.cost),
+      mutation: { type: 'add_negative_keyword', scope: 'campaign', campaignId: row.campaignId, campaignName: row.campaignName, keyword: row.searchTerm, matchType: 'EXACT' }
+    })
+    else if (intent.kind === 'research' && googleAdsSafeNumber(row.cost) >= 10) add({
+      id: `watch-${row.campaignId}-${String(row.searchTerm || '').toLowerCase()}`, severity: 'info', confidence: 'medium', category: 'Search-term review',
+      title: `Watch research-oriented search: ${row.searchTerm}`,
+      detail: `${intent.label}. It spent ${googleAdsFormatMoney(row.cost)} with no conversion. Review the actual query before blocking it because it could still precede a consultation.`,
+      actionLabel: '', mutation: null
+    })
+  })
+
+  return suggestions.sort((a, b) => {
+    const rank = { critical: 0, warning: 1, info: 2, good: 3 }
+    return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || googleAdsSafeNumber(b.estimatedWaste) - googleAdsSafeNumber(a.estimatedWaste)
+  })
+}
+
+function diagnoseGoogleAdsBottleneck(report = {}) {
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : []
+  const searchMetrics = aggregateGoogleAdsRows(campaigns.filter((row) => String(row.advertisingChannelType || '').toUpperCase() === 'SEARCH'))
+  const metrics = searchMetrics.impressions > 0 ? searchMetrics : (report?.overview || {})
+  const inactivePrimary = (report?.conversionActions || []).filter((row) => row.primaryForGoal && String(row.status || '').toUpperCase() !== 'ENABLED')
+  const benchmark = GOOGLE_ADS_LEGAL_BENCHMARK_2026
+  const stages = [
+    { key: 'engagement', label: 'Search relevance / CTR', actual: googleAdsSafeNumber(metrics.ctr), benchmark: benchmark.ctr, score: benchmark.ctr > 0 ? googleAdsSafeNumber(metrics.ctr) / benchmark.ctr : 1, lowerBetter: false },
+    { key: 'click_cost', label: 'Click cost', actual: googleAdsSafeNumber(metrics.averageCpc), benchmark: benchmark.averageCpc, score: googleAdsSafeNumber(metrics.averageCpc) > 0 ? benchmark.averageCpc / googleAdsSafeNumber(metrics.averageCpc) : 1, lowerBetter: true },
+    { key: 'conversion', label: 'Click-to-lead conversion', actual: googleAdsSafeNumber(metrics.conversionRate), benchmark: benchmark.conversionRate, score: benchmark.conversionRate > 0 ? googleAdsSafeNumber(metrics.conversionRate) / benchmark.conversionRate : 1, lowerBetter: false },
+    { key: 'lead_cost', label: 'Cost per lead', actual: googleAdsSafeNumber(metrics.costPerConversion), benchmark: benchmark.costPerLead, score: googleAdsSafeNumber(metrics.costPerConversion) > 0 ? benchmark.costPerLead / googleAdsSafeNumber(metrics.costPerConversion) : 0, lowerBetter: true },
+    { key: 'tracking', label: 'Conversion tracking integrity', actual: inactivePrimary.length ? 0 : 1, benchmark: 1, score: inactivePrimary.length ? 0.15 : 1, lowerBetter: false, detail: inactivePrimary.length ? `${inactivePrimary.length} inactive primary conversion action(s)` : 'No inactive primary conversion action detected' }
+  ].map((stage) => ({ ...stage, score: Math.max(0, Math.min(1.5, googleAdsSafeNumber(stage.score))) }))
+  const biggest = [...stages].sort((a, b) => a.score - b.score)[0]
+  return { metrics, stages, biggest, inactivePrimary }
+}
+
 const BEVERIDGE_FACEBOOK_PAGE_URL = 'https://www.facebook.com/BeveridgeBlawg/'
 
 function buildMetaAdsAudit(report = {}) {
@@ -782,6 +931,132 @@ function buildMetaAdsAudit(report = {}) {
   if (!findings.length && spend > 0) add('good', 'No obvious Meta account-level red flag', 'The high-level Meta metrics do not show an obvious failure under the current rule checks.', 'Continue into Campaigns, Ad Sets, Ads, Platforms, Devices, and Regions before changing budget.')
   if (!spend && report?.fetchedAt) add('info', 'No Meta spend in selected period', 'Meta returned no spend for this date range.', 'Confirm the selected ad account, campaign status, and date range.')
   return findings
+}
+
+const META_ADS_LEGAL_BENCHMARK_2025 = Object.freeze({
+  label: 'Attorneys & Legal Services — 2025 Meta lead-campaign benchmark',
+  linkCtr: 0.0211,
+  averageCpc: 4.10,
+  conversionRate: 0.1053,
+  costPerLead: 18.17,
+  source: 'LocaliQ / WordStream 2025 Facebook Ads benchmarks',
+  sourceUrl: 'https://localiq.com/blog/facebook-advertising-benchmarks/'
+})
+
+function aggregateMetaAdsRows(rows = []) {
+  const totals = (Array.isArray(rows) ? rows : []).reduce((sum, row) => ({
+    impressions: sum.impressions + googleAdsSafeNumber(row.impressions),
+    reach: sum.reach + googleAdsSafeNumber(row.reach),
+    clicks: sum.clicks + googleAdsSafeNumber(row.inlineLinkClicks || row.clicks),
+    spend: sum.spend + googleAdsSafeNumber(row.spend),
+    leads: sum.leads + googleAdsSafeNumber(row.leads),
+    leadSignals: sum.leadSignals + googleAdsSafeNumber(row.leadSignals)
+  }), { impressions: 0, reach: 0, clicks: 0, spend: 0, leads: 0, leadSignals: 0 })
+  return {
+    ...totals,
+    linkCtr: totals.impressions > 0 ? totals.clicks / totals.impressions : 0,
+    cpc: totals.clicks > 0 ? totals.spend / totals.clicks : 0,
+    conversionRate: totals.clicks > 0 ? totals.leadSignals / totals.clicks : 0,
+    costPerLeadSignal: totals.leadSignals > 0 ? totals.spend / totals.leadSignals : 0
+  }
+}
+
+function metaAdsMutationSummary(mutation = {}) {
+  const type = String(mutation.type || '')
+  if (type === 'campaign_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Activate'} campaign “${mutation.campaignName || mutation.campaignId}”`
+  if (type === 'campaign_budget') return `Set “${mutation.campaignName || 'campaign'}” ${String(mutation.budgetType || 'DAILY').toLowerCase()} budget to ${googleAdsFormatMoney(mutation.budget)}`
+  if (type === 'adset_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Activate'} ad set “${mutation.adSetName || mutation.adSetId}”`
+  if (type === 'adset_budget') return `Set “${mutation.adSetName || 'ad set'}” ${String(mutation.budgetType || 'DAILY').toLowerCase()} budget to ${googleAdsFormatMoney(mutation.budget)}`
+  if (type === 'ad_status') return `${mutation.status === 'PAUSED' ? 'Pause' : 'Activate'} ad “${mutation.adName || mutation.adId}”`
+  return type || 'Meta Ads change'
+}
+
+function buildMetaAdsOptimizationSuggestions(report = {}) {
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : []
+  const adSets = Array.isArray(report?.adSets) ? report.adSets : []
+  const ads = Array.isArray(report?.ads) ? report.ads : []
+  const suggestions = []
+  const add = (item) => suggestions.push({ confidence: 'medium', severity: 'warning', ...item })
+  const active = (value) => String(value || '').toUpperCase() === 'ACTIVE'
+  const paused = (value) => String(value || '').toUpperCase() === 'PAUSED'
+
+  campaigns.filter((row) => active(row.status) && googleAdsSafeNumber(row.leadSignals) <= 0 && googleAdsSafeNumber(row.spend) >= Math.max(50, META_ADS_LEGAL_BENCHMARK_2025.costPerLead * 2)).forEach((row) => add({
+    id: `meta-campaign-pause-${row.id}`, severity: 'critical', confidence: 'high', category: 'Campaign control',
+    title: `Pause ${row.name} while it is repaired`,
+    detail: `${row.name} spent ${googleAdsFormatMoney(row.spend)} and produced no reported lead, message, contact, or appointment signal in this period.`,
+    actionLabel: 'Authorize: pause campaign', estimatedWaste: googleAdsSafeNumber(row.spend),
+    mutation: { type: 'campaign_status', campaignId: row.id, campaignName: row.name, status: 'PAUSED', expectedStatus: row.status }
+  }))
+  campaigns.filter((row) => paused(row.status) && googleAdsSafeNumber(row.leadSignals) > 0).forEach((row) => add({
+    id: `meta-campaign-enable-${row.id}`, severity: 'info', confidence: 'medium', category: 'Campaign control',
+    title: `Review paused campaign that produced lead signals: ${row.name}`,
+    detail: `${row.name} recorded ${googleAdsSafeNumber(row.leadSignals)} lead signal(s) in the selected period but is paused. Confirm lead quality before restarting it.`,
+    actionLabel: 'Authorize: activate campaign',
+    mutation: { type: 'campaign_status', campaignId: row.id, campaignName: row.name, status: 'ACTIVE', expectedStatus: row.status }
+  }))
+  campaigns.filter((row) => active(row.status) && googleAdsSafeNumber(row.spend) >= 25 && !['OUTCOME_LEADS', 'LEAD_GENERATION', 'CONVERSIONS'].includes(String(row.objective || '').toUpperCase())).forEach((row) => add({
+    id: `meta-objective-${row.id}`, severity: 'warning', confidence: 'high', category: 'Objective alignment',
+    title: `${row.name} is not using a lead objective`,
+    detail: `${row.name} is using ${row.objective || 'an unknown objective'} while the firm needs qualified inquiries. Changing an objective usually requires rebuilding rather than editing the live campaign.`,
+    actionLabel: '', mutation: null
+  }))
+
+  adSets.filter((row) => active(row.status) && googleAdsSafeNumber(row.leadSignals) <= 0 && googleAdsSafeNumber(row.spend) >= Math.max(35, META_ADS_LEGAL_BENCHMARK_2025.costPerLead * 1.5)).forEach((row) => add({
+    id: `meta-adset-pause-${row.id}`, severity: 'warning', confidence: 'high', category: 'Ad set control',
+    title: `Pause weak ad set: ${row.name}`,
+    detail: `${row.name} spent ${googleAdsFormatMoney(row.spend)} without a reported lead signal.`,
+    actionLabel: 'Authorize: pause ad set', estimatedWaste: googleAdsSafeNumber(row.spend),
+    mutation: { type: 'adset_status', adSetId: row.id, adSetName: row.name, status: 'PAUSED', expectedStatus: row.status }
+  }))
+  adSets.filter((row) => paused(row.status) && googleAdsSafeNumber(row.leadSignals) > 0).forEach((row) => add({
+    id: `meta-adset-enable-${row.id}`, severity: 'info', confidence: 'medium', category: 'Ad set control',
+    title: `Review paused converting ad set: ${row.name}`,
+    detail: `${row.name} recorded ${googleAdsSafeNumber(row.leadSignals)} lead signal(s) but is paused. Confirm lead quality before restarting it.`,
+    actionLabel: 'Authorize: activate ad set',
+    mutation: { type: 'adset_status', adSetId: row.id, adSetName: row.name, status: 'ACTIVE', expectedStatus: row.status }
+  }))
+
+  ads.filter((row) => active(row.status) && googleAdsSafeNumber(row.leadSignals) <= 0 && googleAdsSafeNumber(row.spend) >= 20 && googleAdsSafeNumber(row.inlineLinkClicks || row.clicks) >= 3).forEach((row) => add({
+    id: `meta-ad-pause-${row.id}`, severity: googleAdsSafeNumber(row.frequency) >= 4 ? 'critical' : 'warning', confidence: 'high', category: 'Creative efficiency',
+    title: `Pause weak ad: ${row.name}`,
+    detail: `${row.name} spent ${googleAdsFormatMoney(row.spend)} on ${googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)} link click(s) with no reported lead signal${googleAdsSafeNumber(row.frequency) >= 4 ? ` and frequency ${googleAdsSafeNumber(row.frequency).toFixed(1)}` : ''}.`,
+    actionLabel: 'Authorize: pause ad', estimatedWaste: googleAdsSafeNumber(row.spend),
+    mutation: { type: 'ad_status', adId: row.id, adName: row.name, status: 'PAUSED', expectedStatus: row.status }
+  }))
+  ads.filter((row) => paused(row.status) && googleAdsSafeNumber(row.leadSignals) > 0).forEach((row) => add({
+    id: `meta-ad-enable-${row.id}`, severity: 'info', confidence: 'medium', category: 'Creative efficiency',
+    title: `Review paused ad that produced lead signals: ${row.name}`,
+    detail: `${row.name} recorded ${googleAdsSafeNumber(row.leadSignals)} lead signal(s) in the selected period but is paused.`,
+    actionLabel: 'Authorize: activate ad',
+    mutation: { type: 'ad_status', adId: row.id, adName: row.name, status: 'ACTIVE', expectedStatus: row.status }
+  }))
+
+  return suggestions.sort((a, b) => {
+    const rank = { critical: 0, warning: 1, info: 2, good: 3 }
+    return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || googleAdsSafeNumber(b.estimatedWaste) - googleAdsSafeNumber(a.estimatedWaste)
+  })
+}
+
+function diagnoseMetaAdsBottleneck(report = {}) {
+  const overview = report?.overview || {}
+  const benchmark = META_ADS_LEGAL_BENCHMARK_2025
+  const clicks = googleAdsSafeNumber(overview.inlineLinkClicks || overview.clicks)
+  const leadSignals = googleAdsSafeNumber(overview.leadSignals)
+  const spend = googleAdsSafeNumber(overview.spend)
+  const conversionRate = clicks > 0 ? leadSignals / clicks : 0
+  const costPerLeadSignal = leadSignals > 0 ? spend / leadSignals : 0
+  const activeCampaigns = (report?.campaigns || []).filter((row) => String(row.status || '').toUpperCase() === 'ACTIVE')
+  const nonLeadObjectives = activeCampaigns.filter((row) => !['OUTCOME_LEADS', 'LEAD_GENERATION', 'CONVERSIONS'].includes(String(row.objective || '').toUpperCase()))
+  const stages = [
+    { key: 'engagement', label: 'Creative / link CTR', actual: googleAdsSafeNumber(overview.linkCtr || overview.ctr), benchmark: benchmark.linkCtr, score: benchmark.linkCtr > 0 ? googleAdsSafeNumber(overview.linkCtr || overview.ctr) / benchmark.linkCtr : 1, lowerBetter: false },
+    { key: 'click_cost', label: 'Cost per link click', actual: googleAdsSafeNumber(overview.cpc), benchmark: benchmark.averageCpc, score: googleAdsSafeNumber(overview.cpc) > 0 ? benchmark.averageCpc / googleAdsSafeNumber(overview.cpc) : 1, lowerBetter: true },
+    { key: 'conversion', label: 'Click-to-lead-signal conversion', actual: conversionRate, benchmark: benchmark.conversionRate, score: benchmark.conversionRate > 0 ? conversionRate / benchmark.conversionRate : 1, lowerBetter: false },
+    { key: 'lead_cost', label: 'Cost per reported lead signal', actual: costPerLeadSignal, benchmark: benchmark.costPerLead, score: costPerLeadSignal > 0 ? benchmark.costPerLead / costPerLeadSignal : 0, lowerBetter: true },
+    { key: 'frequency', label: 'Creative fatigue / frequency', actual: googleAdsSafeNumber(overview.frequency), benchmark: 3.5, score: googleAdsSafeNumber(overview.frequency) > 0 ? 3.5 / Math.max(3.5, googleAdsSafeNumber(overview.frequency)) : 1, lowerBetter: true, detail: googleAdsSafeNumber(overview.frequency) >= 4 ? 'Frequency is high enough to investigate creative fatigue' : 'No account-level frequency warning' },
+    { key: 'objective', label: 'Lead-objective alignment', actual: nonLeadObjectives.length ? 0 : 1, benchmark: 1, score: nonLeadObjectives.length ? 0.2 : 1, lowerBetter: false, detail: nonLeadObjectives.length ? `${nonLeadObjectives.length} active campaign(s) are not using a lead objective` : 'Active campaigns are aligned to lead/conversion objectives' }
+  ].map((stage) => ({ ...stage, score: Math.max(0, Math.min(1.5, googleAdsSafeNumber(stage.score))) }))
+  const biggest = [...stages].sort((a, b) => a.score - b.score)[0]
+  return { clicks, leadSignals, spend, conversionRate, costPerLeadSignal, stages, biggest, nonLeadObjectives }
 }
 
 function mergeInventoryColumns(storedColumns = []) {
@@ -1202,27 +1477,322 @@ const DRAFTING_TEMPLATE_ENGINE_OPTIONS = [
 const DRAFTING_FIELD_TYPE_OPTIONS = [
   { value: 'text', label: 'Text' },
   { value: 'email', label: 'Email' },
+  { value: 'tel', label: 'Phone' },
+  { value: 'number', label: 'Number / money' },
   { value: 'textarea', label: 'Long text' },
+  { value: 'rich_text', label: 'Whole paragraph / clause' },
   { value: 'date', label: 'Date' },
   { value: 'select', label: 'Dropdown' },
+  { value: 'pronoun_set', label: 'Pronoun set (he/she/they)' },
   { value: 'checkbox_group', label: 'Checkbox group' },
   { value: 'list', label: 'List (one row per line)' },
   { value: 'event_list', label: 'Matter events / deadlines' },
   { value: 'event_select', label: 'Select one matter event' },
-  { value: 'service_list', label: 'Service recipients' }
+  { value: 'service_list', label: 'Service recipients' },
+  { value: 'relief_selector', label: 'Requested Relief selector' }
 ]
 
 const DRAFTING_FIELD_SOURCE_OPTIONS = [
-  { value: 'manual', label: 'Manual / template default' },
+  { value: 'manual', label: 'Ask when drafting / template default' },
   { value: 'today', label: 'Today' },
+  { value: 'matter.cause_number', label: 'Matter cause number' },
+  { value: 'matter.name', label: 'Matter display name' },
+  { value: 'matter.case_type', label: 'Matter case type' },
+  { value: 'matter.county', label: 'Matter county' },
+  { value: 'matter.court_name', label: 'Matter court name' },
+  { value: 'matter.client_name', label: 'Client name' },
+  { value: 'matter.client_email', label: 'Client email' },
+  { value: 'matter.client_phone', label: 'Client phone' },
+  { value: 'matter.client_address', label: 'Client mailing address' },
+  { value: 'matter.petitioner_name', label: 'Petitioner name' },
+  { value: 'matter.respondent_name', label: 'Respondent name' },
+  { value: 'matter.opposing_party_name', label: 'First opposing party name' },
   { value: 'matter.caption_subject', label: 'Matter caption subject / children' },
   { value: 'matter.client_role', label: 'Client party role' },
   { value: 'matter.children', label: 'Children from Matter Parties' },
+  { value: 'matter.children_names', label: 'Children names only' },
   { value: 'matter.future_events', label: 'Future matter events' },
   { value: 'matter.service_recipients', label: 'Client and opposing counsel' },
+  { value: 'matter.requested_relief_ids', label: 'Selected Requested Relief options' },
+  { value: 'matter.requested_relief_language', label: 'Drafting language for selected relief' },
   { value: 'court.coordinator_email', label: 'Court coordinator email' },
-  { value: 'court.address', label: 'Court address' }
+  { value: 'court.address', label: 'Court address' },
+  { value: 'attorney.signature_block', label: 'Default attorney signature block' },
+  { value: 'case.caption', label: 'Automatic case caption' },
+  { value: 'case.style_id', label: 'Automatic case style' }
 ]
+
+const DRAFTING_STUDIO_TABS = [
+  { value: 'library', label: 'Template Library' },
+  { value: 'visual_builder', label: 'Visual Template Builder' },
+  { value: 'relief_language', label: 'Requested Relief Language' },
+  { value: 'case_styles', label: 'Case Styles & Signature' },
+  { value: 'intake', label: 'Client Intake Forms' },
+  { value: 'compare', label: 'Compare / Update Template' },
+  { value: 'advanced', label: 'Advanced Template Details' }
+]
+
+const DRAFTING_BINDING_KIND_OPTIONS = [
+  { value: 'field', label: 'Fill-in field' },
+  { value: 'pronoun', label: 'Linked pronoun' },
+  { value: 'paragraph_choice', label: 'Whole paragraph choice' },
+  { value: 'relief_clause', label: 'Requested Relief clause' },
+  { value: 'conditional_block', label: 'Conditional block' },
+  { value: 'caption_block', label: 'Case caption block' },
+  { value: 'signature_block', label: 'Signature block' },
+  { value: 'practice_manual_connection', label: 'Practice Manual form connection' }
+]
+
+const DRAFTING_PRONOUN_GRAMMAR_OPTIONS = [
+  { value: 'subject', label: 'Subject — he / she / they' },
+  { value: 'object', label: 'Object — him / her / them' },
+  { value: 'possessive_adjective', label: 'Possessive adjective — his / her / their' },
+  { value: 'possessive_pronoun', label: 'Possessive pronoun — his / hers / theirs' },
+  { value: 'reflexive', label: 'Reflexive — himself / herself / themselves' },
+  { value: 'title', label: 'Title — Mr. / Ms. / Mx.' }
+]
+
+const DRAFTING_PRONOUN_SETS = {
+  male: { subject: 'he', object: 'him', possessive_adjective: 'his', possessive_pronoun: 'his', reflexive: 'himself', title: 'Mr.' },
+  female: { subject: 'she', object: 'her', possessive_adjective: 'her', possessive_pronoun: 'hers', reflexive: 'herself', title: 'Ms.' },
+  neutral: { subject: 'they', object: 'them', possessive_adjective: 'their', possessive_pronoun: 'theirs', reflexive: 'themselves', title: 'Mx.' }
+}
+
+function draftingStudioId(prefix = 'drafting') {
+  try { if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}` } catch {}
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function draftingNormalizePatternList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean)
+  return String(value || '').split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+}
+
+function draftingDefaultProfile() {
+  return {
+    active_signature_block_id: 'signature-ben-beveridge',
+    signature_blocks: [
+      {
+        id: 'signature-ben-beveridge',
+        name: 'Ben Beveridge — standard filing signature',
+        attorney_name: 'Ben Beveridge',
+        bar_number: '',
+        firm_name: 'Beveridge Law Firm, PLLC',
+        email: 'ben@beveridgelawfirm.com',
+        phone: '(281) 407-0961',
+        address_line_1: '',
+        address_line_2: '',
+        signature_text: '/s/ {{attorney_name}}\n{{attorney_name}}\nTexas Bar No. {{attorney_bar_number}}\n{{firm_name}}\n{{firm_address_line_1}}\n{{firm_address_line_2}}\nTelephone: {{firm_phone}}\nEmail: {{firm_service_email}}\nATTORNEY FOR {{client_name}}',
+        is_active: true
+      }
+    ],
+    case_styles: [
+      {
+        id: 'case-style-divorce-children',
+        name: 'Divorce — parties and children',
+        kind: 'divorce',
+        case_type_patterns: ['divorce'],
+        requires_children: true,
+        line_1: 'IN THE MATTER OF THE MARRIAGE OF',
+        line_2: '{{petitioner_name}} AND {{respondent_name}}',
+        line_3: 'AND IN THE INTEREST OF {{children_names}}, CHILDREN',
+        is_active: true
+      },
+      {
+        id: 'case-style-divorce-no-children',
+        name: 'Divorce — parties only',
+        kind: 'divorce',
+        case_type_patterns: ['divorce'],
+        requires_children: false,
+        line_1: 'IN THE MATTER OF THE MARRIAGE OF',
+        line_2: '{{petitioner_name}} AND {{respondent_name}}',
+        line_3: '',
+        is_active: true
+      },
+      {
+        id: 'case-style-sapcr',
+        name: 'SAPCR / modification / enforcement — In the Interest of',
+        kind: 'sapcr',
+        case_type_patterns: ['sapcr', 'modification', 'enforcement', 'custody', 'support'],
+        requires_children: true,
+        line_1: 'IN THE INTEREST OF',
+        line_2: '{{children_names}},',
+        line_3: 'CHILDREN',
+        is_active: true
+      }
+    ],
+    default_case_style_id: 'case-style-sapcr',
+    updated_at: ''
+  }
+}
+
+function draftingNormalizeProfile(input = {}) {
+  const defaults = draftingDefaultProfile()
+  const signatureBlocks = Array.isArray(input.signature_blocks) && input.signature_blocks.length ? input.signature_blocks : defaults.signature_blocks
+  const caseStyles = Array.isArray(input.case_styles) && input.case_styles.length ? input.case_styles : defaults.case_styles
+  return {
+    ...defaults,
+    ...input,
+    active_signature_block_id: input.active_signature_block_id || defaults.active_signature_block_id,
+    signature_blocks: signatureBlocks.map((block, index) => ({
+      id: block?.id || draftingStudioId(`signature-${index + 1}`),
+      name: block?.name || `Signature block ${index + 1}`,
+      attorney_name: block?.attorney_name || '',
+      bar_number: block?.bar_number || '',
+      firm_name: block?.firm_name || '',
+      email: block?.email || '',
+      phone: block?.phone || '',
+      address_line_1: block?.address_line_1 || '',
+      address_line_2: block?.address_line_2 || '',
+      signature_text: block?.signature_text || '',
+      is_active: block?.is_active !== false
+    })),
+    case_styles: caseStyles.map((style, index) => ({
+      id: style?.id || draftingStudioId(`case-style-${index + 1}`),
+      name: style?.name || `Case style ${index + 1}`,
+      kind: style?.kind || 'custom',
+      case_type_patterns: draftingNormalizePatternList(style?.case_type_patterns),
+      requires_children: style?.requires_children === true,
+      line_1: style?.line_1 || '',
+      line_2: style?.line_2 || '',
+      line_3: style?.line_3 || '',
+      is_active: style?.is_active !== false
+    }))
+  }
+}
+
+function draftingDefaultIntakeTemplates() {
+  const common = [
+    { id: 'client_full_name', key: 'client_full_name', label: 'Your full legal name', type: 'text', group: 'Parties', required: true, target: 'client.full_name' },
+    { id: 'client_email', key: 'client_email', label: 'Your email address', type: 'email', group: 'Contact Information', required: true, target: 'client.email' },
+    { id: 'client_phone', key: 'client_phone', label: 'Your mobile telephone number', type: 'tel', group: 'Contact Information', required: true, target: 'client.phone' },
+    { id: 'client_address', key: 'client_address', label: 'Your current mailing address', type: 'textarea', group: 'Contact Information', required: true, target: 'client.address' },
+    { id: 'opposing_party_name', key: 'opposing_party_name', label: 'Other party’s full legal name', type: 'text', group: 'Parties', required: true, target: 'matter.opposing_party_name' },
+    { id: 'opposing_party_email', key: 'opposing_party_email', label: 'Other party’s email address, if known', type: 'email', group: 'Parties', required: false, target: 'matter.opposing_party_email' },
+    { id: 'opposing_party_phone', key: 'opposing_party_phone', label: 'Other party’s telephone number, if known', type: 'tel', group: 'Parties', required: false, target: 'matter.opposing_party_phone' },
+    { id: 'children', key: 'children', label: 'Children (one per row: full name | date of birth | current school)', type: 'children', group: 'Children', required: false, target: 'matter.children' },
+    { id: 'existing_orders', key: 'existing_orders', label: 'Describe any existing court orders, pending hearings, or other related cases', type: 'textarea', group: 'Existing Cases and Orders', required: false, target: 'matter.intake_existing_orders' },
+    { id: 'urgent_concerns', key: 'urgent_concerns', label: 'Describe any urgent safety, possession, support, property, or deadline concerns', type: 'textarea', group: 'Goals and Urgent Issues', required: false, target: 'matter.intake_urgent_concerns' },
+    { id: 'requested_outcome', key: 'requested_outcome', label: 'What result are you asking the court to order?', type: 'textarea', group: 'Goals and Urgent Issues', required: true, target: 'matter.intake_requested_outcome' }
+  ]
+  return [
+    {
+      id: 'intake-template-divorce',
+      name: 'Divorce Intake',
+      case_type_patterns: ['divorce'],
+      description: 'Parties, children, marriage, property, debts, existing orders, and requested relief.',
+      questions: [
+        ...common,
+        { id: 'date_of_marriage', key: 'date_of_marriage', label: 'Date of marriage', type: 'date', group: 'Marriage', required: true, target: 'matter.date_of_marriage' },
+        { id: 'date_of_separation', key: 'date_of_separation', label: 'Date you separated, if applicable', type: 'date', group: 'Marriage', required: false, target: 'matter.date_of_separation' },
+        { id: 'property_debts', key: 'property_debts', label: 'List major property, accounts, retirement, businesses, vehicles, real estate, and debts', type: 'textarea', group: 'Property and Debts', required: false, target: 'matter.intake_property_debts' },
+        { id: 'separate_property', key: 'separate_property', label: 'Identify property you believe is separate property and explain why', type: 'textarea', group: 'Property and Debts', required: false, target: 'matter.intake_separate_property' }
+      ],
+      is_active: true
+    },
+    {
+      id: 'intake-template-sapcr',
+      name: 'SAPCR / Custody Intake',
+      case_type_patterns: ['sapcr', 'custody', 'paternity'],
+      description: 'Parties, children, parentage, schools, possession, conservatorship, support, and requested relief.',
+      questions: [
+        ...common,
+        { id: 'current_schedule', key: 'current_schedule', label: 'Describe the current possession schedule and where each child primarily lives', type: 'textarea', group: 'Children', required: true, target: 'matter.intake_current_schedule' },
+        { id: 'school_medical', key: 'school_medical', label: 'List school, daycare, doctors, diagnoses, medications, counseling, and special needs', type: 'textarea', group: 'Children', required: false, target: 'matter.intake_school_medical' },
+        { id: 'support_information', key: 'support_information', label: 'Describe current child support, insurance, and unreimbursed-expense arrangements', type: 'textarea', group: 'Support', required: false, target: 'matter.intake_support_information' }
+      ],
+      is_active: true
+    },
+    {
+      id: 'intake-template-modification-enforcement',
+      name: 'Modification / Enforcement Intake',
+      case_type_patterns: ['modification', 'enforcement'],
+      description: 'Existing order, requested changes or violations, dates, witnesses, documents, and requested relief.',
+      questions: [
+        ...common,
+        { id: 'order_date_court', key: 'order_date_court', label: 'Date and court of the order you want modified or enforced', type: 'text', group: 'Existing Cases and Orders', required: true, target: 'matter.intake_order_date_court' },
+        { id: 'changed_circumstances', key: 'changed_circumstances', label: 'For a modification, explain what materially changed and when', type: 'textarea', group: 'Modification', required: false, target: 'matter.intake_changed_circumstances' },
+        { id: 'violations', key: 'violations', label: 'For enforcement, list each violation with date, time, place, and what happened', type: 'textarea', group: 'Enforcement', required: false, target: 'matter.intake_violations' },
+        { id: 'witnesses_documents', key: 'witnesses_documents', label: 'Identify witnesses and documents supporting your request', type: 'textarea', group: 'Evidence', required: false, target: 'matter.intake_witnesses_documents' }
+      ],
+      is_active: true
+    }
+  ]
+}
+
+function draftingNormalizeIntakeTemplate(template = {}, index = 0) {
+  return {
+    id: template.id || draftingStudioId(`intake-template-${index + 1}`),
+    name: template.name || `Intake Template ${index + 1}`,
+    description: template.description || '',
+    case_type_patterns: draftingNormalizePatternList(template.case_type_patterns),
+    is_active: template.is_active !== false,
+    questions: (Array.isArray(template.questions) ? template.questions : []).map((question, questionIndex) => ({
+      id: question?.id || draftingStudioId(`intake-question-${questionIndex + 1}`),
+      key: question?.key || String(question?.label || `question_${questionIndex + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
+      label: question?.label || `Question ${questionIndex + 1}`,
+      type: question?.type || 'text',
+      group: question?.group || 'General',
+      help: question?.help || '',
+      placeholder: question?.placeholder || '',
+      options: Array.isArray(question?.options) ? question.options.map(String) : [],
+      required: question?.required === true,
+      target: question?.target || ''
+    }))
+  }
+}
+
+function draftingNormalizeReliefClause(clause = {}, index = 0) {
+  return {
+    id: clause.id || draftingStudioId(`relief-clause-${index + 1}`),
+    name: clause.name || `Drafting clause ${index + 1}`,
+    relief_option_ids: Array.isArray(clause.relief_option_ids) ? clause.relief_option_ids.map(String) : [],
+    language: clause.language || clause.source_text || '',
+    document_roles: draftingNormalizePatternList(clause.document_roles),
+    case_type_patterns: draftingNormalizePatternList(clause.case_type_patterns),
+    source_template_id: clause.source_template_id || '',
+    source_file_id: clause.source_file_id || '',
+    source_text: clause.source_text || clause.language || '',
+    source_paragraph_start: Number.isFinite(Number(clause.source_paragraph_start)) ? Number(clause.source_paragraph_start) : -1,
+    source_paragraph_end: Number.isFinite(Number(clause.source_paragraph_end)) ? Number(clause.source_paragraph_end) : -1,
+    practice_manual_form: clause.practice_manual_form || '',
+    practice_manual_section: clause.practice_manual_section || '',
+    notes: clause.notes || '',
+    is_active: clause.is_active !== false,
+    updated_at: clause.updated_at || ''
+  }
+}
+
+function draftingNormalizeBinding(binding = {}, index = 0) {
+  return {
+    id: binding.id || draftingStudioId(`draft-binding-${index + 1}`),
+    file_id: binding.file_id || '',
+    kind: DRAFTING_BINDING_KIND_OPTIONS.some((item) => item.value === binding.kind) ? binding.kind : 'field',
+    label: binding.label || binding.field_key || `Binding ${index + 1}`,
+    field_key: binding.field_key || '',
+    data_source: binding.data_source || 'manual',
+    grammar_role: binding.grammar_role || '',
+    linked_party: binding.linked_party || '',
+    paragraph_start: Number.isFinite(Number(binding.paragraph_start)) ? Number(binding.paragraph_start) : -1,
+    paragraph_end: Number.isFinite(Number(binding.paragraph_end)) ? Number(binding.paragraph_end) : Number.isFinite(Number(binding.paragraph_start)) ? Number(binding.paragraph_start) : -1,
+    start_offset: Number.isFinite(Number(binding.start_offset)) ? Number(binding.start_offset) : 0,
+    end_offset: Number.isFinite(Number(binding.end_offset)) ? Number(binding.end_offset) : 0,
+    source_text: binding.source_text || '',
+    replacement_text: binding.replacement_text || '',
+    replace_all: binding.replace_all === true,
+    relief_option_ids: Array.isArray(binding.relief_option_ids) ? binding.relief_option_ids.map(String) : [],
+    clause_id: binding.clause_id || '',
+    condition_key: binding.condition_key || '',
+    condition_operator: binding.condition_operator || 'truthy',
+    required: binding.required === true,
+    hide_when_resolved: binding.hide_when_resolved !== false,
+    practice_manual_form: binding.practice_manual_form || '',
+    practice_manual_section: binding.practice_manual_section || '',
+    is_active: binding.is_active !== false,
+    confidence: Number(binding.confidence || 0) || 0,
+    source: binding.source || 'manual'
+  }
+}
 
 const emptyDraftingTemplateForm = {
   id: '',
@@ -1236,9 +1806,19 @@ const emptyDraftingTemplateForm = {
   template_text: '',
   files: [],
   fields: [],
+  bindings: [],
   requirements: '',
   ai_instructions: '',
   tag_id: '',
+  source_kind: 'firm_template',
+  practice_manual_form: '',
+  practice_manual_title: '',
+  practice_manual_outline: [],
+  case_type_patterns: [],
+  default_case_style_id: '',
+  signature_block_id: '',
+  visual_builder_status: 'not_reviewed',
+  compare_history: [],
   approved_at: '',
   updated_at: '',
   is_active: true
@@ -1250,12 +1830,17 @@ function cleanDraftingTemplate(input = {}) {
   return {
     ...emptyDraftingTemplateForm,
     ...input,
-    id: input.id || `draft-template-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: input.id || draftingStudioId('draft-template'),
     status: safeStatus,
     engine: safeEngine,
     version: String(input.version || '1.0'),
+    source_kind: input.source_kind || (input.practice_manual_form ? 'texas_family_law_practice_manual' : 'firm_template'),
+    case_type_patterns: draftingNormalizePatternList(input.case_type_patterns),
+    practice_manual_outline: Array.isArray(input.practice_manual_outline) ? input.practice_manual_outline : [],
+    compare_history: Array.isArray(input.compare_history) ? input.compare_history : [],
+    bindings: Array.isArray(input.bindings) ? input.bindings.map(draftingNormalizeBinding) : [],
     fields: Array.isArray(input.fields) ? input.fields.map((field) => ({
-      id: field.id || `draft-field-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      id: field.id || draftingStudioId('draft-field'),
       label: field.label || field.name || '',
       key: field.key || String(field.label || field.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''),
       type: DRAFTING_FIELD_TYPE_OPTIONS.some((item) => item.value === field.type) ? field.type : 'text',
@@ -1265,10 +1850,14 @@ function cleanDraftingTemplate(input = {}) {
       placeholder: field.placeholder || '',
       default_value: Array.isArray(field.default_value) ? [...field.default_value] : (field.default_value ?? ''),
       options: Array.isArray(field.options) ? field.options.map((option) => typeof option === 'string' ? { value: option, label: option } : { value: String(option?.value ?? option?.label ?? ''), label: String(option?.label ?? option?.value ?? '') }).filter((option) => option.value || option.label) : [],
+      grammar_role: field.grammar_role || '',
+      linked_party: field.linked_party || '',
+      relief_option_ids: Array.isArray(field.relief_option_ids) ? field.relief_option_ids.map(String) : [],
+      hide_when_resolved: field.hide_when_resolved !== false,
       required: !!field.required
     })).filter((field) => field.label || field.key) : [],
     files: Array.isArray(input.files) ? input.files.map((file, index) => ({
-      id: file?.id || `draft-template-file-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      id: file?.id || draftingStudioId(`draft-template-file-${index + 1}`),
       name: file?.name || file?.original_file_name || `Template ${index + 1}.docx`,
       original_file_name: file?.original_file_name || file?.name || '',
       output_name: file?.output_name || file?.name || `Draft ${index + 1}.docx`,
@@ -1277,6 +1866,9 @@ function cleanDraftingTemplate(input = {}) {
       type: file?.type || file?.file_type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       size: Number(file?.size || file?.file_size || 0) || 0,
       file_data: file?.file_data || '',
+      source_kind: file?.source_kind || input.source_kind || 'firm_template',
+      practice_manual_form: file?.practice_manual_form || input.practice_manual_form || '',
+      parsed_summary: file?.parsed_summary && typeof file.parsed_summary === 'object' ? file.parsed_summary : null,
       uploaded_at: file?.uploaded_at || ''
     })) : []
   }
@@ -1969,10 +2561,1151 @@ const BUILT_IN_DRAFTING_TEMPLATES = [
   }
 ]
 
+const MIO_FORM_23_1_DOCX_DATA_URL = [
+  'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,',
+  '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',
+].join('')
+
+const MIO_PRACTICE_MANUAL_FORM_23_1_TEMPLATE = {
+  id: 'draft-template-system-tx-family-practice-manual-form-23-1',
+  system_key: 'tx_family_practice_manual_form_23_1',
+  document_type: 'Final Decree of Divorce',
+  name: 'Texas Family Law Practice Manual — Form 23-1 Final Decree of Divorce',
+  category: 'Divorce Decree / Practice Manual',
+  engine: 'docx_assembly',
+  version: 'source-1.0',
+  status: 'testing',
+  is_active: true,
+  source_kind: 'texas_family_law_practice_manual',
+  practice_manual_form: '23-1',
+  practice_manual_title: 'Final Decree of Divorce',
+  case_type_patterns: ['divorce'],
+  default_case_style_id: 'case-style-divorce-children',
+  template_text: 'Source form imported from the user-provided Texas Family Law Practice Manual Form 23-1. Use Visual Template Builder to accept fields, connect provisions to Requested Relief, preserve form references, and create an approved firm version.',
+  requirements: 'This is a source-form library, not an approved filing-ready firm template. Review and select the correct alternatives, remove unused manual language, verify all statutory language and warnings, and approve a firm version before filing.',
+  ai_instructions: 'Preserve the source form structure and wording. Do not silently choose among alternatives. Treat bracketed text, Or alternatives, concealed guidance, and referenced forms as attorney-review items.',
+  visual_builder_status: 'ai_review_required',
+  fields: [],
+  bindings: [],
+  files: [
+    {
+      id: 'tx-family-practice-manual-form-23-1-docx',
+      name: 'Form 23-1 - Final Decree of Divorce.docx',
+      original_file_name: 'Form23-1.docx',
+      output_name: 'Final Decree of Divorce - {{client_name}}.docx',
+      role: 'final_decree',
+      include_by_default: true,
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      source_kind: 'texas_family_law_practice_manual',
+      practice_manual_form: '23-1',
+      file_data: MIO_FORM_23_1_DOCX_DATA_URL,
+      uploaded_at: '2026-08-29T00:00:00.000Z'
+    }
+  ]
+}
+
 function mergeBuiltInDraftingTemplates(storedTemplates = []) {
   const stored = (Array.isArray(storedTemplates) ? storedTemplates : []).map(cleanDraftingTemplate)
   const existingSystemKeys = new Set(stored.map((template) => template.system_key).filter(Boolean))
-  return [...stored, ...BUILT_IN_DRAFTING_TEMPLATES.filter((template) => !existingSystemKeys.has(template.system_key)).map(cleanDraftingTemplate)]
+  return [...stored, ...[...BUILT_IN_DRAFTING_TEMPLATES, MIO_PRACTICE_MANUAL_FORM_23_1_TEMPLATE].filter((template) => !existingSystemKeys.has(template.system_key)).map(cleanDraftingTemplate)]
 }
 
 
@@ -2805,22 +4538,39 @@ function App() {
   const [marketingError, setMarketingError] = useState('')
   const [googleAdsTab, setGoogleAdsTab] = useState('overview')
   const [googleAdsDays, setGoogleAdsDays] = useState(30)
-  const [googleAdsStatus, setGoogleAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null })
+  const [googleAdsStatus, setGoogleAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null, writeMode: { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' } })
   const [googleAdsReport, setGoogleAdsReport] = useState(null)
   const [googleAdsLoading, setGoogleAdsLoading] = useState(false)
   const [googleAdsStatusLoading, setGoogleAdsStatusLoading] = useState(false)
   const [googleAdsError, setGoogleAdsError] = useState('')
   const [googleAdsAiAudit, setGoogleAdsAiAudit] = useState('')
   const [googleAdsAiLoading, setGoogleAdsAiLoading] = useState(false)
+  const [googleAdsMutationModal, setGoogleAdsMutationModal] = useState(null)
+  const [googleAdsMutationAuthorized, setGoogleAdsMutationAuthorized] = useState(false)
+  const [googleAdsMutationLoading, setGoogleAdsMutationLoading] = useState(false)
+  const [googleAdsMutationMessage, setGoogleAdsMutationMessage] = useState('')
+  const [googleAdsWriteLog, setGoogleAdsWriteLog] = useState(() => { try { const value = JSON.parse(localStorage.getItem('caseMioGoogleAdsWriteLogV261') || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } })
+  const [googleAdsDismissedSuggestions, setGoogleAdsDismissedSuggestions] = useState(() => { try { const value = JSON.parse(localStorage.getItem('caseMioGoogleAdsDismissedSuggestionsV261') || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } })
+  const [googleAdsBudgetDrafts, setGoogleAdsBudgetDrafts] = useState({})
+  const [googleAdsManualKeyword, setGoogleAdsManualKeyword] = useState({ adGroupId: '', keyword: '', matchType: 'EXACT' })
+  const [googleAdsManualNegative, setGoogleAdsManualNegative] = useState({ scope: 'campaign', campaignId: '', adGroupId: '', keyword: '', matchType: 'EXACT' })
   const [metaAdsTab, setMetaAdsTab] = useState('overview')
   const [metaAdsDays, setMetaAdsDays] = useState(30)
-  const [metaAdsStatus, setMetaAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null, page: null })
+  const [metaAdsStatus, setMetaAdsStatus] = useState({ configured: false, connected: false, missing: [], account: null, page: null, writeMode: { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' } })
   const [metaAdsReport, setMetaAdsReport] = useState(null)
   const [metaAdsLoading, setMetaAdsLoading] = useState(false)
   const [metaAdsStatusLoading, setMetaAdsStatusLoading] = useState(false)
   const [metaAdsError, setMetaAdsError] = useState('')
   const [metaAdsAiAudit, setMetaAdsAiAudit] = useState('')
   const [metaAdsAiLoading, setMetaAdsAiLoading] = useState(false)
+  const [metaAdsMutationModal, setMetaAdsMutationModal] = useState(null)
+  const [metaAdsMutationAuthorized, setMetaAdsMutationAuthorized] = useState(false)
+  const [metaAdsMutationLoading, setMetaAdsMutationLoading] = useState(false)
+  const [metaAdsMutationMessage, setMetaAdsMutationMessage] = useState('')
+  const [metaAdsWriteLog, setMetaAdsWriteLog] = useState(() => { try { const value = JSON.parse(localStorage.getItem('caseMioMetaAdsWriteLogV262') || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } })
+  const [metaAdsDismissedSuggestions, setMetaAdsDismissedSuggestions] = useState(() => { try { const value = JSON.parse(localStorage.getItem('caseMioMetaAdsDismissedSuggestionsV262') || '[]'); return Array.isArray(value) ? value : [] } catch { return [] } })
+  const [metaAdsCampaignBudgetDrafts, setMetaAdsCampaignBudgetDrafts] = useState({})
+  const [metaAdsAdSetBudgetDrafts, setMetaAdsAdSetBudgetDrafts] = useState({})
   const [bankAccounts, setBankAccounts] = useState([])
   const [bankTransactions, setBankTransactions] = useState([])
   const [bankConnections, setBankConnections] = useState([])
@@ -3043,6 +4793,53 @@ function App() {
   const [draftingOutput, setDraftingOutput] = useState('')
   const [draftingGeneratedFiles, setDraftingGeneratedFiles] = useState([])
   const [draftingStatus, setDraftingStatus] = useState('')
+  const [draftingStudioTab, setDraftingStudioTab] = useState(() => localStorage.getItem('caseMioDraftingStudioTab') || 'library')
+  const [draftingProfile, setDraftingProfile] = useState(() => {
+    try { return draftingNormalizeProfile(JSON.parse(localStorage.getItem('caseMioDraftingProfile') || '{}') || {}) }
+    catch { return draftingNormalizeProfile({}) }
+  })
+  const [draftingReliefClauses, setDraftingReliefClauses] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem('caseMioDraftingReliefClauses') || '[]') || []).map(draftingNormalizeReliefClause) }
+    catch { return [] }
+  })
+  const [draftingReliefClauseForm, setDraftingReliefClauseForm] = useState(() => draftingNormalizeReliefClause({ id: '', name: '', relief_option_ids: [], language: '', document_roles: [], case_type_patterns: [], practice_manual_form: '', practice_manual_section: '', notes: '', is_active: true }))
+  const [draftingIntakeTemplates, setDraftingIntakeTemplates] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('caseMioDraftingIntakeTemplates') || 'null')
+      return (Array.isArray(stored) && stored.length ? stored : draftingDefaultIntakeTemplates()).map(draftingNormalizeIntakeTemplate)
+    } catch { return draftingDefaultIntakeTemplates().map(draftingNormalizeIntakeTemplate) }
+  })
+  const [draftingStudioTemplateId, setDraftingStudioTemplateId] = useState('')
+  const [draftingStudioFileId, setDraftingStudioFileId] = useState('')
+  const [draftingStudioDocument, setDraftingStudioDocument] = useState(null)
+  const [draftingStudioSelection, setDraftingStudioSelection] = useState(null)
+  const [draftingBindingDraft, setDraftingBindingDraft] = useState({ kind: 'field', label: '', field_key: '', data_source: 'manual', grammar_role: '', linked_party: '', relief_option_ids: [], clause_id: '', condition_key: '', replace_all: false, required: false, practice_manual_form: '', practice_manual_section: '' })
+  const [draftingAiSuggestions, setDraftingAiSuggestions] = useState([])
+  const [draftingAiSuggestionLimit, setDraftingAiSuggestionLimit] = useState(180)
+  const [draftingStudioBusy, setDraftingStudioBusy] = useState(false)
+  const [draftingStudioStatus, setDraftingStudioStatus] = useState('')
+  const [draftingShowHiddenManualText, setDraftingShowHiddenManualText] = useState(false)
+  const [draftingCompareTemplateId, setDraftingCompareTemplateId] = useState('')
+  const [draftingCompareFile, setDraftingCompareFile] = useState(null)
+  const [draftingCompareDocument, setDraftingCompareDocument] = useState(null)
+  const [draftingCompareResults, setDraftingCompareResults] = useState([])
+  const [draftingComposerMode, setDraftingComposerMode] = useState(() => localStorage.getItem('caseMioDraftingComposerMode') || 'guided')
+  const [draftingShowResolvedFields, setDraftingShowResolvedFields] = useState(false)
+  const [draftingComposerDocument, setDraftingComposerDocument] = useState(null)
+  const [draftingFocusedFieldKey, setDraftingFocusedFieldKey] = useState('')
+  const [draftingIntakeWorkspace, setDraftingIntakeWorkspace] = useState({ matter_id: '', template_id: '', recipient_email: '', subject: 'Please complete your secure Mio intake form', message: 'Please use the secure link below to complete the intake form. Your answers will be reviewed before anything is added to your case file.', expires_days: 14 })
+  const [draftingIntakeRequests, setDraftingIntakeRequests] = useState([])
+  const [draftingIntakeStatus, setDraftingIntakeStatus] = useState('')
+  const [draftingIntakeReviewSelections, setDraftingIntakeReviewSelections] = useState({})
+  const [publicIntakePayload, setPublicIntakePayload] = useState(null)
+  const [publicIntakeAnswers, setPublicIntakeAnswers] = useState({})
+  const [publicIntakeStatus, setPublicIntakeStatus] = useState('')
+  const [publicIntakeSubmitted, setPublicIntakeSubmitted] = useState(false)
+  const publicIntakeToken = (() => {
+    if (typeof window === 'undefined') return ''
+    const match = String(window.location.hash || '').match(/^#client-intake\/([^?]+)/i)
+    return match ? decodeURIComponent(match[1]) : ''
+  })()
   const [serviceEmailSources, setServiceEmailSources] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioServiceEmailSources') || 'null')
@@ -4657,6 +6454,9 @@ function App() {
       }), kind: 'array', fallback: [] },
       caseMioLitigationTabTrackFilters: { setter: (value) => setLitigationTabTrackFilters(value && typeof value === 'object' ? value : {}), kind: 'object', fallback: {} },
       caseMioDraftingTemplates: { setter: (value) => setDraftingTemplates(mergeBuiltInDraftingTemplates(Array.isArray(value) ? value : [])), kind: 'array', fallback: [] },
+      caseMioDraftingProfile: { setter: (value) => setDraftingProfile(draftingNormalizeProfile(value || {})), kind: 'object', fallback: draftingDefaultProfile() },
+      caseMioDraftingReliefClauses: { setter: (value) => setDraftingReliefClauses((Array.isArray(value) ? value : []).map(draftingNormalizeReliefClause)), kind: 'array', fallback: [] },
+      caseMioDraftingIntakeTemplates: { setter: (value) => setDraftingIntakeTemplates((Array.isArray(value) && value.length ? value : draftingDefaultIntakeTemplates()).map(draftingNormalizeIntakeTemplate)), kind: 'array', fallback: draftingDefaultIntakeTemplates() },
       caseMioServiceEmailSources: { setter: setServiceEmailSources, kind: 'array', fallback: defaultServiceEmailSources },
       caseMioServiceEmailRows: { setter: setServiceEmailRows, kind: 'array', fallback: defaultServiceEmailIntakeRows },
       caseMioServiceEmailActionLog: { setter: setServiceEmailActionLog, kind: 'array', fallback: [] },
@@ -6790,6 +8590,57 @@ function App() {
     safeSetLocalStorage('caseMioDraftingTemplates', JSON.stringify(safeTemplates))
     try { saveMioStateKey('caseMioDraftingTemplates', JSON.stringify(safeTemplates)) } catch {}
   }, [draftingTemplates])
+
+
+  useEffect(() => {
+    const normalized = draftingNormalizeProfile(draftingProfile || {})
+    safeSetLocalStorage('caseMioDraftingProfile', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioDraftingProfile', JSON.stringify(normalized)) } catch {}
+  }, [draftingProfile])
+
+  useEffect(() => {
+    const normalized = (draftingReliefClauses || []).map(draftingNormalizeReliefClause)
+    safeSetLocalStorage('caseMioDraftingReliefClauses', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioDraftingReliefClauses', JSON.stringify(normalized)) } catch {}
+  }, [draftingReliefClauses])
+
+  useEffect(() => {
+    const normalized = (draftingIntakeTemplates || []).map(draftingNormalizeIntakeTemplate)
+    safeSetLocalStorage('caseMioDraftingIntakeTemplates', JSON.stringify(normalized))
+    try { saveMioStateKey('caseMioDraftingIntakeTemplates', JSON.stringify(normalized)) } catch {}
+  }, [draftingIntakeTemplates])
+
+  useEffect(() => { safeSetLocalStorage('caseMioDraftingStudioTab', draftingStudioTab || 'library') }, [draftingStudioTab])
+  useEffect(() => { safeSetLocalStorage('caseMioDraftingComposerMode', draftingComposerMode || 'guided') }, [draftingComposerMode])
+
+  useEffect(() => {
+    let cancelled = false
+    const template = draftingTemplates.find((item) => String(item.id) === String(draftingSelection.template_id || ''))
+    const file = (template?.files || []).find((item) => /\.docx$/i.test(item.name || '') && item.file_data) || null
+    if (!template || !file) { setDraftingComposerDocument(null); return () => { cancelled = true } }
+    draftingStudioParseTemplateFile(file).then((parsed) => { if (!cancelled) setDraftingComposerDocument({ ...parsed, template_id: template.id, file_id: file.id || file.name }) }).catch(() => { if (!cancelled) setDraftingComposerDocument(null) })
+    return () => { cancelled = true }
+  }, [draftingSelection.template_id, draftingTemplates])
+
+  useEffect(() => {
+    if (!publicIntakeToken) return
+    let cancelled = false
+    setPublicIntakeStatus('Loading secure intake form...')
+    fetch('/api/client-intake', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'load', token: publicIntakeToken }) })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error || 'The intake form could not be loaded.')
+        return payload
+      })
+      .then((payload) => {
+        if (cancelled) return
+        setPublicIntakePayload(payload.request || payload)
+        setPublicIntakeAnswers(payload.request?.answers || {})
+        setPublicIntakeStatus('')
+      })
+      .catch((error) => { if (!cancelled) setPublicIntakeStatus(error?.message || 'The intake form could not be loaded.') })
+    return () => { cancelled = true }
+  }, [publicIntakeToken])
 
   useEffect(() => {
     const normalized = {
@@ -17402,6 +19253,851 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
 
+  function draftingStudioCurrentTemplate() {
+    const id = draftingStudioTemplateId || draftingTemplateForm.id
+    return draftingTemplates.find((template) => String(template.id) === String(id || '')) || (draftingTemplateForm.id ? cleanDraftingTemplate(draftingTemplateForm) : null)
+  }
+
+  function draftingStudioCurrentFile(template = draftingStudioCurrentTemplate()) {
+    if (!template) return null
+    return (template.files || []).find((file) => String(file.id || file.name) === String(draftingStudioFileId || '')) || (template.files || []).find((file) => /\.docx$/i.test(file.name || '') && file.file_data) || null
+  }
+
+  function draftingStudioParagraphText(paragraph) {
+    if (!paragraph) return ''
+    const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const textNodes = Array.from(paragraph.getElementsByTagNameNS(wordNamespace, 't'))
+    if (!textNodes.length) return paragraph.textContent || ''
+    return textNodes.map((node) => node.textContent || '').join('')
+  }
+
+  async function draftingStudioParseTemplateFile(file) {
+    await ensureDraftingZipLibrary()
+    const bytes = dataUrlToUint8Array(file?.file_data || '')
+    if (!bytes.length) throw new Error(`${file?.name || 'The selected file'} does not contain Word document data.`)
+    const zip = await window.JSZip.loadAsync(bytes)
+    const documentEntry = zip.file('word/document.xml')
+    if (!documentEntry) throw new Error('The .docx file does not contain word/document.xml.')
+    const [documentXml, stylesXml] = await Promise.all([
+      documentEntry.async('string'),
+      zip.file('word/styles.xml') ? zip.file('word/styles.xml').async('string') : Promise.resolve('')
+    ])
+    const parser = new DOMParser()
+    const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const styleNames = {}
+    if (stylesXml) {
+      const stylesDoc = parser.parseFromString(stylesXml, 'application/xml')
+      Array.from(stylesDoc.getElementsByTagNameNS(wordNamespace, 'style')).forEach((style) => {
+        const id = style.getAttributeNS(wordNamespace, 'styleId') || style.getAttribute('w:styleId') || ''
+        const nameNode = style.getElementsByTagNameNS(wordNamespace, 'name')[0]
+        const name = nameNode?.getAttributeNS(wordNamespace, 'val') || nameNode?.getAttribute('w:val') || id
+        if (id) styleNames[id] = name
+      })
+    }
+    const doc = parser.parseFromString(documentXml, 'application/xml')
+    if (doc.getElementsByTagName('parsererror').length) throw new Error('Mio could not read the uploaded Word document XML.')
+    const paragraphNodes = Array.from(doc.getElementsByTagNameNS(wordNamespace, 'p'))
+    const paragraphs = paragraphNodes.map((paragraph, index) => {
+      const text = draftingStudioParagraphText(paragraph)
+      const pStyle = paragraph.getElementsByTagNameNS(wordNamespace, 'pStyle')[0]
+      const styleId = pStyle?.getAttributeNS(wordNamespace, 'val') || pStyle?.getAttribute('w:val') || ''
+      const styleName = styleNames[styleId] || styleId || ''
+      const runNodes = Array.from(paragraph.getElementsByTagNameNS(wordNamespace, 'r'))
+      const visibleRunCount = runNodes.filter((run) => !run.getElementsByTagNameNS(wordNamespace, 'vanish').length).length
+      const hiddenRunCount = runNodes.filter((run) => run.getElementsByTagNameNS(wordNamespace, 'vanish').length).length
+      const hidden = /hidden/i.test(styleName) || (hiddenRunCount > 0 && visibleRunCount === 0)
+      const bold = runNodes.some((run) => run.getElementsByTagNameNS(wordNamespace, 'b').length > 0)
+      const normalized = String(text || '').trim()
+      const bracket_placeholders = Array.from(normalized.matchAll(/\[[^\]\n]{1,180}\]/g)).map((match) => match[0])
+      const form_references = Array.from(normalized.matchAll(/\b(?:see\s+)?form\s+\d+(?:-\d+)?\b/ig)).map((match) => match[0].replace(/^see\s+/i, '').trim())
+      const isHeading = !!normalized && (/title|heading/i.test(styleName) || (!hidden && bold && normalized.length <= 120 && !/[.;:]$/.test(normalized)))
+      return { index, text, normalized, style_id: styleId, style_name: styleName, hidden, bold, is_heading: isHeading, bracket_placeholders, form_references, section_name: '' }
+    })
+    const sections = []
+    paragraphs.forEach((paragraph) => {
+      if (!paragraph.is_heading) return
+      sections.push({ id: `section-${paragraph.index}`, name: paragraph.normalized, start: paragraph.index, end: paragraphs.length - 1, style_name: paragraph.style_name })
+    })
+    sections.forEach((section, index) => { section.end = index < sections.length - 1 ? sections[index + 1].start - 1 : paragraphs.length - 1 })
+    let currentSection = ''
+    let currentSectionStart = -1
+    paragraphs.forEach((paragraph) => {
+      if (paragraph.is_heading) { currentSection = paragraph.normalized; currentSectionStart = paragraph.index }
+      paragraph.section_name = currentSection
+      paragraph.section_start = currentSectionStart
+    })
+    const formReferences = []
+    paragraphs.forEach((paragraph) => paragraph.form_references.forEach((reference) => formReferences.push({ reference, paragraph_index: paragraph.index, section_name: paragraph.section_name, text: paragraph.normalized })))
+    return {
+      file_id: file.id || file.name,
+      file_name: file.name,
+      source_kind: file.source_kind || '',
+      practice_manual_form: file.practice_manual_form || '',
+      paragraph_count: paragraphs.length,
+      paragraphs,
+      sections,
+      form_references: formReferences,
+      parsed_at: new Date().toISOString()
+    }
+  }
+
+  async function draftingStudioCreateTemplateFromUpload(file) {
+    if (!file) return
+    if (!/\.docx$/i.test(file.name || '')) return alert('Upload a .docx Word document. Convert older .doc files to .docx first.')
+    setDraftingStudioBusy(true)
+    setDraftingStudioStatus(`Importing ${file.name} as a new visual template...`)
+    try {
+      const payload = await readFileAsDataUrl(file)
+      const baseName = String(file.name || 'Word Template').replace(/\.docx$/i, '')
+      const fileRecord = {
+        id: draftingStudioId('draft-template-file'), name: file.name, original_file_name: file.name,
+        output_name: `${baseName} - {{client_name}}.docx`, role: 'document', include_by_default: true,
+        type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: file.size || 0,
+        file_data: payload.file_data || '', source_kind: 'firm_template', uploaded_at: new Date().toISOString()
+      }
+      const template = cleanDraftingTemplate({
+        id: draftingStudioId('draft-template'), document_type: baseName, name: baseName, category: 'Imported Word Template',
+        engine: 'docx_assembly', version: '1.0', status: 'draft', source_kind: 'firm_template', files: [fileRecord],
+        fields: [], bindings: [], visual_builder_status: 'ai_review_required', is_active: true, updated_at: new Date().toISOString()
+      })
+      setDraftingTemplates((current) => [...current, template])
+      setDraftingTemplateUploadFiles([])
+      await draftingStudioOpenTemplate(template, fileRecord.id)
+      setDraftingStudioStatus(`Imported ${file.name}. Highlight text manually or run AI field detection.`)
+    } catch (error) { setDraftingStudioStatus(error?.message || 'Mio could not import the Word template.') }
+    finally { setDraftingStudioBusy(false) }
+  }
+
+  function draftingStudioSelectionSection(selection = draftingStudioSelection) {
+    if (!selection || !draftingStudioDocument) return ''
+    return draftingStudioDocument.paragraphs?.[selection.paragraph_start]?.section_name || ''
+  }
+
+  async function draftingStudioOpenTemplate(template, preferredFileId = '') {
+    const clean = cleanDraftingTemplate(template)
+    const file = (clean.files || []).find((item) => String(item.id || item.name) === String(preferredFileId || '')) || (clean.files || []).find((item) => /\.docx$/i.test(item.name || '') && item.file_data)
+    setDraftingStudioTemplateId(clean.id)
+    setDraftingTemplateForm(clean)
+    setDraftingStudioFileId(file?.id || file?.name || '')
+    setDraftingStudioDocument(null)
+    setDraftingStudioSelection(null)
+    setDraftingAiSuggestions([])
+    setDraftingStudioTab('visual_builder')
+    if (!file) { setDraftingStudioStatus('This template does not contain a readable .docx file yet.'); return }
+    setDraftingStudioBusy(true)
+    setDraftingStudioStatus(`Opening ${file.name} in the visual builder...`)
+    try {
+      const parsed = await draftingStudioParseTemplateFile(file)
+      setDraftingStudioDocument(parsed)
+      setDraftingStudioStatus(`Loaded ${parsed.paragraph_count.toLocaleString()} Word paragraphs, ${parsed.sections.length} detected sections, and ${parsed.form_references.length} Practice Manual form reference(s).`)
+    } catch (error) {
+      setDraftingStudioStatus(error?.message || 'Mio could not open the Word template.')
+    } finally { setDraftingStudioBusy(false) }
+  }
+
+  function draftingStudioCaptureSelection(event, fallbackParagraphIndex) {
+    const selection = window.getSelection?.()
+    const selectedText = String(selection?.toString() || '').trim()
+    if (!selectedText) return
+    const paragraphElement = (node) => {
+      const element = node?.nodeType === 3 ? node.parentElement : node
+      return element?.closest?.('[data-drafting-paragraph-index]') || null
+    }
+    const anchorElement = paragraphElement(selection.anchorNode)
+    const focusElement = paragraphElement(selection.focusNode)
+    const anchorIndex = Number(anchorElement?.dataset?.draftingParagraphIndex ?? fallbackParagraphIndex)
+    const focusIndex = Number(focusElement?.dataset?.draftingParagraphIndex ?? fallbackParagraphIndex)
+    const paragraphStart = Math.min(anchorIndex, focusIndex)
+    const paragraphEnd = Math.max(anchorIndex, focusIndex)
+    const startParagraph = draftingStudioDocument?.paragraphs?.[paragraphStart]
+    const endParagraph = draftingStudioDocument?.paragraphs?.[paragraphEnd]
+    const startOffset = paragraphStart === paragraphEnd ? Math.max(0, String(startParagraph?.text || '').indexOf(selectedText)) : 0
+    const endOffset = paragraphStart === paragraphEnd ? startOffset + selectedText.length : String(endParagraph?.text || '').length
+    const formReferences = []
+    for (let index = paragraphStart; index <= paragraphEnd; index += 1) {
+      ;(draftingStudioDocument?.paragraphs?.[index]?.form_references || []).forEach((reference) => { if (!formReferences.includes(reference)) formReferences.push(reference) })
+    }
+    const nextSelection = { paragraph_start: paragraphStart, paragraph_end: paragraphEnd, start_offset: startOffset, end_offset: endOffset, source_text: selectedText, section_name: startParagraph?.section_name || '', practice_manual_form: draftingStudioDocument?.practice_manual_form || '', form_references: formReferences }
+    setDraftingStudioSelection(nextSelection)
+    const key = draftingNormalizeFieldKey(selectedText.replace(/^\[|\]$/g, ''))
+    setDraftingBindingDraft((current) => ({
+      ...current,
+      label: current.label || selectedText.replace(/^\[|\]$/g, '').replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 100),
+      field_key: current.field_key || key,
+      practice_manual_form: current.practice_manual_form || draftingStudioDocument?.practice_manual_form || '',
+      practice_manual_section: current.practice_manual_section || startParagraph?.section_name || ''
+    }))
+    try { selection.removeAllRanges() } catch {}
+  }
+
+  function draftingStudioPlaceholderDefinition(sourceText = '') {
+    const inner = String(sourceText || '').replace(/^\[|\]$/g, '').trim()
+    const lowered = inner.toLowerCase()
+    let key = draftingNormalizeFieldKey(inner)
+    let source = 'manual'
+    let type = /date/.test(lowered) ? 'date' : /email/.test(lowered) ? 'email' : /address|reason|describe|specify|provisions|terms/.test(lowered) ? 'rich_text' : 'text'
+    if (/name of petitioner|petitioner name/.test(lowered)) { key = 'petitioner_name'; source = 'matter.petitioner_name' }
+    else if (/name of respondent|respondent name/.test(lowered)) { key = 'respondent_name'; source = 'matter.respondent_name' }
+    else if (/cause number|cause no/.test(lowered)) { key = 'cause_number'; source = 'matter.cause_number' }
+    else if (/county/.test(lowered)) { key = 'county'; source = 'matter.county' }
+    else if (/court/.test(lowered) && !/court reporter/.test(lowered)) { key = 'court_name'; source = 'matter.court_name' }
+    else if (/name\(s\).*child|name of child|child\(ren\).*name/.test(lowered)) { key = 'children_names'; source = 'matter.children_names' }
+    else if (/name of attorney/.test(lowered)) { key = 'attorney_name'; source = 'manual' }
+    else if (/name of obligor/.test(lowered)) key = 'obligor_name'
+    else if (/name of obligee/.test(lowered)) key = 'obligee_name'
+    else if (/name/.test(lowered) && /party a/.test(lowered)) key = 'party_a_name'
+    else if (/name/.test(lowered) && /party b/.test(lowered)) key = 'party_b_name'
+    return { key: key || 'field', label: inner || 'Field', source, type }
+  }
+
+  function draftingStudioReliefMatchForSection(sectionName = '') {
+    const text = String(sectionName || '').toLowerCase()
+    if (!text) return []
+    const aliases = [
+      ['child support', ['child support']],
+      ['conservatorship', ['conservatorship', 'managing conservator', 'sole managing', 'joint managing']],
+      ['possession', ['possession', 'standard possession', 'access']],
+      ['medical support', ['medical support', 'health insurance', 'health-care']],
+      ['dental support', ['dental support', 'dental insurance']],
+      ['geographic restriction', ['geographic restriction', 'primary residence']],
+      ['property', ['division of marital estate', 'property division', 'separate property']],
+      ['spousal maintenance', ['spousal maintenance', 'maintenance']],
+      ['attorney fees', ["attorney's fees", 'attorney fees']],
+      ['tax', ['income tax', 'tax provisions']]
+    ]
+    const matchedAliases = aliases.filter(([, values]) => values.some((value) => text.includes(value))).flatMap(([key]) => [key])
+    if (!matchedAliases.length) return []
+    return requestedReliefOptions.filter((option) => {
+      const name = String(option.name || '').toLowerCase()
+      return option.is_relief_option && matchedAliases.some((alias) => name.includes(alias) || alias.includes(name))
+    }).map((option) => String(option.id))
+  }
+
+  function draftingStudioLocalSuggestions(document = draftingStudioDocument) {
+    if (!document) return []
+    const suggestions = []
+    const placeholderMap = new Map()
+    document.paragraphs.forEach((paragraph) => {
+      paragraph.bracket_placeholders.forEach((sourceText) => {
+        if (!placeholderMap.has(sourceText)) placeholderMap.set(sourceText, { paragraph, sourceText })
+      })
+    })
+    Array.from(placeholderMap.values()).slice(0, 350).forEach(({ paragraph, sourceText }) => {
+      const field = draftingStudioPlaceholderDefinition(sourceText)
+      suggestions.push({
+        id: draftingStudioId('suggestion'), kind: 'field', label: field.label, field_key: field.key, field_type: field.type, data_source: field.source,
+        file_id: document.file_id, paragraph_start: paragraph.index, paragraph_end: paragraph.index, start_offset: paragraph.text.indexOf(sourceText), end_offset: paragraph.text.indexOf(sourceText) + sourceText.length,
+        source_text: sourceText, replace_all: true, confidence: .96, source: 'local_ai', reason: 'Bracketed Practice Manual or form placeholder detected.', practice_manual_form: document.practice_manual_form || '', practice_manual_section: paragraph.section_name || ''
+      })
+    })
+    const pronounRoles = { he: 'subject', she: 'subject', they: 'subject', him: 'object', her: 'object', them: 'object', his: 'possessive_adjective', hers: 'possessive_pronoun', their: 'possessive_adjective', theirs: 'possessive_pronoun', himself: 'reflexive', herself: 'reflexive', themselves: 'reflexive' }
+    const pronounSeen = new Set()
+    document.paragraphs.forEach((paragraph) => {
+      Array.from(paragraph.normalized.matchAll(/\b(he|she|they|him|her|them|his|hers|their|theirs|himself|herself|themselves)\b/ig)).forEach((match) => {
+        const word = match[0]
+        const role = pronounRoles[word.toLowerCase()]
+        const signature = `${word.toLowerCase()}-${role}`
+        if (pronounSeen.has(signature) || pronounSeen.size >= 18) return
+        pronounSeen.add(signature)
+        suggestions.push({ id: draftingStudioId('suggestion'), kind: 'pronoun', label: `${word} — linked pronoun`, field_key: 'client_pronouns', field_type: 'pronoun_set', data_source: 'manual', grammar_role: role, linked_party: 'client', file_id: document.file_id, paragraph_start: paragraph.index, paragraph_end: paragraph.index, start_offset: match.index, end_offset: match.index + word.length, source_text: word, replace_all: true, confidence: .82, source: 'local_ai', reason: 'Pronoun detected; link it to one party’s pronoun set.', practice_manual_form: document.practice_manual_form || '', practice_manual_section: paragraph.section_name || '' })
+      })
+    })
+    const fullNameCounts = new Map()
+    document.paragraphs.forEach((paragraph) => {
+      Array.from(paragraph.normalized.matchAll(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z.'-]+){1,3})\b/g)).forEach((match) => {
+        const name = match[1]
+        if (/^(Final Decree|Texas Family|Standard Possession|Sole Managing|Joint Managing|The Court|Family Code|Income Withholding|Christmas Holidays|Spring Vacation|United States|Social Security|Internal Revenue|Supreme Court)$/i.test(name)) return
+        fullNameCounts.set(name, (fullNameCounts.get(name) || 0) + 1)
+      })
+    })
+    Array.from(fullNameCounts.entries()).filter(([, count]) => count >= 2).sort((a, b) => b[1] - a[1]).slice(0, 25).forEach(([name, count]) => {
+      const paragraph = document.paragraphs.find((item) => item.text.includes(name))
+      suggestions.push({ id: draftingStudioId('suggestion'), kind: 'field', label: name, field_key: draftingNormalizeFieldKey(name), field_type: 'text', data_source: 'manual', file_id: document.file_id, paragraph_start: paragraph?.index ?? -1, paragraph_end: paragraph?.index ?? -1, start_offset: paragraph?.text.indexOf(name) || 0, end_offset: (paragraph?.text.indexOf(name) || 0) + name.length, source_text: name, replace_all: true, confidence: Math.min(.93, .65 + count * .03), source: 'local_ai', reason: `Repeated proper name detected ${count} times.` })
+    })
+    document.sections.forEach((section) => {
+      const reliefIds = draftingStudioReliefMatchForSection(section.name)
+      if (!reliefIds.length) return
+      const sourceText = document.paragraphs.slice(section.start, Math.min(section.end + 1, section.start + 80)).map((paragraph) => paragraph.text).filter(Boolean).join('\n')
+      suggestions.push({ id: draftingStudioId('suggestion'), kind: 'relief_clause', label: section.name, file_id: document.file_id, paragraph_start: section.start, paragraph_end: section.end, start_offset: 0, end_offset: document.paragraphs[section.end]?.text?.length || 0, source_text: sourceText, relief_option_ids: reliefIds, confidence: .72, source: 'local_ai', reason: `Section heading appears to correspond to ${reliefIds.length} Requested Relief option(s).`, practice_manual_form: document.practice_manual_form || '', practice_manual_section: section.name })
+    })
+    return suggestions
+  }
+
+  async function draftingStudioRunAnalysis() {
+    const template = draftingStudioCurrentTemplate()
+    const file = draftingStudioCurrentFile(template)
+    if (!template || !file || !draftingStudioDocument) return alert('Open a Word template in Visual Template Builder first.')
+    setDraftingStudioBusy(true)
+    setDraftingAiSuggestionLimit(180)
+    setDraftingStudioStatus('Mio is detecting fields, pronouns, selectable paragraphs, Practice Manual connections, and Requested Relief clauses...')
+    const localSuggestions = draftingStudioLocalSuggestions(draftingStudioDocument)
+    let remoteSuggestions = []
+    try {
+      const token = session?.access_token || (await supabase.auth.getSession())?.data?.session?.access_token || ''
+      if (token) {
+        const meaningfulParagraphs = draftingStudioDocument.paragraphs.filter((paragraph) => paragraph.normalized).slice(0, 2400)
+        const batchSize = 300
+        const batches = []
+        for (let index = 0; index < meaningfulParagraphs.length; index += batchSize) batches.push(meaningfulParagraphs.slice(index, index + batchSize))
+        const reliefOptionsForAi = requestedReliefOptions.filter((option) => option.is_relief_option && option.is_active !== false).map((option) => ({ id: option.id, name: option.name }))
+        for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+          const batch = batches[batchIndex]
+          const firstIndex = batch[0]?.index ?? 0
+          const lastIndex = batch[batch.length - 1]?.index ?? firstIndex
+          const batchOutline = draftingStudioDocument.sections.filter((section) => section.start <= lastIndex && section.end >= firstIndex).slice(0, 100)
+          setDraftingStudioStatus(`Mio is analyzing document section ${batchIndex + 1} of ${batches.length} (${firstIndex + 1}–${lastIndex + 1} of ${draftingStudioDocument.paragraph_count} paragraphs)...`)
+          const response = await fetch('/api/drafting-ai', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'analyze_template',
+              template: { id: template.id, name: template.name, document_type: template.document_type, category: template.category, source_kind: template.source_kind, practice_manual_form: template.practice_manual_form, analysis_batch: batchIndex + 1, analysis_batch_count: batches.length },
+              outline: batchOutline,
+              paragraphs: batch.map((paragraph) => ({ index: paragraph.index, text: paragraph.normalized.slice(0, 900), style: paragraph.style_name, hidden: paragraph.hidden, section: paragraph.section_name, form_references: paragraph.form_references })),
+              requested_relief_options: reliefOptionsForAi
+            })
+          })
+          const payload = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(payload?.error || `Drafting AI could not analyze section ${batchIndex + 1}.`)
+          if (Array.isArray(payload.suggestions)) remoteSuggestions.push(...payload.suggestions.slice(0, 180).map((suggestion, suggestionIndex) => ({ ...suggestion, id: `${suggestion.id || 'ai-suggestion'}-${batchIndex + 1}-${suggestionIndex + 1}`, file_id: suggestion.file_id || file.id || file.name, source: 'ai', confidence: Number(suggestion.confidence || .7), analysis_batch: batchIndex + 1 })))
+        }
+        if (meaningfulParagraphs.length < draftingStudioDocument.paragraphs.filter((paragraph) => paragraph.normalized).length) setDraftingStudioStatus('AI review was limited to the first 2,400 nonblank paragraphs; local field detection still reviewed the complete document.')
+      }
+    } catch (error) { console.warn('Drafting AI analysis unavailable; local analysis used.', error) }
+    const signatures = new Set()
+    const merged = [...remoteSuggestions, ...localSuggestions].filter((suggestion) => {
+      const signature = `${suggestion.kind}|${suggestion.source_text}|${suggestion.paragraph_start}|${(suggestion.relief_option_ids || []).join(',')}`
+      if (signatures.has(signature)) return false
+      signatures.add(signature)
+      return true
+    })
+    setDraftingAiSuggestions(merged)
+    setDraftingStudioStatus(`Mio proposed ${merged.length} field or clause binding(s). Nothing is permanent until you accept and save the template.`)
+    setDraftingStudioBusy(false)
+  }
+
+  function draftingStudioEnsureField(template, binding, suggestion = {}) {
+    if (!['field', 'pronoun', 'paragraph_choice'].includes(binding.kind)) return template
+    const key = draftingNormalizeFieldKey(binding.field_key || binding.label || binding.source_text) || `field_${(template.fields || []).length + 1}`
+    if ((template.fields || []).some((field) => field.key === key)) return template
+    const fieldType = binding.kind === 'pronoun' ? 'pronoun_set' : (suggestion.field_type || (binding.kind === 'paragraph_choice' ? 'rich_text' : 'text'))
+    return {
+      ...template,
+      fields: [...(template.fields || []), {
+        id: draftingStudioId('draft-field'), label: binding.label || key.replace(/_/g, ' '), key, type: fieldType,
+        source: binding.data_source || suggestion.data_source || 'manual', group: binding.kind === 'pronoun' ? 'Parties and pronouns' : 'AI-detected fields', help: suggestion.reason || '', placeholder: '', default_value: binding.kind === 'paragraph_choice' ? binding.source_text || '' : '', options: fieldType === 'pronoun_set' ? [{ value: 'male', label: 'He / him / his' }, { value: 'female', label: 'She / her / hers' }, { value: 'neutral', label: 'They / them / theirs' }] : [], grammar_role: binding.grammar_role || '', linked_party: binding.linked_party || '', hide_when_resolved: true, required: binding.required === true
+      }]
+    }
+  }
+
+  function draftingStudioCommitBinding(rawBinding, options = {}) {
+    const template = draftingStudioCurrentTemplate()
+    const file = draftingStudioCurrentFile(template)
+    if (!template || !file) return alert('Open a template file first.')
+    let binding = draftingNormalizeBinding({ ...rawBinding, file_id: rawBinding.file_id || file.id || file.name, source: rawBinding.source || 'manual' })
+    let nextTemplate = draftingStudioEnsureField(template, binding, options.suggestion || {})
+    if (['field', 'pronoun', 'paragraph_choice'].includes(binding.kind)) binding.field_key = draftingNormalizeFieldKey(binding.field_key || binding.label || binding.source_text)
+    if (binding.kind === 'relief_clause') {
+      const clause = draftingNormalizeReliefClause({
+        id: binding.clause_id || draftingStudioId('relief-clause'),
+        name: binding.label || binding.practice_manual_section || 'Requested Relief drafting language',
+        relief_option_ids: binding.relief_option_ids,
+        language: binding.replacement_text || binding.source_text,
+        source_text: binding.source_text,
+        source_template_id: template.id,
+        source_file_id: file.id || file.name,
+        source_paragraph_start: binding.paragraph_start,
+        source_paragraph_end: binding.paragraph_end,
+        practice_manual_form: binding.practice_manual_form || template.practice_manual_form || '',
+        practice_manual_section: binding.practice_manual_section || '',
+        updated_at: new Date().toISOString()
+      })
+      binding.clause_id = clause.id
+      setDraftingReliefClauses((current) => current.some((item) => item.id === clause.id) ? current.map((item) => item.id === clause.id ? clause : item) : [...current, clause])
+    }
+    const duplicateSignature = `${binding.kind}|${binding.file_id}|${binding.paragraph_start}|${binding.paragraph_end}|${binding.source_text}|${binding.field_key}|${binding.clause_id}`
+    const nextBindings = [...(nextTemplate.bindings || []).filter((item) => `${item.kind}|${item.file_id}|${item.paragraph_start}|${item.paragraph_end}|${item.source_text}|${item.field_key}|${item.clause_id}` !== duplicateSignature), binding]
+    nextTemplate = cleanDraftingTemplate({ ...nextTemplate, bindings: nextBindings, visual_builder_status: 'reviewed', updated_at: new Date().toISOString() })
+    setDraftingTemplates((current) => current.map((item) => String(item.id) === String(nextTemplate.id) ? nextTemplate : item))
+    setDraftingTemplateForm(nextTemplate)
+    setDraftingStudioTemplateId(nextTemplate.id)
+    setDraftingStudioSelection(null)
+    setDraftingStudioStatus(`Saved ${binding.kind.replace(/_/g, ' ')} binding “${binding.label || binding.field_key || binding.source_text.slice(0, 60)}.”`)
+    return binding
+  }
+
+  function draftingStudioAddBindingFromSelection() {
+    if (!draftingStudioSelection) return alert('Highlight text in the Word viewer first.')
+    const draft = { ...draftingBindingDraft }
+    if (['field', 'pronoun', 'paragraph_choice'].includes(draft.kind) && !String(draft.field_key || draft.label).trim()) return alert('Name the field before saving it.')
+    if (draft.kind === 'relief_clause' && !(draft.relief_option_ids || []).length) return alert('Select at least one Requested Relief option for this clause.')
+    draftingStudioCommitBinding({
+      ...draft,
+      ...draftingStudioSelection,
+      id: draftingStudioId('draft-binding'),
+      file_id: draftingStudioFileId,
+      source_text: draftingStudioSelection.source_text,
+      practice_manual_form: draft.practice_manual_form || draftingStudioDocument?.practice_manual_form || '',
+      practice_manual_section: draft.practice_manual_section || draftingStudioSelection.section_name || '',
+      source: 'manual'
+    })
+    setDraftingBindingDraft({ kind: 'field', label: '', field_key: '', data_source: 'manual', grammar_role: '', linked_party: '', relief_option_ids: [], clause_id: '', condition_key: '', replace_all: false, required: false, practice_manual_form: draftingStudioDocument?.practice_manual_form || '', practice_manual_section: '' })
+  }
+
+  function draftingStudioAcceptSuggestion(suggestion) {
+    draftingStudioCommitBinding({ ...suggestion, id: draftingStudioId('draft-binding'), source: suggestion.source || 'ai' }, { suggestion })
+    setDraftingAiSuggestions((current) => current.filter((item) => item.id !== suggestion.id))
+  }
+
+  function draftingStudioRejectSuggestion(suggestionId) {
+    setDraftingAiSuggestions((current) => current.filter((item) => item.id !== suggestionId))
+  }
+
+  function draftingStudioDeleteBinding(bindingId) {
+    const template = draftingStudioCurrentTemplate()
+    if (!template) return
+    const next = cleanDraftingTemplate({ ...template, bindings: (template.bindings || []).filter((binding) => binding.id !== bindingId), updated_at: new Date().toISOString() })
+    setDraftingTemplates((current) => current.map((item) => item.id === next.id ? next : item))
+    setDraftingTemplateForm(next)
+  }
+
+  function draftingToggleBindingReliefOption(optionId) {
+    setDraftingBindingDraft((current) => {
+      const selected = Array.isArray(current.relief_option_ids) ? current.relief_option_ids : []
+      return { ...current, relief_option_ids: selected.includes(String(optionId)) ? selected.filter((id) => id !== String(optionId)) : [...selected, String(optionId)] }
+    })
+  }
+
+  function draftingReliefOptionLabel(optionId) {
+    const option = requestedReliefOptions.find((item) => String(item.id) === String(optionId))
+    return option ? requestedReliefOptionPath(option.id) : optionId
+  }
+
+  function draftingUpsertReliefClause(clause) {
+    const normalized = draftingNormalizeReliefClause({ ...clause, updated_at: new Date().toISOString() })
+    setDraftingReliefClauses((current) => current.some((item) => item.id === normalized.id) ? current.map((item) => item.id === normalized.id ? normalized : item) : [...current, normalized])
+  }
+
+  function draftingDeleteReliefClause(clauseId) {
+    if (!window.confirm('Delete this Requested Relief drafting clause? Existing template bindings will remain visible but will no longer have replacement language.')) return
+    setDraftingReliefClauses((current) => current.filter((clause) => clause.id !== clauseId))
+  }
+
+  function draftingMatterTypeValue(matter) {
+    return String(matter?.matter_type || matter?.case_type || matter?.type || '').trim()
+  }
+
+  function draftingMatterPartyByRole(matter, rolePattern) {
+    const extra = matter ? matterExtraFor(matter.id) : {}
+    const parties = [
+      ...(Array.isArray(extra?.litigation_parties) ? extra.litigation_parties : []),
+      ...(Array.isArray(extra?.opposing_parties) ? extra.opposing_parties : [])
+    ]
+    const match = parties.find((party) => rolePattern.test(String(party.role || party.party_type || party.type || '')))
+    return match ? (draftingPersonFullName(match) || match.name || '') : ''
+  }
+
+  function draftingPetitionerName(matter) {
+    const clientRole = draftingClientRoleForMatter(matter)
+    const clientName = draftingPersonFullName(draftingMatterClientRecord(matter)) || matterClientName(matter) || ''
+    if (/petitioner|movant|applicant/i.test(clientRole)) return clientName
+    return matter?.petitioner_name || draftingMatterPartyByRole(matter, /petitioner|movant|applicant/i) || (draftingMatterPartyByRole(matter, /opposing|respondent/i) ? clientName : '')
+  }
+
+  function draftingRespondentName(matter) {
+    const clientRole = draftingClientRoleForMatter(matter)
+    const clientName = draftingPersonFullName(draftingMatterClientRecord(matter)) || matterClientName(matter) || ''
+    if (/respondent/i.test(clientRole)) return clientName
+    return matter?.respondent_name || draftingMatterPartyByRole(matter, /respondent/i) || (matterExtraFor(matter?.id)?.opposing_parties || [])[0]?.name || ''
+  }
+
+  function draftingProfileSignatureBlock(template = null, overrideId = '') {
+    const id = overrideId || template?.signature_block_id || draftingProfile.active_signature_block_id
+    return (draftingProfile.signature_blocks || []).find((block) => String(block.id) === String(id || '')) || (draftingProfile.signature_blocks || []).find((block) => block.is_active !== false) || null
+  }
+
+  function draftingResolveCaseStyle(template, matter, fieldValues = {}) {
+    const children = draftingChildrenForMatter(matter)
+    const overrideId = fieldValues.case_style_id || template?.default_case_style_id || ''
+    if (overrideId) {
+      const direct = (draftingProfile.case_styles || []).find((style) => String(style.id) === String(overrideId) && style.is_active !== false)
+      if (direct && (!direct.requires_children || children.length)) return direct
+    }
+    const caseType = draftingMatterTypeValue(matter).toLowerCase()
+    const matches = (draftingProfile.case_styles || []).filter((style) => style.is_active !== false && (style.case_type_patterns || []).some((pattern) => caseType.includes(String(pattern).toLowerCase())))
+    const childAware = matches.find((style) => style.requires_children === (children.length > 0)) || matches.find((style) => !style.requires_children || children.length)
+    return childAware || (draftingProfile.case_styles || []).find((style) => style.id === draftingProfile.default_case_style_id) || (draftingProfile.case_styles || [])[0] || null
+  }
+
+  function draftingExpandInlineTemplate(text, data) {
+    return String(text || '').replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, key) => {
+      const value = draftingResolveData(data, key)
+      return value == null ? '' : String(value)
+    }).replace(/\n{3,}/g, '\n\n').trim()
+  }
+
+  function draftingMatterRequestedReliefIds(matter) {
+    if (!matter) return []
+    return Array.from(new Set(requestedReliefs.filter((relief) => String(relief.matter_id) === String(matter.id) && relief.relief_type !== 'opposing_relief').flatMap((relief) => Array.isArray(relief.selected_option_ids) ? relief.selected_option_ids.map(String) : [])))
+  }
+
+  function draftingApplicableReliefClauses(matter, template = null) {
+    const selected = new Set(draftingMatterRequestedReliefIds(matter))
+    const roleText = String((template?.files || [])[0]?.role || template?.document_type || '').toLowerCase()
+    const caseType = draftingMatterTypeValue(matter).toLowerCase()
+    return draftingReliefClauses.filter((clause) => {
+      if (clause.is_active === false || !(clause.relief_option_ids || []).some((id) => selected.has(String(id)))) return false
+      if ((clause.document_roles || []).length && !(clause.document_roles || []).some((role) => roleText.includes(String(role).toLowerCase()))) return false
+      if ((clause.case_type_patterns || []).length && !(clause.case_type_patterns || []).some((pattern) => caseType.includes(String(pattern).toLowerCase()))) return false
+      return true
+    })
+  }
+
+  function draftingPronounValue(setName, grammarRole) {
+    const set = DRAFTING_PRONOUN_SETS[String(setName || '').toLowerCase()] || DRAFTING_PRONOUN_SETS.neutral
+    return set[grammarRole] || set.subject
+  }
+
+  function draftingCompareSimilarity(a = '', b = '') {
+    const normalize = (value) => new Set(String(value || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((word) => word.length > 2))
+    const left = normalize(a)
+    const right = normalize(b)
+    if (!left.size || !right.size) return 0
+    let intersection = 0
+    left.forEach((word) => { if (right.has(word)) intersection += 1 })
+    return intersection / new Set([...left, ...right]).size
+  }
+
+  function draftingCompareParsedDocuments(baseDoc, newDoc) {
+    const base = (baseDoc?.paragraphs || []).filter((paragraph) => paragraph.normalized && !paragraph.hidden)
+    const next = (newDoc?.paragraphs || []).filter((paragraph) => paragraph.normalized && !paragraph.hidden)
+    const baseExact = new Map(base.map((paragraph) => [paragraph.normalized, paragraph]))
+    const nextExact = new Map(next.map((paragraph) => [paragraph.normalized, paragraph]))
+    const results = []
+    next.forEach((paragraph, nextIndex) => {
+      if (baseExact.has(paragraph.normalized)) return
+      const nearby = base.filter((candidate) => Math.abs(candidate.index - paragraph.index) <= 30)
+      let best = null
+      nearby.forEach((candidate) => {
+        const score = draftingCompareSimilarity(candidate.normalized, paragraph.normalized)
+        if (!best || score > best.score) best = { candidate, score }
+      })
+      if (best?.score >= .42) results.push({ id: draftingStudioId('compare'), type: 'changed', base_index: best.candidate.index, new_index: paragraph.index, base_text: best.candidate.normalized, new_text: paragraph.normalized, section_name: paragraph.section_name, similarity: best.score, accepted: true })
+      else results.push({ id: draftingStudioId('compare'), type: 'added', base_index: -1, new_index: paragraph.index, base_text: '', new_text: paragraph.normalized, section_name: paragraph.section_name, similarity: 0, accepted: true })
+    })
+    base.forEach((paragraph) => {
+      if (nextExact.has(paragraph.normalized)) return
+      const alreadyChanged = results.some((result) => result.type === 'changed' && result.base_index === paragraph.index)
+      if (!alreadyChanged) results.push({ id: draftingStudioId('compare'), type: 'removed', base_index: paragraph.index, new_index: -1, base_text: paragraph.normalized, new_text: '', section_name: paragraph.section_name, similarity: 0, accepted: true })
+    })
+    return results.sort((a, b) => (a.new_index < 0 ? a.base_index : a.new_index) - (b.new_index < 0 ? b.base_index : b.new_index)).slice(0, 600)
+  }
+
+  async function draftingAnalyzeComparisonFile(file = draftingCompareFile) {
+    const template = draftingTemplates.find((item) => String(item.id) === String(draftingCompareTemplateId || ''))
+    const baseFile = (template?.files || []).find((item) => /\.docx$/i.test(item.name || '') && item.file_data)
+    if (!template || !baseFile || !file) return alert('Select an existing template and upload the newer .docx first.')
+    setDraftingStudioBusy(true)
+    setDraftingStudioStatus('Comparing the newer Word document with the existing template...')
+    try {
+      const payload = await readFileAsDataUrl(file)
+      const newFile = { id: draftingStudioId('comparison-file'), name: file.name, original_file_name: file.name, output_name: file.name, role: baseFile.role || 'document', include_by_default: true, type: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: file.size || 0, file_data: payload.file_data || '', uploaded_at: new Date().toISOString(), source_kind: 'comparison_upload' }
+      const [baseDoc, newDoc] = await Promise.all([draftingStudioParseTemplateFile(baseFile), draftingStudioParseTemplateFile(newFile)])
+      const results = draftingCompareParsedDocuments(baseDoc, newDoc)
+      let annotatedResults = results
+      let aiAnnotated = false
+      try {
+        const token = session?.access_token || (await supabase.auth.getSession())?.data?.session?.access_token || ''
+        if (token && results.length) {
+          setDraftingStudioStatus(`Structural comparison found ${results.length} difference(s). Mio AI is classifying the proposed changes...`)
+          const response = await fetch('/api/drafting-ai', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'compare_template',
+              template: { id: template.id, name: template.name, version: template.version, document_type: template.document_type, category: template.category },
+              changes: results.slice(0, 220),
+              requested_relief_options: requestedReliefOptions.filter((option) => option.is_relief_option && option.is_active !== false).map((option) => ({ id: option.id, name: requestedReliefOptionPath(option.id) }))
+            })
+          })
+          const aiPayload = await response.json().catch(() => ({}))
+          if (response.ok && Array.isArray(aiPayload.annotations)) {
+            const annotationById = new Map(aiPayload.annotations.map((annotation) => [String(annotation.result_id), annotation]))
+            annotatedResults = results.map((result) => {
+              const annotation = annotationById.get(String(result.id))
+              if (!annotation) return result
+              return { ...result, ai_summary: annotation.summary || '', ai_reason: annotation.reason || '', ai_recommendation: annotation.recommendation || 'review', ai_relief_option_ids: Array.isArray(annotation.relief_option_ids) ? annotation.relief_option_ids.map(String) : [], ai_clause_name: annotation.possible_clause_name || '', accepted: annotation.recommendation === 'ignore' ? false : result.accepted }
+            })
+            aiAnnotated = true
+          }
+        }
+      } catch (error) { console.warn('Drafting comparison AI unavailable; structural comparison used.', error) }
+      setDraftingCompareDocument({ ...newDoc, file_record: newFile, base_document: baseDoc, base_file_record: baseFile })
+      setDraftingCompareResults(annotatedResults)
+      setDraftingStudioStatus(`Comparison found ${annotatedResults.filter((item) => item.type === 'changed').length} changed, ${annotatedResults.filter((item) => item.type === 'added').length} added, and ${annotatedResults.filter((item) => item.type === 'removed').length} removed paragraph(s).${aiAnnotated ? ' Mio AI classified the differences and suggested which ones need attorney review.' : ''} Review the checkboxes before creating a new template version.`)
+    } catch (error) { setDraftingStudioStatus(error?.message || 'The comparison could not be completed.') }
+    finally { setDraftingStudioBusy(false) }
+  }
+
+  function draftingToggleCompareResult(resultId) {
+    setDraftingCompareResults((current) => current.map((result) => result.id === resultId ? { ...result, accepted: result.accepted === false } : result))
+  }
+
+  function draftingAddCompareResultReliefOption(resultId, optionId) {
+    if (!optionId) return
+    setDraftingCompareResults((current) => current.map((result) => {
+      if (result.id !== resultId) return result
+      const ids = Array.from(new Set([...(result.ai_relief_option_ids || []), String(optionId)]))
+      return { ...result, ai_relief_option_ids: ids }
+    }))
+  }
+
+  function draftingRemoveCompareResultReliefOption(resultId, optionId) {
+    setDraftingCompareResults((current) => current.map((result) => result.id === resultId ? { ...result, ai_relief_option_ids: (result.ai_relief_option_ids || []).filter((id) => String(id) !== String(optionId)) } : result))
+  }
+
+  function draftingSaveCompareResultAsReliefClause(result) {
+    const language = String(result?.new_text || '').trim()
+    const reliefIds = Array.isArray(result?.ai_relief_option_ids) ? result.ai_relief_option_ids.map(String) : []
+    if (!language) return alert('This comparison row does not contain new language to save.')
+    if (!reliefIds.length) return alert('Associate at least one Requested Relief option before saving this language as a clause.')
+    const name = window.prompt('Name this Requested Relief drafting clause:', result.ai_clause_name || result.section_name || 'Drafting language from compared document')
+    if (name === null) return
+    const template = draftingTemplates.find((item) => String(item.id) === String(draftingCompareTemplateId || ''))
+    draftingUpsertReliefClause({
+      id: draftingStudioId('relief-clause'),
+      name: String(name || '').trim() || 'Drafting language from compared document',
+      relief_option_ids: reliefIds,
+      language,
+      source_text: language,
+      source_template_id: template?.id || '',
+      source_file_id: draftingCompareDocument?.file_record?.id || draftingCompareDocument?.file_record?.name || '',
+      source_paragraph_start: Number(result.new_index ?? -1),
+      source_paragraph_end: Number(result.new_index ?? -1),
+      practice_manual_form: template?.practice_manual_form || '',
+      practice_manual_section: result.section_name || '',
+      notes: `Saved from template comparison. ${result.ai_summary || result.ai_reason || ''}`.trim(),
+      updated_at: new Date().toISOString(),
+      is_active: true
+    })
+    setDraftingStudioStatus(`Saved “${String(name || '').trim() || 'Drafting language'}” to the Requested Relief clause library.`)
+  }
+
+  async function draftingApplyComparisonDecisionsToFile(newFile, results = []) {
+    const rejected = results.filter((result) => result.accepted === false)
+    if (!newFile?.file_data || !rejected.length) return newFile
+    await ensureDraftingZipLibrary()
+    const zip = await window.JSZip.loadAsync(dataUrlToUint8Array(newFile.file_data))
+    const entry = zip.file('word/document.xml')
+    if (!entry) return newFile
+    const xml = await entry.async('string')
+    const parser = new DOMParser()
+    const xmlDoc = parser.parseFromString(xml, 'application/xml')
+    if (xmlDoc.getElementsByTagName('parsererror').length) return newFile
+    const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const paragraphNodes = () => Array.from(xmlDoc.getElementsByTagNameNS(wordNamespace, 'p'))
+    rejected.filter((result) => ['added', 'changed'].includes(result.type) && result.new_index >= 0).sort((a, b) => b.new_index - a.new_index).forEach((result) => {
+      const current = paragraphNodes()[result.new_index]
+      if (!current?.parentNode) return
+      if (result.type === 'added') current.parentNode.removeChild(current)
+      else draftingWordSetElementText(current, result.base_text || '')
+    })
+    rejected.filter((result) => result.type === 'removed' && result.base_index >= 0 && result.base_text).sort((a, b) => a.base_index - b.base_index).forEach((result) => {
+      const current = paragraphNodes()
+      const reference = current[Math.min(result.base_index, Math.max(0, current.length - 1))]
+      if (!reference?.parentNode) return
+      const clone = reference.cloneNode(true)
+      draftingWordSetElementText(clone, result.base_text)
+      if (result.base_index >= current.length) reference.parentNode.appendChild(clone)
+      else reference.parentNode.insertBefore(clone, reference)
+    })
+    zip.file('word/document.xml', new XMLSerializer().serializeToString(xmlDoc))
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', compression: 'DEFLATE' })
+    return { ...newFile, file_data: await draftingBlobToDataUrl(blob), size: blob.size, comparison_decisions_applied: true }
+  }
+
+  async function draftingCreateRevisedTemplateFromComparison() {
+    const template = draftingTemplates.find((item) => String(item.id) === String(draftingCompareTemplateId || ''))
+    const uploadedFile = draftingCompareDocument?.file_record
+    if (!template || !uploadedFile) return alert('Run the template comparison first.')
+    const version = window.prompt('New template version:', draftingNextVersion(template.version || '1.0'))
+    if (version === null) return
+    setDraftingStudioBusy(true)
+    setDraftingStudioStatus('Applying your accepted/rejected comparison decisions and creating a new template version...')
+    try {
+      const preparedFile = await draftingApplyComparisonDecisionsToFile(uploadedFile, draftingCompareResults)
+      const preparedDocument = await draftingStudioParseTemplateFile(preparedFile)
+      const newFileId = draftingStudioId('draft-template-file')
+      const paragraphs = preparedDocument.paragraphs || []
+      const remappedBindings = (template.bindings || []).map((binding) => {
+        const exact = binding.source_text ? paragraphs.find((paragraph) => paragraph.text.includes(binding.source_text)) : null
+        if (!exact) return { ...binding, id: draftingStudioId('draft-binding'), file_id: newFileId, is_active: false, source: 'comparison_unresolved' }
+        return { ...binding, id: draftingStudioId('draft-binding'), file_id: newFileId, paragraph_start: exact.index, paragraph_end: exact.index, start_offset: exact.text.indexOf(binding.source_text), end_offset: exact.text.indexOf(binding.source_text) + binding.source_text.length, is_active: true, source: 'comparison_remapped' }
+      })
+      const nextVersion = String(version || '').trim() || draftingNextVersion(template.version)
+      const nextFile = { ...preparedFile, id: newFileId, output_name: (template.files || [])[0]?.output_name || preparedFile.name }
+      const next = cleanDraftingTemplate({
+        ...template,
+        id: draftingStudioId('draft-template'),
+        system_key: '',
+        name: `${draftingTemplateLabel(template)} v${nextVersion}`,
+        version: nextVersion,
+        status: 'draft',
+        approved_at: '',
+        visual_builder_status: 'comparison_review_required',
+        files: [nextFile],
+        bindings: remappedBindings,
+        compare_history: [...(template.compare_history || []), {
+          compared_at: new Date().toISOString(), source_template_id: template.id, source_template_version: template.version,
+          uploaded_file_name: preparedFile.name,
+          accepted_change_count: draftingCompareResults.filter((result) => result.accepted !== false).length,
+          rejected_change_count: draftingCompareResults.filter((result) => result.accepted === false).length,
+          unresolved_binding_count: remappedBindings.filter((binding) => binding.is_active === false).length
+        }],
+        updated_at: new Date().toISOString()
+      })
+      setDraftingTemplates((current) => [...current, next])
+      setDraftingCompareTemplateId(next.id)
+      setDraftingCompareResults([])
+      setDraftingCompareFile(null)
+      setDraftingStudioStatus(`Created ${next.name}. Comparison decisions were applied to the Word template; ${remappedBindings.filter((binding) => binding.is_active === false).length} binding(s) need visual review.`)
+      await draftingStudioOpenTemplate(next, newFileId)
+    } catch (error) {
+      setDraftingStudioStatus(error?.message || 'The revised template version could not be created.')
+    } finally {
+      setDraftingStudioBusy(false)
+    }
+  }
+
+  function draftingIntakeTemplateForMatter(matter) {
+    const caseType = draftingMatterTypeValue(matter).toLowerCase()
+    return draftingIntakeTemplates.find((template) => template.is_active !== false && (template.case_type_patterns || []).some((pattern) => caseType.includes(String(pattern).toLowerCase()))) || draftingIntakeTemplates.find((template) => template.is_active !== false) || null
+  }
+
+  function draftingSelectIntakeMatter(matterId) {
+    const matter = matters.find((item) => String(item.id) === String(matterId || '')) || null
+    const template = draftingIntakeTemplateForMatter(matter)
+    const recipient = matter ? (draftingMatterClientRecord(matter)?.email || matter.client_email || '') : ''
+    setDraftingIntakeWorkspace((current) => ({ ...current, matter_id: matterId, template_id: template?.id || '', recipient_email: recipient, last_link: '' }))
+    setDraftingIntakeRequests([])
+    setDraftingIntakeStatus('')
+  }
+
+  async function draftingAuthenticatedApi(path, options = {}) {
+    const authSession = session || (await supabase.auth.getSession())?.data?.session
+    const token = authSession?.access_token || ''
+    if (!token) throw new Error('You must be signed in to use secure client intake.')
+    const response = await fetch(path, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || `Client intake request failed (${response.status}).`)
+    return payload
+  }
+
+  async function draftingSendIntakeEmail(link, matter, template) {
+    const recipient = String(draftingIntakeWorkspace.recipient_email || '').trim()
+    if (!recipient) throw new Error('Enter the client email address before sending.')
+    const subject = draftingIntakeWorkspace.subject || `Secure ${template.name} — ${matterClientName(matter) || 'your case'}`
+    const messageText = draftingIntakeWorkspace.message || 'Please complete the secure intake form.'
+    const html = `<p>${String(messageText).replace(/\n/g, '<br>')}</p><p><a href="${link}" style="display:inline-block;padding:11px 16px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:7px;font-weight:700">Open secure intake form</a></p><p style="font-size:12px;color:#64748b">This link is unique to your matter. Do not forward it.</p>`
+    if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected) {
+      const mailbox = serviceGraphAuth?.account?.username || session?.user?.email || ''
+      await graphFetch(`${graphMailboxBase(mailbox)}/sendMail`, { method: 'POST', body: JSON.stringify({ message: { subject, body: { contentType: 'HTML', content: html }, toRecipients: [{ emailAddress: { address: recipient } }] }, saveToSentItems: true }) })
+      return 'sent_graph'
+    }
+    const mailto = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(`${messageText}\n\n${link}\n\nThis link is unique to your matter. Do not forward it.`)}`
+    window.location.href = mailto
+    return 'opened_mail_client'
+  }
+
+  async function draftingCreateIntakeRequest(sendEmail = false) {
+    const matter = matters.find((item) => String(item.id) === String(draftingIntakeWorkspace.matter_id || ''))
+    const template = draftingIntakeTemplates.find((item) => String(item.id) === String(draftingIntakeWorkspace.template_id || ''))
+    if (!matter || !template) return alert('Select a matter and intake template first.')
+    setDraftingIntakeStatus('Creating a secure client-specific intake link...')
+    try {
+      const payload = await draftingAuthenticatedApi('/api/client-intake', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'create', matter_id: matter.id, matter_name: matter.name || '', client_name: matterClientName(matter) || '', recipient_email: draftingIntakeWorkspace.recipient_email || '', expires_days: Number(draftingIntakeWorkspace.expires_days || 14), template_snapshot: draftingNormalizeIntakeTemplate(template), title: template.name })
+      })
+      const link = payload.link || payload.request?.link || ''
+      setDraftingIntakeWorkspace((current) => ({ ...current, last_link: link }))
+      setDraftingIntakeRequests((current) => payload.request ? [payload.request, ...current.filter((item) => item.id !== payload.request.id)] : current)
+      if (sendEmail && link) {
+        const result = await draftingSendIntakeEmail(link, matter, template)
+        setDraftingIntakeStatus(result === 'sent_graph' ? `Secure intake link created and emailed to ${draftingIntakeWorkspace.recipient_email}.` : 'Secure intake link created. Your email program was opened with the link ready to send.')
+      } else setDraftingIntakeStatus('Secure intake link created. Copy it or send it through Microsoft from Mio.')
+    } catch (error) { setDraftingIntakeStatus(error?.message || 'The intake request could not be created.') }
+  }
+
+  async function draftingLoadIntakeRequests() {
+    if (!draftingIntakeWorkspace.matter_id) return alert('Select a matter first.')
+    setDraftingIntakeStatus('Loading intake requests and submissions...')
+    try {
+      const payload = await draftingAuthenticatedApi(`/api/client-intake?action=list&matter_id=${encodeURIComponent(draftingIntakeWorkspace.matter_id)}`, { method: 'GET', headers: {} })
+      const rows = Array.isArray(payload.requests) ? payload.requests : []
+      setDraftingIntakeRequests(rows)
+      setDraftingIntakeReviewSelections(Object.fromEntries(rows.map((row) => [row.id, Object.fromEntries(Object.keys(row.submission?.answers || {}).map((key) => [key, true]))])))
+      setDraftingIntakeStatus(`Loaded ${rows.length} intake request(s).`)
+    } catch (error) { setDraftingIntakeStatus(error?.message || 'The intake requests could not be loaded.') }
+  }
+
+  function draftingToggleIntakeReviewAnswer(requestId, key) {
+    setDraftingIntakeReviewSelections((current) => ({ ...current, [requestId]: { ...(current[requestId] || {}), [key]: current?.[requestId]?.[key] === false } }))
+  }
+
+  async function draftingApplyIntakeRequest(request) {
+    const matter = matters.find((item) => String(item.id) === String(request.matter_id || ''))
+    const answers = request.submission?.answers || request.answers || {}
+    const template = draftingNormalizeIntakeTemplate(request.template_snapshot || {})
+    if (!matter || !Object.keys(answers).length) return alert('This intake request does not have a submitted answer set to apply.')
+    const selectedMap = draftingIntakeReviewSelections[request.id] || Object.fromEntries(Object.keys(answers).map((key) => [key, true]))
+    const questions = template.questions || []
+    const matterPatch = { intake_last_approved_at: new Date().toISOString(), intake_last_request_id: request.id, intake_approved_data: { ...(matter.intake_approved_data || {}) } }
+    const clientPatch = {}
+    questions.forEach((question) => {
+      if (selectedMap[question.key] === false || answers[question.key] == null || answers[question.key] === '') return
+      const value = answers[question.key]
+      matterPatch.intake_approved_data[question.key] = value
+      const target = String(question.target || '')
+      if (target === 'client.full_name') {
+        const parts = String(value).trim().split(/\s+/)
+        clientPatch.name = String(value).trim()
+        clientPatch.first_name = parts[0] || ''
+        clientPatch.last_name = parts.length > 1 ? parts[parts.length - 1] : ''
+        if (parts.length > 2) clientPatch.middle_name = parts.slice(1, -1).join(' ')
+      } else if (target.startsWith('client.')) clientPatch[target.slice(7)] = value
+      else if (target === 'matter.children') matterPatch.children = String(value).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => { const parts = line.split(/\s*\|\s*/); return { id: draftingStudioId('child'), name: parts[0] || '', date_of_birth: parts[1] || '', school: parts[2] || '' } })
+      else if (target.startsWith('matter.')) matterPatch[target.slice(7)] = value
+    })
+    if (Object.keys(clientPatch).length) {
+      const client = draftingMatterClientRecord(matter)
+      if (client?.id) setClients((current) => current.map((item) => String(item.id) === String(client.id) ? { ...item, ...clientPatch, updated_at: new Date().toISOString() } : item))
+    }
+    setMatters((current) => current.map((item) => String(item.id) === String(matter.id) ? { ...item, ...matterPatch, client_email: clientPatch.email || item.client_email, updated_at: new Date().toISOString() } : item))
+    try {
+      await draftingAuthenticatedApi('/api/client-intake', { method: 'POST', body: JSON.stringify({ action: 'review', request_id: request.id, review_status: 'approved', applied_keys: Object.keys(selectedMap).filter((key) => selectedMap[key] !== false) }) })
+      setDraftingIntakeRequests((current) => current.map((item) => item.id === request.id ? { ...item, status: 'approved', reviewed_at: new Date().toISOString() } : item))
+      setDraftingIntakeStatus('Approved selected intake answers and applied them to the matter/client record. Existing values were changed only for checked answers.')
+    } catch (error) { setDraftingIntakeStatus(`The answers were applied locally, but Mio could not mark the request reviewed: ${error?.message || error}`) }
+  }
+
+  async function submitPublicIntake(event) {
+    event.preventDefault()
+    const request = publicIntakePayload
+    const questions = request?.template_snapshot?.questions || []
+    const missing = questions.filter((question) => question.required && !String(publicIntakeAnswers[question.key] ?? '').trim())
+    if (missing.length) return setPublicIntakeStatus(`Please complete: ${missing.map((question) => question.label).join(', ')}`)
+    setPublicIntakeStatus('Submitting your secure intake form...')
+    try {
+      const response = await fetch('/api/client-intake', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit', token: publicIntakeToken, answers: publicIntakeAnswers }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error || 'The intake form could not be submitted.')
+      setPublicIntakeSubmitted(true)
+      setPublicIntakeStatus('Your intake form was submitted securely. The firm will review your answers before adding them to your case file.')
+    } catch (error) { setPublicIntakeStatus(error?.message || 'The intake form could not be submitted.') }
+  }
+
+
   function draftingSelectedTemplate() {
     return draftingTemplates.find((template) => String(template.id) === String(draftingSelection.template_id)) || null
   }
@@ -17734,27 +20430,59 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
   function draftingDefaultValueForField(field, matter) {
     const source = field?.source || 'manual'
+    const client = matter ? draftingMatterClientRecord(matter) : {}
+    const court = matter ? draftingMatterCourtRecord(matter) : {}
+    const children = draftingChildrenForMatter(matter)
     if (source === 'today') return dateToInputValue(new Date())
+    if (source === 'matter.cause_number') return matter?.cause_number || field.default_value || ''
+    if (source === 'matter.name') return matter?.name || field.default_value || ''
+    if (source === 'matter.case_type') return draftingMatterTypeValue(matter) || field.default_value || ''
+    if (source === 'matter.county') return court.county || matter?.county || field.default_value || ''
+    if (source === 'matter.court_name') return court.court_name || matter?.court || field.default_value || ''
+    if (source === 'matter.client_name') return draftingPersonFullName(client) || matterClientName(matter) || field.default_value || ''
+    if (source === 'matter.client_email') return client?.email || matter?.client_email || field.default_value || ''
+    if (source === 'matter.client_phone') return client?.phone || client?.mobile_phone || matter?.client_phone || field.default_value || ''
+    if (source === 'matter.client_address') return draftingMultilineAddress(client) || field.default_value || ''
+    if (source === 'matter.petitioner_name') return draftingPetitionerName(matter) || field.default_value || ''
+    if (source === 'matter.respondent_name') return draftingRespondentName(matter) || field.default_value || ''
+    if (source === 'matter.opposing_party_name') return (matterExtraFor(matter?.id)?.opposing_parties || [])[0]?.name || matter?.opposing_party_name || field.default_value || ''
     if (source === 'matter.caption_subject') return draftingCaptionSubjectForMatter(matter) || field.default_value || ''
     if (source === 'matter.client_role') return draftingClientRoleForMatter(matter) || field.default_value || ''
-    if (source === 'matter.children') return draftingChildrenForMatter(matter).map((child) => `${child.name}${child.age ? ` | ${child.age}` : ''}`).join('\n') || field.default_value || ''
+    if (source === 'matter.children') return children.map((child) => `${child.name}${child.age ? ` | ${child.age}` : ''}`).join('\n') || field.default_value || ''
+    if (source === 'matter.children_names') return children.map((child) => child.name).filter(Boolean).join(', ') || field.default_value || ''
     if (source === 'matter.future_events') return draftingFutureEventsForMatter(matter).map((event) => String(event.id))
     if (source === 'matter.service_recipients') return draftingServiceRecipientOptions(matter).map((recipient) => recipient.id)
+    if (source === 'matter.requested_relief_ids') return draftingMatterRequestedReliefIds(matter)
+    if (source === 'matter.requested_relief_language') return draftingApplicableReliefClauses(matter).map((clause) => clause.language).filter(Boolean).join('\n\n')
     if (source === 'court.coordinator_email') {
-      const court = draftingMatterCourtRecord(matter)
       const courtPeople = matter ? matterExtraFor(matter.id)?.court_people || [] : []
       return court.court_coordinator_email || court.coordinator_email || courtPeople.find((person) => /coordinator/i.test(person.title || ''))?.email || field.default_value || ''
     }
-    if (source === 'court.address') {
-      const court = draftingMatterCourtRecord(matter)
-      return court.court_address || court.address || field.default_value || ''
+    if (source === 'court.address') return court.court_address || court.address || field.default_value || ''
+    if (source === 'attorney.signature_block') {
+      const block = draftingProfileSignatureBlock()
+      return field?.type === 'select' ? (block?.id || field.default_value || '') : (block?.signature_text || field.default_value || '')
+    }
+    if (source === 'case.style_id') return draftingResolveCaseStyle(null, matter, {})?.id || field.default_value || ''
+    if (source === 'case.caption') {
+      const style = draftingResolveCaseStyle(null, matter, {})
+      const data = { petitioner_name: draftingPetitionerName(matter), respondent_name: draftingRespondentName(matter), children_names: children.map((child) => child.name).filter(Boolean).join(', ') }
+      return [style?.line_1, style?.line_2, style?.line_3].map((line) => draftingExpandInlineTemplate(line, data)).filter(Boolean).join('\n') || field.default_value || ''
+    }
+    if (field?.type === 'pronoun_set') {
+      const gender = String(client?.gender || client?.sex || '').toLowerCase()
+      if (/male|man|boy/.test(gender)) return 'male'
+      if (/female|woman|girl/.test(gender)) return 'female'
     }
     if (Array.isArray(field?.default_value)) return [...field.default_value]
     return field?.default_value ?? ''
   }
 
   function buildDefaultDraftingFieldValues(template, matter) {
-    return Object.fromEntries((template?.fields || []).map((field) => [field.key, draftingDefaultValueForField(field, matter)]))
+    const output = Object.fromEntries((template?.fields || []).map((field) => [field.key, draftingDefaultValueForField(field, matter)]))
+    if (!output.case_style_id) output.case_style_id = draftingResolveCaseStyle(template, matter, output)?.id || ''
+    if (!output.signature_block_id) output.signature_block_id = draftingProfileSignatureBlock(template)?.id || ''
+    return output
   }
 
   function draftingDefaultSelectedFiles(template) {
@@ -17925,13 +20653,15 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const clientFirstName = client.first_name || clientName.split(/\s+/)[0] || 'Client'
     const attorneyName = draftingPersonFullName(attorney) || attorney.name || 'Ben Beveridge'
     const attorneyEmail = attorney.email || session?.user?.email || 'ben@beveridgelawfirm.com'
-    const attorneyBarNumber = attorney.state_bar_number || attorney.bar_number || attorney.bar_no || '24121457'
+    const attorneyBarNumber = attorney.state_bar_number || attorney.bar_number || attorney.bar_no || ''
     const firmAddress = draftingFirmAddressLines()
     const courtCaption = draftingCourtCaptionLines(court, matter)
     const clientAddressInline = String(fieldValues.client_address_override || '').trim() || draftingInlineAddress(client)
     const clientAddressMultiline = String(fieldValues.client_address_override || '').trim() || draftingMultilineAddress(client)
     const clientEmail = String(fieldValues.client_email_override || '').trim() || client.email || matter?.client_email || ''
-    const children = draftingParseRows(fieldValues.children, ['name', 'age'])
+    const children = draftingParseRows(fieldValues.children, ['name', 'age']).filter((child) => child.name)
+    const matterChildren = draftingChildrenForMatter(matter)
+    const resolvedChildren = children.length ? children : matterChildren
     const pendingEventIds = Array.isArray(fieldValues.pending_settings) ? fieldValues.pending_settings.map(String) : []
     const allMatterEvents = draftingFutureEventsForMatter(matter)
     const pendingEvents = allMatterEvents.filter((event) => pendingEventIds.includes(String(event.id)))
@@ -17983,12 +20713,25 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const courtContactEmail = String(fieldValues.court_contact_email || '').trim() || court.court_coordinator_email || court.coordinator_email || courtPeople.find((person) => /coordinator/i.test(person.title || ''))?.email || ''
     const courtPhone = String(fieldValues.court_phone_override || '').trim() || court.court_phone || court.phone || ''
     const courtWebsite = String(fieldValues.court_website_override || '').trim() || court.court_website || court.website || ''
-    const captionSubject = String(fieldValues.caption_left_line_2 || '').trim()
-    const captionOpening = String(fieldValues.caption_left_line_1 || 'IN THE INTEREST OF').trim()
-    const captionDesignation = String(fieldValues.caption_left_line_3 || '').trim()
-    const firmName = lawFirmProfile?.firm_name || 'Beveridge Law Firm, PLLC'
-    const firmPhone = lawFirmProfile?.phone || '(281) 407-0961'
-    const firmServiceEmail = lawFirmProfile?.email || 'service@beveridgelawfirm.com'
+    const petitionerName = draftingPetitionerName(matter)
+    const respondentName = draftingRespondentName(matter)
+    const opposingPartyName = (extra?.opposing_parties || [])[0]?.name || matter?.opposing_party_name || ''
+    const childrenNames = resolvedChildren.map((child) => String(child.name || '').trim()).filter(Boolean).join(', ')
+    const caseStyle = draftingResolveCaseStyle(template, matter, fieldValues)
+    const captionTokenData = { ...fieldValues, petitioner_name: petitionerName, respondent_name: respondentName, opposing_party_name: opposingPartyName, children_names: childrenNames, client_name: clientName, cause_number: matter?.cause_number || '' }
+    const captionOpening = String(fieldValues.caption_left_line_1 || draftingExpandInlineTemplate(caseStyle?.line_1 || 'IN THE INTEREST OF', captionTokenData)).trim()
+    const captionSubject = String(fieldValues.caption_left_line_2 || draftingExpandInlineTemplate(caseStyle?.line_2 || draftingCaptionSubjectForMatter(matter), captionTokenData)).trim()
+    const captionDesignation = String(fieldValues.caption_left_line_3 || draftingExpandInlineTemplate(caseStyle?.line_3 || '', captionTokenData)).trim()
+    const caseCaptionText = [captionOpening, captionSubject, captionDesignation].filter(Boolean).join('\n')
+    const signatureBlock = draftingProfileSignatureBlock(template, fieldValues.signature_block_id || '')
+    const firmName = signatureBlock?.firm_name || lawFirmProfile?.firm_name || 'Beveridge Law Firm, PLLC'
+    const firmPhone = signatureBlock?.phone || lawFirmProfile?.phone || '(281) 407-0961'
+    const firmServiceEmail = signatureBlock?.email || lawFirmProfile?.email || 'service@beveridgelawfirm.com'
+    const activeReliefOptionIds = draftingMatterRequestedReliefIds(matter)
+    const requestedReliefClauses = draftingApplicableReliefClauses(matter, template)
+    const requestedReliefLanguage = requestedReliefClauses.map((clause) => clause.language).filter(Boolean).join('\n\n')
+    const signatureTokenData = { ...captionTokenData, attorney_name: signatureBlock?.attorney_name || attorneyName, attorney_bar_number: signatureBlock?.bar_number || attorneyBarNumber, firm_name: firmName, firm_address_line_1: signatureBlock?.address_line_1 || firmAddress[0] || '', firm_address_line_2: signatureBlock?.address_line_2 || firmAddress[1] || '', firm_phone: firmPhone, firm_service_email: firmServiceEmail }
+    const attorneySignatureBlock = draftingExpandInlineTemplate(signatureBlock?.signature_text || '/s/ {{attorney_name}}\n{{attorney_name}}\nTexas Bar No. {{attorney_bar_number}}\n{{firm_name}}', signatureTokenData)
     const noticeIntro = `This letter gives you written notice that ${attorneyName} and ${firmName} are seeking permission from the Court to withdraw from representing you in the above-referenced matter. A Motion for Withdrawal of Attorney is being filed and served on ${draftingLongDate(filingDate)}.`
 
     return {
@@ -18001,14 +20744,25 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       client_address_inline: clientAddressInline,
       client_address_multiline: clientAddressMultiline,
       client_role: fieldValues.client_role || draftingClientRoleForMatter(matter),
-      attorney_name: attorneyName,
+      petitioner_name: petitionerName,
+      respondent_name: respondentName,
+      opposing_party_name: opposingPartyName,
+      children_names: childrenNames,
+      matter_case_type: draftingMatterTypeValue(matter),
+      matter_county: court.county || matter?.county || '',
+      case_style_id: caseStyle?.id || '',
+      case_style_name: caseStyle?.name || '',
+      case_caption_text: caseCaptionText,
+      attorney_name: signatureBlock?.attorney_name || attorneyName,
       attorney_email: attorneyEmail,
-      attorney_bar_number: attorneyBarNumber,
+      attorney_bar_number: signatureBlock?.bar_number || attorneyBarNumber,
       firm_name: firmName,
-      firm_address_line_1: firmAddress[0] || '',
-      firm_address_line_2: firmAddress[1] || '',
+      firm_address_line_1: signatureBlock?.address_line_1 || firmAddress[0] || '',
+      firm_address_line_2: signatureBlock?.address_line_2 || firmAddress[1] || '',
       firm_phone: firmPhone,
       firm_service_email: firmServiceEmail,
+      attorney_signature_block: attorneySignatureBlock,
+      signature_block_id: signatureBlock?.id || '',
       caption_left_line_1: captionOpening,
       caption_left_line_2: captionSubject,
       caption_left_line_3: captionDesignation,
@@ -18024,9 +20778,13 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       filing_date: filingDate,
       filing_date_long: draftingLongDate(filingDate),
       notice_date_long: draftingLongDate(filingDate),
-      children: children.length ? children : [{ name: '', age: '' }],
+      children: resolvedChildren.length ? resolvedChildren : [{ name: '', age: '' }],
       pending_settings: pendingRows.length ? pendingRows : [{ title: 'No pending settings or deadlines', date: '' }],
       service_recipients: serviceRecipients,
+      active_relief_option_ids: activeReliefOptionIds,
+      requested_relief_ids: activeReliefOptionIds,
+      requested_relief_clauses: requestedReliefClauses,
+      requested_relief_language: requestedReliefLanguage,
       client_consent_motion_clause: clientConsentMotionClause,
       client_consent_order_clause: clientConsentOrderClause,
       replacement_counsel_order_clause: replacementCounselOrderClause,
@@ -18061,6 +20819,13 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       if (field.required && draftingValueMissing(fieldValues[field.key])) issues.push({ level: 'error', message: `Complete ${field.label || field.key}.` })
     })
     if (!matter) issues.push({ level: 'error', message: 'Select a matter.' })
+    if (draftingTemplateIsAssembly(template) && matter) {
+      if (!data?.matter_county) issues.push({ level: 'warning', message: 'The matter does not have a county. Add it to the matter or override the document field.' })
+      if (!data?.court_name && !isWithdrawalTemplate) issues.push({ level: 'warning', message: 'The matter does not have a court selected. The caption or court references may be incomplete.' })
+      const selectedSignature = draftingProfileSignatureBlock(template, fieldValues.signature_block_id || '')
+      if (!selectedSignature) issues.push({ level: 'warning', message: 'No active signature block is configured in Drafting Studio settings.' })
+      else if (/attorney_bar_number/i.test(String(selectedSignature.signature_text || '')) && !data?.attorney_bar_number) issues.push({ level: 'warning', message: `The selected signature block “${selectedSignature.name || 'Signature block'}” uses the attorney bar-number token, but no bar number is configured.` })
+    }
     if (isWithdrawalTemplate) {
       if (!data?.cause_number) issues.push({ level: 'error', message: 'The matter does not have a cause number.' })
       if (!data?.client_name) issues.push({ level: 'error', message: 'The matter does not have a client name.' })
@@ -18248,10 +21013,153 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     draftingDirectElementChildren(parent).forEach((child) => draftingProcessWordBlocks(child, data))
   }
 
-  function draftingProcessWordXml(xml, data) {
+  function draftingWordSetElementText(element, value) {
+    const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const nodes = draftingWordTextNodes(element)
+    if (!nodes.length) return
+    const lines = String(value == null ? '' : value).split(/\r?\n/)
+    const first = nodes[0]
+    first.textContent = lines.shift() || ''
+    first.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+    nodes.slice(1).forEach((node) => { node.textContent = '' })
+    const run = first.parentNode
+    lines.forEach((line) => {
+      const br = element.ownerDocument.createElementNS(wordNamespace, 'w:br')
+      const text = element.ownerDocument.createElementNS(wordNamespace, 'w:t')
+      text.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+      text.textContent = line
+      run.appendChild(br)
+      run.appendChild(text)
+    })
+  }
+
+  function draftingPlainTextMatches(combined, search, options = {}) {
+    if (!search) return []
+    const matches = []
+    if (options.wholeWord) {
+      const escaped = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const regex = new RegExp(`\\b${escaped}\\b`, options.caseInsensitive ? 'gi' : 'g')
+      let match
+      while ((match = regex.exec(combined)) && matches.length < 500) matches.push({ index: match.index, text: match[0] })
+      return matches
+    }
+    const haystack = options.caseInsensitive ? combined.toLowerCase() : combined
+    const needle = options.caseInsensitive ? String(search).toLowerCase() : String(search)
+    let index = haystack.indexOf(needle)
+    while (index >= 0 && matches.length < 500) {
+      matches.push({ index, text: combined.slice(index, index + String(search).length) })
+      if (!options.replaceAll) break
+      index = haystack.indexOf(needle, index + Math.max(1, needle.length))
+    }
+    return matches
+  }
+
+  function draftingReplacePlainTextInElement(element, search, replacement, options = {}) {
+    const nodes = draftingWordTextNodes(element)
+    if (!nodes.length || !search) return 0
+    const segments = []
+    let combined = ''
+    nodes.forEach((node) => {
+      const value = node.textContent || ''
+      segments.push({ node, start: combined.length, end: combined.length + value.length })
+      combined += value
+    })
+    const matches = draftingPlainTextMatches(combined, search, options).reverse()
+    matches.forEach((match) => {
+      const startPos = match.index
+      const endPos = startPos + match.text.length
+      const startSegment = segments.find((segment) => startPos >= segment.start && startPos <= segment.end)
+      const endSegment = segments.find((segment) => endPos >= segment.start && endPos <= segment.end) || segments[segments.length - 1]
+      if (!startSegment || !endSegment) return
+      let nextReplacement = typeof replacement === 'function' ? replacement(match.text) : String(replacement == null ? '' : replacement)
+      if (/^[A-Z]/.test(match.text) && nextReplacement) nextReplacement = nextReplacement.charAt(0).toUpperCase() + nextReplacement.slice(1)
+      const startOffset = startPos - startSegment.start
+      const endOffset = endPos - endSegment.start
+      if (startSegment.node === endSegment.node) {
+        const current = startSegment.node.textContent || ''
+        startSegment.node.textContent = `${current.slice(0, startOffset)}${nextReplacement}${current.slice(endOffset)}`
+      } else {
+        const startText = startSegment.node.textContent || ''
+        const endText = endSegment.node.textContent || ''
+        startSegment.node.textContent = `${startText.slice(0, startOffset)}${nextReplacement}`
+        let clearing = false
+        nodes.forEach((node) => {
+          if (node === startSegment.node) { clearing = true; return }
+          if (!clearing) return
+          if (node === endSegment.node) { node.textContent = endText.slice(endOffset); clearing = false; return }
+          node.textContent = ''
+        })
+      }
+      startSegment.node.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+    })
+    return matches.length
+  }
+
+  function draftingBindingValue(binding, data, template) {
+    if (binding.kind === 'caption_block') return data.case_caption_text || ''
+    if (binding.kind === 'signature_block') return data.attorney_signature_block || ''
+    if (binding.kind === 'pronoun') {
+      const setName = draftingResolveData(data, binding.field_key) || draftingResolveData(data, binding.data_source) || 'neutral'
+      return draftingPronounValue(setName, binding.grammar_role || 'subject')
+    }
+    if (binding.kind === 'relief_clause') {
+      const clause = draftingReliefClauses.find((item) => item.id === binding.clause_id)
+      return binding.replacement_text || clause?.language || binding.source_text || ''
+    }
+    return draftingResolveData(data, binding.field_key) ?? draftingResolveData(data, binding.data_source) ?? binding.replacement_text ?? ''
+  }
+
+  function draftingBindingConditionPasses(binding, data) {
+    if (binding.kind === 'relief_clause') {
+      const selected = new Set(Array.isArray(data.active_relief_option_ids) ? data.active_relief_option_ids.map(String) : [])
+      return (binding.relief_option_ids || []).some((id) => selected.has(String(id)))
+    }
+    if (binding.kind !== 'conditional_block') return true
+    const value = draftingResolveData(data, binding.condition_key || binding.field_key)
+    if (binding.condition_operator === 'falsy') return !draftingTruthy(value)
+    return draftingTruthy(value)
+  }
+
+  function draftingApplyVisualBindings(xmlDoc, data, template, templateFile, xmlPath = '') {
+    if (!template || !(template.bindings || []).length) return
+    const fileKey = String(templateFile?.id || templateFile?.name || '')
+    const bindings = (template.bindings || []).map(draftingNormalizeBinding).filter((binding) => binding.is_active !== false && (!binding.file_id || String(binding.file_id) === fileKey))
+    if (!bindings.length) return
+    const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const paragraphNodes = Array.from(xmlDoc.getElementsByTagNameNS(wordNamespace, 'p'))
+    const rangeBindings = bindings.filter((binding) => ['relief_clause', 'conditional_block', 'caption_block', 'signature_block'].includes(binding.kind) && binding.paragraph_start >= 0).sort((a, b) => b.paragraph_start - a.paragraph_start)
+    rangeBindings.forEach((binding) => {
+      const start = Math.max(0, binding.paragraph_start)
+      const end = Math.min(paragraphNodes.length - 1, Math.max(start, binding.paragraph_end))
+      const pass = draftingBindingConditionPasses(binding, data)
+      const nodes = paragraphNodes.slice(start, end + 1).filter((node) => node?.parentNode)
+      if (!nodes.length) return
+      if (!pass) {
+        nodes.slice().reverse().forEach((node) => { if (node.parentNode) node.parentNode.removeChild(node) })
+        return
+      }
+      const replacement = draftingBindingValue(binding, data, template)
+      if (binding.kind === 'caption_block' || binding.kind === 'signature_block' || (binding.kind === 'relief_clause' && replacement && replacement !== binding.source_text)) {
+        draftingWordSetElementText(nodes[0], replacement)
+        nodes.slice(1).forEach((node) => { if (node.parentNode) node.parentNode.removeChild(node) })
+      }
+    })
+    bindings.filter((binding) => ['field', 'pronoun', 'paragraph_choice'].includes(binding.kind) && binding.source_text).forEach((binding) => {
+      const replacement = draftingBindingValue(binding, data, template)
+      if (binding.replace_all || !/^word\/document\.xml$/i.test(xmlPath)) {
+        draftingReplacePlainTextInElement(xmlDoc.documentElement, binding.source_text, replacement, { replaceAll: binding.replace_all === true, caseInsensitive: binding.kind === 'pronoun', wholeWord: binding.kind === 'pronoun' })
+        return
+      }
+      const paragraph = paragraphNodes[binding.paragraph_start]
+      if (paragraph?.parentNode) draftingReplacePlainTextInElement(paragraph, binding.source_text, replacement, { replaceAll: false, caseInsensitive: binding.kind === 'pronoun', wholeWord: binding.kind === 'pronoun' })
+    })
+  }
+
+  function draftingProcessWordXml(xml, data, template = null, templateFile = null, xmlPath = '') {
     const parser = new DOMParser()
     const xmlDoc = parser.parseFromString(xml, 'application/xml')
     if (xmlDoc.getElementsByTagName('parsererror').length) throw new Error('The uploaded Word template contains XML that could not be read.')
+    draftingApplyVisualBindings(xmlDoc, data, template, templateFile, xmlPath)
     draftingProcessWordBlocks(xmlDoc.documentElement, data)
     draftingReplaceTokensInElement(xmlDoc.documentElement, data)
     return new XMLSerializer().serializeToString(xmlDoc)
@@ -18276,7 +21184,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     return withExtension.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || `Draft - ${matter?.cause_number || 'Matter'}.docx`
   }
 
-  async function generateDocxFromTemplateFile(templateFile, data, matter) {
+  async function generateDocxFromTemplateFile(templateFile, data, matter, template = null) {
     await ensureDraftingZipLibrary()
     const bytes = dataUrlToUint8Array(templateFile.file_data || '')
     if (!bytes.length) throw new Error(`${templateFile.name} does not contain Word template data.`)
@@ -18284,7 +21192,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const xmlPaths = Object.keys(zip.files).filter((path) => /^word\/(?:document|header\d+|footer\d+)\.xml$/i.test(path))
     for (const path of xmlPaths) {
       const xml = await zip.file(path).async('string')
-      zip.file(path, draftingProcessWordXml(xml, data))
+      zip.file(path, draftingProcessWordXml(xml, data, template, templateFile, path))
     }
     const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', compression: 'DEFLATE' })
     const fileName = draftingOutputFileName(templateFile, data, matter)
@@ -18321,7 +21229,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     try {
       const generated = []
       for (const file of selectedFiles) {
-        generated.push(await generateDocxFromTemplateFile(file, data, matter))
+        generated.push(await generateDocxFromTemplateFile(file, data, matter, template))
       }
       setDraftingGeneratedFiles(generated)
       setDraftingStatus(`Generated ${generated.length} editable .docx document${generated.length === 1 ? '' : 's'}. Download them or save them to this matter's Documents.`)
@@ -34855,7 +37763,216 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
   }
 
 
+  function renderDraftingStudioHighlightedText(paragraph, template) {
+    const text = String(paragraph?.text || '')
+    if (!text) return <span>&nbsp;</span>
+    const markers = []
+    const addMarker = (sourceText, kind, id, label, isSuggestion = false, rangeStart = paragraph.index, rangeEnd = paragraph.index) => {
+      if (!sourceText || rangeStart !== rangeEnd || paragraph.index !== rangeStart) return
+      let cursor = 0
+      const haystack = text.toLowerCase()
+      const needle = String(sourceText).toLowerCase()
+      while (needle && cursor <= haystack.length) {
+        const start = haystack.indexOf(needle, cursor)
+        if (start < 0) break
+        markers.push({ start, end: start + String(sourceText).length, kind, id, label, isSuggestion })
+        cursor = start + Math.max(1, String(sourceText).length)
+        if (!isSuggestion && !(template?.bindings || []).find((binding) => binding.id === id)?.replace_all) break
+      }
+    }
+    ;(template?.bindings || []).filter((binding) => binding.is_active !== false && String(binding.file_id || '') === String(draftingStudioFileId || '') && paragraph.index >= binding.paragraph_start && paragraph.index <= binding.paragraph_end).forEach((binding) => addMarker(binding.source_text, binding.kind, binding.id, binding.label || binding.field_key, false, binding.paragraph_start, binding.paragraph_end))
+    draftingAiSuggestions.filter((suggestion) => String(suggestion.file_id || '') === String(draftingStudioFileId || '') && paragraph.index >= Number(suggestion.paragraph_start) && paragraph.index <= Number(suggestion.paragraph_end)).forEach((suggestion) => addMarker(suggestion.source_text, suggestion.kind, suggestion.id, suggestion.label, true, Number(suggestion.paragraph_start), Number(suggestion.paragraph_end)))
+    const rangeBinding = (template?.bindings || []).find((binding) => binding.is_active !== false && String(binding.file_id || '') === String(draftingStudioFileId || '') && binding.paragraph_start !== binding.paragraph_end && paragraph.index >= binding.paragraph_start && paragraph.index <= binding.paragraph_end)
+    const rangeSuggestion = draftingAiSuggestions.find((suggestion) => Number(suggestion.paragraph_start) !== Number(suggestion.paragraph_end) && paragraph.index >= Number(suggestion.paragraph_start) && paragraph.index <= Number(suggestion.paragraph_end))
+    if (!markers.length) return <span style={rangeBinding || rangeSuggestion ? { background: rangeSuggestion ? '#fef3c7' : '#dcfce7', boxShadow: `inset 4px 0 0 ${rangeSuggestion ? '#f59e0b' : '#16a34a'}`, paddingLeft: 6 } : undefined}>{text}</span>
+    markers.sort((a, b) => a.start - b.start || b.end - a.end)
+    const rendered = []
+    let cursor = 0
+    markers.forEach((marker) => {
+      if (marker.start < cursor) return
+      if (marker.start > cursor) rendered.push(<span key={`plain-${cursor}`}>{text.slice(cursor, marker.start)}</span>)
+      const palette = marker.isSuggestion
+        ? { background: '#fef3c7', border: '#f59e0b', color: '#78350f' }
+        : marker.kind === 'relief_clause' ? { background: '#dcfce7', border: '#16a34a', color: '#14532d' }
+          : marker.kind === 'pronoun' ? { background: '#f3e8ff', border: '#a855f7', color: '#581c87' }
+            : { background: '#dbeafe', border: '#3b82f6', color: '#1e3a8a' }
+      rendered.push(<mark key={`${marker.id}-${marker.start}`} title={`${marker.isSuggestion ? 'AI suggestion' : 'Saved binding'}: ${marker.label || marker.kind}`} style={{ ...palette, borderBottom: `2px solid ${palette.border}`, borderRadius: 3, padding: '1px 2px' }}>{text.slice(marker.start, marker.end)}</mark>)
+      cursor = marker.end
+    })
+    if (cursor < text.length) rendered.push(<span key={`plain-${cursor}`}>{text.slice(cursor)}</span>)
+    return rendered
+  }
+
+  function renderDraftingStudioLibrary() {
+    const statusRank = { approved: 0, testing: 1, draft: 2, retired: 3 }
+    const rows = [...draftingTemplates].sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || draftingTemplateLabel(a).localeCompare(draftingTemplateLabel(b)))
+    return <div style={{ display: 'grid', gap: 14 }}>
+      <section style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 12, padding: 14 }}>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'start', flexWrap: 'wrap' }}>
+          <div><h2 style={{ margin: 0 }}>Template Library</h2><p style={{ color: '#334155', marginBottom: 0, maxWidth: 900 }}>Upload a prior filing or Practice Manual form, let Mio propose fields and clause blocks, then approve the reusable template. Every accepted visual binding remains editable and versioned.</p></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><label style={{ border: '1px solid #1d4ed8', color: '#1d4ed8', background: '#fff', borderRadius: 7, padding: '7px 10px', fontWeight: 850, cursor: 'pointer' }}>+ Upload Word template<input type="file" accept=".docx" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; draftingStudioCreateTemplateFromUpload(file) }} /></label><button type="button" onClick={restoreBuiltInDraftingTemplates}>Restore built-in sources</button></div>
+        </div>
+      </section>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(360px,1fr))', gap: 12 }}>
+        {rows.map((template) => {
+          const colors = draftingTemplateStatusColors(template)
+          const isPracticeManual = template.source_kind === 'texas_family_law_practice_manual'
+          return <article key={template.id} style={{ border: `1px solid ${isPracticeManual ? '#c4b5fd' : '#d5dce3'}`, borderRadius: 12, padding: 13, background: isPracticeManual ? '#faf5ff' : '#fff', opacity: template.status === 'retired' ? .7 : 1 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start' }}><div style={{ minWidth: 0 }}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><span style={{ border: `1px solid ${colors.border}`, background: colors.background, color: colors.color, borderRadius: 999, padding: '3px 8px', fontSize: 11, fontWeight: 900 }}>{draftingTemplateStatusLabel(template)}</span>{isPracticeManual && <span style={{ border: '1px solid #a78bfa', background: '#ede9fe', color: '#5b21b6', borderRadius: 999, padding: '3px 8px', fontSize: 11, fontWeight: 900 }}>Practice Manual Form {template.practice_manual_form}</span>}</div><h3 style={{ margin: '7px 0 3px', overflowWrap: 'anywhere' }}>{draftingTemplateLabel(template)}</h3><div style={{ color: '#64748b', fontSize: 12 }}>{template.category || 'Uncategorized'} · v{template.version || '1.0'} · {(template.files || []).length} Word file(s)</div><div style={{ color: '#475569', fontSize: 12, marginTop: 4 }}>{(template.fields || []).length} field(s) · {(template.bindings || []).length} visual binding(s) · {(template.case_type_patterns || []).join(', ') || 'all case types'}</div></div></div>
+            {template.template_text && <p style={{ fontSize: 13, color: '#475569', maxHeight: 68, overflow: 'hidden' }}>{template.template_text}</p>}
+            <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 10 }}><button type="button" onClick={() => draftingStudioOpenTemplate(template)} style={{ fontWeight: 900, color: '#1d4ed8' }}>Open Visual Builder</button><button type="button" onClick={() => { editDraftingTemplate(template); setDraftingStudioTab('advanced') }}>Advanced details</button><button type="button" onClick={() => duplicateDraftingTemplateVersion(template)}>New version</button>{template.status !== 'approved' && template.status !== 'retired' && <button type="button" onClick={() => approveDraftingTemplate(template.id)} style={{ color: '#166534', fontWeight: 850 }}>Approve</button>}{template.status !== 'retired' && <button type="button" onClick={() => retireDraftingTemplate(template.id)}>Retire</button>}</div>
+            {(template.files || []).length > 0 && <div style={{ display: 'grid', gap: 5, borderTop: '1px solid #e2e8f0', marginTop: 10, paddingTop: 8 }}>{template.files.map((file) => <div key={file.id || file.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span><button type="button" onClick={() => downloadDraftingTemplateFile(file)} style={{ padding: '3px 7px' }}>Download</button></div>)}</div>}
+          </article>
+        })}
+      </div>
+    </div>
+  }
+
+  function renderDraftingVisualBuilder() {
+    const template = draftingStudioCurrentTemplate()
+    const file = draftingStudioCurrentFile(template)
+    const activeBindings = (template?.bindings || []).filter((binding) => binding.is_active !== false && (!binding.file_id || String(binding.file_id) === String(draftingStudioFileId || '')))
+    const reliefOptions = requestedReliefOptions.filter((option) => option.is_active !== false && option.is_relief_option)
+    const selectedReliefIds = new Set((draftingBindingDraft.relief_option_ids || []).map(String))
+    const visibleParagraphs = (draftingStudioDocument?.paragraphs || []).filter((paragraph) => draftingShowHiddenManualText || !paragraph.hidden)
+    return <div style={{ display: 'grid', gap: 12 }}>
+      <section style={{ border: '1px solid #bfdbfe', borderRadius: 12, padding: 12, background: '#eff6ff' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(260px,1fr) auto', gap: 9, alignItems: 'end' }}>
+          <LabeledField label="Template"><select value={template?.id || ''} onChange={(event) => { const next = draftingTemplates.find((item) => item.id === event.target.value); if (next) draftingStudioOpenTemplate(next) }}><option value="">Select a template</option>{draftingTemplates.filter((item) => item.status !== 'retired').map((item) => <option key={item.id} value={item.id}>{draftingTemplateLabel(item)} — v{item.version}</option>)}</select></LabeledField>
+          <LabeledField label="Word file"><select value={file?.id || file?.name || ''} onChange={async (event) => { const nextFile = (template?.files || []).find((item) => String(item.id || item.name) === String(event.target.value)); if (!nextFile) return; setDraftingStudioFileId(nextFile.id || nextFile.name); setDraftingStudioBusy(true); try { setDraftingStudioDocument(await draftingStudioParseTemplateFile(nextFile)); setDraftingAiSuggestions([]); setDraftingStudioSelection(null) } catch (error) { setDraftingStudioStatus(error?.message || 'Could not open file.') } finally { setDraftingStudioBusy(false) } }}><option value="">Select Word file</option>{(template?.files || []).map((item) => <option key={item.id || item.name} value={item.id || item.name}>{item.name}</option>)}</select></LabeledField>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}><button type="button" onClick={draftingStudioRunAnalysis} disabled={!draftingStudioDocument || draftingStudioBusy} style={{ fontWeight: 900 }}>{draftingStudioBusy ? 'Analyzing…' : 'AI Detect Fields & Clauses'}</button><label style={{ display: 'flex', alignItems: 'center', gap: 5 }}><input type="checkbox" checked={draftingShowHiddenManualText} onChange={(event) => setDraftingShowHiddenManualText(event.target.checked)} /> Show concealed/manual guidance</label></div>
+        </div>
+        {draftingStudioStatus && <div style={{ marginTop: 8, color: /could not|failed|error/i.test(draftingStudioStatus) ? '#991b1b' : '#334155', fontWeight: 750 }}>{draftingStudioStatus}</div>}
+      </section>
+      {!draftingStudioDocument && <div style={{ border: '1px dashed #94a3b8', borderRadius: 12, padding: 30, textAlign: 'center', color: '#64748b' }}>Select a template above or upload a Word template from the Template Library.</div>}
+      {draftingStudioDocument && <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,280px) minmax(520px,1fr) minmax(300px,380px)', gap: 12, alignItems: 'start' }}>
+        <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff', padding: 10, position: 'sticky', top: 10, maxHeight: '84vh', overflow: 'auto' }}>
+          <h3 style={{ marginTop: 0 }}>Outline</h3><div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>{draftingStudioDocument.paragraph_count} paragraphs · {draftingStudioDocument.sections.length} sections</div>
+          <div style={{ display: 'grid', gap: 4 }}>{draftingStudioDocument.sections.slice(0, 250).map((section) => <button type="button" key={section.id} onClick={() => document.getElementById(`drafting-paragraph-${section.start}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ border: 0, background: 'transparent', textAlign: 'left', padding: '4px 3px', color: '#1d4ed8', cursor: 'pointer', fontSize: 12 }}>{section.name}</button>)}</div>
+          {draftingStudioDocument.form_references.length > 0 && <details open style={{ marginTop: 12 }}><summary style={{ fontWeight: 850, cursor: 'pointer' }}>Connected Practice Manual forms ({draftingStudioDocument.form_references.length})</summary><div style={{ display: 'grid', gap: 5, marginTop: 7 }}>{draftingStudioDocument.form_references.slice(0, 160).map((ref, index) => <button type="button" key={`${ref.reference}-${index}`} onClick={() => document.getElementById(`drafting-paragraph-${ref.paragraph_index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} style={{ textAlign: 'left', border: '1px solid #ddd6fe', background: '#faf5ff', color: '#5b21b6', borderRadius: 6, padding: 5, fontSize: 11 }}><strong>{ref.reference}</strong>{ref.section_name ? ` · ${ref.section_name}` : ''}</button>)}</div></details>}
+        </aside>
+        <main style={{ background: '#e2e8f0', borderRadius: 10, padding: '20px 14px', maxHeight: '84vh', overflow: 'auto' }}>
+          <div style={{ width: 'min(8.5in,100%)', minHeight: '11in', margin: '0 auto', background: '#fff', boxShadow: '0 8px 30px rgba(15,23,42,.18)', padding: '0.72in 0.78in', boxSizing: 'border-box', fontFamily: 'Times New Roman,serif', fontSize: 14, lineHeight: 1.35 }}>
+            {visibleParagraphs.map((paragraph) => {
+              const selected = draftingStudioSelection && paragraph.index >= draftingStudioSelection.paragraph_start && paragraph.index <= draftingStudioSelection.paragraph_end
+              return <div id={`drafting-paragraph-${paragraph.index}`} data-drafting-paragraph-index={paragraph.index} key={paragraph.index} onMouseUp={(event) => draftingStudioCaptureSelection(event, paragraph.index)} style={{ minHeight: paragraph.text ? 20 : 10, marginBottom: paragraph.style_name === 'Title' ? 12 : 3, textAlign: paragraph.style_name === 'Title' ? 'center' : 'left', fontWeight: paragraph.is_heading || paragraph.style_name === 'Title' ? 700 : 400, fontSize: paragraph.style_name === 'Title' ? 18 : 14, color: paragraph.hidden ? '#7c3aed' : '#111827', background: selected ? '#dbeafe' : 'transparent', outline: selected ? '2px solid #60a5fa' : 'none', opacity: paragraph.hidden ? .72 : 1, whiteSpace: 'pre-wrap', scrollMarginTop: 10 }}>
+                {paragraph.hidden && <span style={{ fontFamily: 'Arial', fontSize: 9, background: '#ede9fe', color: '#6d28d9', borderRadius: 999, padding: '2px 5px', marginRight: 6 }}>GUIDANCE</span>}{renderDraftingStudioHighlightedText(paragraph, template)}
+              </div>
+            })}
+          </div>
+        </main>
+        <aside style={{ display: 'grid', gap: 10, position: 'sticky', top: 10, maxHeight: '84vh', overflow: 'auto' }}>
+          <section style={{ border: '1px solid #60a5fa', borderRadius: 10, padding: 11, background: '#eff6ff' }}><h3 style={{ marginTop: 0 }}>Create binding from highlight</h3>{draftingStudioSelection ? <><div style={{ border: '1px solid #93c5fd', borderRadius: 7, background: '#fff', padding: 8, fontFamily: 'Times New Roman,serif', maxHeight: 110, overflow: 'auto' }}>{draftingStudioSelection.source_text}</div><div style={{ color: '#64748b', fontSize: 11, marginTop: 5 }}>Paragraph {draftingStudioSelection.paragraph_start + 1}{draftingStudioSelection.paragraph_end !== draftingStudioSelection.paragraph_start ? `–${draftingStudioSelection.paragraph_end + 1}` : ''}{draftingStudioSelection.section_name ? ` · ${draftingStudioSelection.section_name}` : ''}</div></> : <div style={{ color: '#64748b' }}>Drag across words or whole paragraphs in the document viewer.</div>}
+            <div style={{ display: 'grid', gap: 7, marginTop: 9 }}><LabeledField label="Binding type"><select value={draftingBindingDraft.kind} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, kind: event.target.value }))}>{DRAFTING_BINDING_KIND_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField><LabeledField label="Label"><input value={draftingBindingDraft.label || ''} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, label: event.target.value }))} /></LabeledField>
+              {['field','pronoun','paragraph_choice'].includes(draftingBindingDraft.kind) && <><LabeledField label="Field key"><input value={draftingBindingDraft.field_key || ''} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, field_key: draftingNormalizeFieldKey(event.target.value) }))} placeholder="continuance_reason" /></LabeledField><LabeledField label="Auto-fill source"><select value={draftingBindingDraft.data_source || 'manual'} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, data_source: event.target.value }))}>{DRAFTING_FIELD_SOURCE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField></>}
+              {draftingBindingDraft.kind === 'pronoun' && <><LabeledField label="Pronoun grammar"><select value={draftingBindingDraft.grammar_role || 'subject'} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, grammar_role: event.target.value }))}>{DRAFTING_PRONOUN_GRAMMAR_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></LabeledField><LabeledField label="Linked party"><select value={draftingBindingDraft.linked_party || 'client'} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, linked_party: event.target.value }))}><option value="client">Client</option><option value="petitioner">Petitioner</option><option value="respondent">Respondent</option><option value="obligor">Obligor</option><option value="obligee">Obligee</option></select></LabeledField></>}
+              {draftingBindingDraft.kind === 'relief_clause' && <LabeledField label="Associated Requested Relief"><select multiple size={10} value={Array.from(selectedReliefIds)} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, relief_option_ids: Array.from(event.target.selectedOptions).map((option) => option.value) }))}>{reliefOptions.map((option) => <option key={option.id} value={option.id}>{requestedReliefOptionPath(option.id)}</option>)}</select></LabeledField>}
+              {draftingBindingDraft.kind === 'conditional_block' && <LabeledField label="Show when this field is true"><input value={draftingBindingDraft.condition_key || ''} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, condition_key: draftingNormalizeFieldKey(event.target.value) }))} placeholder="is_agreed" /></LabeledField>}
+              <label><input type="checkbox" checked={!!draftingBindingDraft.replace_all} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, replace_all: event.target.checked }))} /> Link and replace every matching occurrence</label><label><input type="checkbox" checked={!!draftingBindingDraft.required} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, required: event.target.checked }))} /> Required before generation</label>
+              <LabeledField label="Practice Manual form"><input value={draftingBindingDraft.practice_manual_form || ''} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, practice_manual_form: event.target.value }))} placeholder="23-1" /></LabeledField><LabeledField label="Section / connection"><input value={draftingBindingDraft.practice_manual_section || ''} onChange={(event) => setDraftingBindingDraft((current) => ({ ...current, practice_manual_section: event.target.value }))} /></LabeledField><button type="button" onClick={draftingStudioAddBindingFromSelection} disabled={!draftingStudioSelection} style={{ fontWeight: 900 }}>Save highlighted binding</button>
+            </div></section>
+          <section style={{ border: '1px solid #f59e0b', borderRadius: 10, padding: 10, background: '#fffbeb' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><h3 style={{ margin: 0 }}>AI suggestions ({draftingAiSuggestions.length})</h3>{draftingAiSuggestions.length > draftingAiSuggestionLimit && <span style={{ color: '#92400e', fontSize: 11 }}>Showing {Math.min(draftingAiSuggestionLimit, draftingAiSuggestions.length)} of {draftingAiSuggestions.length}</span>}</div>{!draftingAiSuggestions.length && <div style={{ color: '#64748b', marginTop: 8 }}>Run AI detection to populate suggestions.</div>}<div style={{ display: 'grid', gap: 7, marginTop: 8 }}>{draftingAiSuggestions.slice(0, draftingAiSuggestionLimit).map((suggestion) => <div key={suggestion.id} style={{ border: '1px solid #fde68a', borderRadius: 7, padding: 7, background: '#fff' }}><strong>{suggestion.label || suggestion.kind}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{suggestion.kind.replace(/_/g,' ')} · {Math.round((suggestion.confidence || 0) * 100)}%{suggestion.practice_manual_section ? ` · ${suggestion.practice_manual_section}` : ''}{suggestion.analysis_batch ? ` · AI section ${suggestion.analysis_batch}` : ''}</div><div style={{ fontSize: 12, marginTop: 4, maxHeight: 64, overflow: 'hidden' }}>{suggestion.source_text}</div>{(suggestion.relief_option_ids || []).length > 0 && <div style={{ fontSize: 11, color: '#166534', marginTop: 4 }}>{suggestion.relief_option_ids.map(draftingReliefOptionLabel).join(' · ')}</div>}<div style={{ display: 'flex', gap: 5, marginTop: 6 }}><button type="button" onClick={() => draftingStudioAcceptSuggestion(suggestion)} style={{ color: '#166534', fontWeight: 850 }}>Accept</button><button type="button" onClick={() => draftingStudioRejectSuggestion(suggestion.id)}>Reject</button><button type="button" onClick={() => document.getElementById(`drafting-paragraph-${suggestion.paragraph_start}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>Show</button></div></div>)}</div>{draftingAiSuggestions.length > draftingAiSuggestionLimit && <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => setDraftingAiSuggestionLimit((current) => Math.min(draftingAiSuggestions.length, current + 180))}>Show next {Math.min(180, draftingAiSuggestions.length - draftingAiSuggestionLimit)}</button><button type="button" onClick={() => setDraftingAiSuggestionLimit(draftingAiSuggestions.length)}>Show all</button></div>}</section>
+          <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff' }}><h3 style={{ marginTop: 0 }}>Saved bindings ({activeBindings.length})</h3><div style={{ display: 'grid', gap: 6 }}>{activeBindings.map((binding) => <div key={binding.id} style={{ border: '1px solid #e2e8f0', borderRadius: 7, padding: 7 }}><strong>{binding.label || binding.field_key || binding.kind}</strong><div style={{ fontSize: 11, color: '#64748b' }}>{binding.kind.replace(/_/g,' ')} · paragraph {binding.paragraph_start + 1}{binding.paragraph_end !== binding.paragraph_start ? `–${binding.paragraph_end + 1}` : ''}</div><div style={{ display: 'flex', gap: 5, marginTop: 5 }}><button type="button" onClick={() => document.getElementById(`drafting-paragraph-${binding.paragraph_start}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>Show</button><button type="button" onClick={() => draftingStudioDeleteBinding(binding.id)} style={{ color: '#991b1b' }}>Delete</button></div></div>)}</div></section>
+        </aside>
+      </div>}
+    </div>
+  }
+
+  function renderDraftingReliefLanguageSettings() {
+    const reliefOptions = requestedReliefOptions.filter((option) => option.is_active !== false && option.is_relief_option)
+    const form = draftingReliefClauseForm
+    return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(330px,440px) minmax(480px,1fr)', gap: 14, alignItems: 'start' }}>
+      <form onSubmit={(event) => { event.preventDefault(); if (!(form.relief_option_ids || []).length) return alert('Select at least one Requested Relief option.'); if (!String(form.language || '').trim()) return alert('Add the drafting language.'); draftingUpsertReliefClause({ ...form, id: form.id || draftingStudioId('relief-clause') }); setDraftingReliefClauseForm(draftingNormalizeReliefClause({ id: '', name: '', relief_option_ids: [], language: '', document_roles: [], case_type_patterns: [], practice_manual_form: '', practice_manual_section: '', notes: '', is_active: true })); }} style={{ border: '1px solid #86efac', borderRadius: 12, padding: 13, background: '#f0fdf4', position: 'sticky', top: 10 }}><h2 style={{ marginTop: 0 }}>{form.id ? 'Edit drafting language' : 'Add drafting language to relief'}</h2><p style={{ color: '#475569', fontSize: 13 }}>You can type language here, or create it instantly by highlighting a provision in Visual Template Builder and choosing Requested Relief clause.</p><LabeledField label="Clause name"><input value={form.name || ''} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, name: event.target.value }))} /></LabeledField><LabeledField label="Requested Relief option(s)"><select multiple size={13} value={form.relief_option_ids || []} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, relief_option_ids: Array.from(event.target.selectedOptions).map((option) => option.value) }))}>{reliefOptions.map((option) => <option key={option.id} value={option.id}>{requestedReliefOptionPath(option.id)}</option>)}</select></LabeledField><LabeledField label="Drafting language"><textarea rows={13} value={form.language || ''} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, language: event.target.value }))} placeholder="Paste or draft the motion, petition, or order language for this relief." /></LabeledField><LabeledField label="Document roles (comma-separated)"><input value={(form.document_roles || []).join(', ')} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, document_roles: draftingNormalizePatternList(event.target.value) }))} placeholder="petition, motion, order, decree" /></LabeledField><LabeledField label="Case types (comma-separated)"><input value={(form.case_type_patterns || []).join(', ')} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, case_type_patterns: draftingNormalizePatternList(event.target.value) }))} placeholder="divorce, modification, SAPCR" /></LabeledField><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}><LabeledField label="Practice Manual form"><input value={form.practice_manual_form || ''} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, practice_manual_form: event.target.value }))} /></LabeledField><LabeledField label="Source section"><input value={form.practice_manual_section || ''} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, practice_manual_section: event.target.value }))} /></LabeledField></div><LabeledField label="Notes"><textarea rows={3} value={form.notes || ''} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, notes: event.target.value }))} /></LabeledField><label><input type="checkbox" checked={form.is_active !== false} onChange={(event) => setDraftingReliefClauseForm((current) => ({ ...current, is_active: event.target.checked }))} /> Active</label><div style={{ display: 'flex', gap: 7, marginTop: 10 }}><button type="submit" style={{ fontWeight: 900 }}>{form.id ? 'Save changes' : 'Add clause'}</button>{form.id && <button type="button" onClick={() => setDraftingReliefClauseForm(draftingNormalizeReliefClause({ id: '', name: '', relief_option_ids: [], language: '', document_roles: [], case_type_patterns: [], practice_manual_form: '', practice_manual_section: '', notes: '', is_active: true }))}>Cancel</button>}</div></form>
+      <section><h2 style={{ marginTop: 0 }}>Requested Relief clause library</h2><p style={{ color: '#475569' }}>When a matter has any linked relief selected, Mio makes the corresponding language available to the template and conditionally keeps linked blocks. One clause may be tied to multiple relief choices.</p><div style={{ display: 'grid', gap: 9 }}>{draftingReliefClauses.map((clause) => <article key={clause.id} style={{ border: '1px solid #d5dce3', borderRadius: 10, padding: 11, background: clause.is_active === false ? '#f1f5f9' : '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'start' }}><div><strong>{clause.name}</strong><div style={{ fontSize: 12, color: '#166534', marginTop: 3 }}>{(clause.relief_option_ids || []).map(draftingReliefOptionLabel).join(' · ') || 'No relief linked'}</div><div style={{ fontSize: 11, color: '#64748b' }}>{clause.practice_manual_form ? `Practice Manual Form ${clause.practice_manual_form}` : 'Firm language'}{clause.practice_manual_section ? ` · ${clause.practice_manual_section}` : ''}{(clause.document_roles || []).length ? ` · ${(clause.document_roles || []).join(', ')}` : ''}</div></div><div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}><button type="button" onClick={() => setDraftingReliefClauseForm(draftingNormalizeReliefClause(clause))}>Edit</button>{clause.source_template_id && <button type="button" onClick={() => { const source = draftingTemplates.find((item) => item.id === clause.source_template_id); if (source) draftingStudioOpenTemplate(source, clause.source_file_id) }}>Open source</button>}<button type="button" onClick={() => draftingDeleteReliefClause(clause.id)} style={{ color: '#991b1b' }}>Delete</button></div></div><div style={{ marginTop: 8, whiteSpace: 'pre-wrap', fontFamily: 'Times New Roman,serif', maxHeight: 180, overflow: 'auto', borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>{clause.language}</div></article>)}{!draftingReliefClauses.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 9, padding: 20, color: '#64748b' }}>No relief-specific drafting language has been saved yet.</div>}</div></section>
+    </div>
+  }
+
+  function renderDraftingProfileSettings() {
+    const updateSignature = (id, patch) => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, signature_blocks: (current.signature_blocks || []).map((block) => block.id === id ? { ...block, ...patch } : block), updated_at: new Date().toISOString() }))
+    const updateStyle = (id, patch) => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, case_styles: (current.case_styles || []).map((style) => style.id === id ? { ...style, ...patch } : style), updated_at: new Date().toISOString() }))
+    return <div style={{ display: 'grid', gap: 16 }}><section style={{ border: '1px solid #cbd5e1', borderRadius: 12, padding: 13, background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 9, flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Signature Blocks</h2><p style={{ color: '#475569', marginBottom: 0 }}>Templates reference the selected block instead of hard-coding your address, bar number, or contact information.</p></div><button type="button" onClick={() => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, signature_blocks: [...(current.signature_blocks || []), { id: draftingStudioId('signature'), name: 'New signature block', attorney_name: '', bar_number: '', firm_name: '', email: '', phone: '', address_line_1: '', address_line_2: '', signature_text: '/s/ {{attorney_name}}\n{{attorney_name}}\nTexas Bar No. {{attorney_bar_number}}\n{{firm_name}}\n{{firm_address_line_1}}\n{{firm_address_line_2}}\nTelephone: {{firm_phone}}\nEmail: {{firm_service_email}}\nATTORNEY FOR {{client_name}}', is_active: true }] }))}>+ Signature block</button></div><LabeledField label="Default signature block"><select value={draftingProfile.active_signature_block_id || ''} onChange={(event) => setDraftingProfile((current) => ({ ...current, active_signature_block_id: event.target.value }))}>{(draftingProfile.signature_blocks || []).map((block) => <option key={block.id} value={block.id}>{block.name}</option>)}</select></LabeledField><div style={{ display: 'grid', gap: 10 }}>{(draftingProfile.signature_blocks || []).map((block) => <details key={block.id} open={block.id === draftingProfile.active_signature_block_id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10 }}><summary style={{ cursor: 'pointer', fontWeight: 900 }}>{block.name}{block.id === draftingProfile.active_signature_block_id ? ' — DEFAULT' : ''}</summary><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(180px,1fr))', gap: 8, marginTop: 9 }}><LabeledField label="Name"><input value={block.name || ''} onChange={(event) => updateSignature(block.id, { name: event.target.value })} /></LabeledField><LabeledField label="Attorney"><input value={block.attorney_name || ''} onChange={(event) => updateSignature(block.id, { attorney_name: event.target.value })} /></LabeledField><LabeledField label="Bar number"><input value={block.bar_number || ''} onChange={(event) => updateSignature(block.id, { bar_number: event.target.value })} /></LabeledField><LabeledField label="Firm"><input value={block.firm_name || ''} onChange={(event) => updateSignature(block.id, { firm_name: event.target.value })} /></LabeledField><LabeledField label="Email"><input value={block.email || ''} onChange={(event) => updateSignature(block.id, { email: event.target.value })} /></LabeledField><LabeledField label="Phone"><input value={block.phone || ''} onChange={(event) => updateSignature(block.id, { phone: event.target.value })} /></LabeledField><LabeledField label="Address line 1"><input value={block.address_line_1 || ''} onChange={(event) => updateSignature(block.id, { address_line_1: event.target.value })} /></LabeledField><LabeledField label="Address line 2"><input value={block.address_line_2 || ''} onChange={(event) => updateSignature(block.id, { address_line_2: event.target.value })} /></LabeledField></div><LabeledField label="Signature text / tokens"><textarea rows={10} value={block.signature_text || ''} onChange={(event) => updateSignature(block.id, { signature_text: event.target.value })} /></LabeledField><div style={{ display: 'flex', gap: 7 }}><label><input type="checkbox" checked={block.is_active !== false} onChange={(event) => updateSignature(block.id, { is_active: event.target.checked })} /> Active</label>{(draftingProfile.signature_blocks || []).length > 1 && <button type="button" onClick={() => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, signature_blocks: current.signature_blocks.filter((item) => item.id !== block.id), active_signature_block_id: current.active_signature_block_id === block.id ? current.signature_blocks.find((item) => item.id !== block.id)?.id || '' : current.active_signature_block_id }))} style={{ marginLeft: 'auto', color: '#991b1b' }}>Delete</button>}</div></details>)}</div></section>
+      <section style={{ border: '1px solid #cbd5e1', borderRadius: 12, padding: 13, background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 9, flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Case Caption Styles</h2><p style={{ color: '#475569', marginBottom: 0 }}>Mio matches the matter’s case type and whether children are present. You can still override the style in a template or one draft.</p></div><button type="button" onClick={() => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, case_styles: [...(current.case_styles || []), { id: draftingStudioId('case-style'), name: 'New case style', kind: 'custom', case_type_patterns: [], requires_children: false, line_1: '', line_2: '', line_3: '', is_active: true }] }))}>+ Case style</button></div><LabeledField label="Fallback case style"><select value={draftingProfile.default_case_style_id || ''} onChange={(event) => setDraftingProfile((current) => ({ ...current, default_case_style_id: event.target.value }))}>{(draftingProfile.case_styles || []).map((style) => <option key={style.id} value={style.id}>{style.name}</option>)}</select></LabeledField><div style={{ display: 'grid', gap: 10 }}>{(draftingProfile.case_styles || []).map((style) => <details key={style.id} open style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10 }}><summary style={{ cursor: 'pointer', fontWeight: 900 }}>{style.name}</summary><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(200px,1fr))', gap: 8, marginTop: 9 }}><LabeledField label="Style name"><input value={style.name || ''} onChange={(event) => updateStyle(style.id, { name: event.target.value })} /></LabeledField><LabeledField label="Case-type matches"><input value={(style.case_type_patterns || []).join(', ')} onChange={(event) => updateStyle(style.id, { case_type_patterns: draftingNormalizePatternList(event.target.value) })} placeholder="divorce, SAPCR, modification" /></LabeledField></div><label><input type="checkbox" checked={style.requires_children === true} onChange={(event) => updateStyle(style.id, { requires_children: event.target.checked })} /> Use only when the matter has children</label><LabeledField label="Caption line 1"><input value={style.line_1 || ''} onChange={(event) => updateStyle(style.id, { line_1: event.target.value })} /></LabeledField><LabeledField label="Caption line 2"><input value={style.line_2 || ''} onChange={(event) => updateStyle(style.id, { line_2: event.target.value })} /></LabeledField><LabeledField label="Caption line 3"><input value={style.line_3 || ''} onChange={(event) => updateStyle(style.id, { line_3: event.target.value })} /></LabeledField><div style={{ background: '#f8fafc', borderRadius: 7, padding: 8, fontFamily: 'Times New Roman,serif', textAlign: 'center', whiteSpace: 'pre-wrap' }}>{[style.line_1, style.line_2, style.line_3].filter(Boolean).join('\n')}</div><div style={{ display: 'flex', gap: 7, marginTop: 8 }}><label><input type="checkbox" checked={style.is_active !== false} onChange={(event) => updateStyle(style.id, { is_active: event.target.checked })} /> Active</label>{(draftingProfile.case_styles || []).length > 1 && <button type="button" onClick={() => setDraftingProfile((current) => draftingNormalizeProfile({ ...current, case_styles: current.case_styles.filter((item) => item.id !== style.id), default_case_style_id: current.default_case_style_id === style.id ? current.case_styles.find((item) => item.id !== style.id)?.id || '' : current.default_case_style_id }))} style={{ marginLeft: 'auto', color: '#991b1b' }}>Delete</button>}</div></details>)}</div></section>
+    </div>
+  }
+
+  function renderDraftingIntakeSettings() {
+    const selectedTemplate = draftingIntakeTemplates.find((item) => String(item.id) === String(draftingIntakeWorkspace.template_id || '')) || draftingIntakeTemplates[0]
+    const updateTemplate = (patch) => setDraftingIntakeTemplates((current) => current.map((item) => item.id === selectedTemplate?.id ? draftingNormalizeIntakeTemplate({ ...item, ...patch }) : item))
+    const updateQuestion = (id, patch) => updateTemplate({ questions: (selectedTemplate?.questions || []).map((question) => question.id === id ? { ...question, ...patch } : question) })
+    const matter = matters.find((item) => String(item.id) === String(draftingIntakeWorkspace.matter_id || ''))
+    return <div style={{ display: 'grid', gap: 14 }}><section style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 12, padding: 13 }}><h2 style={{ marginTop: 0 }}>Secure Client Intake</h2><p style={{ marginBottom: 0, color: '#334155' }}>Choose a case-type form, create a client-specific expiring link, email it from Mio, and review every submitted answer before it changes matter data.</p></section><div style={{ display: 'grid', gridTemplateColumns: 'minmax(400px,.9fr) minmax(480px,1.1fr)', gap: 14, alignItems: 'start' }}>
+      <section style={{ border: '1px solid #d5dce3', borderRadius: 12, padding: 12, background: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><h2 style={{ margin: 0 }}>Intake Form Builder</h2><button type="button" onClick={() => { const next = draftingNormalizeIntakeTemplate({ id: draftingStudioId('intake-template'), name: 'New Intake Form', description: '', case_type_patterns: [], questions: [], is_active: true }); setDraftingIntakeTemplates((current) => [...current, next]); setDraftingIntakeWorkspace((current) => ({ ...current, template_id: next.id })) }}>+ New form</button></div><LabeledField label="Form"><select value={selectedTemplate?.id || ''} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, template_id: event.target.value }))}>{draftingIntakeTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></LabeledField>{selectedTemplate && <><LabeledField label="Name"><input value={selectedTemplate.name || ''} onChange={(event) => updateTemplate({ name: event.target.value })} /></LabeledField><LabeledField label="Case-type matches"><input value={(selectedTemplate.case_type_patterns || []).join(', ')} onChange={(event) => updateTemplate({ case_type_patterns: draftingNormalizePatternList(event.target.value) })} placeholder="divorce, SAPCR, modification" /></LabeledField><LabeledField label="Description"><textarea rows={3} value={selectedTemplate.description || ''} onChange={(event) => updateTemplate({ description: event.target.value })} /></LabeledField><div style={{ display: 'grid', gap: 8 }}>{(selectedTemplate.questions || []).map((question, index) => <div key={question.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, background: '#f8fafc' }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 160px', gap: 7 }}><LabeledField label={`Question ${index + 1}`}><input value={question.label || ''} onChange={(event) => updateQuestion(question.id, { label: event.target.value })} /></LabeledField><LabeledField label="Type"><select value={question.type || 'text'} onChange={(event) => updateQuestion(question.id, { type: event.target.value })}><option value="text">Text</option><option value="email">Email</option><option value="tel">Phone</option><option value="date">Date</option><option value="textarea">Long text</option><option value="select">Dropdown</option><option value="children">Children rows</option></select></LabeledField></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}><LabeledField label="Section"><input value={question.group || ''} onChange={(event) => updateQuestion(question.id, { group: event.target.value })} /></LabeledField><LabeledField label="Matter/client target"><input value={question.target || ''} onChange={(event) => updateQuestion(question.id, { target: event.target.value })} placeholder="matter.date_of_marriage" /></LabeledField></div>{question.type === 'select' && <LabeledField label="Options"><input value={(question.options || []).join(', ')} onChange={(event) => updateQuestion(question.id, { options: draftingNormalizePatternList(event.target.value) })} /></LabeledField>}<div style={{ display: 'flex', gap: 7 }}><label><input type="checkbox" checked={question.required === true} onChange={(event) => updateQuestion(question.id, { required: event.target.checked })} /> Required</label><button type="button" onClick={() => updateTemplate({ questions: selectedTemplate.questions.filter((item) => item.id !== question.id) })} style={{ marginLeft: 'auto', color: '#991b1b' }}>Delete</button></div></div>)}</div><button type="button" onClick={() => updateTemplate({ questions: [...(selectedTemplate.questions || []), { id: draftingStudioId('intake-question'), key: `question_${(selectedTemplate.questions || []).length + 1}`, label: 'New question', type: 'text', group: 'General', help: '', placeholder: '', options: [], required: false, target: '' }] })} style={{ marginTop: 9 }}>+ Question</button></>}</section>
+      <section style={{ display: 'grid', gap: 12 }}><div style={{ border: '1px solid #86efac', borderRadius: 12, padding: 12, background: '#f0fdf4' }}><h2 style={{ marginTop: 0 }}>Send Intake Form</h2><LabeledField label="Matter"><SmartMatterSelect value={draftingIntakeWorkspace.matter_id || ''} onChange={draftingSelectIntakeMatter} placeholder="Select matter" /></LabeledField><LabeledField label="Intake form"><select value={draftingIntakeWorkspace.template_id || ''} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, template_id: event.target.value }))}><option value="">Select form</option>{draftingIntakeTemplates.filter((template) => template.is_active !== false).map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></LabeledField><div style={{ display: 'grid', gridTemplateColumns: '1fr 150px', gap: 8 }}><LabeledField label="Client email"><input type="email" value={draftingIntakeWorkspace.recipient_email || ''} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, recipient_email: event.target.value }))} /></LabeledField><LabeledField label="Expires in days"><input type="number" min="1" max="60" value={draftingIntakeWorkspace.expires_days || 14} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, expires_days: event.target.value }))} /></LabeledField></div><LabeledField label="Email subject"><input value={draftingIntakeWorkspace.subject || ''} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, subject: event.target.value }))} /></LabeledField><LabeledField label="Email message"><textarea rows={4} value={draftingIntakeWorkspace.message || ''} onChange={(event) => setDraftingIntakeWorkspace((current) => ({ ...current, message: event.target.value }))} /></LabeledField><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}><button type="button" onClick={() => draftingCreateIntakeRequest(false)}>Create secure link</button><button type="button" onClick={() => draftingCreateIntakeRequest(true)} style={{ fontWeight: 900, color: '#166534' }}>Create & Email Client</button><button type="button" onClick={draftingLoadIntakeRequests} disabled={!matter}>Refresh submissions</button></div>{draftingIntakeWorkspace.last_link && <div style={{ marginTop: 9, border: '1px solid #86efac', borderRadius: 7, background: '#fff', padding: 8 }}><strong>Secure link</strong><div style={{ wordBreak: 'break-all', fontSize: 12, marginTop: 4 }}>{draftingIntakeWorkspace.last_link}</div><button type="button" onClick={() => navigator.clipboard?.writeText(draftingIntakeWorkspace.last_link)} style={{ marginTop: 6 }}>Copy link</button></div>}{draftingIntakeStatus && <div style={{ marginTop: 8, fontWeight: 750, color: /could not|failed|error/i.test(draftingIntakeStatus) ? '#991b1b' : '#334155' }}>{draftingIntakeStatus}</div>}</div>
+        <div style={{ border: '1px solid #d5dce3', borderRadius: 12, padding: 12, background: '#fff' }}><h2 style={{ marginTop: 0 }}>Review Submitted Intake</h2>{!draftingIntakeRequests.length && <div style={{ color: '#64748b' }}>Select a matter and click Refresh submissions.</div>}<div style={{ display: 'grid', gap: 9 }}>{draftingIntakeRequests.map((request) => { const answers = request.submission?.answers || {}; const template = draftingNormalizeIntakeTemplate(request.template_snapshot || {}); const labels = Object.fromEntries((template.questions || []).map((question) => [question.key, question.label])); return <details key={request.id} open={request.status === 'submitted'} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 9 }}><summary style={{ cursor: 'pointer', fontWeight: 900 }}>{request.title || template.name || 'Intake'} — {request.status || 'pending'} <span style={{ color: '#64748b', fontWeight: 400 }}>({request.recipient_email || ''})</span></summary><div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>Created {request.created_at ? new Date(request.created_at).toLocaleString() : ''}{request.submitted_at ? ` · Submitted ${new Date(request.submitted_at).toLocaleString()}` : ''}</div>{request.link && <button type="button" onClick={() => navigator.clipboard?.writeText(request.link)} style={{ marginTop: 6 }}>Copy link</button>}{Object.keys(answers).length > 0 ? <div style={{ display: 'grid', gap: 6, marginTop: 9 }}>{Object.entries(answers).map(([key,value]) => <label key={key} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 8, border: '1px solid #e2e8f0', borderRadius: 7, padding: 7, background: draftingIntakeReviewSelections?.[request.id]?.[key] === false ? '#f8fafc' : '#eff6ff' }}><input type="checkbox" checked={draftingIntakeReviewSelections?.[request.id]?.[key] !== false} onChange={() => draftingToggleIntakeReviewAnswer(request.id,key)} /><span><strong>{labels[key] || key}</strong><div style={{ whiteSpace: 'pre-wrap', marginTop: 3 }}>{Array.isArray(value) ? value.join(', ') : String(value)}</div></span></label>)}<button type="button" onClick={() => draftingApplyIntakeRequest(request)} style={{ fontWeight: 900, color: '#166534' }}>Approve checked answers & apply to matter</button></div> : <div style={{ color: '#64748b', marginTop: 8 }}>Not submitted yet.</div>}</details> })}</div></div></section>
+    </div></div>
+  }
+
+  function renderDraftingCompareSettings() {
+    const selectedTemplate = draftingTemplates.find((item) => String(item.id) === String(draftingCompareTemplateId || ''))
+    const counts = {
+      changed: draftingCompareResults.filter((item) => item.type === 'changed').length,
+      added: draftingCompareResults.filter((item) => item.type === 'added').length,
+      removed: draftingCompareResults.filter((item) => item.type === 'removed').length
+    }
+    const reliefOptions = requestedReliefOptions.filter((option) => option.is_relief_option && option.is_active !== false).sort((a, b) => requestedReliefOptionPath(a.id).localeCompare(requestedReliefOptionPath(b.id)))
+    return <div style={{ display: 'grid', gap: 13 }}>
+      <section style={{ border: '1px solid #c4b5fd', background: '#faf5ff', borderRadius: 12, padding: 13 }}>
+        <h2 style={{ marginTop: 0 }}>Compare a New Document to an Existing Template</h2>
+        <p style={{ color: '#475569' }}>Upload a newer draft, opposing counsel’s language, or a later firm version. Mio detects additions, removals, and rewrites; AI classifies them; then your checkboxes control which newer changes remain in the next template version.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px,1fr) minmax(300px,1fr) auto', gap: 9, alignItems: 'end' }}>
+          <LabeledField label="Existing template"><select value={draftingCompareTemplateId || ''} onChange={(event) => { setDraftingCompareTemplateId(event.target.value); setDraftingCompareResults([]); setDraftingCompareDocument(null) }}><option value="">Select template</option>{draftingTemplates.filter((template) => template.status !== 'retired' && (template.files || []).some((file) => /\.docx$/i.test(file.name || ''))).map((template) => <option key={template.id} value={template.id}>{draftingTemplateLabel(template)} — v{template.version}</option>)}</select></LabeledField>
+          <LabeledField label="Newer / comparison .docx"><input type="file" accept=".docx" onChange={(event) => { setDraftingCompareFile(event.target.files?.[0] || null); setDraftingCompareResults([]) }} /></LabeledField>
+          <button type="button" onClick={() => draftingAnalyzeComparisonFile()} disabled={!selectedTemplate || !draftingCompareFile || draftingStudioBusy} style={{ fontWeight: 900 }}>{draftingStudioBusy ? 'Comparing…' : 'Compare Documents'}</button>
+        </div>
+        {draftingStudioStatus && <div style={{ marginTop: 8, fontWeight: 750 }}>{draftingStudioStatus}</div>}
+      </section>
+      {draftingCompareResults.length > 0 && <>
+        <section style={{ display: 'flex', gap: 9, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ border: '1px solid #f59e0b', borderRadius: 999, padding: '5px 10px', background: '#fffbeb' }}>{counts.changed} changed</span>
+          <span style={{ border: '1px solid #22c55e', borderRadius: 999, padding: '5px 10px', background: '#f0fdf4' }}>{counts.added} added</span>
+          <span style={{ border: '1px solid #ef4444', borderRadius: 999, padding: '5px 10px', background: '#fef2f2' }}>{counts.removed} removed</span>
+          <span style={{ color: '#64748b', fontSize: 12 }}>Checked = keep newer language. Unchecked = revert that paragraph to the existing template when the new version is created.</span>
+          <button type="button" onClick={draftingCreateRevisedTemplateFromComparison} disabled={draftingStudioBusy} style={{ marginLeft: 'auto', fontWeight: 900, color: '#5b21b6' }}>{draftingStudioBusy ? 'Creating version…' : 'Create revised template version'}</button>
+        </section>
+        <div style={{ display: 'grid', gap: 8 }}>{draftingCompareResults.map((result) => {
+          const reliefIds = Array.isArray(result.ai_relief_option_ids) ? result.ai_relief_option_ids : []
+          const recommendationColor = result.ai_recommendation === 'accept' ? { bg: '#dcfce7', fg: '#166534', border: '#86efac' } : result.ai_recommendation === 'ignore' ? { bg: '#f1f5f9', fg: '#475569', border: '#cbd5e1' } : { bg: '#fef3c7', fg: '#92400e', border: '#fcd34d' }
+          return <article key={result.id} style={{ border: `1px solid ${result.type === 'added' ? '#86efac' : result.type === 'removed' ? '#fca5a5' : '#fde68a'}`, borderRadius: 9, padding: 10, background: result.accepted === false ? '#f8fafc' : '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'start', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', gap: 7, alignItems: 'center' }}><input type="checkbox" checked={result.accepted !== false} onChange={() => draftingToggleCompareResult(result.id)} /><strong style={{ textTransform: 'capitalize' }}>{result.type}</strong><span style={{ color: '#64748b', fontSize: 12 }}>{result.section_name || ''}{result.similarity ? ` · ${Math.round(result.similarity * 100)}% similar` : ''}</span></label>
+              {result.ai_recommendation && <span style={{ border: `1px solid ${recommendationColor.border}`, background: recommendationColor.bg, color: recommendationColor.fg, borderRadius: 999, padding: '3px 8px', fontSize: 10, fontWeight: 900 }}>AI: {result.ai_recommendation.toUpperCase()}</span>}
+            </div>
+            {result.base_text && <div style={{ marginTop: 7, padding: 8, background: '#fef2f2', borderRadius: 6, whiteSpace: 'pre-wrap' }}><strong>Existing:</strong> {result.base_text}</div>}
+            {result.new_text && <div style={{ marginTop: 7, padding: 8, background: '#f0fdf4', borderRadius: 6, whiteSpace: 'pre-wrap' }}><strong>New:</strong> {result.new_text}</div>}
+            {(result.ai_summary || result.ai_reason) && <div style={{ marginTop: 7, border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 6, padding: 8, color: '#1e3a8a' }}><strong>Mio AI review:</strong> {result.ai_summary || result.ai_reason}{result.ai_summary && result.ai_reason && result.ai_reason !== result.ai_summary ? <div style={{ marginTop: 4, color: '#334155', fontSize: 12 }}>{result.ai_reason}</div> : null}</div>}
+            {result.new_text && <div style={{ marginTop: 8, borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}><strong style={{ fontSize: 12 }}>Requested Relief links:</strong>{reliefIds.map((id) => <span key={`${result.id}-${id}`} style={{ border: '1px solid #86efac', background: '#f0fdf4', color: '#166534', borderRadius: 999, padding: '3px 7px', fontSize: 11 }}>{draftingReliefOptionLabel(id)} <button type="button" onClick={() => draftingRemoveCompareResultReliefOption(result.id, id)} style={{ border: 0, background: 'transparent', color: '#991b1b', padding: 0, marginLeft: 4 }}>×</button></span>)}<select defaultValue="" onChange={(event) => { draftingAddCompareResultReliefOption(result.id, event.target.value); event.target.value = '' }} style={{ maxWidth: 360 }}><option value="">+ Associate another relief…</option>{reliefOptions.map((option) => <option key={option.id} value={option.id}>{requestedReliefOptionPath(option.id)}</option>)}</select><button type="button" onClick={() => draftingSaveCompareResultAsReliefClause(result)} disabled={!reliefIds.length} style={{ fontWeight: 850, color: '#166534' }}>Save new language as relief clause</button></div>
+            </div>}
+          </article>
+        })}</div>
+      </>}
+    </div>
+  }
+
   function renderDraftingSettings() {
+    return <div style={{ display: 'grid', gap: 12, width: '100%' }}><section style={{ border: '1px solid #0f172a', borderRadius: 12, padding: 13, background: '#0f172a', color: '#fff' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start', flexWrap: 'wrap' }}><div><h1 style={{ margin: 0 }}>Mio Drafting Studio</h1><p style={{ margin: '5px 0 0', color: '#cbd5e1' }}>Visual Word templates, linked matter fields, Requested Relief clauses, Practice Manual connections, secure client intake, and version comparison.</p></div><span style={{ border: '1px solid #475569', borderRadius: 999, padding: '5px 9px', color: '#cbd5e1' }}>{draftingTemplates.length} templates · {draftingReliefClauses.length} relief clauses</span></div></section><nav style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: '1px solid #cbd5e1', paddingBottom: 8 }}>{DRAFTING_STUDIO_TABS.map((tab) => <button type="button" key={tab.value} onClick={() => setDraftingStudioTab(tab.value)} style={{ border: draftingStudioTab === tab.value ? '2px solid #1d4ed8' : '1px solid #cbd5e1', background: draftingStudioTab === tab.value ? '#dbeafe' : '#fff', color: draftingStudioTab === tab.value ? '#1e3a8a' : '#334155', borderRadius: 8, padding: '7px 11px', fontWeight: 850 }}>{tab.label}</button>)}</nav>{draftingStudioTab === 'library' && renderDraftingStudioLibrary()}{draftingStudioTab === 'visual_builder' && renderDraftingVisualBuilder()}{draftingStudioTab === 'relief_language' && renderDraftingReliefLanguageSettings()}{draftingStudioTab === 'case_styles' && renderDraftingProfileSettings()}{draftingStudioTab === 'intake' && renderDraftingIntakeSettings()}{draftingStudioTab === 'compare' && renderDraftingCompareSettings()}{draftingStudioTab === 'advanced' && renderDraftingAdvancedSettings()}</div>
+  }
+
+  function renderPublicClientIntake() {
+    const request = publicIntakePayload
+    const template = request?.template_snapshot ? draftingNormalizeIntakeTemplate(request.template_snapshot) : null
+    const groups = (template?.questions || []).reduce((acc, question) => { const group = question.group || 'General'; if (!acc[group]) acc[group] = []; acc[group].push(question); return acc }, {})
+    const renderQuestion = (question) => {
+      const value = publicIntakeAnswers[question.key] || ''
+      const update = (next) => setPublicIntakeAnswers((current) => ({ ...current, [question.key]: next }))
+      if (question.type === 'textarea' || question.type === 'children') return <textarea rows={question.type === 'children' ? 7 : 5} value={value} onChange={(event) => update(event.target.value)} placeholder={question.type === 'children' ? 'Full name | date of birth | current school\nOne child per line' : question.placeholder || ''} />
+      if (question.type === 'select') return <select value={value} onChange={(event) => update(event.target.value)}><option value="">Select...</option>{(question.options || []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
+      return <input type={question.type === 'tel' ? 'tel' : question.type === 'email' ? 'email' : question.type === 'date' ? 'date' : 'text'} value={value} onChange={(event) => update(event.target.value)} placeholder={question.placeholder || ''} />
+    }
+    return <div style={{ minHeight: '100vh', background: '#f1f5f9', padding: '24px 12px', fontFamily: 'Arial,sans-serif' }}><div style={{ position: 'fixed', top: 8, left: 8, zIndex: 20, background: '#111827', color: '#fff', borderRadius: 999, padding: '4px 9px', fontSize: 12 }}>{MIO_APP_VERSION}</div><main style={{ width: 'min(860px,100%)', margin: '0 auto', background: '#fff', borderRadius: 16, boxShadow: '0 18px 50px rgba(15,23,42,.14)', overflow: 'hidden' }}><header style={{ background: '#0f172a', color: '#fff', padding: '24px 28px' }}><div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: '#93c5fd', fontWeight: 900 }}>Beveridge Law Firm, PLLC</div><h1 style={{ margin: '6px 0' }}>{template?.name || request?.title || 'Secure Client Intake'}</h1><div style={{ color: '#cbd5e1' }}>{request?.client_name ? `Prepared for ${request.client_name}` : 'Secure client form'}{request?.matter_name ? ` · ${request.matter_name}` : ''}</div></header><div style={{ padding: '22px 28px' }}>{publicIntakeStatus && <div style={{ border: `1px solid ${/submitted securely/i.test(publicIntakeStatus) ? '#86efac' : /could not|expired|invalid|required/i.test(publicIntakeStatus) ? '#fca5a5' : '#bfdbfe'}`, background: /submitted securely/i.test(publicIntakeStatus) ? '#f0fdf4' : /could not|expired|invalid|required/i.test(publicIntakeStatus) ? '#fef2f2' : '#eff6ff', borderRadius: 9, padding: 11, marginBottom: 14, fontWeight: 750 }}>{publicIntakeStatus}</div>}{!request && !publicIntakeStatus && <div>Loading secure intake form...</div>}{request && request.status === 'submitted' && !publicIntakeSubmitted && <div style={{ border: '1px solid #86efac', background: '#f0fdf4', borderRadius: 9, padding: 12 }}>This intake form has already been submitted. Contact the firm if you need to correct an answer.</div>}{template && !publicIntakeSubmitted && request.status !== 'submitted' && <form onSubmit={submitPublicIntake} style={{ display: 'grid', gap: 16 }}><p style={{ color: '#475569', marginTop: 0 }}>{template.description}</p>{Object.entries(groups).map(([group,questions]) => <fieldset key={group} style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14 }}><legend style={{ fontWeight: 900, padding: '0 5px' }}>{group}</legend><div style={{ display: 'grid', gap: 12 }}>{questions.map((question) => <LabeledField key={question.id} label={`${question.label}${question.required ? ' *' : ''}`}>{renderQuestion(question)}{question.help && <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{question.help}</div>}</LabeledField>)}</div></fieldset>)}<label style={{ display: 'flex', gap: 8, alignItems: 'start', border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 9, padding: 10 }}><input type="checkbox" required style={{ marginTop: 3 }} /><span>I certify that the information I provided is accurate to the best of my knowledge. I understand the firm will review it before adding it to my case file.</span></label><button type="submit" style={{ justifySelf: 'start', padding: '10px 16px', fontWeight: 900, background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8 }}>Submit secure intake</button></form>}{publicIntakeSubmitted && <div style={{ textAlign: 'center', padding: '35px 10px' }}><div style={{ fontSize: 42 }}>✓</div><h2>Submitted</h2><p>Your answers were sent securely to Beveridge Law Firm for review.</p></div>}<div style={{ borderTop: '1px solid #e2e8f0', marginTop: 20, paddingTop: 12, color: '#64748b', fontSize: 12 }}>This secure link is unique to your matter. Do not forward it. Intake answers do not automatically replace information in the firm’s records; a firm user must approve them first.</div></div></main></div>
+  }
+
+  function renderDraftingAdvancedSettings() {
     const selectedTagName = draftingTemplateForm.tag_id ? tagFullName(draftingTemplateForm.tag_id) : ''
     const pendingFiles = Array.from(draftingTemplateUploadFiles || [])
     const statusRank = { approved: 0, testing: 1, draft: 2, retired: 3 }
@@ -35037,15 +38154,46 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       groups[group].push(field)
       return groups
     }, {})
+    const draftingComposerValuePresent = (value) => {
+      if (Array.isArray(value)) return value.length > 0
+      if (value && typeof value === 'object') return Object.keys(value).length > 0
+      if (value === false || value === 0) return true
+      return value != null && String(value).trim() !== ''
+    }
+    const draftingFieldCurrentValue = (field) => Object.prototype.hasOwnProperty.call(fieldValues, field.key) ? fieldValues[field.key] : draftingDefaultValueForField(field, matter)
+    const draftingFieldIsApplicable = (field) => !(field.key === 'replacement_counsel_name' && fieldValues.replacement_counsel_status !== 'substituting')
+    const draftingFieldIsResolved = (field) => draftingComposerValuePresent(draftingFieldCurrentValue(field))
+    const draftingApplicableFields = (template?.fields || []).filter(draftingFieldIsApplicable)
+    const draftingUnresolvedFields = draftingApplicableFields.filter((field) => !draftingFieldIsResolved(field))
+    const draftingResolvedFields = draftingApplicableFields.filter(draftingFieldIsResolved)
+    const draftingFieldByKey = Object.fromEntries(draftingApplicableFields.map((field) => [field.key, field]))
+    const draftingUnresolvedFieldKeys = new Set(draftingUnresolvedFields.map((field) => field.key))
+    const focusDraftingComposerField = (fieldKey) => {
+      if (!fieldKey) return
+      setDraftingFocusedFieldKey(fieldKey)
+      window.requestAnimationFrame(() => document.getElementById(`drafting-composer-field-${fieldKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+    }
 
     const renderDraftingFieldInput = (field) => {
-      const value = fieldValues[field.key]
+      const value = draftingFieldCurrentValue(field)
       const commonHelp = field.help ? <div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>{field.help}</div> : null
+      const sourceBadge = field.source && field.source !== 'manual' ? <div style={{ color: '#1d4ed8', fontSize: 11, marginTop: 4 }}>Auto-filled from {DRAFTING_FIELD_SOURCE_OPTIONS.find((item) => item.value === field.source)?.label || field.source}. Editing here overrides only this generated document.</div> : null
       if (field.key === 'replacement_counsel_name' && fieldValues.replacement_counsel_status !== 'substituting') return null
-      if (field.type === 'textarea' || field.type === 'list') return <><textarea value={Array.isArray(value) ? value.join('\n') : (value || '')} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} rows={field.type === 'list' ? 5 : 3} placeholder={field.placeholder || field.help || ''} />{commonHelp}</>
-      if (field.type === 'date') return <><input type="date" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} />{commonHelp}</>
-      if (field.type === 'email') return <><input type="email" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}</>
-      if (field.type === 'select') return <><select value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)}><option value="">Select...</option>{(field.options || []).map((option) => { const optionValue = typeof option === 'string' ? option : option.value; const optionLabel = typeof option === 'string' ? option : (option.label || option.value); return <option key={optionValue} value={optionValue}>{optionLabel}</option> })}</select>{commonHelp}</>
+      if (['textarea', 'list', 'rich_text'].includes(field.type)) return <><textarea value={Array.isArray(value) ? value.join('\n') : (value || '')} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} rows={field.type === 'list' ? 6 : field.type === 'rich_text' ? 7 : 3} placeholder={field.placeholder || field.help || ''} />{commonHelp}{sourceBadge}</>
+      if (field.type === 'date') return <><input type="date" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} />{commonHelp}{sourceBadge}</>
+      if (field.type === 'email') return <><input type="email" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}{sourceBadge}</>
+      if (field.type === 'tel') return <><input type="tel" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}{sourceBadge}</>
+      if (field.type === 'number') return <><input type="number" value={value ?? ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}{sourceBadge}</>
+      if (field.type === 'pronoun_set') return <><select value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)}><option value="">Select pronouns...</option><option value="male">He / him / his / himself</option><option value="female">She / her / hers / herself</option><option value="neutral">They / them / theirs / themselves</option></select>{commonHelp}{sourceBadge}</>
+      if (field.type === 'select') {
+        const dynamicOptions = field.source === 'case.style_id' ? (draftingProfile.case_styles || []).filter((item) => item.is_active !== false).map((item) => ({ value: item.id, label: item.name })) : field.source === 'attorney.signature_block' ? (draftingProfile.signature_blocks || []).filter((item) => item.is_active !== false).map((item) => ({ value: item.id, label: item.name })) : (field.options || [])
+        return <><select value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)}><option value="">Select...</option>{dynamicOptions.map((option) => { const optionValue = typeof option === 'string' ? option : option.value; const optionLabel = typeof option === 'string' ? option : (option.label || option.value); return <option key={optionValue} value={optionValue}>{optionLabel}</option> })}</select>{commonHelp}{sourceBadge}</>
+      }
+      if (field.type === 'relief_selector') {
+        const selected = Array.isArray(value) ? value.map(String) : []
+        const options = requestedReliefOptions.filter((option) => option.is_relief_option && option.is_active !== false && (!(field.relief_option_ids || []).length || (field.relief_option_ids || []).includes(String(option.id))))
+        return <><div style={{ display: 'grid', gap: 5, maxHeight: 280, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 7, padding: 8 }}>{options.map((option) => <label key={option.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 7, alignItems: 'start' }}><input type="checkbox" checked={selected.includes(String(option.id))} onChange={() => toggleDraftingCheckboxValue(field.key, String(option.id))} /><span>{requestedReliefOptionPath(option.id)}</span></label>)}</div>{commonHelp}{sourceBadge}</>
+      }
       if (field.type === 'checkbox_group') {
         const selected = Array.isArray(value) ? value : []
         return <><div style={{ display: 'grid', gap: 6 }}>{(field.options || []).map((option) => { const optionValue = typeof option === 'string' ? option : option.value; const optionLabel = typeof option === 'string' ? option : (option.label || option.value); return <label key={optionValue} style={{ display: 'flex', gap: 7, alignItems: 'center' }}><input type="checkbox" checked={selected.includes(optionValue)} onChange={() => toggleDraftingCheckboxValue(field.key, optionValue)} /> {optionLabel}</label> })}</div>{commonHelp}</>
@@ -35068,17 +38216,92 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
           {commonHelp}
         </div>
       }
-      return <><input type="text" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}</>
+      return <><input type="text" value={value || ''} onChange={(e) => updateDraftingFieldValue(field.key, e.target.value)} placeholder={field.placeholder || ''} />{commonHelp}{sourceBadge}</>
     }
 
     const renderFieldGroup = (groupName, fields) => {
-      const content = <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 10 }}>{fields.map((field) => {
+      const visibleFields = fields.filter(draftingFieldIsApplicable).filter((field) => draftingShowResolvedFields || !draftingFieldIsResolved(field) || field.hide_when_resolved === false)
+      if (!visibleFields.length) return null
+      const content = <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 10 }}>{visibleFields.map((field) => {
         const input = renderDraftingFieldInput(field)
         if (input === null) return null
-        return <LabeledField key={field.id} label={`${field.label || field.key}${field.required ? ' *' : ''}`}>{input}</LabeledField>
+        const resolved = draftingFieldIsResolved(field)
+        return <div id={`drafting-composer-field-${field.key}`} key={field.id} style={{ border: draftingFocusedFieldKey === field.key ? '2px solid #2563eb' : '1px solid #e2e8f0', background: resolved ? '#f8fafc' : '#fff', borderRadius: 8, padding: 9, scrollMarginTop: 90 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 5 }}><strong>{field.label || field.key}{field.required ? ' *' : ''}</strong><span style={{ color: resolved ? '#166534' : '#9a3412', background: resolved ? '#dcfce7' : '#ffedd5', borderRadius: 999, padding: '2px 7px', fontSize: 10, fontWeight: 900 }}>{resolved ? 'Completed' : 'Active field'}</span></div>{input}</div>
       })}</div>
-      if (groupName === 'Contact overrides') return <details key={groupName} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 10, background: '#f8fafc' }}><summary style={{ cursor: 'pointer', fontWeight: 850 }}>{groupName} (normally leave unchanged)</summary><div style={{ marginTop: 10 }}>{content}</div></details>
+      if (groupName === 'Contact overrides') return <details key={groupName} open={draftingFocusedFieldKey && visibleFields.some((field) => field.key === draftingFocusedFieldKey) ? true : undefined} style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 10, background: '#f8fafc' }}><summary style={{ cursor: 'pointer', fontWeight: 850 }}>{groupName} (normally leave unchanged)</summary><div style={{ marginTop: 10 }}>{content}</div></details>
       return <fieldset key={groupName} style={{ border: '1px solid #d5dce3', borderRadius: 8, minWidth: 0, padding: 10 }}><legend style={{ fontWeight: 850 }}>{groupName}</legend>{content}</fieldset>
+    }
+
+    const draftingComposerFileKey = String(draftingComposerDocument?.file_id || '')
+    const draftingComposerBindings = (template?.bindings || []).map(draftingNormalizeBinding).filter((binding) => binding.is_active !== false && (!binding.file_id || String(binding.file_id) === draftingComposerFileKey))
+    const draftingComposerFormatValue = (value) => {
+      if (Array.isArray(value)) return value.map((item) => item && typeof item === 'object' ? (item.name || item.label || item.title || JSON.stringify(item)) : String(item)).filter(Boolean).join(', ')
+      if (value && typeof value === 'object') return value.name || value.label || value.title || JSON.stringify(value)
+      return value == null ? '' : String(value)
+    }
+    const draftingComposerBindingValue = (binding) => draftingBindingValue(binding, assemblyData || {}, template)
+    const draftingComposerBindingResolved = (binding) => draftingComposerValuePresent(draftingComposerBindingValue(binding))
+    const draftingComposerRangeBindingForParagraph = (paragraph) => draftingComposerBindings.find((binding) => ['relief_clause', 'conditional_block', 'caption_block', 'signature_block'].includes(binding.kind) && binding.paragraph_start >= 0 && paragraph.index >= binding.paragraph_start && paragraph.index <= Math.max(binding.paragraph_start, binding.paragraph_end))
+    const renderDraftingComposerInlineParagraph = (paragraph) => {
+      const text = String(paragraph.text || '')
+      const inlineBindings = draftingComposerBindings.filter((binding) => ['field', 'pronoun', 'paragraph_choice'].includes(binding.kind) && binding.source_text && (binding.replace_all ? text.toLowerCase().includes(String(binding.source_text).toLowerCase()) : binding.paragraph_start === paragraph.index))
+      const markers = []
+      inlineBindings.forEach((binding) => {
+        const sourceText = String(binding.source_text || '')
+        if (!sourceText) return
+        const haystack = binding.kind === 'pronoun' ? text.toLowerCase() : text
+        const needle = binding.kind === 'pronoun' ? sourceText.toLowerCase() : sourceText
+        let from = 0
+        while (from <= haystack.length) {
+          const start = haystack.indexOf(needle, from)
+          if (start < 0) break
+          markers.push({ start, end: start + sourceText.length, binding })
+          if (!binding.replace_all) break
+          from = start + Math.max(1, sourceText.length)
+        }
+      })
+      markers.sort((a, b) => a.start - b.start || b.end - a.end)
+      const nodes = []
+      let cursor = 0
+      markers.forEach((marker, index) => {
+        if (marker.start < cursor) return
+        if (marker.start > cursor) nodes.push(<span key={`plain-${paragraph.index}-${index}`}>{text.slice(cursor, marker.start)}</span>)
+        const binding = marker.binding
+        const value = draftingComposerBindingValue(binding)
+        const resolved = draftingComposerBindingResolved(binding)
+        const fieldKey = binding.field_key || binding.data_source || ''
+        const display = resolved ? draftingComposerFormatValue(value) : text.slice(marker.start, marker.end)
+        nodes.push(<button type="button" key={`binding-${binding.id}-${paragraph.index}-${marker.start}`} onClick={() => focusDraftingComposerField(fieldKey)} title={resolved ? `${binding.label || fieldKey}: completed` : `Complete ${binding.label || fieldKey}`} style={{ display: 'inline', border: resolved ? 0 : '1px solid #f59e0b', borderRadius: resolved ? 0 : 4, padding: resolved ? 0 : '1px 3px', margin: 0, background: resolved ? 'transparent' : '#fef3c7', color: resolved ? 'inherit' : '#92400e', font: 'inherit', fontWeight: resolved ? 'inherit' : 800, textDecoration: resolved ? 'none' : 'underline', cursor: fieldKey ? 'pointer' : 'default', whiteSpace: 'pre-wrap' }}>{display || `[${binding.label || fieldKey || 'FIELD'}]`}</button>)
+        cursor = marker.end
+      })
+      if (cursor < text.length) nodes.push(<span key={`plain-tail-${paragraph.index}`}>{text.slice(cursor)}</span>)
+      return nodes.length ? nodes : text
+    }
+    const renderDraftingComposerParagraph = (paragraph) => {
+      if (!paragraph || paragraph.hidden) return null
+      const rangeBinding = draftingComposerRangeBindingForParagraph(paragraph)
+      if (rangeBinding) {
+        const passes = draftingBindingConditionPasses(rangeBinding, assemblyData || {})
+        if (!passes) return null
+        if (['relief_clause', 'caption_block', 'signature_block'].includes(rangeBinding.kind)) {
+          if (paragraph.index !== rangeBinding.paragraph_start) return null
+          const replacement = draftingComposerFormatValue(draftingComposerBindingValue(rangeBinding))
+          if (replacement) return <div key={`range-${rangeBinding.id}-${paragraph.index}`} style={{ whiteSpace: 'pre-wrap', margin: rangeBinding.kind === 'caption_block' ? '0 0 18px' : '0 0 10px', textAlign: rangeBinding.kind === 'caption_block' ? 'center' : 'left', fontWeight: rangeBinding.kind === 'caption_block' ? 700 : 400, lineHeight: 1.45 }}>{replacement}</div>
+        }
+      }
+      const isHeading = paragraph.is_heading
+      return <p id={`drafting-composer-paragraph-${paragraph.index}`} key={`composer-paragraph-${paragraph.index}`} style={{ margin: isHeading ? '15px 0 7px' : '0 0 9px', fontWeight: isHeading ? 800 : 400, textAlign: /caption|title/i.test(paragraph.style_name || '') ? 'center' : 'left', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>{renderDraftingComposerInlineParagraph(paragraph)}</p>
+    }
+    const navigateDraftingComposerField = (direction) => {
+      if (!draftingUnresolvedFields.length) return
+      const currentIndex = Math.max(0, draftingUnresolvedFields.findIndex((field) => field.key === draftingFocusedFieldKey))
+      const nextIndex = (currentIndex + direction + draftingUnresolvedFields.length) % draftingUnresolvedFields.length
+      focusDraftingComposerField(draftingUnresolvedFields[nextIndex].key)
+    }
+    const renderDraftingComposerDocumentMode = () => {
+      if (!draftingComposerDocument) return <div style={{ border: '1px dashed #94a3b8', borderRadius: 9, padding: 22, color: '#64748b', textAlign: 'center' }}>Mio is reading the selected Word template. The document view appears when the .docx has been parsed.</div>
+      const sidebarFields = draftingShowResolvedFields ? draftingApplicableFields : draftingUnresolvedFields
+      return <div style={{ display: 'grid', gridTemplateColumns: 'minmax(560px,1fr) minmax(300px,390px)', gap: 12, alignItems: 'start' }}><div style={{ background: '#e2e8f0', border: '1px solid #cbd5e1', borderRadius: 9, padding: 14, maxHeight: '78vh', overflow: 'auto' }}><div style={{ width: 'min(816px,100%)', minHeight: 1056, margin: '0 auto', background: '#fff', boxShadow: '0 4px 16px rgba(15,23,42,.15)', padding: '70px 72px', color: '#111827', fontFamily: 'Times New Roman,serif', fontSize: 14 }}>{(draftingComposerDocument.paragraphs || []).map(renderDraftingComposerParagraph)}</div></div><aside style={{ border: '1px solid #cbd5e1', borderRadius: 9, padding: 10, background: '#f8fafc', maxHeight: '78vh', overflow: 'auto', position: 'sticky', top: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}><strong>{draftingUnresolvedFields.length} active field{draftingUnresolvedFields.length === 1 ? '' : 's'}</strong><div style={{ display: 'flex', gap: 5 }}><button type="button" onClick={() => navigateDraftingComposerField(-1)} disabled={!draftingUnresolvedFields.length} title="Previous active field">↑</button><button type="button" onClick={() => navigateDraftingComposerField(1)} disabled={!draftingUnresolvedFields.length} title="Next active field">↓</button></div></div>{!draftingUnresolvedFields.length && <div style={{ border: '1px solid #86efac', background: '#f0fdf4', color: '#166534', borderRadius: 7, padding: 10, marginBottom: 8, fontWeight: 850 }}>All template fields are populated. Review the document and generate the Word file.</div>}<div style={{ display: 'grid', gap: 8 }}>{sidebarFields.map((field) => { const resolved = draftingFieldIsResolved(field); return <div id={`drafting-composer-field-${field.key}`} key={`sidebar-${field.id}`} style={{ border: draftingFocusedFieldKey === field.key ? '2px solid #2563eb' : '1px solid #dbe3ea', background: resolved ? '#f8fafc' : '#fff', borderRadius: 8, padding: 8, scrollMarginTop: 70 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 7, marginBottom: 5 }}><strong>{field.label || field.key}{field.required ? ' *' : ''}</strong><span style={{ color: resolved ? '#166534' : '#9a3412', fontSize: 10, fontWeight: 900 }}>{resolved ? 'DONE' : 'ACTIVE'}</span></div>{renderDraftingFieldInput(field)}</div> })}</div></aside></div>
     }
 
     return (
@@ -35106,19 +38329,36 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <div style={{ display: 'grid', gap: 7 }}>{(template.files || []).map((file) => { const key = file.id || file.name; return <label key={key} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 8, alignItems: 'start', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 9px', background: selectedFileKeys.includes(key) ? '#eff6ff' : '#fff' }}><input type="checkbox" checked={selectedFileKeys.includes(key)} onChange={() => toggleDraftingTemplateFile(file)} /><span><strong>{file.output_name || file.name}</strong><br /><span style={{ color: '#64748b', fontSize: 12 }}>Template: {file.name}</span></span></label> })}</div>
             </section>}
 
-            {isAssembly && matter && assemblyData && <section style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 10, background: '#eff6ff' }}>
-              <h3 style={{ margin: '0 0 8px' }}>Matter data Mio will place into the Word document</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 8, fontSize: 13 }}>
-                <div><strong>Cause:</strong><br />{assemblyData.cause_number || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
-                <div><strong>Client:</strong><br />{assemblyData.client_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
-                <div><strong>Client address:</strong><br />{assemblyData.client_address_inline || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
-                <div><strong>Client email:</strong><br />{assemblyData.client_email || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
-                <div><strong>Court:</strong><br />{assemblyData.court_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
-                <div><strong>Assigned attorney:</strong><br />{assemblyData.attorney_name} · {assemblyData.attorney_email}</div>
+            {isAssembly && matter && assemblyData && <section style={{ border: '1px solid #bfdbfe', borderRadius: 10, padding: 12, background: '#eff6ff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'start', flexWrap: 'wrap' }}><div><h3 style={{ margin: 0 }}>Matter data Mio will place into the Word document</h3><div style={{ color: '#475569', fontSize: 12, marginTop: 3 }}>These values come from the matter, court, Requested Relief, and Drafting Studio settings. Overrides below affect only this document.</div></div><span style={{ border: '1px solid #93c5fd', borderRadius: 999, background: '#dbeafe', color: '#1e3a8a', padding: '4px 8px', fontSize: 12, fontWeight: 850 }}>{assemblyData.requested_relief_clauses?.length || 0} relief clause{(assemblyData.requested_relief_clauses?.length || 0) === 1 ? '' : 's'} linked</span></div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 9, fontSize: 13, marginTop: 10 }}>
+                <div><strong>Cause number</strong><br />{assemblyData.cause_number || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>County</strong><br />{assemblyData.matter_county || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Court</strong><br />{assemblyData.court_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Client</strong><br />{assemblyData.client_name || <span style={{ color: '#991b1b' }}>Missing</span>}</div>
+                <div><strong>Petitioner / Movant</strong><br />{assemblyData.petitioner_name || <span style={{ color: '#64748b' }}>Not identified</span>}</div>
+                <div><strong>Respondent</strong><br />{assemblyData.respondent_name || <span style={{ color: '#64748b' }}>Not identified</span>}</div>
+                <div><strong>Children</strong><br />{assemblyData.children_names || <span style={{ color: '#64748b' }}>None identified</span>}</div>
+                <div><strong>Assigned attorney</strong><br />{assemblyData.attorney_name || <span style={{ color: '#991b1b' }}>Missing</span>}{assemblyData.attorney_email ? ` · ${assemblyData.attorney_email}` : ''}</div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 10, marginTop: 12 }}>
+                <LabeledField label="Caption / case style for this document"><select value={fieldValues.case_style_id || assemblyData.case_style_id || ''} onChange={(event) => updateDraftingFieldValue('case_style_id', event.target.value)}><option value="">Use automatic match</option>{(draftingProfile.case_styles || []).filter((style) => style.is_active !== false).map((style) => <option key={style.id} value={style.id}>{style.name}</option>)}</select></LabeledField>
+                <LabeledField label="Signature block for this document"><select value={fieldValues.signature_block_id || assemblyData.signature_block_id || ''} onChange={(event) => updateDraftingFieldValue('signature_block_id', event.target.value)}><option value="">Use drafting default</option>{(draftingProfile.signature_blocks || []).filter((block) => block.is_active !== false).map((block) => <option key={block.id} value={block.id}>{block.name}</option>)}</select></LabeledField>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 10, marginTop: 10 }}>
+                <div style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 10, background: '#fff' }}><strong>Caption preview</strong><div style={{ whiteSpace: 'pre-wrap', textAlign: 'center', fontFamily: 'Times New Roman,serif', marginTop: 7 }}>{assemblyData.case_caption_text || <span style={{ color: '#991b1b' }}>Caption is incomplete</span>}</div></div>
+                <details style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 10, background: '#fff' }}><summary style={{ cursor: 'pointer', fontWeight: 850 }}>Signature preview</summary><div style={{ whiteSpace: 'pre-wrap', fontFamily: 'Times New Roman,serif', marginTop: 7 }}>{assemblyData.attorney_signature_block || <span style={{ color: '#991b1b' }}>Signature block is incomplete</span>}</div></details>
               </div>
             </section>}
 
-            {(template.fields || []).length > 0 && <div style={{ display: 'grid', gap: 10 }}>{Object.entries(groupedFields).map(([groupName, fields]) => renderFieldGroup(groupName, fields))}</div>}
+            {(template.fields || []).length > 0 && <section style={{ border: '1px solid #94a3b8', borderRadius: 10, padding: 11, background: '#f8fafc' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+                <div><strong style={{ fontSize: 16 }}>Complete the document</strong><div style={{ color: '#64748b', fontSize: 12 }}>{draftingResolvedFields.length} completed · {draftingUnresolvedFields.length} active · completed fields stop highlighting everywhere in the document</div></div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" onClick={() => setDraftingComposerMode('guided')} style={{ fontWeight: draftingComposerMode === 'guided' ? 900 : 650, background: draftingComposerMode === 'guided' ? '#dbeafe' : '#fff', border: draftingComposerMode === 'guided' ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 7, padding: '6px 10px' }}>Guided interview</button><button type="button" onClick={() => setDraftingComposerMode('document')} style={{ fontWeight: draftingComposerMode === 'document' ? 900 : 650, background: draftingComposerMode === 'document' ? '#dbeafe' : '#fff', border: draftingComposerMode === 'document' ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 7, padding: '6px 10px' }}>Fill from document</button><label style={{ display: 'flex', gap: 5, alignItems: 'center', fontSize: 12 }}><input type="checkbox" checked={draftingShowResolvedFields} onChange={(event) => setDraftingShowResolvedFields(event.target.checked)} /> Show completed fields</label></div>
+              </div>
+              <div style={{ height: 8, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden', marginBottom: 11 }}><div style={{ height: '100%', width: `${draftingApplicableFields.length ? Math.round((draftingResolvedFields.length / draftingApplicableFields.length) * 100) : 100}%`, background: '#22c55e', transition: 'width .2s ease' }} /></div>
+              {draftingComposerMode === 'document' ? renderDraftingComposerDocumentMode() : <div style={{ display: 'grid', gap: 10 }}>{draftingUnresolvedFields.length === 0 && !draftingShowResolvedFields && <div style={{ border: '1px solid #86efac', background: '#f0fdf4', color: '#166534', borderRadius: 8, padding: 10, fontWeight: 850 }}>All fields are populated. Turn on “Show completed fields” to review or override them.</div>}{Object.entries(groupedFields).map(([groupName, fields]) => renderFieldGroup(groupName, fields))}{!draftingShowResolvedFields && draftingResolvedFields.length > 0 && <details style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 9, background: '#fff' }}><summary style={{ cursor: 'pointer', fontWeight: 850 }}>Completed automatically ({draftingResolvedFields.length})</summary><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 6, marginTop: 8 }}>{draftingResolvedFields.map((field) => <button type="button" key={`resolved-${field.id}`} onClick={() => { setDraftingShowResolvedFields(true); focusDraftingComposerField(field.key) }} style={{ textAlign: 'left', border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 6, padding: 7 }}><strong>{field.label || field.key}</strong><div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#166534', fontSize: 12 }}>{draftingComposerFormatValue(draftingFieldCurrentValue(field))}</div></button>)}</div></details>}</div>}
+            </section>}
 
             {preflightIssues.length > 0 && <section style={{ border: '1px solid #fcd34d', borderRadius: 8, padding: 10, background: '#fffbeb' }}>
               <strong>Preflight review</strong>
@@ -44108,7 +47348,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const settingsTabButton = (value, label) => (
       <button type="button" onClick={() => setRequestedReliefSettingsView(value)} style={{ marginRight: 8, marginBottom: 10, fontWeight: requestedReliefSettingsView === value ? 900 : 600, background: requestedReliefSettingsView === value ? '#dbeafe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '7px 10px' }}>{label}</button>
     )
-    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('drafting_language', 'Drafting Language')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    if (requestedReliefSettingsView === 'drafting_language') {
+      return <>{settingsTabs}{renderDraftingReliefLanguageSettings()}</>
+    }
     if (requestedReliefSettingsView === 'templates') {
       return (
         <>
@@ -50224,6 +53467,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         serviceAccountEmail: result?.serviceAccountEmail || '',
         apiVersion: result?.apiVersion || 'v25',
         aiConfigured: Boolean(result?.aiConfigured),
+        writeMode: result?.writeMode || { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' },
         error: result?.error || ''
       }
       setGoogleAdsStatus(next)
@@ -50266,11 +53510,16 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         account: googleAdsReport.account,
         overview: googleAdsReport.overview,
         campaigns: (googleAdsReport.campaigns || []).slice(0, 25),
+        adGroups: (googleAdsReport.adGroups || []).slice(0, 50),
+        ads: (googleAdsReport.ads || []).slice(0, 50),
         searchTerms: (googleAdsReport.searchTerms || []).slice(0, 75),
         keywords: (googleAdsReport.keywords || []).slice(0, 50),
         conversionActions: googleAdsReport.conversionActions || [],
         devices: googleAdsReport.devices || [],
-        warnings: googleAdsReport.warnings || []
+        warnings: googleAdsReport.warnings || [],
+        benchmark: GOOGLE_ADS_LEGAL_BENCHMARK_2026,
+        bottleneck: diagnoseGoogleAdsBottleneck(googleAdsReport),
+        proposedChanges: buildGoogleAdsOptimizationSuggestions(googleAdsReport).slice(0, 30)
       }
       const result = await googleAdsApiRequest('audit', { method: 'POST', body: { report: compact } })
       setGoogleAdsAiAudit(String(result?.audit || '').trim())
@@ -50279,6 +53528,106 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } finally {
       setGoogleAdsAiLoading(false)
     }
+  }
+
+  function persistGoogleAdsWriteLog(entry) {
+    setGoogleAdsWriteLog((current) => {
+      const next = [entry, ...(Array.isArray(current) ? current : [])].slice(0, 250)
+      try { localStorage.setItem('caseMioGoogleAdsWriteLogV261', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  function queueGoogleAdsMutation(mutation, reason = '', source = 'manual') {
+    if (!mutation) return
+    setGoogleAdsMutationAuthorized(false)
+    setGoogleAdsMutationMessage('')
+    setGoogleAdsMutationModal({ mutation, reason, source, summary: googleAdsMutationSummary(mutation) })
+  }
+
+  function dismissGoogleAdsSuggestion(id) {
+    if (!id) return
+    setGoogleAdsDismissedSuggestions((current) => {
+      const next = Array.from(new Set([...(Array.isArray(current) ? current : []), id])).slice(-500)
+      try { localStorage.setItem('caseMioGoogleAdsDismissedSuggestionsV261', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  function restoreGoogleAdsSuggestions() {
+    setGoogleAdsDismissedSuggestions([])
+    try { localStorage.removeItem('caseMioGoogleAdsDismissedSuggestionsV261') } catch {}
+  }
+
+  async function applyGoogleAdsMutation() {
+    if (!googleAdsMutationModal?.mutation || googleAdsMutationLoading) return
+    if (!googleAdsMutationAuthorized) {
+      setGoogleAdsMutationMessage('Check the authorization box before applying a live Google Ads change.')
+      return
+    }
+    setGoogleAdsMutationLoading(true)
+    setGoogleAdsMutationMessage('')
+    const startedAt = new Date().toISOString()
+    try {
+      const result = await googleAdsApiRequest('mutate', {
+        method: 'POST',
+        body: {
+          mutation: googleAdsMutationModal.mutation,
+          confirmation: 'APPLY',
+          reason: googleAdsMutationModal.reason || googleAdsMutationModal.summary || ''
+        }
+      })
+      const entry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        status: 'applied',
+        startedAt,
+        appliedAt: result?.log?.appliedAt || new Date().toISOString(),
+        actorEmail: result?.log?.actorEmail || googleAdsStatus?.writeMode?.actorEmail || session?.user?.email || '',
+        summary: result?.log?.summary || googleAdsMutationModal.summary,
+        reason: googleAdsMutationModal.reason || '',
+        requestId: result?.log?.requestId || '',
+        mutation: googleAdsMutationModal.mutation,
+        resultResources: result?.log?.resultResources || []
+      }
+      persistGoogleAdsWriteLog(entry)
+      setGoogleAdsMutationMessage('Change applied. Mio is refreshing Google Ads data.')
+      await loadGoogleAdsReport(googleAdsDays)
+      await loadGoogleAdsStatus({ silent: true })
+      setTimeout(() => {
+        setGoogleAdsMutationModal(null)
+        setGoogleAdsMutationAuthorized(false)
+        setGoogleAdsMutationMessage('')
+      }, 900)
+    } catch (error) {
+      const message = error?.message || 'Google Ads rejected the change.'
+      persistGoogleAdsWriteLog({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        status: 'failed',
+        startedAt,
+        appliedAt: new Date().toISOString(),
+        actorEmail: googleAdsStatus?.writeMode?.actorEmail || session?.user?.email || '',
+        summary: googleAdsMutationModal.summary,
+        reason: googleAdsMutationModal.reason || '',
+        requestId: '',
+        mutation: googleAdsMutationModal.mutation,
+        error: message
+      })
+      setGoogleAdsMutationMessage(message)
+    } finally {
+      setGoogleAdsMutationLoading(false)
+    }
+  }
+
+  function downloadGoogleAdsWriteLog() {
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), account: googleAdsStatus.account, changes: googleAdsWriteLog }, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `mio-google-ads-change-log-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   async function metaAdsApiRequest(action, { method = 'GET', params = {}, body = null } = {}) {
@@ -50306,7 +53655,9 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         configured: Boolean(result?.configured), connected: Boolean(result?.connected),
         missing: Array.isArray(result?.missing) ? result.missing : [], account: result?.account || null,
         page: result?.page || { url: BEVERIDGE_FACEBOOK_PAGE_URL, label: 'Beveridge Blawg' },
-        apiVersion: result?.apiVersion || 'v25.0', aiConfigured: Boolean(result?.aiConfigured), error: result?.error || ''
+        apiVersion: result?.apiVersion || 'v25.0', aiConfigured: Boolean(result?.aiConfigured),
+        writeMode: result?.writeMode || { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' },
+        error: result?.error || ''
       }
       setMetaAdsStatus(next)
       return next
@@ -50348,7 +53699,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         range: metaAdsReport.range, account: metaAdsReport.account, page: metaAdsReport.page, overview: metaAdsReport.overview,
         campaigns: (metaAdsReport.campaigns || []).slice(0, 25), adSets: (metaAdsReport.adSets || []).slice(0, 40),
         ads: (metaAdsReport.ads || []).slice(0, 60), platforms: metaAdsReport.platforms || [], devices: metaAdsReport.devices || [],
-        regions: (metaAdsReport.regions || []).slice(0, 30), warnings: metaAdsReport.warnings || []
+        regions: (metaAdsReport.regions || []).slice(0, 30), warnings: metaAdsReport.warnings || [],
+        benchmark: META_ADS_LEGAL_BENCHMARK_2025,
+        bottleneck: diagnoseMetaAdsBottleneck(metaAdsReport),
+        proposedChanges: buildMetaAdsOptimizationSuggestions(metaAdsReport).slice(0, 30)
       }
       const result = await metaAdsApiRequest('audit', { method: 'POST', body: { report: compact } })
       setMetaAdsAiAudit(String(result?.audit || '').trim())
@@ -50357,6 +53711,109 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     } finally {
       setMetaAdsAiLoading(false)
     }
+  }
+
+  function persistMetaAdsWriteLog(entry) {
+    setMetaAdsWriteLog((current) => {
+      const next = [entry, ...(Array.isArray(current) ? current : [])].slice(0, 250)
+      try { localStorage.setItem('caseMioMetaAdsWriteLogV262', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  function queueMetaAdsMutation(mutation, reason = '', source = 'manual') {
+    if (!mutation) return
+    setMetaAdsMutationAuthorized(false)
+    setMetaAdsMutationMessage('')
+    setMetaAdsMutationModal({ mutation, reason, source, summary: metaAdsMutationSummary(mutation) })
+  }
+
+  function dismissMetaAdsSuggestion(id) {
+    if (!id) return
+    setMetaAdsDismissedSuggestions((current) => {
+      const next = Array.from(new Set([...(Array.isArray(current) ? current : []), id])).slice(-500)
+      try { localStorage.setItem('caseMioMetaAdsDismissedSuggestionsV262', JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  function restoreMetaAdsSuggestions() {
+    setMetaAdsDismissedSuggestions([])
+    try { localStorage.removeItem('caseMioMetaAdsDismissedSuggestionsV262') } catch {}
+  }
+
+  async function applyMetaAdsMutation() {
+    if (!metaAdsMutationModal?.mutation || metaAdsMutationLoading) return
+    if (!metaAdsMutationAuthorized) {
+      setMetaAdsMutationMessage('Check the authorization box before applying this live Meta Ads change.')
+      return
+    }
+    setMetaAdsMutationLoading(true)
+    setMetaAdsMutationMessage('')
+    const startedAt = new Date().toISOString()
+    try {
+      const result = await metaAdsApiRequest('mutate', {
+        method: 'POST',
+        body: {
+          mutation: metaAdsMutationModal.mutation,
+          confirmation: 'APPLY',
+          reason: metaAdsMutationModal.reason || metaAdsMutationModal.summary || ''
+        }
+      })
+      const entry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        status: 'applied',
+        startedAt,
+        appliedAt: result?.log?.appliedAt || new Date().toISOString(),
+        actorEmail: result?.log?.actorEmail || metaAdsStatus?.writeMode?.actorEmail || session?.user?.email || '',
+        summary: result?.log?.summary || metaAdsMutationModal.summary,
+        reason: metaAdsMutationModal.reason || '',
+        requestId: result?.log?.requestId || '',
+        objectType: result?.log?.objectType || '',
+        objectId: result?.log?.objectId || '',
+        mutation: metaAdsMutationModal.mutation,
+        before: result?.log?.before || null,
+        after: result?.log?.after || result?.after || null
+      }
+      persistMetaAdsWriteLog(entry)
+      setMetaAdsMutationMessage('Change applied. Mio is refreshing Meta Ads data.')
+      await loadMetaAdsReport(metaAdsDays)
+      await loadMetaAdsStatus({ silent: true })
+      setTimeout(() => {
+        setMetaAdsMutationModal(null)
+        setMetaAdsMutationAuthorized(false)
+        setMetaAdsMutationMessage('')
+      }, 900)
+    } catch (error) {
+      const message = error?.message || 'Meta Ads rejected the change.'
+      persistMetaAdsWriteLog({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        status: 'failed',
+        startedAt,
+        appliedAt: new Date().toISOString(),
+        actorEmail: metaAdsStatus?.writeMode?.actorEmail || session?.user?.email || '',
+        summary: metaAdsMutationModal.summary,
+        reason: metaAdsMutationModal.reason || '',
+        requestId: '',
+        mutation: metaAdsMutationModal.mutation,
+        error: message
+      })
+      setMetaAdsMutationMessage(message)
+    } finally {
+      setMetaAdsMutationLoading(false)
+    }
+  }
+
+  function downloadMetaAdsWriteLog() {
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), account: metaAdsStatus.account, changes: metaAdsWriteLog }, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `mio-meta-ads-change-log-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   async function runMarketingAiAudit() {
@@ -50455,7 +53912,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         <div>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
           <h1 style={{ margin: '3px 0 5px' }}>Paid Advertising Auditor</h1>
-          <div style={{ color: '#64748b' }}>One read-only view of Google Ads plus Facebook/Instagram Ads. Platform conversions are compared, but Mio does not assume they are qualified clients.</div>
+          <div style={{ color: '#64748b' }}>One view of Google Ads plus Facebook/Instagram Ads. Both platforms use approval-based optimization consoles, and Mio does not assume platform conversions are qualified clients.</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => refreshAll(days)} style={{ background: googleAdsDays === days && metaAdsDays === days ? '#1d4ed8' : '#fff', color: googleAdsDays === days && metaAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
@@ -50511,7 +53968,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
       <section style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <div><h2 style={{ margin: 0 }}>Cross-channel AI audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Compares the Google and Meta reports already loaded. Read-only; it cannot change either account.</p></div>
+          <div><h2 style={{ margin: 0 }}>Cross-channel AI audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Compares the Google and Meta reports already loaded. The audit proposes actions only; every live change on either platform still requires its separate approval console.</p></div>
           <button type="button" onClick={runMarketingAiAudit} disabled={marketingAiLoading || !aiConfigured || (!googleAdsReport && !metaAdsReport)} style={{ background: aiConfigured && (googleAdsReport || metaAdsReport) ? '#1d4ed8' : '#e2e8f0', color: aiConfigured && (googleAdsReport || metaAdsReport) ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{marketingAiLoading ? 'Auditing...' : aiConfigured ? 'Run marketing audit' : 'Add OPENAI_API_KEY to enable'}</button>
         </div>
         {marketingAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{marketingAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>Once both accounts are connected, this can answer the practical question: where is the money going, which channel is producing real inquiry signals, and what should be changed first?</div>}
@@ -50530,9 +53987,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const devices = Array.isArray(report.devices) ? report.devices : []
     const regions = Array.isArray(report.regions) ? report.regions : []
     const daily = Array.isArray(report.daily) ? report.daily : []
+    const writeMode = metaAdsStatus.writeMode || { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' }
+    const bottleneck = diagnoseMetaAdsBottleneck(report)
+    const benchmark = META_ADS_LEGAL_BENCHMARK_2025
+    const allSuggestions = buildMetaAdsOptimizationSuggestions(report)
+    const suggestions = allSuggestions.filter((row) => !metaAdsDismissedSuggestions.includes(row.id))
     const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
     const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
     const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
+    const muted = { color: '#64748b', fontSize: 12 }
+    const actionButton = { border: '1px solid #cbd5e1', borderRadius: 8, padding: '6px 9px', background: '#fff', fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }
+    const dangerButton = { ...actionButton, color: '#991b1b', borderColor: '#fecaca', background: '#fff7f7' }
+    const primaryButton = { ...actionButton, color: '#fff', borderColor: '#1d4ed8', background: '#1d4ed8' }
     const severityStyle = (severity) => severity === 'critical'
       ? { border: '#fecaca', background: '#fef2f2', title: '#991b1b', badge: '#dc2626' }
       : severity === 'warning'
@@ -50542,104 +54008,149 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           : { border: '#bfdbfe', background: '#eff6ff', title: '#1e40af', badge: '#2563eb' }
     const metricCards = [
       ['Spend', googleAdsFormatMoney(overview.spend)],
+      ['Impressions', googleAdsSafeNumber(overview.impressions).toLocaleString()],
       ['Link clicks', googleAdsSafeNumber(overview.inlineLinkClicks || overview.clicks).toLocaleString()],
+      ['Reported lead signals', googleAdsSafeNumber(overview.leadSignals).toFixed(googleAdsSafeNumber(overview.leadSignals) % 1 ? 1 : 0)],
       ['Avg. CPC', googleAdsFormatMoney(overview.cpc)],
-      ['Lead actions', googleAdsSafeNumber(overview.leads).toFixed(googleAdsSafeNumber(overview.leads) % 1 ? 1 : 0)],
-      ['Cost / lead', googleAdsSafeNumber(overview.leads) > 0 ? googleAdsFormatMoney(overview.costPerLead) : '-'],
-      ['Frequency', googleAdsSafeNumber(overview.frequency).toFixed(1)]
+      ['Cost / lead signal', googleAdsSafeNumber(overview.leadSignals) > 0 ? googleAdsFormatMoney(bottleneck.costPerLeadSignal) : '-']
     ]
+    const formatStageActual = (stage) => {
+      if (stage.key === 'engagement' || stage.key === 'conversion') return googleAdsFormatPercent(stage.actual)
+      if (stage.key === 'click_cost' || stage.key === 'lead_cost') return googleAdsFormatMoney(stage.actual)
+      if (stage.key === 'frequency') return googleAdsSafeNumber(stage.actual).toFixed(1)
+      return stage.actual ? 'Aligned' : 'Needs review'
+    }
+    const formatStageBenchmark = (stage) => {
+      if (stage.key === 'engagement' || stage.key === 'conversion') return googleAdsFormatPercent(stage.benchmark)
+      if (stage.key === 'click_cost' || stage.key === 'lead_cost') return googleAdsFormatMoney(stage.benchmark)
+      if (stage.key === 'frequency') return `≤ ${googleAdsSafeNumber(stage.benchmark).toFixed(1)}`
+      return 'Lead objective'
+    }
+    const campaignBudgetType = (row) => googleAdsSafeNumber(row.dailyBudget) > 0 ? 'DAILY' : googleAdsSafeNumber(row.lifetimeBudget) > 0 ? 'LIFETIME' : ''
+    const campaignBudgetValue = (row) => campaignBudgetType(row) === 'LIFETIME' ? googleAdsSafeNumber(row.lifetimeBudget) : googleAdsSafeNumber(row.dailyBudget)
+    const adSetBudgetType = (row) => googleAdsSafeNumber(row.dailyBudget) > 0 ? 'DAILY' : googleAdsSafeNumber(row.lifetimeBudget) > 0 ? 'LIFETIME' : ''
+    const adSetBudgetValue = (row) => adSetBudgetType(row) === 'LIFETIME' ? googleAdsSafeNumber(row.lifetimeBudget) : googleAdsSafeNumber(row.dailyBudget)
+    const statusButton = (status, onClick) => {
+      const normalized = String(status || '').toUpperCase()
+      const active = normalized === 'ACTIVE'
+      const controllable = ['ACTIVE', 'PAUSED'].includes(normalized)
+      return <button type="button" onClick={onClick} disabled={!writeMode.ready || !controllable} title={controllable ? '' : `Mio does not activate Meta objects with status ${normalized || 'unknown'}.`} style={{ ...(active ? dangerButton : primaryButton), opacity: writeMode.ready && controllable ? 1 : .5 }}>{active ? 'Pause' : controllable ? 'Activate' : normalized || 'Unavailable'}</button>
+    }
 
-    return <div style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
+    return <div style={{ maxWidth: 1600, margin: '0 auto', paddingBottom: 60 }}>
       {renderMarketingPlatformSwitch()}
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
         <div>
           <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
-          <h1 style={{ margin: '3px 0 5px' }}>Facebook / Instagram Ads Auditor</h1>
-          <div style={{ color: '#64748b' }}>Read-only Meta Marketing API reporting for campaigns tied to your ad account. Your public Page URL identifies the brand, but API access is granted through the Meta ad account.</div>
+          <h1 style={{ margin: '3px 0 5px' }}>Facebook / Instagram Optimization Console</h1>
+          <div style={{ color: '#64748b', maxWidth: 950 }}>Mio reviews Meta performance, compares the funnel with legal-industry reference points, proposes controlled changes, and applies a change only after you authorize the exact mutation.</div>
           <div style={{ marginTop: 5 }}><a href={metaAdsStatus.page?.url || BEVERIDGE_FACEBOOK_PAGE_URL} target="_blank" rel="noreferrer">Open {metaAdsStatus.page?.label || 'Beveridge Blawg'} on Facebook</a></div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => { setMetaAdsDays(days); if (metaAdsStatus.connected) loadMetaAdsReport(days) }} style={{ background: metaAdsDays === days ? '#1d4ed8' : '#fff', color: metaAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
-          <button type="button" onClick={async () => { const status = await loadMetaAdsStatus(); if (status?.connected) await loadMetaAdsReport(metaAdsDays) }} disabled={metaAdsLoading || metaAdsStatusLoading} style={{ background: '#0f172a', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>{metaAdsLoading || metaAdsStatusLoading ? 'Refreshing...' : 'Refresh data'}</button>
+          <button type="button" onClick={async () => { const status = await loadMetaAdsStatus(); if (status?.connected) await loadMetaAdsReport(metaAdsDays) }} disabled={metaAdsLoading || metaAdsStatusLoading} style={{ ...primaryButton, padding: '9px 12px' }}>{metaAdsLoading || metaAdsStatusLoading ? 'Refreshing…' : 'Refresh data'}</button>
         </div>
       </div>
 
-      {metaAdsError && <div style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: 10, padding: 11, marginBottom: 12 }}><strong>Meta Ads:</strong> {metaAdsError}</div>}
-
-      {!metaAdsStatus.configured && <section style={{ ...card, borderColor: '#fcd34d', background: '#fffbeb', marginBottom: 14 }}>
-        <h2 style={{ marginTop: 0 }}>Meta connection setup required</h2>
-        <p style={{ marginTop: 0 }}>The Mio Meta Ads page is installed. To read live Facebook/Instagram ad data, create a Meta developer app with the Marketing API and give a system user read access to the ad account. Store the token only in Vercel.</p>
-        <ol style={{ lineHeight: 1.65, marginBottom: 8 }}>
-          <li>In Meta for Developers, create/select a Business app and add the Marketing API.</li>
-          <li>In Business Settings, create a system user and assign it to the Beveridge Law Firm ad account.</li>
-          <li>Generate a system-user token with read permissions for ads/insights. This version does not call Meta mutation endpoints.</li>
-          <li>Add the server-only Vercel variables below and redeploy Mio.</li>
-        </ol>
-        <div style={{ display: 'grid', gap: 5, fontFamily: 'monospace', fontSize: 12, background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10 }}>
-          <div>META_AD_ACCOUNT_ID</div>
-          <div>META_ACCESS_TOKEN</div>
-          <div>META_APP_SECRET &nbsp; (optional; enables appsecret_proof)</div>
-          <div>META_PAGE_URL=https://www.facebook.com/BeveridgeBlawg/ &nbsp; (optional; already the default)</div>
-          <div>OPENAI_API_KEY &nbsp; (optional, enables AI audits)</div>
-        </div>
-        {metaAdsStatus.missing?.length > 0 && <div style={{ marginTop: 9, color: '#92400e' }}><strong>Still missing:</strong> {metaAdsStatus.missing.join(', ')}</div>}
-        <button type="button" onClick={() => loadMetaAdsStatus()} disabled={metaAdsStatusLoading} style={{ marginTop: 10 }}>{metaAdsStatusLoading ? 'Checking...' : 'Check connection'}</button>
-      </section>}
-
-      {metaAdsStatus.configured && <section style={{ ...card, marginBottom: 14, borderColor: metaAdsStatus.connected ? '#86efac' : '#fecaca', background: metaAdsStatus.connected ? '#f0fdf4' : '#fef2f2' }}>
+      <div style={{ ...card, marginBottom: 14, borderColor: metaAdsStatus.connected ? '#bbf7d0' : '#fde68a', background: metaAdsStatus.connected ? '#f0fdf4' : '#fffbeb' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><strong>{metaAdsStatus.connected ? 'Meta Ads connected' : 'Meta Ads configured but not connected'}</strong><div style={{ fontSize: 13, color: '#475569', marginTop: 3 }}>{metaAdsStatus.account?.name || 'Meta ad account'}{metaAdsStatus.account?.id ? ` - ${metaAdsStatus.account.id}` : ''}{metaAdsStatus.account?.currency ? ` - ${metaAdsStatus.account.currency}` : ''}</div></div>
-          <div style={{ fontSize: 12, color: '#64748b', textAlign: 'right' }}>Marketing API {metaAdsStatus.apiVersion || 'v25.0'}<br />Read-only reporting</div>
+          <div><strong>{metaAdsStatus.connected ? '● Meta Ads connected' : metaAdsStatus.configured ? '● Meta Ads configured but not connected' : '● Meta Ads setup required'}</strong><div style={{ ...muted, marginTop: 4 }}>{metaAdsStatus.account?.name || 'Meta ad account'}{metaAdsStatus.account?.id ? ` · ${metaAdsStatus.account.id}` : ''}</div></div>
+          <div style={{ textAlign: 'right' }}><strong style={{ color: writeMode.ready ? '#166534' : '#92400e' }}>{writeMode.ready ? 'Approval writes ready' : writeMode.serverEnabled ? 'Write user not authorized' : 'Writes locked'}</strong><div style={muted}>Meta Marketing API {metaAdsStatus.apiVersion || 'v25.0'}</div></div>
         </div>
+        {metaAdsError && <div style={{ color: '#991b1b', marginTop: 8 }}>{metaAdsError}</div>}
+      </div>
+
+      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
+        {[
+          ['overview', 'Funnel & Benchmarks'],
+          ['optimization', `Recommendations (${suggestions.length})`],
+          ['campaigns', 'Campaigns'],
+          ['adsets', 'Ad Sets'],
+          ['ads', 'Ads'],
+          ['delivery', 'Delivery'],
+          ['audit', 'AI Audit'],
+          ['change_log', 'Change Log'],
+          ['settings', 'Settings']
+        ].map(([value, label]) => <button key={value} type="button" onClick={() => setMetaAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: metaAdsTab === value ? '#dbeafe' : '#fff', color: metaAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
+      </div>
+
+      {!metaAdsReport && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Connection setup required</h2><p>Mio needs a Meta ad-account ID and server-side access token before it can load or manage Facebook and Instagram ads.</p><button type="button" onClick={() => setMetaAdsTab('settings')}>Open setup instructions</button></section>}
+
+      {metaAdsReport && metaAdsTab === 'overview' && <div style={{ display: 'grid', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>{metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px,1.3fr) minmax(300px,1fr)', gap: 14 }}>
+          <section style={card}>
+            <h2 style={{ marginTop: 0 }}>Where the funnel is breaking</h2>
+            <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, padding: 12, marginBottom: 12 }}><strong style={{ color: '#92400e' }}>Largest measured bottleneck: {bottleneck.biggest?.label || 'Insufficient data'}</strong><div style={{ marginTop: 4 }}>{bottleneck.biggest?.detail || 'Mio compares each stage with a directional Attorneys & Legal Services benchmark.'}</div></div>
+            <div style={{ display: 'grid', gap: 11 }}>{bottleneck.stages.map((stage) => { const pct = Math.max(0, Math.min(100, stage.score * 100)); const weak = stage.score < 0.65; return <div key={stage.key}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><strong>{stage.label}</strong><span style={muted}>You: {formatStageActual(stage)} · benchmark: {formatStageBenchmark(stage)}</span></div><div style={{ height: 10, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden', marginTop: 5 }}><div style={{ width: `${pct}%`, height: '100%', background: weak ? '#dc2626' : stage.score < 0.9 ? '#d97706' : '#16a34a' }} /></div></div> })}</div>
+          </section>
+          <section style={card}>
+            <h2 style={{ marginTop: 0 }}>Benchmark context</h2>
+            <p style={{ marginTop: 0 }}>Directional 2025 Meta lead-campaign benchmark for Attorneys & Legal Services:</p>
+            <div style={{ display: 'grid', gap: 8 }}><div><strong>Link CTR:</strong> {googleAdsFormatPercent(benchmark.linkCtr)}</div><div><strong>Average CPC:</strong> {googleAdsFormatMoney(benchmark.averageCpc)}</div><div><strong>Click-to-lead rate:</strong> {googleAdsFormatPercent(benchmark.conversionRate)}</div><div><strong>Cost per raw lead:</strong> {googleAdsFormatMoney(benchmark.costPerLead)}</div></div>
+            <p style={{ ...muted, marginBottom: 0, marginTop: 12 }}>This is a broad category benchmark for platform-reported leads, not a guarantee of qualified family-law consultations or retained matters. <a href={benchmark.sourceUrl} target="_blank" rel="noreferrer">Source</a></p>
+          </section>
+        </div>
+        <section style={card}><h2 style={{ marginTop: 0 }}>Daily spend and lead signals</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}><thead><tr><th style={th}>Date</th><th style={th}>Spend</th><th style={th}>Impressions</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>Lead signals</th><th style={th}>Cost / signal</th></tr></thead><tbody>{daily.map((row) => <tr key={row.date}><td style={td}>{row.date}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.impressions).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals) > 0 ? googleAdsFormatMoney(googleAdsSafeNumber(row.spend) / googleAdsSafeNumber(row.leadSignals)) : '-'}</td></tr>)}{!daily.length && <tr><td colSpan="7" style={td}>No daily rows returned.</td></tr>}</tbody></table></div></section>
+      </div>}
+
+      {metaAdsReport && metaAdsTab === 'optimization' && <section style={card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Approval queue</h2><p style={{ ...muted, margin: '4px 0 0' }}>Mio proposes changes from the loaded data. Nothing is changed until you authorize one exact action.</p></div>{metaAdsDismissedSuggestions.length > 0 && <button type="button" onClick={restoreMetaAdsSuggestions} style={actionButton}>Restore dismissed</button>}</div>
+        <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>{suggestions.map((suggestion) => { const tone = severityStyle(suggestion.severity); return <div key={suggestion.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 11, padding: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div style={{ minWidth: 0 }}><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}><span style={{ background: tone.badge, color: '#fff', borderRadius: 999, padding: '3px 7px', fontSize: 11, fontWeight: 900 }}>{String(suggestion.severity || 'info').toUpperCase()}</span><span style={{ ...muted, fontWeight: 800 }}>{suggestion.category} · {suggestion.confidence} confidence</span></div><h3 style={{ color: tone.title, margin: '7px 0 3px' }}>{suggestion.title}</h3><div>{suggestion.detail}</div>{googleAdsSafeNumber(suggestion.estimatedWaste) > 0 && <div style={{ marginTop: 5 }}><strong>Spend at risk:</strong> {googleAdsFormatMoney(suggestion.estimatedWaste)}</div>}</div><div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', flexWrap: 'wrap' }}>{suggestion.mutation && <button type="button" disabled={!writeMode.ready} onClick={() => queueMetaAdsMutation(suggestion.mutation, suggestion.detail, 'recommendation')} style={primaryButton}>{suggestion.actionLabel || 'Authorize change'}</button>}<button type="button" onClick={() => dismissMetaAdsSuggestion(suggestion.id)} style={actionButton}>Dismiss</button></div></div></div> })}{!suggestions.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 10, padding: 18, color: '#64748b' }}>No active recommendation is waiting. Refresh the report or restore dismissed recommendations.</div>}</div>
       </section>}
 
-      {metaAdsStatus.connected && <>
-        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
-          {[['overview', 'Overview'], ['campaigns', 'Campaigns'], ['adsets', 'Ad Sets'], ['ads', 'Ads'], ['delivery', 'Delivery'], ['audit', 'AI Audit'], ['settings', 'Settings']].map(([value, label]) => <button key={value} type="button" onClick={() => setMetaAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: metaAdsTab === value ? '#dbeafe' : '#fff', color: metaAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
-        </div>
+      {metaAdsReport && metaAdsTab === 'campaigns' && <section style={card}><h2 style={{ marginTop: 0 }}>Campaign controls</h2><p style={{ ...muted, marginTop: -4 }}>Pause/activate campaigns and adjust an existing campaign-level budget. Budget edits are unavailable when the campaign is budgeted at the ad-set level.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1450 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Objective</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>Lead signals</th><th style={th}>CTR</th><th style={th}>CPL</th><th style={th}>Budget</th><th style={th}>Controls</th></tr></thead><tbody>{campaigns.map((row) => { const budgetType = campaignBudgetType(row); const currentBudget = campaignBudgetValue(row); const draft = metaAdsCampaignBudgetDrafts[row.id] ?? (currentBudget || ''); return <tr key={row.id}><td style={{ ...td, fontWeight: 900 }}>{row.name}<div style={muted}>{row.id}</div></td><td style={td}>{row.status || '-'}<div style={muted}>Effective: {row.effectiveStatus || '-'}</div></td><td style={td}>{row.objective || '-'}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals) > 0 ? googleAdsFormatMoney(googleAdsSafeNumber(row.spend) / googleAdsSafeNumber(row.leadSignals)) : '-'}</td><td style={td}>{budgetType ? <div><div style={muted}>{budgetType === 'DAILY' ? 'Daily' : 'Lifetime'}</div><input type="number" min="1" step="1" value={draft} onChange={(event) => setMetaAdsCampaignBudgetDrafts((current) => ({ ...current, [row.id]: event.target.value }))} style={{ width: 95, padding: 6 }} /></div> : <span style={muted}>Budget controlled by ad set</span>}</td><td style={td}><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{statusButton(row.status, () => queueMetaAdsMutation({ type: 'campaign_status', campaignId: row.id, campaignName: row.name, status: String(row.status).toUpperCase() === 'ACTIVE' ? 'PAUSED' : 'ACTIVE', expectedStatus: row.status }, `Manual campaign status change for ${row.name}.`, 'manual'))}{budgetType && <button type="button" disabled={!writeMode.ready || !Number(draft) || Number(draft) === currentBudget} onClick={() => queueMetaAdsMutation({ type: 'campaign_budget', campaignId: row.id, campaignName: row.name, budgetType, budget: Number(draft), expectedBudget: currentBudget }, `Manual ${budgetType.toLowerCase()} budget change for ${row.name}.`, 'manual')} style={actionButton}>Authorize budget</button>}</div></td></tr> })}{!campaigns.length && <tr><td colSpan="10" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div></section>}
 
-        {metaAdsLoading && !metaAdsReport && <div style={card}>Loading Meta Ads data...</div>}
+      {metaAdsReport && metaAdsTab === 'adsets' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad-set controls</h2><p style={{ ...muted, marginTop: -4 }}>Manage delivery at the audience/placement level and change ad-set budgets when present.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1550 }}><thead><tr><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Optimization</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>Lead signals</th><th style={th}>Frequency</th><th style={th}>Budget</th><th style={th}>Controls</th></tr></thead><tbody>{adSets.map((row) => { const budgetType = adSetBudgetType(row); const currentBudget = adSetBudgetValue(row); const draft = metaAdsAdSetBudgetDrafts[row.id] ?? (currentBudget || ''); return <tr key={row.id}><td style={{ ...td, fontWeight: 900 }}>{row.name}<div style={muted}>{row.id}</div></td><td style={td}>{row.campaignName || '-'}</td><td style={td}>{row.status || '-'}<div style={muted}>Effective: {row.effectiveStatus || '-'}</div></td><td style={td}>{row.optimizationGoal || '-'}<div style={muted}>{row.billingEvent || ''}</div></td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td><td style={td}>{budgetType ? <div><div style={muted}>{budgetType === 'DAILY' ? 'Daily' : 'Lifetime'}</div><input type="number" min="1" step="1" value={draft} onChange={(event) => setMetaAdsAdSetBudgetDrafts((current) => ({ ...current, [row.id]: event.target.value }))} style={{ width: 95, padding: 6 }} /></div> : <span style={muted}>Uses campaign budget</span>}</td><td style={td}><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{statusButton(row.status, () => queueMetaAdsMutation({ type: 'adset_status', adSetId: row.id, adSetName: row.name, status: String(row.status).toUpperCase() === 'ACTIVE' ? 'PAUSED' : 'ACTIVE', expectedStatus: row.status }, `Manual ad-set status change for ${row.name}.`, 'manual'))}{budgetType && <button type="button" disabled={!writeMode.ready || !Number(draft) || Number(draft) === currentBudget} onClick={() => queueMetaAdsMutation({ type: 'adset_budget', adSetId: row.id, adSetName: row.name, budgetType, budget: Number(draft), expectedBudget: currentBudget }, `Manual ${budgetType.toLowerCase()} budget change for ${row.name}.`, 'manual')} style={actionButton}>Authorize budget</button>}</div></td></tr> })}{!adSets.length && <tr><td colSpan="10" style={td}>No ad-set rows returned.</td></tr>}</tbody></table></div></section>}
 
-        {metaAdsReport && metaAdsTab === 'overview' && <div style={{ display: 'grid', gap: 14 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10 }}>{metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(320px,.8fr)', gap: 14 }}>
-            <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><h2 style={{ margin: 0 }}>Audit findings</h2><span style={{ fontSize: 12, color: '#64748b' }}>{report.range?.start} - {report.range?.end}</span></div><div style={{ display: 'grid', gap: 9, marginTop: 10 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#fff', background: tone.badge, borderRadius: 999, padding: '3px 7px', fontWeight: 900, textTransform: 'uppercase' }}>{finding.severity}</span><strong style={{ color: tone.title }}>{finding.title}</strong></div><div style={{ marginTop: 5, fontSize: 13 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 6, fontSize: 13 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}</div></section>
-            <section style={card}><h2 style={{ marginTop: 0 }}>Lead signals</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Lead actions:</strong> {googleAdsSafeNumber(overview.leads)}</div><div><strong>Messages:</strong> {googleAdsSafeNumber(overview.messages)}</div><div><strong>Contacts:</strong> {googleAdsSafeNumber(overview.contacts)}</div><div><strong>Appointments:</strong> {googleAdsSafeNumber(overview.appointments)}</div><div><strong>Landing-page views:</strong> {googleAdsSafeNumber(overview.landingPageViews)}</div></div><p style={{ color: '#64748b', fontSize: 12, marginBottom: 0 }}>Mio intentionally keeps these separate because Meta can report overlapping action types. The main "Lead actions" number is not treated as a signed client.</p></section>
-          </div>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Daily performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Date</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Frequency</th></tr></thead><tbody>{daily.map((row) => <tr key={row.date}><td style={td}>{row.date}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!daily.length && <tr><td colSpan="6" style={td}>No daily data returned.</td></tr>}</tbody></table></div></section>
-        </div>}
+      {metaAdsReport && metaAdsTab === 'ads' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad and creative controls</h2><p style={{ ...muted, marginTop: -4 }}>Pause or activate individual ads without changing the rest of the ad set.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1350 }}><thead><tr><th style={th}>Ad</th><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>Lead signals</th><th style={th}>Frequency</th><th style={th}>Control</th></tr></thead><tbody>{ads.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 900 }}><div style={{ display: 'flex', gap: 9, alignItems: 'center' }}>{row.thumbnailUrl && <img src={row.thumbnailUrl} alt="" style={{ width: 54, height: 54, objectFit: 'cover', borderRadius: 7, border: '1px solid #e2e8f0' }} />}<div>{row.name}<div style={muted}>{row.id}</div></div></div></td><td style={td}>{row.adSetName || '-'}</td><td style={td}>{row.campaignName || '-'}</td><td style={td}>{row.status || '-'}<div style={muted}>Effective: {row.effectiveStatus || '-'}</div></td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td><td style={td}>{statusButton(row.status, () => queueMetaAdsMutation({ type: 'ad_status', adId: row.id, adName: row.name, status: String(row.status).toUpperCase() === 'ACTIVE' ? 'PAUSED' : 'ACTIVE', expectedStatus: row.status }, `Manual ad status change for ${row.name}.`, 'manual'))}</td></tr>)}{!ads.length && <tr><td colSpan="10" style={td}>No ad rows returned.</td></tr>}</tbody></table></div></section>}
 
-        {metaAdsReport && metaAdsTab === 'campaigns' && <section style={card}><h2 style={{ marginTop: 0 }}>Campaign performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Objective</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Frequency</th></tr></thead><tbody>{campaigns.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.effectiveStatus || row.status || '-'}</td><td style={td}>{row.objective || '-'}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!campaigns.length && <tr><td colSpan="11" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div></section>}
+      {metaAdsReport && metaAdsTab === 'delivery' && <div style={{ display: 'grid', gap: 14 }}>
+        <section style={card}><h2 style={{ marginTop: 0 }}>Facebook vs. Instagram placement</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Platform</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Lead signals</th><th style={th}>Frequency</th></tr></thead><tbody>{platforms.map((row) => <tr key={row.platform}><td style={{ ...td, fontWeight: 800 }}>{row.platform}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!platforms.length && <tr><td colSpan="6" style={td}>No platform breakdown returned.</td></tr>}</tbody></table></div></section>
+        <section style={card}><h2 style={{ marginTop: 0 }}>Device performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CPC</th><th style={th}>Lead signals</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={{ ...td, fontWeight: 800 }}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td></tr>)}{!devices.length && <tr><td colSpan="5" style={td}>No device breakdown returned.</td></tr>}</tbody></table></div></section>
+        <section style={card}><h2 style={{ marginTop: 0 }}>Region performance</h2><p style={{ ...muted, marginTop: -4 }}>Useful for spotting spend outside the areas you actually want to serve. Meta may suppress or limit some breakdown rows.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Region</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Lead signals</th></tr></thead><tbody>{regions.map((row, index) => <tr key={`${row.region}-${index}`}><td style={{ ...td, fontWeight: 800 }}>{row.region}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leadSignals)}</td></tr>)}{!regions.length && <tr><td colSpan="5" style={td}>No region breakdown returned.</td></tr>}</tbody></table></div></section>
+      </div>}
 
-        {metaAdsReport && metaAdsTab === 'adsets' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad set performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}><thead><tr><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Frequency</th></tr></thead><tbody>{adSets.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!adSets.length && <tr><td colSpan="10" style={td}>No ad set rows returned.</td></tr>}</tbody></table></div></section>}
+      {metaAdsReport && metaAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI Meta Ads audit</h2><p style={{ ...muted, margin: '4px 0 0' }}>The AI can propose prioritized changes, but every live mutation still requires your approval window.</p></div><button type="button" onClick={runMetaAdsAiAudit} disabled={metaAdsAiLoading || !metaAdsStatus.aiConfigured} style={metaAdsStatus.aiConfigured ? primaryButton : { ...actionButton, color: '#64748b', background: '#e2e8f0' }}>{metaAdsAiLoading ? 'Auditing…' : metaAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>{metaAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{metaAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>Rule-based recommendations work without an AI key. The AI adds a narrative review of objectives, campaigns, ad sets, ads, creative fatigue, placements, and tracking.</div>}</section><section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section></div>}
 
-        {metaAdsReport && metaAdsTab === 'ads' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad performance</h2><p style={{ color: '#64748b', marginTop: -4 }}>Sorted by spend so weak creative consuming the most money is easy to spot.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={th}>Ad</th><th style={th}>Ad set</th><th style={th}>Campaign</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CTR</th><th style={th}>CPC</th><th style={th}>Leads</th><th style={th}>Cost/lead</th><th style={th}>Flag</th></tr></thead><tbody>{ads.map((row) => { const review = googleAdsSafeNumber(row.spend) >= 10 && googleAdsSafeNumber(row.leadSignals) <= 0; return <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.adSetName}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.linkCtr || row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.leads) > 0 ? googleAdsFormatMoney(row.costPerLead) : '-'}</td><td style={td}>{review ? <span style={{ color: '#b91c1c', fontWeight: 900 }}>Review</span> : '-'}</td></tr> })}{!ads.length && <tr><td colSpan="10" style={td}>No ad rows returned.</td></tr>}</tbody></table></div></section>}
+      {metaAdsTab === 'change_log' && <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>Mio Meta Ads change log</h2><p style={{ ...muted, margin: '4px 0 0' }}>Records the exact action, approver, validation result, before/after state, and failure message when available.</p></div><button type="button" onClick={downloadMetaAdsWriteLog} disabled={!metaAdsWriteLog.length} style={actionButton}>Download JSON</button></div><div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={th}>When</th><th style={th}>Status</th><th style={th}>Change</th><th style={th}>Approved by</th><th style={th}>Reason</th><th style={th}>Request ID / error</th></tr></thead><tbody>{metaAdsWriteLog.map((row) => <tr key={row.id}><td style={td}>{row.appliedAt ? new Date(row.appliedAt).toLocaleString() : '-'}</td><td style={td}><strong style={{ color: row.status === 'applied' ? '#166534' : '#991b1b' }}>{row.status}</strong></td><td style={td}>{row.summary}<div style={muted}>{row.objectType || ''} {row.objectId || ''}</div></td><td style={td}>{row.actorEmail || '-'}</td><td style={td}>{row.reason || '-'}</td><td style={td}>{row.requestId || row.error || '-'}</td></tr>)}{!metaAdsWriteLog.length && <tr><td colSpan="6" style={td}>No Mio-authorized Meta Ads changes have been recorded in this browser yet.</td></tr>}</tbody></table></div></section>}
 
-        {metaAdsReport && metaAdsTab === 'delivery' && <div style={{ display: 'grid', gap: 14 }}>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Facebook vs. Instagram placement</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Platform</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Leads</th><th style={th}>Frequency</th></tr></thead><tbody>{platforms.map((row) => <tr key={row.platform}><td style={{ ...td, fontWeight: 800 }}>{row.platform}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td><td style={td}>{googleAdsSafeNumber(row.frequency).toFixed(1)}</td></tr>)}{!platforms.length && <tr><td colSpan="6" style={td}>No platform breakdown returned.</td></tr>}</tbody></table></div></section>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Device performance</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Spend</th><th style={th}>Link clicks</th><th style={th}>CPC</th><th style={th}>Leads</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={{ ...td, fontWeight: 800 }}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cpc)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td></tr>)}{!devices.length && <tr><td colSpan="5" style={td}>No device breakdown returned.</td></tr>}</tbody></table></div></section>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Region performance</h2><p style={{ color: '#64748b', marginTop: -4 }}>Useful for spotting spend outside the areas you actually want to serve. Meta may suppress or limit some breakdown rows.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Region</th><th style={th}>Spend</th><th style={th}>Reach</th><th style={th}>Link clicks</th><th style={th}>Leads</th></tr></thead><tbody>{regions.map((row, index) => <tr key={`${row.region}-${index}`}><td style={{ ...td, fontWeight: 800 }}>{row.region}</td><td style={td}>{googleAdsFormatMoney(row.spend)}</td><td style={td}>{googleAdsSafeNumber(row.reach).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.inlineLinkClicks || row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.leads)}</td></tr>)}{!regions.length && <tr><td colSpan="5" style={td}>No region breakdown returned.</td></tr>}</tbody></table></div></section>
-        </div>}
+      {metaAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><h2 style={{ marginTop: 0 }}>Connection and write mode</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Ad account:</strong> {metaAdsStatus.account?.name || '-'} {metaAdsStatus.account?.id ? `(${metaAdsStatus.account.id})` : ''}</div><div><strong>Business:</strong> {metaAdsStatus.account?.businessName || '-'}</div><div><strong>Meta Marketing API:</strong> {metaAdsStatus.apiVersion || 'v25.0'}</div><div><strong>AI narrative audit:</strong> {metaAdsStatus.aiConfigured ? 'Enabled' : 'Not configured'}</div><div><strong>Server write lock:</strong> {writeMode.serverEnabled ? 'Enabled' : 'Disabled'}</div><div><strong>Signed-in approver authorized:</strong> {writeMode.userAuthorized ? `Yes (${writeMode.actorEmail || session?.user?.email || ''})` : 'No'}</div><div><strong>Live write readiness:</strong> {writeMode.ready ? 'Approval writes ready' : 'Not ready'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '-'}</div></div></section>
+        <section style={card}><h2 style={{ marginTop: 0 }}>Enable controlled Meta writes</h2><ol style={{ lineHeight: 1.55 }}><li>In Meta Business Settings, assign the system user behind the access token to the Beveridge Law Firm ad account with permission to manage campaigns.</li><li>Generate/use a server-side system-user access token that includes <code>ads_management</code>. Keep <code>business_management</code> too when your Business Manager workflow requires it.</li><li>In Vercel Production variables, add <code>META_ADS_WRITES_ENABLED=true</code>.</li><li>Optionally add <code>META_ADS_WRITE_APPROVER_EMAILS=ben@beveridgelawfirm.com</code>.</li><li>Redeploy Mio, refresh this page, and confirm “Approval writes ready.”</li></ol><p style={{ ...muted, marginBottom: 0 }}>Optional safety cap: <code>META_ADS_MAX_BUDGET_DOLLARS</code> controls the largest budget value Mio will accept per approved change; default is $1,000.</p></section>
+        {report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}
+        <section style={card}><h2 style={{ marginTop: 0 }}>Safety model</h2><p>Mio never sends a live Meta mutation merely because an AI suggested it. The server verifies your Mio session and approver email, checks the object belongs to the configured ad account, detects stale status/budget values, performs a Meta <code>validate_only</code> request, and only then performs the exact approved action.</p><p style={{ marginBottom: 0 }}>The Meta token and app secret remain server-side in Vercel. Successful live changes are additionally logged to Vercel as <code>META_ADS_LIVE_CHANGE</code>.</p></section></div>}
 
-        {metaAdsReport && metaAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI Meta Ads audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Reviews the loaded Facebook/Instagram data. It cannot change campaigns, audiences, budgets, or ads.</p></div><button type="button" onClick={runMetaAdsAiAudit} disabled={metaAdsAiLoading || !metaAdsStatus.aiConfigured} style={{ background: metaAdsStatus.aiConfigured ? '#1d4ed8' : '#e2e8f0', color: metaAdsStatus.aiConfigured ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{metaAdsAiLoading ? 'Auditing...' : metaAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>{metaAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{metaAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>The rule-based findings work without AI. The AI review adds campaign/ad-set/ad, placement, device, region, frequency, and tracking analysis.</div>}</section><section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section></div>}
-
-        {metaAdsReport && metaAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><h2 style={{ marginTop: 0 }}>Read-only connection</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Ad account:</strong> {metaAdsStatus.account?.name || '-'} {metaAdsStatus.account?.id ? `(${metaAdsStatus.account.id})` : ''}</div><div><strong>Business:</strong> {metaAdsStatus.account?.businessName || '-'}</div><div><strong>Meta Marketing API:</strong> {metaAdsStatus.apiVersion || 'v25.0'}</div><div><strong>Facebook Page:</strong> <a href={metaAdsStatus.page?.url || BEVERIDGE_FACEBOOK_PAGE_URL} target="_blank" rel="noreferrer">{metaAdsStatus.page?.label || 'Beveridge Blawg'}</a></div><div><strong>AI narrative audit:</strong> {metaAdsStatus.aiConfigured ? 'Enabled' : 'Not configured'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '-'}</div></div></section>{report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}<section style={card}><h2 style={{ marginTop: 0 }}>Security</h2><p style={{ marginBottom: 0 }}>The Meta access token and optional app secret stay in Vercel server environment variables. The browser gets reporting data only after the API endpoint verifies a signed-in Beveridge Law Firm Mio user. This build contains no Meta write/mutate endpoint.</p></section></div>}
-      </>}
+      {metaAdsMutationModal && createPortal(<div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.62)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}><div style={{ width: 'min(760px,96vw)', maxHeight: '92vh', overflow: 'auto', background: '#fff', borderRadius: 15, padding: 18, boxShadow: '0 24px 70px rgba(15,23,42,.35)' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}><div><div style={{ color: '#b91c1c', fontSize: 12, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.06em' }}>Live Meta Ads change</div><h2 style={{ margin: '4px 0 0' }}>{metaAdsMutationModal.summary}</h2></div><button type="button" onClick={() => { if (!metaAdsMutationLoading) { setMetaAdsMutationModal(null); setMetaAdsMutationMessage('') } }} style={actionButton}>Close</button></div><div style={{ border: '1px solid #dbe3ea', borderRadius: 10, background: '#f8fafc', padding: 12, marginTop: 14 }}><strong>Reason</strong><div style={{ marginTop: 4 }}>{metaAdsMutationModal.reason || 'Manual optimization-console action.'}</div></div><div style={{ marginTop: 12 }}><strong>Exact mutation Mio will submit</strong><pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#0f172a', color: '#e2e8f0', padding: 12, borderRadius: 10, fontSize: 12, overflow: 'auto' }}>{JSON.stringify(metaAdsMutationModal.mutation, null, 2)}</pre></div><label style={{ display: 'flex', gap: 9, alignItems: 'flex-start', border: '1px solid #fecaca', background: '#fff7f7', borderRadius: 10, padding: 12, marginTop: 12 }}><input type="checkbox" checked={metaAdsMutationAuthorized} onChange={(event) => setMetaAdsMutationAuthorized(event.target.checked)} /><span>I authorize Mio to validate and then apply this exact change to the Beveridge Law Firm Meta ad account.</span></label>{metaAdsMutationMessage && <div style={{ marginTop: 10, color: metaAdsMutationMessage.startsWith('Change applied') ? '#166534' : '#991b1b', fontWeight: 800 }}>{metaAdsMutationMessage}</div>}<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}><button type="button" onClick={() => setMetaAdsMutationModal(null)} disabled={metaAdsMutationLoading} style={actionButton}>Cancel</button><button type="button" onClick={applyMetaAdsMutation} disabled={!metaAdsMutationAuthorized || metaAdsMutationLoading || !writeMode.ready} style={primaryButton}>{metaAdsMutationLoading ? 'Validating and applying…' : 'Authorize & apply'}</button></div></div></div>, document.body)}
     </div>
   }
 
+
   function renderGoogleAdsPage() {
-    if (marketingPlatform === 'overview') return renderMarketingOverviewPage()
-    if (marketingPlatform === 'meta') return renderMetaAdsPage()
     const report = googleAdsReport || {}
     const overview = report.overview || {}
     const findings = buildGoogleAdsAudit(report)
     const campaigns = Array.isArray(report.campaigns) ? report.campaigns : []
+    const adGroups = Array.isArray(report.adGroups) ? report.adGroups : []
+    const ads = Array.isArray(report.ads) ? report.ads : []
     const searchTerms = Array.isArray(report.searchTerms) ? report.searchTerms : []
     const keywords = Array.isArray(report.keywords) ? report.keywords : []
+    const negativeKeywords = Array.isArray(report.negativeKeywords) ? report.negativeKeywords : []
     const conversionActions = Array.isArray(report.conversionActions) ? report.conversionActions : []
     const devices = Array.isArray(report.devices) ? report.devices : []
     const daily = Array.isArray(report.daily) ? report.daily : []
+    const writeMode = googleAdsStatus.writeMode || { serverEnabled: false, userAuthorized: false, ready: false, actorEmail: '' }
+    const bottleneck = diagnoseGoogleAdsBottleneck(report)
+    const searchMetrics = bottleneck.metrics || {}
+    const benchmark = GOOGLE_ADS_LEGAL_BENCHMARK_2026
+    const allSuggestions = buildGoogleAdsOptimizationSuggestions(report)
+    const suggestions = allSuggestions.filter((row) => !googleAdsDismissedSuggestions.includes(row.id))
+    const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
+    const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
+    const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
+    const muted = { color: '#64748b', fontSize: 12 }
+    const actionButton = { border: '1px solid #cbd5e1', borderRadius: 8, padding: '6px 9px', background: '#fff', fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }
+    const primaryActionButton = { ...actionButton, background: '#1d4ed8', color: '#fff', borderColor: '#1d4ed8' }
+    const dangerActionButton = { ...actionButton, background: '#fff1f2', color: '#991b1b', borderColor: '#fecaca' }
     const severityStyle = (severity) => severity === 'critical'
       ? { border: '#fecaca', background: '#fef2f2', title: '#991b1b', badge: '#dc2626' }
       : severity === 'warning'
@@ -50647,132 +54158,126 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         : severity === 'good'
           ? { border: '#bbf7d0', background: '#f0fdf4', title: '#166534', badge: '#16a34a' }
           : { border: '#bfdbfe', background: '#eff6ff', title: '#1e40af', badge: '#2563eb' }
-    const card = { border: '1px solid #dbe3ea', borderRadius: 12, background: '#fff', padding: 14, boxShadow: '0 2px 8px rgba(15,23,42,.04)' }
-    const th = { textAlign: 'left', padding: '9px 8px', borderBottom: '1px solid #dbe3ea', color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }
-    const td = { padding: '9px 8px', borderBottom: '1px solid #eef2f7', fontSize: 13, verticalAlign: 'top' }
     const metricCards = [
       ['Spend', googleAdsFormatMoney(overview.cost)],
       ['Clicks', googleAdsSafeNumber(overview.clicks).toLocaleString()],
       ['Avg. CPC', googleAdsFormatMoney(overview.averageCpc)],
-      ['Conversions', googleAdsSafeNumber(overview.conversions).toFixed(googleAdsSafeNumber(overview.conversions) % 1 ? 1 : 0)],
+      ['Conversions', googleAdsSafeNumber(overview.conversions)],
       ['Conv. rate', googleAdsFormatPercent(overview.conversionRate)],
       ['Cost / conv.', googleAdsSafeNumber(overview.conversions) > 0 ? googleAdsFormatMoney(overview.costPerConversion) : '—']
     ]
-    const topWaste = searchTerms.filter((row) => googleAdsSafeNumber(row.conversions) <= 0).sort((a, b) => googleAdsSafeNumber(b.cost) - googleAdsSafeNumber(a.cost)).slice(0, 10)
+    const writeLabel = writeMode.ready ? 'Approval writes ready' : writeMode.serverEnabled ? 'Write user not authorized' : 'Writes locked'
+    const writeTone = writeMode.ready ? { bg: '#ecfdf5', border: '#86efac', color: '#166534' } : { bg: '#fffbeb', border: '#fde68a', color: '#92400e' }
+    const isRemoval = ['remove_keyword', 'remove_negative_keyword'].includes(String(googleAdsMutationModal?.mutation?.type || ''))
 
-    return <div style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
-      {renderMarketingPlatformSwitch()}
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 14 }}>
-        <div>
-          <div style={{ color: '#64748b', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' }}>Marketing</div>
-          <h1 style={{ margin: '3px 0 5px' }}>Google Ads Auditor</h1>
-          <div style={{ color: '#64748b' }}>Read-only reporting and recommendations. Mio does not change campaigns, bids, budgets, keywords, or conversion settings.</div>
-        </div>
+    const percentOf = (actual, target, lowerBetter = false) => {
+      const a = googleAdsSafeNumber(actual)
+      const t = Math.max(0.000001, googleAdsSafeNumber(target))
+      if (!a) return 0
+      return Math.max(2, Math.min(100, (lowerBetter ? t / a : a / t) * 100))
+    }
+    const benchmarkRow = (label, actual, target, format, lowerBetter = false) => {
+      const healthy = actual > 0 && (lowerBetter ? actual <= target : actual >= target)
+      const pct = percentOf(actual, target, lowerBetter)
+      return <div key={label} style={{ display: 'grid', gridTemplateColumns: 'minmax(150px,.8fr) minmax(230px,1.6fr) minmax(110px,.6fr)', gap: 12, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #eef2f7' }}>
+        <div><strong>{label}</strong><div style={muted}>Legal benchmark: {format(target)}</div></div>
+        <div style={{ height: 16, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden', position: 'relative' }}><div style={{ width: `${pct}%`, minWidth: actual ? 4 : 0, height: '100%', background: healthy ? '#16a34a' : '#dc2626', borderRadius: 999 }} /></div>
+        <div style={{ textAlign: 'right', fontWeight: 900, color: healthy ? '#166534' : '#991b1b' }}>{actual > 0 ? format(actual) : 'No result'}</div>
+      </div>
+    }
+    const authorizeButton = (label, mutation, reason, style = primaryActionButton) => <button type="button" onClick={() => queueGoogleAdsMutation(mutation, reason)} disabled={!writeMode.ready} title={!writeMode.ready ? 'Enable write mode in Settings first.' : ''} style={{ ...style, opacity: writeMode.ready ? 1 : .5, cursor: writeMode.ready ? 'pointer' : 'not-allowed' }}>{label}</button>
+
+    const selectedManualAdGroup = adGroups.find((row) => String(row.id) === String(googleAdsManualKeyword.adGroupId))
+    const selectedNegativeCampaign = campaigns.find((row) => String(row.id) === String(googleAdsManualNegative.campaignId))
+    const selectedNegativeAdGroup = adGroups.find((row) => String(row.id) === String(googleAdsManualNegative.adGroupId))
+
+    return <div style={{ maxWidth: 1600, margin: '0 auto', padding: '0 12px 36px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: 14 }}>
+        <div><h1 style={{ margin: 0 }}>Google Ads Optimization Console</h1><p style={{ color: '#64748b', margin: '5px 0 0', maxWidth: 920 }}>Mio diagnoses the funnel, proposes changes, and applies nothing until an authorized firm user approves the exact live change.</p></div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => { setGoogleAdsDays(days); if (googleAdsStatus.connected) loadGoogleAdsReport(days) }} style={{ background: googleAdsDays === days ? '#1d4ed8' : '#fff', color: googleAdsDays === days ? '#fff' : '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800 }}>{days} days</button>)}
+          {[7, 14, 30, 90].map((days) => <button key={days} type="button" onClick={() => { setGoogleAdsDays(days); if (googleAdsStatus.connected) loadGoogleAdsReport(days) }} disabled={googleAdsLoading} style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px', fontWeight: 800, background: googleAdsDays === days ? '#1d4ed8' : '#fff', color: googleAdsDays === days ? '#fff' : '#0f172a' }}>{days} days</button>)}
           <button type="button" onClick={async () => { const status = await loadGoogleAdsStatus(); if (status?.connected) await loadGoogleAdsReport(googleAdsDays) }} disabled={googleAdsLoading || googleAdsStatusLoading} style={{ background: '#0f172a', color: '#fff', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 800 }}>{googleAdsLoading || googleAdsStatusLoading ? 'Refreshing…' : 'Refresh data'}</button>
+          <span style={{ border: `1px solid ${writeTone.border}`, background: writeTone.bg, color: writeTone.color, borderRadius: 999, padding: '7px 10px', fontSize: 12, fontWeight: 900 }}>{writeLabel}</span>
         </div>
       </div>
 
       {googleAdsError && <div style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', borderRadius: 10, padding: 11, marginBottom: 12 }}><strong>Google Ads:</strong> {googleAdsError}</div>}
+      {googleAdsMutationMessage && !googleAdsMutationModal && <div style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', color: '#166534', borderRadius: 10, padding: 11, marginBottom: 12 }}>{googleAdsMutationMessage}</div>}
 
-      {!googleAdsStatus.configured && <section style={{ ...card, borderColor: '#fcd34d', background: '#fffbeb', marginBottom: 14 }}>
-        <h2 style={{ marginTop: 0 }}>Connection setup required</h2>
-        <p style={{ marginTop: 0 }}>The Mio page is installed. To let it read your live Google Ads account, the server still needs Google Ads API credentials. Do not paste the service-account private key into this webpage or into the React file.</p>
-        <ol style={{ lineHeight: 1.65, marginBottom: 8 }}>
-          <li>Create or select a Google Cloud project, enable the Google Ads API, and create a service account.</li>
-          <li>In Google Ads, add the service-account email as a user under <strong>Admin → Access and security</strong>.</li>
-          <li>Obtain a Google Ads developer token from the API Center of a Google Ads manager account.</li>
-          <li>Add the server-only Vercel environment variables listed below, then redeploy Mio.</li>
-        </ol>
-        <div style={{ display: 'grid', gap: 5, fontFamily: 'monospace', fontSize: 12, background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10 }}>
-          <div>GOOGLE_ADS_CUSTOMER_ID</div>
-          <div>GOOGLE_ADS_DEVELOPER_TOKEN</div>
-          <div>GOOGLE_ADS_SERVICE_ACCOUNT_JSON</div>
-          <div>GOOGLE_ADS_LOGIN_CUSTOMER_ID &nbsp; (only if access runs through a manager account)</div>
-          <div>OPENAI_API_KEY &nbsp; (optional, enables the narrative AI audit button)</div>
-        </div>
-        {googleAdsStatus.missing?.length > 0 && <div style={{ marginTop: 9, color: '#92400e' }}><strong>Still missing:</strong> {googleAdsStatus.missing.join(', ')}</div>}
-        <button type="button" onClick={() => loadGoogleAdsStatus()} disabled={googleAdsStatusLoading} style={{ marginTop: 10 }}>{googleAdsStatusLoading ? 'Checking…' : 'Check connection'}</button>
-      </section>}
+      {!googleAdsStatus.configured && <section style={{ ...card, borderColor: '#fcd34d', background: '#fffbeb', marginBottom: 14 }}><h2 style={{ marginTop: 0 }}>Connection setup required</h2><p>The reporting and optimization console needs the existing Google Ads service-account connection.</p>{googleAdsStatus.missing?.length > 0 && <div><strong>Missing:</strong> {googleAdsStatus.missing.join(', ')}</div>}<button type="button" onClick={() => loadGoogleAdsStatus()} disabled={googleAdsStatusLoading}>{googleAdsStatusLoading ? 'Checking…' : 'Check connection'}</button></section>}
 
       {googleAdsStatus.configured && <section style={{ ...card, marginBottom: 14, borderColor: googleAdsStatus.connected ? '#86efac' : '#fecaca', background: googleAdsStatus.connected ? '#f0fdf4' : '#fef2f2' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><strong>{googleAdsStatus.connected ? '● Google Ads connected' : '● Google Ads configured but not connected'}</strong><div style={{ fontSize: 13, color: '#475569', marginTop: 3 }}>{googleAdsStatus.account?.descriptiveName || 'Google Ads account'}{googleAdsStatus.account?.id ? ` • ${googleAdsStatus.account.id}` : ''}{googleAdsStatus.account?.currencyCode ? ` • ${googleAdsStatus.account.currencyCode}` : ''}</div></div>
-          <div style={{ fontSize: 12, color: '#64748b', textAlign: 'right' }}>API {googleAdsStatus.apiVersion || 'v25'}{googleAdsStatus.serviceAccountEmail ? <><br />{googleAdsStatus.serviceAccountEmail}</> : null}</div>
-        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div><strong>{googleAdsStatus.connected ? '● Google Ads connected' : '● Google Ads configured but not connected'}</strong><div style={{ fontSize: 13, color: '#475569', marginTop: 3 }}>{googleAdsStatus.account?.descriptiveName || 'Google Ads account'}{googleAdsStatus.account?.id ? ` • ${googleAdsStatus.account.id}` : ''}{googleAdsStatus.account?.currencyCode ? ` • ${googleAdsStatus.account.currencyCode}` : ''}</div></div><div style={{ fontSize: 12, color: '#64748b', textAlign: 'right' }}>API {googleAdsStatus.apiVersion || 'v25'}{googleAdsStatus.serviceAccountEmail ? <><br />{googleAdsStatus.serviceAccountEmail}</> : null}</div></div>
       </section>}
 
       {googleAdsStatus.connected && <>
         <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
-          {[['overview', 'Overview'], ['campaigns', 'Campaigns'], ['search_terms', 'Search Terms'], ['keywords', 'Keywords'], ['conversions', 'Conversions'], ['audit', 'AI Audit'], ['settings', 'Settings']].map(([value, label]) => <button key={value} type="button" onClick={() => setGoogleAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: googleAdsTab === value ? '#dbeafe' : '#fff', color: googleAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
+          {[
+            ['overview', 'Funnel & Benchmarks'], ['optimization', `Recommendations (${suggestions.length})`], ['campaigns', 'Campaigns'], ['ad_groups', 'Ad groups'], ['ads', 'Ads'], ['search_terms', 'Search Terms'], ['keywords', 'Keywords'], ['negatives', 'Negative Keywords'], ['conversions', 'Conversions'], ['audit', 'AI Audit'], ['change_log', 'Change Log'], ['settings', 'Settings']
+          ].map(([value, label]) => <button key={value} type="button" onClick={() => setGoogleAdsTab(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '8px 12px', fontWeight: 800, background: googleAdsTab === value ? '#dbeafe' : '#fff', color: googleAdsTab === value ? '#1d4ed8' : '#334155' }}>{label}</button>)}
         </div>
 
-        {googleAdsLoading && !googleAdsReport && <div style={{ ...card }}>Loading Google Ads data…</div>}
+        {googleAdsLoading && !googleAdsReport && <div style={card}>Loading Google Ads data…</div>}
 
         {googleAdsReport && googleAdsTab === 'overview' && <div style={{ display: 'grid', gap: 14 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10 }}>
-            {metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}
-          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 10 }}>{metricCards.map(([label, value]) => <div key={label} style={card}><div style={{ color: '#64748b', fontSize: 12, fontWeight: 800 }}>{label}</div><div style={{ fontSize: 26, fontWeight: 900, marginTop: 5 }}>{value}</div></div>)}</div>
+
+          <section style={{ ...card, borderColor: bottleneck.biggest?.score < .6 ? '#fecaca' : '#bfdbfe', background: bottleneck.biggest?.score < .6 ? '#fff7f7' : '#f8fbff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}><div><div style={{ color: '#64748b', fontSize: 12, fontWeight: 900, textTransform: 'uppercase' }}>Biggest measured bottleneck</div><h2 style={{ margin: '4px 0' }}>{bottleneck.biggest?.label || 'Not enough data'}</h2><p style={{ margin: 0, color: '#475569' }}>{bottleneck.biggest?.detail || (bottleneck.biggest?.key === 'conversion' ? 'Clicks are not becoming recorded leads at the expected rate.' : bottleneck.biggest?.key === 'engagement' ? 'Searchers are seeing the ads but clicking less often than the legal-services benchmark.' : bottleneck.biggest?.key === 'lead_cost' ? 'The measured cost to produce a lead is materially above the benchmark.' : 'Review the funnel stages below.')}</p></div><div style={{ minWidth: 170, textAlign: 'right' }}><div style={{ fontSize: 34, fontWeight: 900 }}>{Math.round(googleAdsSafeNumber(bottleneck.biggest?.score) * 100)}%</div><div style={muted}>of benchmark health</div></div></div>
+          </section>
+
+          <section style={card}><h2 style={{ marginTop: 0 }}>Search funnel</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
+            {[['Impressions', searchMetrics.impressions, 'People shown a Search ad'], ['Clicks', searchMetrics.clicks, `${googleAdsFormatPercent(searchMetrics.ctr)} click-through rate`], ['Recorded leads', searchMetrics.conversions, `${googleAdsFormatPercent(searchMetrics.conversionRate)} click-to-lead rate`], ['Cost per lead', searchMetrics.conversions > 0 ? googleAdsFormatMoney(searchMetrics.costPerConversion) : 'No measured lead', `${googleAdsFormatMoney(searchMetrics.cost)} Search spend`]].map(([label, value, note], index) => <div key={label} style={{ border: '1px solid #dbe3ea', borderRadius: 11, padding: 14, background: index === 2 && googleAdsSafeNumber(searchMetrics.conversionRate) < benchmark.conversionRate ? '#fff7f7' : '#fff' }}><div style={muted}>{label}</div><div style={{ fontSize: 28, fontWeight: 900, margin: '4px 0' }}>{typeof value === 'number' ? value.toLocaleString() : value}</div><div style={muted}>{note}</div></div>)}
+          </div></section>
+
+          <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}><div><h2 style={{ margin: 0 }}>Your Search performance vs. legal-services benchmark</h2><p style={{ margin: '4px 0 0', color: '#64748b' }}>Directional industry context—not a guarantee. Compare like-for-like Search traffic and verify lead quality.</p></div><a href={benchmark.sourceUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>{benchmark.source}</a></div><div style={{ marginTop: 10 }}>
+            {benchmarkRow('Click-through rate', searchMetrics.ctr, benchmark.ctr, googleAdsFormatPercent)}
+            {benchmarkRow('Average CPC', searchMetrics.averageCpc, benchmark.averageCpc, googleAdsFormatMoney, true)}
+            {benchmarkRow('Click-to-lead rate', searchMetrics.conversionRate, benchmark.conversionRate, googleAdsFormatPercent)}
+            {benchmarkRow('Cost per lead', searchMetrics.costPerConversion, benchmark.costPerLead, googleAdsFormatMoney, true)}
+          </div></section>
+
+          <section style={card}><h2 style={{ marginTop: 0 }}>Bottleneck scorecard</h2><div style={{ display: 'grid', gap: 8 }}>{bottleneck.stages.map((stage) => { const pct = Math.max(2, Math.min(100, stage.score * 100)); const tone = stage.score >= .9 ? '#16a34a' : stage.score >= .6 ? '#d97706' : '#dc2626'; return <div key={stage.key} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px,.9fr) minmax(260px,1.7fr) 90px', gap: 12, alignItems: 'center' }}><div><strong>{stage.label}</strong>{stage.detail && <div style={muted}>{stage.detail}</div>}</div><div style={{ height: 13, background: '#e2e8f0', borderRadius: 999, overflow: 'hidden' }}><div style={{ width: `${pct}%`, height: '100%', background: tone }} /></div><div style={{ textAlign: 'right', fontWeight: 900, color: tone }}>{Math.round(stage.score * 100)}%</div></div> })}</div></section>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.25fr) minmax(320px,.75fr)', gap: 14 }}>
-            <section style={card}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><h2 style={{ margin: 0 }}>Audit findings</h2><span style={{ fontSize: 12, color: '#64748b' }}>{report.range?.start} → {report.range?.end}</span></div>
-              <div style={{ display: 'grid', gap: 9, marginTop: 10 }}>
-                {findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><span style={{ fontSize: 10, color: '#fff', background: tone.badge, borderRadius: 999, padding: '3px 7px', fontWeight: 900, textTransform: 'uppercase' }}>{finding.severity}</span><strong style={{ color: tone.title }}>{finding.title}</strong></div><div style={{ marginTop: 5, fontSize: 13 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 6, fontSize: 13 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}
-              </div>
-            </section>
-            <section style={card}>
-              <h2 style={{ marginTop: 0 }}>Device efficiency</h2>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Conv.</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={td}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td></tr>)}{!devices.length && <tr><td colSpan="4" style={td}>No device data returned.</td></tr>}</tbody></table>
-            </section>
+            <section style={card}><h2 style={{ marginTop: 0 }}>Audit findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Recommended:</strong> {finding.action}</div>}</div> })}</div></section>
+            <section style={card}><h2 style={{ marginTop: 0 }}>Device efficiency</h2><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Device</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Conv.</th></tr></thead><tbody>{devices.map((row) => <tr key={row.device}><td style={td}>{row.device}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td></tr>)}</tbody></table></section>
           </div>
-
-          <section style={card}>
-            <h2 style={{ marginTop: 0 }}>Daily spend and leads</h2>
-            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Date</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Avg. CPC</th><th style={th}>Conversions</th><th style={th}>Cost / conv.</th></tr></thead><tbody>{daily.map((row) => <tr key={row.date}><td style={td}>{row.date}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!daily.length && <tr><td colSpan="6" style={td}>No daily data returned.</td></tr>}</tbody></table></div>
-          </section>
-
-          <section style={card}>
-            <h2 style={{ marginTop: 0 }}>Most expensive non-converting search terms</h2>
-            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th style={th}>Search term</th><th style={th}>Campaign</th><th style={th}>Cost</th><th style={th}>Clicks</th><th style={th}>Match</th></tr></thead><tbody>{topWaste.map((row) => <tr key={`${row.campaignId}-${row.adGroupId}-${row.searchTerm}`}><td style={{ ...td, fontWeight: 800 }}>{row.searchTerm}</td><td style={td}>{row.campaignName}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{row.matchType || '—'}</td></tr>)}{!topWaste.length && <tr><td colSpan="5" style={td}>No non-converting search-term spend returned.</td></tr>}</tbody></table></div>
-          </section>
         </div>}
 
-        {googleAdsReport && googleAdsTab === 'campaigns' && <section style={card}>
-          <h2 style={{ marginTop: 0 }}>Campaign performance</h2>
-          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Bidding</th><th style={th}>Budget/day</th><th style={th}>Impr.</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Avg CPC</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Conv. rate</th><th style={th}>Cost/conv.</th></tr></thead><tbody>{campaigns.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.status}</td><td style={td}>{row.biddingStrategyType || '—'}</td><td style={td}>{googleAdsFormatMoney(row.dailyBudget)}</td><td style={td}>{googleAdsSafeNumber(row.impressions).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.clicks).toLocaleString()}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsFormatPercent(row.conversionRate)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!campaigns.length && <tr><td colSpan="12" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div>
-        </section>}
+        {googleAdsReport && googleAdsTab === 'optimization' && <div style={{ display: 'grid', gap: 14 }}>
+          <section style={{ ...card, borderColor: writeTone.border, background: writeTone.bg }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>Approval queue</h2><p style={{ margin: '4px 0 0', color: writeTone.color }}>Suggestions are informational until you open one, review the exact mutation, check the authorization box, and apply it.</p></div><div><strong style={{ color: writeTone.color }}>{writeLabel}</strong>{!writeMode.ready && <div style={muted}>See Settings to enable controlled writes.</div>}</div></div></section>
 
-        {googleAdsReport && googleAdsTab === 'search_terms' && <section style={card}>
-          <h2 style={{ marginTop: 0 }}>Actual search terms</h2><p style={{ color: '#64748b', marginTop: -4 }}>Sorted by spend. These are the searches people actually typed before clicking your ads.</p>
-          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr><th style={th}>Search term</th><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Match</th><th style={th}>Impr.</th><th style={th}>Clicks</th><th style={th}>Cost</th><th style={th}>Conversions</th><th style={th}>Flag</th></tr></thead><tbody>{searchTerms.map((row) => { const spendNoLead = googleAdsSafeNumber(row.cost) >= 10 && googleAdsSafeNumber(row.conversions) <= 0; return <tr key={`${row.campaignId}-${row.adGroupId}-${row.searchTerm}`}><td style={{ ...td, fontWeight: 800 }}>{row.searchTerm}</td><td style={td}>{row.campaignName}</td><td style={td}>{row.adGroupName}</td><td style={td}>{row.matchType || '—'}</td><td style={td}>{googleAdsSafeNumber(row.impressions)}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{spendNoLead ? <span style={{ color: '#b91c1c', fontWeight: 900 }}>Review</span> : '—'}</td></tr> })}{!searchTerms.length && <tr><td colSpan="9" style={td}>No search-term rows returned.</td></tr>}</tbody></table></div>
-        </section>}
+          <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><h2 style={{ margin: 0 }}>Recommended changes</h2>{googleAdsDismissedSuggestions.length > 0 && <button type="button" onClick={restoreGoogleAdsSuggestions} style={actionButton}>Restore dismissed</button>}</div><div style={{ display: 'grid', gap: 10, marginTop: 12 }}>{suggestions.map((suggestion) => { const tone = severityStyle(suggestion.severity); return <div key={suggestion.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 11, padding: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}><div style={{ flex: '1 1 520px' }}><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center' }}><span style={{ background: tone.badge, color: '#fff', borderRadius: 999, padding: '3px 7px', fontSize: 11, fontWeight: 900 }}>{String(suggestion.severity).toUpperCase()}</span><span style={{ color: '#475569', fontSize: 12, fontWeight: 800 }}>{suggestion.category} • {suggestion.confidence} confidence</span></div><h3 style={{ margin: '7px 0 4px', color: tone.title }}>{suggestion.title}</h3><div>{suggestion.detail}</div>{suggestion.estimatedWaste > 0 && <div style={{ marginTop: 5 }}><strong>Spend at risk:</strong> {googleAdsFormatMoney(suggestion.estimatedWaste)}</div>}</div><div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', flexWrap: 'wrap' }}>{suggestion.mutation && authorizeButton(suggestion.actionLabel || 'Authorize change', suggestion.mutation, suggestion.detail)}<button type="button" onClick={() => dismissGoogleAdsSuggestion(suggestion.id)} style={actionButton}>Dismiss</button></div></div></div> })}{!suggestions.length && <div style={{ color: '#64748b' }}>No active rule-based suggestions. Restore dismissed items or refresh the report.</div>}</div></section>
 
-        {googleAdsReport && googleAdsTab === 'keywords' && <section style={card}>
-          <h2 style={{ marginTop: 0 }}>Keyword performance</h2>
-          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}><thead><tr><th style={th}>Keyword</th><th style={th}>Match</th><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Status</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Avg CPC</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Cost/conv.</th></tr></thead><tbody>{keywords.map((row) => <tr key={`${row.campaignId}-${row.adGroupId}-${row.criterionId}`}><td style={{ ...td, fontWeight: 800 }}>{row.keyword}</td><td style={td}>{row.matchType}</td><td style={td}>{row.campaignName}</td><td style={td}>{row.adGroupName}</td><td style={td}>{row.status}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.averageCpc)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td></tr>)}{!keywords.length && <tr><td colSpan="11" style={td}>No keyword rows returned.</td></tr>}</tbody></table></div>
-        </section>}
-
-        {googleAdsReport && googleAdsTab === 'conversions' && <section style={card}>
-          <h2 style={{ marginTop: 0 }}>Conversion actions</h2><p style={{ color: '#64748b', marginTop: -4 }}>This is where we check whether Google is actually optimizing toward successful forms and phone calls.</p>
-          <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}><thead><tr><th style={th}>Conversion</th><th style={th}>Type</th><th style={th}>Status</th><th style={th}>Primary</th><th style={th}>Conversions</th><th style={th}>All conversions</th></tr></thead><tbody>{conversionActions.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.type}</td><td style={td}>{row.status}</td><td style={td}>{row.primaryForGoal ? <strong style={{ color: '#166534' }}>Yes</strong> : 'No'}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.allConversions)}</td></tr>)}{!conversionActions.length && <tr><td colSpan="6" style={td}>No conversion-action rows returned. Check the report warnings below.</td></tr>}</tbody></table></div>
-        </section>}
-
-        {googleAdsReport && googleAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}>
-          <section style={card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI account audit</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Uses the reporting data already loaded above. It cannot make changes to Google Ads.</p></div><button type="button" onClick={runGoogleAdsAiAudit} disabled={googleAdsAiLoading || !googleAdsStatus.aiConfigured} style={{ background: googleAdsStatus.aiConfigured ? '#1d4ed8' : '#e2e8f0', color: googleAdsStatus.aiConfigured ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{googleAdsAiLoading ? 'Auditing…' : googleAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>
-            {googleAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{googleAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>The rule-based findings below work even without an AI key. The AI audit adds a narrative review across campaigns, search terms, keywords, conversion actions, and devices.</div>}
-          </section>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', gap: 14 }}>
+            <section style={card}><h2 style={{ marginTop: 0 }}>Add a high-intent keyword</h2><div style={{ display: 'grid', gap: 9 }}><label>Ad group<select value={googleAdsManualKeyword.adGroupId} onChange={(event) => setGoogleAdsManualKeyword((current) => ({ ...current, adGroupId: event.target.value }))}><option value="">Select ad group</option>{adGroups.map((row) => <option key={row.id} value={row.id}>{row.campaignName} → {row.name}</option>)}</select></label><label>Keyword<input value={googleAdsManualKeyword.keyword} onChange={(event) => setGoogleAdsManualKeyword((current) => ({ ...current, keyword: event.target.value }))} placeholder="child custody attorney brazoria county" /></label><label>Match type<select value={googleAdsManualKeyword.matchType} onChange={(event) => setGoogleAdsManualKeyword((current) => ({ ...current, matchType: event.target.value }))}><option>EXACT</option><option>PHRASE</option><option>BROAD</option></select></label>{authorizeButton('Review & authorize keyword', { type: 'add_keyword', adGroupId: selectedManualAdGroup?.id || '', adGroupName: selectedManualAdGroup?.name || '', keyword: googleAdsManualKeyword.keyword, matchType: googleAdsManualKeyword.matchType }, 'Manually proposed from Mio Optimization Console')}</div></section>
+            <section style={card}><h2 style={{ marginTop: 0 }}>Add a negative keyword</h2><div style={{ display: 'grid', gap: 9 }}><label>Scope<select value={googleAdsManualNegative.scope} onChange={(event) => setGoogleAdsManualNegative((current) => ({ ...current, scope: event.target.value }))}><option value="campaign">Campaign</option><option value="ad_group">Ad group</option></select></label>{googleAdsManualNegative.scope === 'campaign' ? <label>Campaign<select value={googleAdsManualNegative.campaignId} onChange={(event) => setGoogleAdsManualNegative((current) => ({ ...current, campaignId: event.target.value }))}><option value="">Select campaign</option>{campaigns.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label> : <label>Ad group<select value={googleAdsManualNegative.adGroupId} onChange={(event) => setGoogleAdsManualNegative((current) => ({ ...current, adGroupId: event.target.value }))}><option value="">Select ad group</option>{adGroups.map((row) => <option key={row.id} value={row.id}>{row.campaignName} → {row.name}</option>)}</select></label>}<label>Negative keyword<input value={googleAdsManualNegative.keyword} onChange={(event) => setGoogleAdsManualNegative((current) => ({ ...current, keyword: event.target.value }))} placeholder="competitor name" /></label><label>Match type<select value={googleAdsManualNegative.matchType} onChange={(event) => setGoogleAdsManualNegative((current) => ({ ...current, matchType: event.target.value }))}><option>EXACT</option><option>PHRASE</option><option>BROAD</option></select></label>{authorizeButton('Review & authorize negative', { type: 'add_negative_keyword', scope: googleAdsManualNegative.scope, campaignId: selectedNegativeCampaign?.id || selectedNegativeAdGroup?.campaignId || '', campaignName: selectedNegativeCampaign?.name || selectedNegativeAdGroup?.campaignName || '', adGroupId: selectedNegativeAdGroup?.id || '', adGroupName: selectedNegativeAdGroup?.name || '', keyword: googleAdsManualNegative.keyword, matchType: googleAdsManualNegative.matchType }, 'Manually proposed from Mio Optimization Console')}</div></section>
+          </div>
         </div>}
 
-        {googleAdsReport && googleAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}>
-          <section style={card}><h2 style={{ marginTop: 0 }}>Read-only connection</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Account:</strong> {googleAdsStatus.account?.descriptiveName || '—'} {googleAdsStatus.account?.id ? `(${googleAdsStatus.account.id})` : ''}</div><div><strong>Service account:</strong> {googleAdsStatus.serviceAccountEmail || '—'}</div><div><strong>Google Ads API:</strong> {googleAdsStatus.apiVersion || 'v25'}</div><div><strong>AI narrative audit:</strong> {googleAdsStatus.aiConfigured ? 'Enabled' : 'Not configured'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '—'}</div></div></section>
-          {report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}
-          <section style={card}><h2 style={{ marginTop: 0 }}>Security</h2><p style={{ marginBottom: 0 }}>The developer token and service-account private key stay in Vercel server environment variables. The browser receives reporting data only after the Google Ads API endpoint verifies a signed-in Beveridge Law Firm Mio user.</p></section>
-        </div>}
+        {googleAdsReport && googleAdsTab === 'campaigns' && <section style={card}><h2 style={{ marginTop: 0 }}>Campaign controls</h2><p style={{ color: '#64748b', marginTop: -4 }}>Pause/resume campaigns and review budget changes. Every live change requires a second confirmation.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1280 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Status</th><th style={th}>Channel</th><th style={th}>Bidding</th><th style={th}>Budget/day</th><th style={th}>Impr.</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Cost/conv.</th><th style={th}>Controls</th></tr></thead><tbody>{campaigns.map((row) => { const paused = String(row.status).toUpperCase() === 'PAUSED'; const draft = googleAdsBudgetDrafts[row.id] ?? row.dailyBudget; return <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}<div style={muted}>ID {row.id}</div></td><td style={td}>{row.status}</td><td style={td}>{row.advertisingChannelType}</td><td style={td}>{row.biddingStrategyType || '—'}</td><td style={td}><input type="number" min="1" step="1" value={draft} onChange={(event) => setGoogleAdsBudgetDrafts((current) => ({ ...current, [row.id]: event.target.value }))} style={{ width: 90 }} />{row.budgetExplicitlyShared && <div style={{ color: '#92400e', fontSize: 11 }}>Shared by {row.budgetReferenceCount || 'multiple'} campaigns</div>}</td><td style={td}>{googleAdsSafeNumber(row.impressions).toLocaleString()}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.conversions) > 0 ? googleAdsFormatMoney(row.costPerConversion) : '—'}</td><td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{authorizeButton(paused ? 'Resume' : 'Pause', { type: 'campaign_status', campaignId: row.id, campaignName: row.name, status: paused ? 'ENABLED' : 'PAUSED' }, `${paused ? 'Resume' : 'Pause'} campaign after reviewing current performance`, paused ? primaryActionButton : dangerActionButton)}{authorizeButton('Set budget', { type: 'campaign_budget', campaignId: row.id, campaignName: row.name, budgetResourceName: row.budgetResourceName, dailyBudget: Number(draft) }, row.budgetExplicitlyShared ? `Warning: this budget is shared by ${row.budgetReferenceCount || 'multiple'} campaigns.` : 'Approved daily budget update', actionButton)}</div></td></tr> })}{!campaigns.length && <tr><td colSpan="12" style={td}>No campaign rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'ad_groups' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad group controls</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}><thead><tr><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Status</th><th style={th}>Type</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Control</th></tr></thead><tbody>{adGroups.map((row) => { const paused = String(row.status).toUpperCase() === 'PAUSED'; return <tr key={row.id}><td style={td}>{row.campaignName}</td><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.status}</td><td style={td}>{row.type}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{authorizeButton(paused ? 'Resume' : 'Pause', { type: 'ad_group_status', adGroupId: row.id, adGroupName: row.name, status: paused ? 'ENABLED' : 'PAUSED' }, `${paused ? 'Resume' : 'Pause'} ad group after reviewing performance`, paused ? primaryActionButton : dangerActionButton)}</td></tr> })}{!adGroups.length && <tr><td colSpan="9" style={td}>No ad group rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'ads' && <section style={card}><h2 style={{ marginTop: 0 }}>Ad controls</h2><p style={{ color: '#64748b', marginTop: -4 }}>Pause or resume individual ads without changing the rest of the ad group.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}><thead><tr><th style={th}>Campaign / ad group</th><th style={th}>Ad</th><th style={th}>Type</th><th style={th}>Status</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Control</th></tr></thead><tbody>{ads.map((row) => { const paused = String(row.status).toUpperCase() === 'PAUSED'; return <tr key={`${row.adGroupId}-${row.id}`}><td style={td}>{row.campaignName}<br /><span style={muted}>{row.adGroupName}</span></td><td style={{ ...td, fontWeight: 800 }}>{row.name || `Ad ${row.id}`}<div style={muted}>{row.finalUrls?.[0] || ''}</div></td><td style={td}>{row.type}</td><td style={td}>{row.status}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{authorizeButton(paused ? 'Resume' : 'Pause', { type: 'ad_status', adGroupId: row.adGroupId, adId: row.id, adName: row.name || `Ad ${row.id}`, status: paused ? 'ENABLED' : 'PAUSED' }, `${paused ? 'Resume' : 'Pause'} individual ad after reviewing performance`, paused ? primaryActionButton : dangerActionButton)}</td></tr> })}{!ads.length && <tr><td colSpan="9" style={td}>No ad rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'search_terms' && <section style={card}><h2 style={{ marginTop: 0 }}>Search-term decision table</h2><p style={{ color: '#64748b', marginTop: -4 }}>Classify the actual search, then approve an exact negative or add a strong query as an exact keyword.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1260 }}><thead><tr><th style={th}>Search term</th><th style={th}>Intent</th><th style={th}>Campaign / ad group</th><th style={th}>Match</th><th style={th}>Clicks</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Actions</th></tr></thead><tbody>{searchTerms.map((row) => { const intent = googleAdsSearchTermIntent(row.searchTerm); return <tr key={`${row.campaignId}-${row.adGroupId}-${row.searchTerm}`}><td style={{ ...td, fontWeight: 800 }}>{row.searchTerm}</td><td style={td}><strong style={{ color: intent.kind === 'hire' ? '#166534' : ['competitor', 'low_intent'].includes(intent.kind) ? '#991b1b' : '#92400e' }}>{intent.label}</strong><div style={muted}>{intent.confidence} confidence</div></td><td style={td}>{row.campaignName}<br /><span style={muted}>{row.adGroupName}</span></td><td style={td}>{row.matchType || '—'}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{authorizeButton('Campaign negative', { type: 'add_negative_keyword', scope: 'campaign', campaignId: row.campaignId, campaignName: row.campaignName, keyword: row.searchTerm, matchType: 'EXACT' }, `${intent.label}; ${googleAdsFormatMoney(row.cost)} spent and ${googleAdsSafeNumber(row.conversions)} conversion(s)`, dangerActionButton)}{authorizeButton('Ad-group negative', { type: 'add_negative_keyword', scope: 'ad_group', campaignId: row.campaignId, campaignName: row.campaignName, adGroupId: row.adGroupId, adGroupName: row.adGroupName, keyword: row.searchTerm, matchType: 'EXACT' }, `Block this exact query only in ${row.adGroupName}`, actionButton)}{intent.kind === 'hire' && authorizeButton('Add exact keyword', { type: 'add_keyword', adGroupId: row.adGroupId, adGroupName: row.adGroupName, keyword: row.searchTerm, matchType: 'EXACT' }, 'High hiring-intent search term observed in the account', primaryActionButton)}</div></td></tr> })}{!searchTerms.length && <tr><td colSpan="8" style={td}>No search-term rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'keywords' && <section style={card}><h2 style={{ marginTop: 0 }}>Keyword controls</h2><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1250 }}><thead><tr><th style={th}>Keyword</th><th style={th}>Match</th><th style={th}>Campaign / ad group</th><th style={th}>Status</th><th style={th}>Clicks</th><th style={th}>CTR</th><th style={th}>Cost</th><th style={th}>Conv.</th><th style={th}>Controls</th></tr></thead><tbody>{keywords.filter((row) => !row.negative).map((row) => { const paused = String(row.status).toUpperCase() === 'PAUSED'; return <tr key={`${row.adGroupId}-${row.criterionId}`}><td style={{ ...td, fontWeight: 800 }}>{row.keyword}</td><td style={td}>{row.matchType}</td><td style={td}>{row.campaignName}<br /><span style={muted}>{row.adGroupName}</span></td><td style={td}>{row.status}</td><td style={td}>{googleAdsSafeNumber(row.clicks)}</td><td style={td}>{googleAdsFormatPercent(row.ctr)}</td><td style={td}>{googleAdsFormatMoney(row.cost)}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{authorizeButton(paused ? 'Enable' : 'Pause', { type: 'keyword_status', adGroupId: row.adGroupId, criterionId: row.criterionId, keyword: row.keyword, status: paused ? 'ENABLED' : 'PAUSED' }, `${paused ? 'Enable' : 'Pause'} keyword after reviewing ${googleAdsFormatMoney(row.cost)} spend and ${googleAdsSafeNumber(row.conversions)} conversion(s)`, paused ? primaryActionButton : dangerActionButton)}{String(row.matchType).toUpperCase() !== 'EXACT' && authorizeButton('Add exact copy', { type: 'add_keyword', adGroupId: row.adGroupId, adGroupName: row.adGroupName, keyword: row.keyword, matchType: 'EXACT' }, 'Create a tighter exact-match version; the existing keyword is not automatically removed', actionButton)}{authorizeButton('Remove', { type: 'remove_keyword', adGroupId: row.adGroupId, criterionId: row.criterionId, keyword: row.keyword }, 'Permanent keyword removal requested from Mio', dangerActionButton)}</div></td></tr> })}{!keywords.length && <tr><td colSpan="9" style={td}>No keyword rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'negatives' && <section style={card}><h2 style={{ marginTop: 0 }}>Negative keyword library</h2><p style={{ color: '#64748b', marginTop: -4 }}>Campaign negatives protect every ad group in that campaign. Ad-group negatives are narrower.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}><thead><tr><th style={th}>Negative</th><th style={th}>Match</th><th style={th}>Scope</th><th style={th}>Campaign</th><th style={th}>Ad group</th><th style={th}>Control</th></tr></thead><tbody>{negativeKeywords.map((row) => <tr key={row.resourceName || `${row.scope}-${row.criterionId}`}><td style={{ ...td, fontWeight: 800 }}>{row.keyword}</td><td style={td}>{row.matchType}</td><td style={td}>{row.scope === 'ad_group' ? 'Ad group' : 'Campaign'}</td><td style={td}>{row.campaignName}</td><td style={td}>{row.adGroupName || '—'}</td><td style={td}>{authorizeButton('Remove negative', { type: 'remove_negative_keyword', scope: row.scope, resourceName: row.resourceName, keyword: row.keyword }, 'Remove an existing exclusion only after confirming the traffic should be allowed again', dangerActionButton)}</td></tr>)}{!negativeKeywords.length && <tr><td colSpan="6" style={td}>No negative keyword rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'conversions' && <section style={card}><h2 style={{ marginTop: 0 }}>Conversion-goal controls</h2><p style={{ color: '#64748b', marginTop: -4 }}>Primary actions influence bidding. Only make genuine phone calls and successful form submissions primary.</p><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={th}>Conversion</th><th style={th}>Type</th><th style={th}>Status</th><th style={th}>Primary</th><th style={th}>Conversions</th><th style={th}>All conversions</th><th style={th}>Controls</th></tr></thead><tbody>{conversionActions.map((row) => <tr key={row.id}><td style={{ ...td, fontWeight: 800 }}>{row.name}</td><td style={td}>{row.type}</td><td style={td}>{row.status}</td><td style={td}>{row.primaryForGoal ? <strong style={{ color: '#166534' }}>Yes</strong> : 'No'}</td><td style={td}>{googleAdsSafeNumber(row.conversions)}</td><td style={td}>{googleAdsSafeNumber(row.allConversions)}</td><td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{authorizeButton(row.primaryForGoal ? 'Make secondary' : 'Make primary', { type: 'conversion_primary', conversionActionId: row.id, resourceName: row.resourceName, conversionName: row.name, primaryForGoal: !row.primaryForGoal }, row.primaryForGoal ? 'Remove this action from primary bidding optimization' : 'Promote only after confirming this is a real lead action', row.primaryForGoal ? dangerActionButton : primaryActionButton)}{String(row.status).toUpperCase() !== 'REMOVED' && authorizeButton(String(row.status).toUpperCase() === 'ENABLED' ? 'Hide' : 'Enable', { type: 'conversion_status', conversionActionId: row.id, resourceName: row.resourceName, conversionName: row.name, status: String(row.status).toUpperCase() === 'ENABLED' ? 'HIDDEN' : 'ENABLED' }, 'Change conversion-action availability after reviewing tracking setup', actionButton)}</div></td></tr>)}{!conversionActions.length && <tr><td colSpan="7" style={td}>No conversion-action rows returned.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'audit' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}><div><h2 style={{ margin: 0 }}>AI optimization review</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>The AI can propose changes, but the live approval modal and server-side write lock remain mandatory.</p></div><button type="button" onClick={runGoogleAdsAiAudit} disabled={googleAdsAiLoading || !googleAdsStatus.aiConfigured} style={{ background: googleAdsStatus.aiConfigured ? '#1d4ed8' : '#e2e8f0', color: googleAdsStatus.aiConfigured ? '#fff' : '#64748b', border: 0, borderRadius: 8, padding: '9px 12px', fontWeight: 900 }}>{googleAdsAiLoading ? 'Auditing…' : googleAdsStatus.aiConfigured ? 'Run AI audit' : 'Add OPENAI_API_KEY to enable'}</button></div>{googleAdsAiAudit ? <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, marginTop: 14, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>{googleAdsAiAudit}</div> : <div style={{ marginTop: 12, color: '#64748b' }}>Rule-based recommendations work without an AI key. The AI adds a narrative review of the funnel, benchmark gaps, and proposed changes.</div>}</section><section style={card}><h2 style={{ marginTop: 0 }}>Rule-based findings</h2><div style={{ display: 'grid', gap: 9 }}>{findings.map((finding) => { const tone = severityStyle(finding.severity); return <div key={finding.id} style={{ border: `1px solid ${tone.border}`, background: tone.background, borderRadius: 9, padding: 10 }}><strong style={{ color: tone.title }}>{finding.title}</strong><div style={{ marginTop: 4 }}>{finding.detail}</div>{finding.action && <div style={{ marginTop: 5 }}><strong>Action:</strong> {finding.action}</div>}</div> })}</div></section></div>}
+
+        {googleAdsReport && googleAdsTab === 'change_log' && <section style={card}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>Mio Google Ads change log</h2><p style={{ color: '#64748b', margin: '4px 0 0' }}>Local audit trail of approved attempts from this browser. Vercel logs also record successful server mutations.</p></div><div style={{ display: 'flex', gap: 7 }}><button type="button" onClick={downloadGoogleAdsWriteLog} disabled={!googleAdsWriteLog.length} style={actionButton}>Download JSON</button><button type="button" onClick={() => { if (window.confirm('Clear this browser’s Google Ads change log?')) { setGoogleAdsWriteLog([]); try { localStorage.removeItem('caseMioGoogleAdsWriteLogV261') } catch {} } }} disabled={!googleAdsWriteLog.length} style={dangerActionButton}>Clear local log</button></div></div><div style={{ overflowX: 'auto', marginTop: 12 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={th}>Time</th><th style={th}>Status</th><th style={th}>Change</th><th style={th}>Reason</th><th style={th}>Actor</th><th style={th}>Request ID</th></tr></thead><tbody>{googleAdsWriteLog.map((row) => <tr key={row.id}><td style={td}>{row.appliedAt ? new Date(row.appliedAt).toLocaleString() : '—'}</td><td style={{ ...td, color: row.status === 'applied' ? '#166534' : '#991b1b', fontWeight: 900 }}>{row.status}</td><td style={{ ...td, fontWeight: 800 }}>{row.summary}</td><td style={td}>{row.reason || '—'}{row.error && <div style={{ color: '#991b1b' }}>{row.error}</div>}</td><td style={td}>{row.actorEmail || '—'}</td><td style={td}>{row.requestId || '—'}</td></tr>)}{!googleAdsWriteLog.length && <tr><td colSpan="6" style={td}>No Mio-approved changes have been recorded in this browser.</td></tr>}</tbody></table></div></section>}
+
+        {googleAdsReport && googleAdsTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section style={card}><h2 style={{ marginTop: 0 }}>Connection and write mode</h2><div style={{ display: 'grid', gap: 7 }}><div><strong>Account:</strong> {googleAdsStatus.account?.descriptiveName || '—'} {googleAdsStatus.account?.id ? `(${googleAdsStatus.account.id})` : ''}</div><div><strong>Service account:</strong> {googleAdsStatus.serviceAccountEmail || '—'}</div><div><strong>Google Ads API:</strong> {googleAdsStatus.apiVersion || 'v25'}</div><div><strong>Server write lock:</strong> {writeMode.serverEnabled ? 'Enabled' : 'Locked'}</div><div><strong>Authorized approver:</strong> {writeMode.userAuthorized ? `Yes (${writeMode.actorEmail || session?.user?.email || ''})` : 'No'}</div><div><strong>Live writes ready:</strong> {writeMode.ready ? 'Yes' : 'No'}</div><div><strong>Last report:</strong> {report.fetchedAt ? new Date(report.fetchedAt).toLocaleString() : '—'}</div></div></section><section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Enable controlled writes</h2><ol style={{ lineHeight: 1.6 }}><li>Change the Mio Google Ads service account from <strong>Read only</strong> to <strong>Standard</strong> access in the Google Ads manager account.</li><li>Add <code>GOOGLE_ADS_WRITES_ENABLED=true</code> in Vercel Production environment variables.</li><li>Optionally set <code>GOOGLE_ADS_WRITE_APPROVER_EMAILS</code> to a comma-separated allowlist. The backend defaults to <code>ben@beveridgelawfirm.com</code>.</li><li>Redeploy, refresh this page, and confirm the badge says <strong>Approval writes ready</strong>.</li></ol><p style={{ marginBottom: 0 }}>Every mutation is validate-only first, then applied only after a second human authorization. The server rejects all writes when the lock or approver checks fail.</p></section>{report.warnings?.length > 0 && <section style={{ ...card, borderColor: '#fde68a', background: '#fffbeb' }}><h2 style={{ marginTop: 0 }}>Partial-report warnings</h2><div style={{ display: 'grid', gap: 6 }}>{report.warnings.map((warning, index) => <div key={`${warning.section}-${index}`}><strong>{warning.section}:</strong> {warning.message}</div>)}</div></section>}<section style={card}><h2 style={{ marginTop: 0 }}>Implemented live controls</h2><p style={{ marginBottom: 0 }}>Pause/resume campaigns, ad groups, ads, and keywords; adjust daily campaign budgets; add/remove keywords and campaign/ad-group negatives; and change conversion-action primary/status settings. Mio intentionally does not provide unrestricted free-form API access.</p></section></div>}
       </>}
+
+      {googleAdsMutationModal && createPortal(<div style={{ position: 'fixed', inset: 0, zIndex: 12000, background: 'rgba(15,23,42,.58)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}><div style={{ width: 'min(680px,96vw)', maxHeight: '92vh', overflow: 'auto', background: '#fff', borderRadius: 16, boxShadow: '0 24px 70px rgba(15,23,42,.35)', padding: 20 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 900, textTransform: 'uppercase' }}>Live Google Ads approval</div><h2 style={{ margin: '5px 0' }}>{googleAdsMutationModal.summary}</h2></div><button type="button" onClick={() => { if (!googleAdsMutationLoading) { setGoogleAdsMutationModal(null); setGoogleAdsMutationMessage(''); setGoogleAdsMutationAuthorized(false) } }} style={{ border: 0, background: 'transparent', fontSize: 25, cursor: 'pointer' }}>×</button></div><div style={{ border: `1px solid ${isRemoval ? '#fecaca' : '#bfdbfe'}`, background: isRemoval ? '#fff1f2' : '#eff6ff', borderRadius: 10, padding: 12, marginTop: 12 }}><strong>{isRemoval ? 'Permanent removal requested' : 'Exact proposed mutation'}</strong><pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginBottom: 0 }}>{JSON.stringify(googleAdsMutationModal.mutation, null, 2)}</pre></div>{googleAdsMutationModal.reason && <div style={{ marginTop: 12 }}><strong>Reason:</strong> {googleAdsMutationModal.reason}</div>}<label style={{ display: 'flex', gap: 9, alignItems: 'flex-start', marginTop: 16, border: '1px solid #dbe3ea', borderRadius: 10, padding: 12 }}><input type="checkbox" checked={googleAdsMutationAuthorized} onChange={(event) => setGoogleAdsMutationAuthorized(event.target.checked)} style={{ marginTop: 3 }} /><span><strong>I authorize Mio to apply this exact live Google Ads change.</strong><br /><span style={muted}>Mio will validate it with Google first, then apply it. It will not apply other suggestions in this queue.</span></span></label>{googleAdsMutationMessage && <div style={{ marginTop: 12, color: googleAdsMutationMessage.startsWith('Change applied') ? '#166534' : '#991b1b', fontWeight: 800 }}>{googleAdsMutationMessage}</div>}<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}><button type="button" onClick={() => { if (!googleAdsMutationLoading) { setGoogleAdsMutationModal(null); setGoogleAdsMutationMessage(''); setGoogleAdsMutationAuthorized(false) } }} disabled={googleAdsMutationLoading} style={actionButton}>Cancel</button><button type="button" onClick={applyGoogleAdsMutation} disabled={!googleAdsMutationAuthorized || googleAdsMutationLoading || !writeMode.ready} style={{ ...primaryActionButton, opacity: googleAdsMutationAuthorized && writeMode.ready ? 1 : .5 }}>{googleAdsMutationLoading ? 'Validating and applying…' : 'Authorize & apply'}</button></div></div></div>, document.body)}
     </div>
   }
 
@@ -51744,6 +55249,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       </>
     )
   }
+
+  if (publicIntakeToken) return renderPublicClientIntake()
 
   if (!authChecked) {
     return <div style={{ padding: 40, textAlign: 'center' }}>Restoring your Mio session...</div>
