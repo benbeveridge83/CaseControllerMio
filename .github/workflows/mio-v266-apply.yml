@@ -1,0 +1,55 @@
+name: Apply Mio V266
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mio-v266-apply.yml'
+      - '.mio-deploy/v266-app.patch.gz.b64'
+      - '.mio-deploy/v266-mailform.js.gz.b64'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-v266:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Decode and verify V266 app patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .mio-deploy/v266-app.patch.gz.b64 | gunzip > /tmp/v266-app.patch
+          git apply --check /tmp/v266-app.patch
+          git apply /tmp/v266-app.patch
+          test "$(git hash-object src/App.jsx)" = "32f18c205e7a9ec91621d5c22c4234cb545faa15"
+
+      - name: Install Mailform API route
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .mio-deploy/v266-mailform.js.gz.b64 | gunzip > api/mailform.js
+          node --check api/mailform.js
+
+      - name: Build Mio V266
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Commit V266 and clean deployment helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.jsx api/mailform.js
+          git rm .mio-deploy/v266-app.patch.gz.b64 .mio-deploy/v266-mailform.js.gz.b64 .github/workflows/mio-v266-apply.yml
+          git commit -m "Deploy Mio V266 Mail Center and roadmap"
+          git push origin HEAD:main
