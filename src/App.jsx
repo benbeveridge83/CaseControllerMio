@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V264'
+const MIO_APP_VERSION = 'Mio V265'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -224,6 +224,443 @@ function verifiedServicePdfFileName(value) {
   const clean = normalizeServiceFileNameCandidate(value).replace(/\.+$/g, '')
   if (!clean || isGenericOrGeneratedServiceFileName(clean)) return ''
   return /\.pdf$/i.test(clean) ? clean : `${clean}.pdf`
+}
+
+
+const SERVICE_HEARING_SCAN_SCHEMA = 'service-hearing-scan-v265'
+const SERVICE_HEARING_MONTHS = {
+  january: 1, jan: 1,
+  february: 2, feb: 2,
+  march: 3, mar: 3,
+  april: 4, apr: 4,
+  may: 5,
+  june: 6, jun: 6,
+  july: 7, jul: 7,
+  august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9,
+  october: 10, oct: 10,
+  november: 11, nov: 11,
+  december: 12, dec: 12
+}
+
+function serviceHearingTextHash(value = '') {
+  const text = String(value || '')
+  let hash = 5381
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) + hash) ^ text.charCodeAt(index)
+  return `h${(hash >>> 0).toString(36)}-${text.length}`
+}
+
+function serviceHearingCompactText(value = '') {
+  return String(value || '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function serviceHearingValidDate(year, month, day) {
+  const y = Number(year)
+  const m = Number(month)
+  const d = Number(day)
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d) || y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) return ''
+  const candidate = new Date(y, m - 1, d)
+  if (candidate.getFullYear() !== y || candidate.getMonth() !== m - 1 || candidate.getDate() !== d) return ''
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+function serviceHearingParseDate(value = '') {
+  const text = String(value || '')
+  let match = text.match(/\b(20\d{2})\s*[-/.]\s*(0?[1-9]|1[0-2])\s*[-/.]\s*(0?[1-9]|[12]\d|3[01])\b/)
+  if (match) return serviceHearingValidDate(match[1], match[2], match[3])
+  match = text.match(/\b(0?[1-9]|1[0-2])\s*[\/.\-]\s*(0?[1-9]|[12]\d|3[01])\s*[\/.\-]\s*(20\d{2}|\d{2})\b/)
+  if (match) return serviceHearingValidDate(match[3].length === 2 ? `20${match[3]}` : match[3], match[1], match[2])
+  match = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(20\d{2})\b/i)
+  if (match) return serviceHearingValidDate(match[3], SERVICE_HEARING_MONTHS[match[1].toLowerCase()], match[2])
+  match = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:day\s+of\s+)?(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?(?:,)?\s+(20\d{2})\b/i)
+  if (match) return serviceHearingValidDate(match[3], SERVICE_HEARING_MONTHS[match[2].toLowerCase()], match[1])
+  return ''
+}
+
+function serviceHearingParseTime(value = '') {
+  const text = String(value || '')
+  let match = text.match(/\b(1[0-2]|0?\d)(?:\s*:\s*([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
+  if (match) {
+    let hour = Number(match[1])
+    const minute = match[2] || '00'
+    if (/p/i.test(match[3]) && hour < 12) hour += 12
+    if (/a/i.test(match[3]) && hour === 12) hour = 0
+    return `${String(hour).padStart(2, '0')}:${minute}`
+  }
+  match = text.match(/\b([01]?\d|2[0-3])\s*:\s*([0-5]\d)\b/)
+  if (match) return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`
+  return ''
+}
+
+function serviceHearingScheduleLanguageRegex(flags = 'i') {
+  return new RegExp([
+    'notice\\s+of\\s+(?:hearing|setting|trial|submission)',
+    '(?:hearing|trial|matter|motion|case)\\s+(?:is|has\\s+been|was)\\s+(?:set|scheduled)',
+    '(?:is|has\\s+been|was)\\s+(?:set|scheduled)\\s+for\\s+(?:hearing|trial|submission)',
+    '(?:set|scheduled)\\s+for\\s+(?:hearing|trial|submission)',
+    '(?:will|shall|to)\\s+be\\s+heard',
+    'oral\\s+hearing',
+    'trial\\s+setting',
+    'hearing\\s+date',
+    'date\\s+of\\s+hearing',
+    'submission\\s+date',
+    'appear\\s+(?:before|at|on)',
+    'courtroom\\s+(?:number|no\\.?|#)?',
+    'zoom\\s+(?:meeting|hearing|link)'
+  ].join('|'), flags)
+}
+
+function serviceHearingPossibleLanguageRegex(flags = 'i') {
+  return new RegExp('\\b(?:hearing|trial|setting|submission|courtroom|zoom|docket|appearance)\\b', flags)
+}
+
+function serviceHearingFileStampMarkerRegex(flags = 'i') {
+  return new RegExp([
+    'filed\\s+for\\s+record',
+    'electronically\\s+filed',
+    'date\\s*[/\\-]?\\s*time\\s+(?:submitted|accepted)',
+    'file[-\\s]?stamp(?:ed)?',
+    'received\\s+for\\s+filing',
+    'filing\\s+(?:date|time)',
+    'district\\s+clerk',
+    'county\\s+clerk',
+    'envelope\\s+(?:number|no\\.?|id)',
+    'document\\s+(?:number|no\\.?|id)'
+  ].join('|'), flags)
+}
+
+function serviceHearingExplicitFileStampMarkerRegex(flags = 'i') {
+  return new RegExp([
+    'filed\\s+for\\s+record',
+    'electronically\\s+filed',
+    'date\\s*[/\\-]?\\s*time\\s+(?:submitted|accepted)',
+    'file[-\\s]?stamp(?:ed)?',
+    'received\\s+for\\s+filing',
+    'filing\\s+(?:date|time)'
+  ].join('|'), flags)
+}
+
+function serviceHearingFileStampSupportRegex(flags = 'i') {
+  return new RegExp([
+    'district\\s+clerk',
+    'county\\s+clerk',
+    'envelope\\s+(?:number|no\\.?|id)',
+    'document\\s+(?:number|no\\.?|id)'
+  ].join('|'), flags)
+}
+
+function serviceHearingRangeDistance(start, end, otherStart, otherEnd) {
+  if (otherEnd < start) return start - otherEnd
+  if (otherStart > end) return otherStart - end
+  return 0
+}
+
+function serviceHearingNearestRegexMatch(text, regex, start, end, localStart, localEnd) {
+  const source = String(text || '')
+  const from = Math.max(0, Number(localStart || 0))
+  const to = Math.min(source.length, Number(localEnd || source.length))
+  const local = source.slice(from, to)
+  let nearest = null
+  let match
+  while ((match = regex.exec(local))) {
+    const matchStart = from + match.index
+    const matchEnd = matchStart + match[0].length
+    const distance = serviceHearingRangeDistance(start, end, matchStart, matchEnd)
+    if (!nearest || distance < nearest.distance) nearest = { start: matchStart, end: matchEnd, distance, raw: match[0] }
+    if (regex.lastIndex === match.index) regex.lastIndex += 1
+  }
+  return nearest
+}
+
+function serviceHearingMatchNearFileStamp(text, start, end) {
+  const source = String(text || '')
+  const localStart = Math.max(0, start - 110)
+  const localEnd = Math.min(source.length, end + 110)
+  const explicit = serviceHearingNearestRegexMatch(source, serviceHearingExplicitFileStampMarkerRegex('gi'), start, end, localStart, localEnd)
+  if (!explicit) return false
+
+  // If hearing/setting language appears immediately BEFORE this date/time, it is
+  // probably the actual setting after the stamp header. Do not suppress it once
+  // it is meaningfully separated from the explicit filing phrase. A notice title
+  // that comes AFTER the stamp date/time does not get this override.
+  const before = source.slice(Math.max(0, start - 55), start)
+  if (explicit.distance > 20 && serviceHearingScheduleLanguageRegex('i').test(before)) return false
+
+  // Only suppress a candidate when it is genuinely part of the electronic file
+  // stamp. A clerk name by itself is not enough: that could appear next to a real
+  // hearing date in the body of a notice.
+  if (explicit.distance <= 38) return true
+
+  const support = serviceHearingNearestRegexMatch(source, serviceHearingFileStampSupportRegex('gi'), start, end, localStart, localEnd)
+  if (!support || explicit.distance > 72 || support.distance > 45) return false
+  return true
+}
+
+function serviceHearingCandidateContext(text, start, end) {
+  const source = String(text || '')
+  return serviceHearingCompactText(source.slice(Math.max(0, start - 220), Math.min(source.length, end + 360)))
+}
+
+function serviceHearingRangeHasPageBoundary(text, start, end) {
+  if (end <= start) return false
+  return /---[^\n]{0,180}(?:PDF|OCR)\s+page\s+\d+\s+---/i.test(String(text || '').slice(start, end))
+}
+
+function serviceHearingRangeHasExplicitStamp(text, start, end) {
+  if (end <= start) return false
+  return serviceHearingExplicitFileStampMarkerRegex('i').test(String(text || '').slice(start, end))
+}
+
+function serviceHearingBestCounterpart(text, item, pool = []) {
+  let best = null
+  for (const other of pool) {
+    if (!other || other.excluded || other.kind === item.kind) continue
+    let distance = Number.POSITIVE_INFINITY
+    let directionPenalty = 0
+    if (item.kind === 'date') {
+      if (other._start >= item._end) {
+        distance = other._start - item._end
+        if (distance > 150) continue
+      } else if (other._end <= item._start) {
+        distance = item._start - other._end
+        directionPenalty = 45
+        if (distance > 70) continue
+      } else {
+        distance = 0
+      }
+    } else {
+      if (other._end <= item._start) {
+        distance = item._start - other._end
+        if (distance > 170) continue
+      } else if (other._start >= item._end) {
+        distance = other._start - item._end
+        directionPenalty = 40
+        if (distance > 85) continue
+      } else {
+        distance = 0
+      }
+    }
+    const betweenStart = Math.min(item._end, other._end)
+    const betweenEnd = Math.max(item._start, other._start)
+    if (serviceHearingRangeHasPageBoundary(text, betweenStart, betweenEnd)) continue
+    if (serviceHearingRangeHasExplicitStamp(text, betweenStart, betweenEnd)) continue
+    const score = distance + directionPenalty - (item.strong && other.strong ? 18 : 0)
+    if (!best || score < best.score) best = { other, score }
+  }
+  return best?.other || null
+}
+
+function serviceHearingNearestCandidateToLanguage(text, languageStart, languageEnd, pool = [], kind = 'date') {
+  let best = null
+  for (const candidate of pool) {
+    if (!candidate || candidate.excluded || candidate.kind !== kind) continue
+    let distance = Number.POSITIVE_INFINITY
+    let directionPenalty = 0
+    if (candidate._start >= languageEnd) {
+      distance = candidate._start - languageEnd
+      if (distance > 260) continue
+    } else if (candidate._end <= languageStart) {
+      distance = languageStart - candidate._end
+      directionPenalty = 90
+      if (distance > 110) continue
+    } else {
+      distance = 0
+    }
+    const betweenStart = Math.min(languageEnd, candidate._end)
+    const betweenEnd = Math.max(languageStart, candidate._start)
+    if (serviceHearingRangeHasPageBoundary(text, betweenStart, betweenEnd)) continue
+    if (serviceHearingRangeHasExplicitStamp(text, betweenStart, betweenEnd)) continue
+    const score = distance + directionPenalty - (candidate.strong ? 20 : 0)
+    if (!best || score < best.score) best = { candidate, score }
+  }
+  return best?.candidate || null
+}
+
+function scanServiceFilingTextForHearing(value = '') {
+  const text = String(value || '')
+  const fingerprint = serviceHearingTextHash(text)
+  const rawCandidates = []
+
+  const pushRawCandidate = (candidate) => {
+    // PDF text and OCR often produce both "12:23 PM" and the nested "12:23".
+    // Keep the longer overlapping version so the review list stays readable.
+    const overlappingIndex = rawCandidates.findIndex((item) => (
+      item.kind === candidate.kind
+      && item.excluded === candidate.excluded
+      && item._start < candidate._end
+      && candidate._start < item._end
+    ))
+    if (overlappingIndex >= 0) {
+      const existing = rawCandidates[overlappingIndex]
+      if (String(existing.raw || '').length >= String(candidate.raw || '').length) return
+      rawCandidates.splice(overlappingIndex, 1)
+    }
+    rawCandidates.push(candidate)
+  }
+
+  const monthToken = '(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)'
+  const patterns = [
+    { kind: 'date', regex: /\b20\d{2}\s*[-/.]\s*(?:0?[1-9]|1[0-2])\s*[-/.]\s*(?:0?[1-9]|[12]\d|3[01])\b/g },
+    { kind: 'date', regex: /\b(?:0?[1-9]|1[0-2])\s*[\/.\-]\s*(?:0?[1-9]|[12]\d|3[01])\s*[\/.\-]\s*(?:20\d{2}|\d{2})\b/g },
+    { kind: 'date', regex: /\b(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+20\d{2}\b/gi },
+    { kind: 'date', regex: /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:day\s+of\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?(?:,)?\s+20\d{2}\b/gi },
+    // Month/day-only references are intentionally alerts even when the year is omitted.
+    // They remain unparsed so the calendar form requires the user to verify the year.
+    { kind: 'date', regex: new RegExp(`\\b${monthToken}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b(?!\\s*(?:,?\\s*20\\d{2}))`, 'gi') },
+    { kind: 'date', regex: /\b(?:0?[1-9]|1[0-2])\s*[\/.\-]\s*(?:0?[1-9]|[12]\d|3[01])\b(?!\s*[\/.\-]\s*\d{2,4})/g },
+    { kind: 'time', regex: /\b(?:1[0-2]|0?\d)(?:\s*:\s*[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)\b/gi },
+    { kind: 'time', regex: /\b(?:[01]?\d|2[0-3])\s*:\s*[0-5]\d\b/g },
+    { kind: 'time', regex: /\b(?:noon|midnight)\b/gi }
+  ]
+
+  patterns.forEach(({ kind, regex }) => {
+    let match
+    while ((match = regex.exec(text))) {
+      const start = match.index
+      const end = start + match[0].length
+      const context = serviceHearingCandidateContext(text, start, end)
+      const signalContext = serviceHearingCompactText(text.slice(Math.max(0, start - 160), Math.min(text.length, end + 220)))
+      const excludedAsFileStamp = serviceHearingMatchNearFileStamp(text, start, end)
+      const parsedTime = kind === 'time'
+        ? (/\bnoon\b/i.test(match[0]) ? '12:00' : (/\bmidnight\b/i.test(match[0]) ? '00:00' : serviceHearingParseTime(match[0])))
+        : ''
+      pushRawCandidate({
+        id: `candidate-${start}-${kind}`,
+        kind,
+        raw: match[0],
+        date: kind === 'date' ? serviceHearingParseDate(match[0]) : '',
+        time: parsedTime,
+        context,
+        strong: serviceHearingScheduleLanguageRegex('i').test(signalContext),
+        excluded: excludedAsFileStamp,
+        reason: excludedAsFileStamp ? 'Excluded as an eFile/court file-stamp date or time.' : (serviceHearingScheduleLanguageRegex('i').test(signalContext) ? 'Near hearing/setting language.' : 'Non-file-stamp date or time found in the filing.'),
+        _start: start,
+        _end: end
+      })
+      if (regex.lastIndex === match.index) regex.lastIndex += 1
+    }
+  })
+
+  const nonExcludedRaw = rawCandidates.filter((item) => !item.excluded)
+  const pairedCandidates = rawCandidates.map((item) => {
+    if (item.excluded || !['date', 'time'].includes(item.kind)) return item
+    const counterpart = serviceHearingBestCounterpart(text, item, nonExcludedRaw)
+    if (!counterpart) return item
+    return {
+      ...item,
+      date: item.kind === 'date' ? item.date : (counterpart.date || ''),
+      time: item.kind === 'time' ? item.time : (counterpart.time || '')
+    }
+  })
+  rawCandidates.splice(0, rawCandidates.length, ...pairedCandidates)
+
+  const scheduleRegex = serviceHearingScheduleLanguageRegex('gi')
+  let languageMatch
+  while ((languageMatch = scheduleRegex.exec(text))) {
+    const start = languageMatch.index
+    const end = start + languageMatch[0].length
+    const context = serviceHearingCandidateContext(text, start, end)
+    const dateCandidate = serviceHearingNearestCandidateToLanguage(text, start, end, pairedCandidates, 'date')
+    const timeCandidate = dateCandidate?.time
+      ? null
+      : serviceHearingNearestCandidateToLanguage(text, start, end, pairedCandidates, 'time')
+    pushRawCandidate({
+      id: `candidate-${start}-hearing-language`,
+      kind: 'hearing_language',
+      raw: languageMatch[0],
+      date: dateCandidate?.date || timeCandidate?.date || '',
+      time: dateCandidate?.time || timeCandidate?.time || '',
+      context,
+      strong: true,
+      excluded: false,
+      reason: 'Direct hearing, trial, setting, submission, courtroom, or Zoom language found.',
+      _start: start,
+      _end: end
+    })
+    if (scheduleRegex.lastIndex === languageMatch.index) scheduleRegex.lastIndex += 1
+  }
+
+  const candidatePriority = (item) => {
+    let score = 0
+    if (item.date && item.time) score += 120
+    else if (item.date) score += 82
+    else if (item.time) score += 48
+    if (item.strong) score += 38
+    if (item.kind === 'date') score += 8
+    if (item.kind === 'hearing_language' && !item.date && !item.time) score -= 5
+    return score
+  }
+  const clean = (item) => {
+    const { _start, _end, ...safe } = item
+    return safe
+  }
+  const cleanCandidates = rawCandidates
+    .filter((item) => !item.excluded)
+    .map(clean)
+    .sort((a, b) => candidatePriority(b) - candidatePriority(a) || Number(b.strong) - Number(a.strong))
+  const cleanExcluded = rawCandidates.filter((item) => item.excluded).map(clean)
+  const primary = cleanCandidates[0] || null
+  const hasStrong = cleanCandidates.some((item) => item.strong)
+  const hasPossibleLanguage = serviceHearingPossibleLanguageRegex('i').test(text)
+  const status = hasStrong ? 'high' : (cleanCandidates.length || hasPossibleLanguage ? 'possible' : 'clear')
+  const level = status === 'high' ? 'critical' : (status === 'possible' ? 'warning' : 'clear')
+  const dateCount = cleanCandidates.filter((item) => item.date).length
+  const timeCount = cleanCandidates.filter((item) => item.time).length
+  const summary = status === 'high'
+    ? `Likely hearing or setting language was found${primary?.date ? ` for ${primary.date}` : ''}${primary?.time ? ` at ${primary.time}` : ''}. Review the filing and add the date to the calendar.`
+    : status === 'possible'
+      ? (cleanCandidates.length
+        ? `Possible hearing or calendar setting: Mio found ${dateCount || cleanCandidates.length} non-file-stamp date reference(s) and ${timeCount} time reference(s). Review before moving the email to Read.`
+        : 'Hearing, trial, setting, courtroom, Zoom, or appearance language was found. Review the filing for a calendar setting before moving the email to Read.')
+      : 'No hearing/setting language or non-file-stamp date/time reference was found in the readable filing text.'
+
+  return {
+    schema: SERVICE_HEARING_SCAN_SCHEMA,
+    status,
+    level,
+    summary,
+    fingerprint,
+    scanned_character_count: text.length,
+    candidates: cleanCandidates.slice(0, 30),
+    excluded_file_stamp_candidates: cleanExcluded.slice(0, 20),
+    primary_candidate: primary,
+    has_hearing_language: hasStrong || hasPossibleLanguage,
+    created_at: new Date().toISOString()
+  }
+}
+
+function serviceHearingCandidateLabel(candidate = null) {
+  if (!candidate) return ''
+  const parts = []
+  if (candidate.date) parts.push(candidate.date)
+  if (candidate.time) parts.push(candidate.time)
+  if (!parts.length && candidate.raw) parts.push(candidate.raw)
+  return parts.join(' at ')
+}
+
+function sanitizeServiceEmailRowsForPersistence(rows = []) {
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    ...row,
+    attachments: (Array.isArray(row?.attachments) ? row.attachments : []).map((attachment) => {
+      const {
+        blob: _blob,
+        file: _file,
+        content_bytes: _contentBytesSnake,
+        contentBytes: _contentBytesCamel,
+        ...rest
+      } = attachment || {}
+      const contentUrl = String(rest.content_url || '')
+      const transientUrl = /^(?:blob:|data:)/i.test(contentUrl)
+      return {
+        ...rest,
+        content_url: transientUrl ? '' : contentUrl,
+        content_loaded: transientUrl ? false : Boolean(contentUrl || rest.content_loaded)
+      }
+    })
+  }))
 }
 
 function clearTransientSearchFields(value, keys = ['search']) {
@@ -7744,7 +8181,7 @@ function App() {
   }, [serviceEmailSources])
 
   useEffect(() => {
-    try { saveMioStateKey('caseMioServiceEmailRows', JSON.stringify(serviceEmailRows)) } catch {}
+    try { saveMioStateKey('caseMioServiceEmailRows', JSON.stringify(sanitizeServiceEmailRowsForPersistence(serviceEmailRows))) } catch {}
   }, [serviceEmailRows])
 
   useEffect(() => {
@@ -23786,8 +24223,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     }
 
     const isUndatedSave = !eventForm.start_date
+    const sourceServiceHearingRowId = eventForm.source_service_email_row_id || ''
+    const { source_service_email_row_id: _sourceServiceHearingRowId, ...persistedEventForm } = eventForm
     const cleanForm = {
-      ...eventForm,
+      ...persistedEventForm,
       matter_id: eventForm.matter_id || null,
       assigned_to: eventForm.assigned_to || null,
       // calendar_events.start_date is not nullable. Blank dates are saved with
@@ -23855,6 +24294,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
           const withoutOldCopy = currentEvents.filter((item) => item.id !== savedEvent.id)
           return [...withoutOldCopy, savedEvent]
         })
+        if (sourceServiceHearingRowId) {
+          const sourceRow = serviceEmailRows.find((item) => item.id === sourceServiceHearingRowId)
+          if (sourceRow && eventForm.start_date) markNotificationHearingReviewed(sourceRow, 'calendar_event_saved')
+          else if (sourceRow) setServiceEmailScanNote('Calendar item was saved without a date. The red hearing alert remains unresolved until a date is entered or the complete PDF is manually reviewed.')
+        }
         if (requestedReliefPendingEventLink && !editingEventId) {
           setRequestedReliefBuilder((builder) => builder ? { ...builder, setting_event_id: savedEvent.id } : builder)
           setRequestedReliefSetupDraft((draft) => draft ? { ...draft, setting_event_id: savedEvent.id } : draft)
@@ -34488,6 +34932,13 @@ useEffect(() => {
       source_service_email_id: row.id,
       source_outlook_message_id: row.outlook_message_id || '',
       source_mailbox_email: row.mailbox_email || serviceEmailMailboxAddress(row.source_id) || '',
+      hearing_scan_status: row.hearing_scan_status || '',
+      hearing_alert_level: row.hearing_alert_level || '',
+      hearing_scan_at: row.hearing_scan_at || '',
+      hearing_scan_completeness: row.hearing_scan_completeness || '',
+      hearing_scan_result: row.hearing_scan_result || null,
+      hearing_reviewed_at: row.hearing_reviewed_at || '',
+      hearing_review_action: row.hearing_review_action || '',
       litigation_track_id: row.litigation_track_id || '',
       litigation_row_id: row.litigation_row_id || '',
       litigation_party_id: row.litigation_party_id || '',
@@ -34694,11 +35145,37 @@ useEffect(() => {
         throw new Error(`No emails were scanned because every enabled folder failed. First skipped folder: ${skippedSources[0]}`)
       }
 
+      // Hearing/calendar safety is part of the inbox scan, not an optional later step.
+      // Merge any prior scan/review state first, then scan every incoming opposing-counsel
+      // filing sequentially so Microsoft Graph and the eFile download function are not flooded.
+      const priorByOutlookIdForScan = new Map(serviceEmailRows.map((row) => [row.outlook_message_id || row.id, row]))
+      const scannedLiveRows = []
+      let notificationScanCount = 0
+      for (let index = 0; index < liveRows.length; index += 1) {
+        const incoming = liveRows[index]
+        const existing = priorByOutlookIdForScan.get(incoming.outlook_message_id || incoming.id)
+        let merged = { ...existing, ...incoming, selected: existing?.selected ?? incoming.selected, phase_selected: existing?.phase_selected ?? incoming.phase_selected }
+        if (serviceEmailRowCategory(merged) === 'notification_service') {
+          notificationScanCount += 1
+          setServiceEmailScanNote(`Outlook scan found ${liveRows.length} email(s). Hearing safety scan ${notificationScanCount}: ${merged.subject || merged.id}.`)
+          merged = await scanNotificationServiceRowForHearing(merged, { updateState: false, quiet: true })
+        }
+        scannedLiveRows.push(merged)
+      }
+
       setServiceEmailRows((rows) => {
         const priorByOutlookId = new Map(rows.map((row) => [row.outlook_message_id || row.id, row]))
-        const mergedLiveRows = liveRows.map((row) => {
-          const existing = priorByOutlookId.get(row.outlook_message_id)
-          return { ...existing, ...row, selected: existing?.selected ?? row.selected, phase_selected: existing?.phase_selected ?? row.phase_selected }
+        const mergedLiveRows = scannedLiveRows.map((row) => {
+          const existing = priorByOutlookId.get(row.outlook_message_id || row.id)
+          const preserveReview = existing?.hearing_scan_fingerprint && existing.hearing_scan_fingerprint === row.hearing_scan_fingerprint
+          return {
+            ...existing,
+            ...row,
+            selected: existing?.selected ?? row.selected,
+            phase_selected: existing?.phase_selected ?? row.phase_selected,
+            hearing_reviewed_at: preserveReview ? (existing?.hearing_reviewed_at || row.hearing_reviewed_at || '') : (row.hearing_reviewed_at || ''),
+            hearing_review_action: preserveReview ? (existing?.hearing_review_action || row.hearing_review_action || '') : (row.hearing_review_action || '')
+          }
         })
 
         const keepRows = rows.filter((row) => {
@@ -34711,9 +35188,7 @@ useEffect(() => {
         return [...mergedLiveRows, ...keepRows]
       })
 
-      if (liveRows[0]) setSelectedServiceEmailId(liveRows[0].id)
-      // PDF/attachment details load on demand when a row is opened or processed.
-      // This prevents Microsoft Graph mailbox concurrency throttling.
+      if (scannedLiveRows[0]) setSelectedServiceEmailId(scannedLiveRows[0].id)
 
       // After a live scan, show the user everything that came back instead of hiding it
       // behind the previous Status or action-group filter.
@@ -34722,7 +35197,8 @@ useEffect(() => {
       setServiceInboxViewMode('grouped')
       setCollapsedServiceInboxSections({})
 
-      setServiceEmailScanNote(`Scan complete. Found ${liveRows.length} live Outlook email(s) in ${enabledSources.length - skippedSources.length} configured folder(s).${skippedSources.length ? ` Skipped ${skippedSources.length} folder(s); first skipped: ${skippedSources[0]}` : ''}`)
+      const hearingAttentionCount = scannedLiveRows.filter((row) => serviceHearingNeedsAttention(row)).length
+      setServiceEmailScanNote(`Scan complete. Found ${scannedLiveRows.length} live Outlook email(s) in ${enabledSources.length - skippedSources.length} configured folder(s). Scanned ${notificationScanCount} notification-of-service filing(s) for hearing dates.${hearingAttentionCount ? ` RED ALERT: ${hearingAttentionCount} filing(s) require hearing/calendar review.` : ' No unresolved hearing/calendar alerts.'}${skippedSources.length ? ` Skipped ${skippedSources.length} folder(s); first skipped: ${skippedSources[0]}` : ''}`)
       setPage('service_inbox')
     } catch (error) {
       console.error('Service email live scan failed:', error)
@@ -34968,6 +35444,13 @@ useEffect(() => {
 
   async function moveLiveRowToRead(row) {
     if (!row?.outlook_message_id || String(row.outlook_message_id).startsWith('mock-')) return false
+    const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row, { quiet: true })
+    if (!hearingSafety.ok) {
+      const error = new Error('HEARING/CALENDAR REVIEW REQUIRED before this notification-of-service email can be moved to Read.')
+      error.code = 'HEARING_REVIEW_REQUIRED'
+      throw error
+    }
+    row = hearingSafety.row || row
     const configuredSource = serviceEmailSource(row.source_id)
     const source = {
       ...(configuredSource || {}),
@@ -35712,11 +36195,17 @@ async function chooseAndSaveMatterEfileFolder(row) {
       const base = graphMailboxBase(row.mailbox_email || source.mailbox_email)
       let attachments = row.attachments || []
       if (!attachments.length && row.outlook_message_id) attachments = await listMessageAttachments(base, row.outlook_message_id)
-      const primary = primaryServicePdfAttachment(attachments)
+      let primary = primaryServicePdfAttachment(attachments)
+      const hasLiveBlob = (attachment) => Boolean(attachment?.blob && (typeof Blob === 'undefined' || attachment.blob instanceof Blob || typeof attachment.blob?.arrayBuffer === 'function'))
+      const hasStaleObjectUrl = (attachment) => /^blob:/i.test(String(attachment?.content_url || '')) && !hasLiveBlob(attachment)
+      const isTemporaryDownload = (attachment) => /^(?:edge-downloaded|downloaded)-/i.test(String(attachment?.id || ''))
+      if ((!primary?.content_url || hasStaleObjectUrl(primary)) && isTemporaryDownload(primary)) {
+        primary = servicePdfAttachments(attachments).find((item) => item?.id && !isTemporaryDownload(item)) || primary
+      }
       let updatedAttachments = attachments
       let loadedPrimary = primary
-      if (primary?.id && !primary.content_url) {
-        loadedPrimary = await loadMessageAttachmentContent(base, row.outlook_message_id, primary)
+      if (primary?.id && (!primary.content_url || hasStaleObjectUrl(primary)) && !isTemporaryDownload(primary)) {
+        loadedPrimary = await loadMessageAttachmentContent(base, row.outlook_message_id, { ...primary, content_url: '', blob: null })
         updatedAttachments = attachments.map((item) => item.id === primary.id ? loadedPrimary : item)
       }
       const link = primaryServiceFilingLink(row)
@@ -36368,20 +36857,555 @@ Ben`) : '',
     return [row.subject, row.body_preview, row.bodyPreview, row.extracted_text, row.pdf_text, row.suggested_document_name, row.extracted_pdf_name, row.file_name].filter(Boolean).join(' ')
   }
 
-  function inferNoticeDateTime(row = {}) {
-    const text = serviceReviewText(row)
-    const monthMap = { january: '01', february: '02', march: '03', april: '04', may: '05', june: '06', july: '07', august: '08', september: '09', october: '10', november: '11', december: '12', jan: '01', feb: '02', mar: '03', apr: '04', jun: '06', jul: '07', aug: '08', sep: '09', sept: '09', oct: '10', nov: '11', dec: '12' }
-    let date = ''
-    let match = text.match(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/)
-    if (match) date = `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`
-    if (!date && (match = text.match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2}|\d{2})\b/))) date = `${match[3].length === 2 ? `20${match[3]}` : match[3]}-${String(match[1]).padStart(2, '0')}-${String(match[2]).padStart(2, '0')}`
-    if (!date && (match = text.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(20\d{2})\b/i))) date = `${match[3]}-${monthMap[match[1].toLowerCase()]}-${String(match[2]).padStart(2, '0')}`
-    let time = ''
-    match = text.match(/\b(1[0-2]|0?\d)(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i)
-    if (match) { let hour = Number(match[1]); const minute = match[2] || '00'; if (/p/i.test(match[3]) && hour < 12) hour += 12; if (/a/i.test(match[3]) && hour === 12) hour = 0; time = `${String(hour).padStart(2, '0')}:${minute}` }
-    const lower = text.toLowerCase()
-    const category = /trial/.test(lower) ? 'Trial' : /mediation/.test(lower) ? 'Mediation' : /deposition/.test(lower) ? 'Deposition' : /conference/.test(lower) ? 'Conference' : /hearing|setting/.test(lower) ? 'Hearing' : 'Notice'
-    return { date, time, category }
+  function isNotificationServiceHearingRow(row = {}) {
+    if (serviceEmailRowCategory(row) === 'notification_service') return true
+    if (row.notice_service_source || row.notice_service_type) return true
+    const source = serviceEmailSource(row.source_id) || {}
+    const sourceText = `${source.filing_category || ''} ${source.monitor_section || ''} ${source.outlook_folder_name || ''}`.toLowerCase()
+    return /incoming service|notification of service|service notice/.test(sourceText)
+  }
+
+  function serviceHearingAlertForRow(row = {}) {
+    const isNotification = isNotificationServiceHearingRow(row)
+    const scan = row.hearing_scan_result && typeof row.hearing_scan_result === 'object' ? row.hearing_scan_result : {}
+    const status = scan.status || row.hearing_scan_status || (isNotification ? 'not_scanned' : 'clear')
+    const candidates = Array.isArray(scan.candidates) ? scan.candidates : (Array.isArray(row.hearing_date_candidates) ? row.hearing_date_candidates : [])
+    const primary = scan.primary_candidate || candidates[0] || null
+    return {
+      ...scan,
+      status,
+      level: scan.level || row.hearing_alert_level || (['high', 'failed', 'not_scanned'].includes(status) ? 'critical' : (status === 'possible' || status === 'scanning' ? 'warning' : 'clear')),
+      summary: scan.summary || row.hearing_scan_message || (status === 'not_scanned' ? 'This notification-of-service filing has not yet been scanned for a hearing or setting.' : ''),
+      candidates,
+      primary_candidate: primary,
+      reviewed_at: row.hearing_reviewed_at || scan.reviewed_at || '',
+      review_action: row.hearing_review_action || scan.review_action || '',
+      completeness: row.hearing_scan_completeness || scan.completeness || '',
+      error: row.hearing_scan_error || scan.error || ''
+    }
+  }
+
+  function serviceHearingNeedsAttention(row = {}) {
+    if (!isNotificationServiceHearingRow(row)) return false
+    const alertState = serviceHearingAlertForRow(row)
+    if (alertState.reviewed_at) return false
+    return ['high', 'possible', 'failed', 'not_scanned', 'scanning'].includes(alertState.status) || alertState.completeness === 'partial'
+  }
+
+  function serviceHearingStatusLabel(row = {}) {
+    const alertState = serviceHearingAlertForRow(row)
+    if (alertState.reviewed_at) return `HEARING CHECK REVIEWED${alertState.review_action ? ` - ${String(alertState.review_action).replace(/_/g, ' ')}` : ''}`
+    if (alertState.status === 'high') return 'LIKELY HEARING / SETTING NOTICE'
+    if (alertState.status === 'possible') return 'POSSIBLE HEARING / CALENDAR DATE'
+    if (alertState.status === 'failed') return 'HEARING CHECK FAILED - MANUAL REVIEW REQUIRED'
+    if (alertState.status === 'scanning') return 'SCANNING FILING FOR HEARING DATES...'
+    if (alertState.status === 'not_scanned') return 'HEARING CHECK NOT COMPLETED'
+    return 'Hearing scan complete - no alert found'
+  }
+
+  function renderServiceHearingAlert(row = {}, options = {}) {
+    if (!isNotificationServiceHearingRow(row)) return null
+    const alertState = serviceHearingAlertForRow(row)
+    const needsAttention = serviceHearingNeedsAttention(row)
+    const isClear = alertState.status === 'clear'
+    if (isClear && options.hideClear) return null
+    const compact = Boolean(options.compact)
+    const showCandidates = Boolean(options.showCandidates) && !compact
+    const background = needsAttention ? '#b91c1c' : (isClear ? '#ecfdf5' : '#fff1f2')
+    const foreground = needsAttention ? '#ffffff' : (isClear ? '#14532d' : '#7f1d1d')
+    const border = needsAttention ? '4px solid #7f1d1d' : (isClear ? '2px solid #22c55e' : '2px solid #ef4444')
+    const candidate = alertState.primary_candidate
+    const candidateLabel = serviceHearingCandidateLabel(candidate)
+    const stop = (event) => event?.stopPropagation?.()
+    return (
+      <div style={{ marginTop: options.marginTop ?? 8, border, borderRadius: 9, padding: compact ? 8 : 12, background, color: foreground, boxShadow: needsAttention ? '0 0 0 3px rgba(239,68,68,.22)' : 'none' }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 950, letterSpacing: '.02em', fontSize: compact ? 12 : 17 }}>
+              {needsAttention ? '\u26A0 ' : ''}{serviceHearingStatusLabel(row)}
+            </div>
+            {!compact && <div style={{ marginTop: 5, fontWeight: needsAttention ? 750 : 600 }}>{alertState.summary}</div>}
+            {compact && <div style={{ marginTop: 3, fontSize: 11, fontWeight: 700 }}>{candidateLabel || alertState.summary}</div>}
+            {alertState.error && !compact && <div style={{ marginTop: 5, fontSize: 12 }}><strong>Scan problem:</strong> {alertState.error}</div>}
+            {alertState.reviewed_at && <div style={{ marginTop: 5, fontSize: 11, fontWeight: 800 }}>Reviewed {new Date(alertState.reviewed_at).toLocaleString()}.</div>}
+          </div>
+          {options.showActions !== false && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              {needsAttention && <button type="button" onClick={(event) => { stop(event); openNotificationHearingReview(row) }} style={{ background: '#ffffff', color: '#991b1b', border: '2px solid #ffffff', borderRadius: 6, padding: compact ? '5px 7px' : '8px 10px', fontWeight: 900 }}>{compact ? 'REVIEW ALERT' : 'REVIEW FILING'}</button>}
+              {alertState.status !== 'scanning' && alertState.status !== 'clear' && <button type="button" onClick={(event) => { stop(event); addNoticeServiceRowToCalendar(row, candidate) }} style={{ background: '#fde047', color: '#713f12', border: '2px solid #fef08a', borderRadius: 6, padding: compact ? '5px 7px' : '8px 10px', fontWeight: 950 }}>ADD DATE TO CALENDAR</button>}
+              {!compact && alertState.status !== 'scanning' && <button type="button" onClick={async (event) => { stop(event); await scanNotificationServiceRowForHearing(serviceEmailRows.find((item) => item.id === row.id) || row, { force: true, updateState: true, quiet: false }) }} style={{ background: needsAttention ? '#fee2e2' : '#ffffff', color: '#7f1d1d', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>Scan filing again</button>}
+              {!compact && !isClear && !alertState.reviewed_at && alertState.status !== 'scanning' && <button type="button" onClick={(event) => { stop(event); markNotificationHearingReviewed(row, 'manual_pdf_review') }} style={{ background: needsAttention ? '#ffffff' : '#fee2e2', color: '#7f1d1d', border: '1px solid #fecaca', borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>I reviewed the entire PDF / no additional calendar date</button>}
+            </div>
+          )}
+        </div>
+        {showCandidates && alertState.candidates.length > 0 && (
+          <div style={{ marginTop: 10, display: 'grid', gap: 7 }}>
+            <strong>Detected non-file-stamp dates/times and hearing language:</strong>
+            {alertState.candidates.slice(0, 8).map((item, index) => (
+              <div key={item.id || `${item.raw}-${index}`} style={{ border: `1px solid ${needsAttention ? 'rgba(255,255,255,.55)' : '#fecaca'}`, borderRadius: 7, padding: 8, background: needsAttention ? 'rgba(255,255,255,.10)' : '#ffffff', color: needsAttention ? '#ffffff' : '#7f1d1d' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <strong>{serviceHearingCandidateLabel(item) || item.raw || `Candidate ${index + 1}`}</strong>
+                  <button type="button" onClick={(event) => { stop(event); addNoticeServiceRowToCalendar(row, item) }} style={{ background: '#fde047', color: '#713f12', border: 0, borderRadius: 5, padding: '5px 8px', fontWeight: 900 }}>Add this date</button>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, whiteSpace: 'pre-wrap' }}>{item.context}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {!compact && Array.isArray(alertState.excluded_file_stamp_candidates) && alertState.excluded_file_stamp_candidates.length > 0 && (
+          <details style={{ marginTop: 9, fontSize: 12 }}><summary style={{ cursor: 'pointer', fontWeight: 750 }}>Excluded file-stamp date/time references ({alertState.excluded_file_stamp_candidates.length})</summary><div style={{ marginTop: 5 }}>Mio ignored these only because they were immediately beside eFile/court filing-stamp language. Review them if the PDF layout makes that uncertain.</div></details>
+        )}
+      </div>
+    )
+  }
+
+  function serviceHearingStoredText(value = '', maxLength = 100000) {
+    const text = String(value || '')
+    if (text.length <= maxLength) return text
+    const half = Math.floor(maxLength / 2)
+    return `${text.slice(0, half)}\n\n[Middle of long filing omitted from local storage after hearing scan.]\n\n${text.slice(-half)}`
+  }
+
+  async function serviceHearingBlobFromAttachment(attachment = null) {
+    if (!attachment) return null
+    const direct = await normalizeServicePdfBlob(attachment.blob || attachment.file || attachment.content_bytes || attachment.contentBytes || null, attachment.content_type || attachment.type || 'application/pdf')
+    if (direct) return direct
+    if (attachment.content_url) {
+      try {
+        const response = await fetch(attachment.content_url)
+        if (response.ok) return await response.blob()
+      } catch (error) {
+        console.warn('Could not read service filing attachment URL for hearing scan:', error)
+      }
+    }
+    return null
+  }
+
+  async function loadServicePdfsForHearingScan(row = {}, options = {}) {
+    const working = { ...row }
+    let attachments = Array.isArray(working.attachments) ? working.attachments.slice() : []
+    const source = serviceEmailSource(working.source_id) || working
+    const messageId = working.outlook_message_id || ''
+    const isRealGraphMessage = messageId && !String(messageId).startsWith('mock-')
+    let base = ''
+
+    if (isRealGraphMessage) {
+      base = graphMailboxBase(working.mailbox_email || source.mailbox_email)
+      if (!attachments.length) attachments = await listMessageAttachments(base, messageId)
+    }
+
+    let candidates = servicePdfAttachments(attachments)
+    if (!candidates.length) candidates = nonInlineServiceAttachments(attachments)
+    const maxAttachments = 20
+    const loadedAttachments = attachments.slice()
+    const documentsToScan = []
+
+    for (const candidate of candidates.slice(0, maxAttachments)) {
+      let loaded = candidate
+      if (isRealGraphMessage && candidate?.id && !candidate.content_url && !candidate.blob) {
+        try {
+          loaded = await loadMessageAttachmentContent(base, messageId, candidate)
+          const existingIndex = loadedAttachments.findIndex((item) => item.id === candidate.id)
+          if (existingIndex >= 0) loadedAttachments[existingIndex] = loaded
+          else loadedAttachments.push(loaded)
+        } catch (error) {
+          console.warn('Could not load one service filing attachment for hearing scan:', candidate?.name, error)
+        }
+      }
+      let blob = await serviceHearingBlobFromAttachment(loaded)
+      if ((!blob || blob.size <= 20) && isRealGraphMessage && candidate?.id) {
+        try {
+          loaded = await loadMessageAttachmentContent(base, messageId, { ...candidate, content_url: '', blob: null })
+          blob = await serviceHearingBlobFromAttachment(loaded)
+        } catch (error) {
+          console.warn('Could not refresh a stale service attachment for hearing scan:', candidate?.name, error)
+        }
+      }
+      if (blob && blob.size > 20) {
+        let previewLoaded = loaded
+        if (/^data:/i.test(String(loaded.content_url || ''))) {
+          previewLoaded = { ...loaded, content_url: URL.createObjectURL(blob), content_loaded: true, blob }
+        } else if (!loaded.blob) {
+          previewLoaded = { ...loaded, blob }
+        }
+        const loadedIndex = loadedAttachments.findIndex((item) => item.id === previewLoaded.id)
+        if (loadedIndex >= 0) loadedAttachments[loadedIndex] = previewLoaded
+        else loadedAttachments.push(previewLoaded)
+        documentsToScan.push({ attachment: previewLoaded, blob, fileName: previewLoaded.name || 'Service filing.pdf' })
+      }
+    }
+
+    if (!documentsToScan.length) {
+      const link = primaryServiceFilingLink(working)
+      if (link?.url) {
+        const knownName = resolveServiceActualPdfFileName(working).name || verifiedServicePdfFileName(link.name || link.label || '') || 'efile-download.pdf'
+        const downloaded = await downloadServiceFilingLinkThroughEdgeFunction(working, link, knownName)
+        if (downloaded) {
+          const blob = await serviceHearingBlobFromAttachment(downloaded)
+          if (blob && blob.size > 20) {
+            documentsToScan.push({ attachment: downloaded, blob, fileName: downloaded.name || knownName })
+            loadedAttachments.unshift(downloaded)
+          }
+        }
+      }
+    }
+
+    return {
+      documents: documentsToScan,
+      attachments: loadedAttachments,
+      partial_attachments: candidates.length > maxAttachments,
+      attempted_attachment_count: candidates.length
+    }
+  }
+
+  async function extractServicePdfTextForHearing(blob, fileName = 'Service filing.pdf', options = {}) {
+    const dataUrl = await blobToDataUrl(blob)
+    if (!dataUrl) throw new Error('The PDF bytes could not be read for the hearing scan.')
+    const pdfjsLib = await loadPdfJs()
+    const loadingTask = pdfjsLib.getDocument({ data: dataUrlToUint8Array(dataUrl) })
+    const pdf = await loadingTask.promise
+    const embeddedPageRecords = []
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber)
+      const textContent = await page.getTextContent()
+      const pageText = (textContent.items || []).map((item) => item.str || '').join(' ').trim()
+      embeddedPageRecords.push({
+        pageNumber,
+        text: pageText,
+        usefulCharacters: usefulTextCharacterCount(pageText)
+      })
+    }
+
+    const embeddedText = embeddedPageRecords.map((item) => `--- ${fileName} - PDF page ${item.pageNumber} ---
+${item.text}`).join('\n\n').trim()
+    const usefulEmbedded = embeddedPageRecords.reduce((sum, item) => sum + item.usefulCharacters, 0)
+    const embeddedThreshold = Math.max(70, Math.min(300, pdf.numPages * 35))
+    // Be deliberately aggressive. A scanned notice appended to a searchable motion
+    // can still expose only a short eFile stamp or page header as embedded text.
+    // OCR sparse pages even when they contain more than a few characters so the
+    // hearing date hidden in the page image is not skipped.
+    const lowTextPageThreshold = 220
+    const lowTextPageNumbers = embeddedPageRecords.filter((item) => item.usefulCharacters < lowTextPageThreshold).map((item) => item.pageNumber)
+    const maxOcrPages = Number(options.maxOcrPages || 40)
+    let pageNumbers = lowTextPageNumbers.slice()
+    let completeness = 'full'
+
+    // A mixed PDF can have normal searchable motion pages and an image-only notice
+    // appended at the end. OCR every low-text page even when the rest of the PDF has
+    // excellent embedded text, which is essential for detecting that appended notice.
+    if (usefulEmbedded < embeddedThreshold && !pageNumbers.length) {
+      pageNumbers = Array.from({ length: pdf.numPages }, (_, index) => index + 1)
+    }
+    if (pageNumbers.length > maxOcrPages) {
+      const firstCount = Math.ceil(maxOcrPages / 2)
+      const lastCount = Math.floor(maxOcrPages / 2)
+      pageNumbers = [...pageNumbers.slice(0, firstCount), ...pageNumbers.slice(-lastCount)]
+      completeness = 'partial'
+    }
+
+    if (!pageNumbers.length && usefulEmbedded >= embeddedThreshold) {
+      return {
+        text: embeddedText,
+        extraction_method: 'pdf_embedded_text_full_document',
+        text_quality: 'usable',
+        completeness: 'full',
+        page_count: pdf.numPages,
+        pages_scanned: pdf.numPages,
+        warnings: []
+      }
+    }
+
+    const Tesseract = await loadTesseract()
+    const ocrPages = []
+    for (let index = 0; index < pageNumbers.length; index += 1) {
+      const pageNumber = pageNumbers[index]
+      if (options.onProgress) options.onProgress({ pageNumber, index: index + 1, total: pageNumbers.length, fileName })
+      const page = await pdf.getPage(pageNumber)
+      const viewport = page.getViewport({ scale: 1.7 })
+      const canvas = document.createElement('canvas')
+      const context = canvas.getContext('2d')
+      canvas.width = Math.floor(viewport.width)
+      canvas.height = Math.floor(viewport.height)
+      await page.render({ canvasContext: context, viewport }).promise
+      const result = await Tesseract.recognize(canvas.toDataURL('image/png'), 'eng')
+      ocrPages.push(`--- ${fileName} - OCR page ${pageNumber} ---
+${result?.data?.text || ''}`)
+      canvas.width = 1
+      canvas.height = 1
+    }
+    const ocrText = ocrPages.join('\n\n').trim()
+    const combinedText = usefulEmbedded > 20 ? `${embeddedText}
+
+${ocrText}` : ocrText
+    const mixedExtraction = usefulEmbedded >= embeddedThreshold && lowTextPageNumbers.length > 0
+    const warnings = []
+    if (mixedExtraction) warnings.push(`OCR checked ${pageNumbers.length} low-text/image-only page(s), including appended pages that could contain a hearing notice.`)
+    if (completeness === 'partial') warnings.push(`PDF had ${lowTextPageNumbers.length || pdf.numPages} page(s) needing OCR. Mio scanned the first and last ${pageNumbers.length}; manual review is required.`)
+    return {
+      text: combinedText,
+      extraction_method: mixedExtraction ? 'pdf_embedded_text_plus_ocr_low_text_pages' : 'browser_ocr_hearing_scan',
+      text_quality: usefulTextCharacterCount(combinedText) >= 40 ? 'usable' : 'short',
+      completeness,
+      page_count: pdf.numPages,
+      pages_scanned: Math.max(0, pdf.numPages - Math.max(0, lowTextPageNumbers.length - pageNumbers.length)),
+      warnings
+    }
+  }
+
+  async function scanNotificationServiceRowForHearing(row = {}, options = {}) {
+    if (!isNotificationServiceHearingRow(row)) return row
+    const updateState = options.updateState !== false
+    const force = Boolean(options.force)
+    const existingAlert = serviceHearingAlertForRow(row)
+    if (!force && existingAlert.schema === SERVICE_HEARING_SCAN_SCHEMA && ['high', 'possible', 'clear'].includes(existingAlert.status) && row.hearing_scan_at) return row
+
+    const startedAt = new Date().toISOString()
+    const scanningPatch = {
+      hearing_scan_status: 'scanning',
+      hearing_alert_level: 'warning',
+      hearing_scan_message: 'Mio is scanning the complete readable filing for hearing, trial, setting, courtroom, Zoom, and non-file-stamp date/time references.',
+      hearing_scan_error: '',
+      hearing_scan_started_at: startedAt
+    }
+    if (updateState) setServiceEmailRows((current) => current.map((item) => item.id === row.id ? { ...item, ...scanningPatch } : item))
+
+    try {
+      const loaded = await loadServicePdfsForHearingScan(row, options)
+      const extractedDocuments = []
+      if (loaded.documents.length) {
+        for (let index = 0; index < loaded.documents.length; index += 1) {
+          const documentItem = loaded.documents[index]
+          if (!options.quiet) setServiceEmailScanNote(`Hearing safety scan ${index + 1} of ${loaded.documents.length}: ${documentItem.fileName}. Reading every text page and OCRing image-only pages...`)
+          try {
+            const extracted = await extractServicePdfTextForHearing(documentItem.blob, documentItem.fileName, {
+              maxOcrPages: 40,
+              onProgress: ({ pageNumber, total, fileName: progressName }) => {
+                if (!options.quiet) setServiceEmailScanNote(`Hearing safety OCR: ${progressName}, page ${pageNumber} (${total} page(s) selected for OCR).`)
+              }
+            })
+            extractedDocuments.push({ ...extracted, fileName: documentItem.fileName })
+          } catch (error) {
+            console.warn('Hearing scan could not extract one PDF:', documentItem.fileName, error)
+            extractedDocuments.push({ text: '', extraction_method: 'failed', text_quality: 'none', completeness: 'failed', page_count: 0, pages_scanned: 0, warnings: [error.message || String(error)], fileName: documentItem.fileName })
+          }
+        }
+      } else if (String(row.pdf_text || '').trim()) {
+        const storedTextWasTruncated = /\[Middle of long filing omitted from local storage after hearing scan\.\]/i.test(String(row.pdf_text || ''))
+        extractedDocuments.push({
+          text: row.pdf_text,
+          extraction_method: row.hearing_pdf_extraction_method || 'previously_extracted_pdf_text',
+          text_quality: 'usable',
+          completeness: storedTextWasTruncated ? 'partial' : (row.hearing_scan_completeness || 'full'),
+          page_count: row.hearing_pdf_page_count || 0,
+          pages_scanned: row.hearing_pdf_pages_scanned || 0,
+          warnings: storedTextWasTruncated ? ['Only the locally stored beginning and end of this long filing were available. Manual review is required.'] : [],
+          fileName: row.extracted_pdf_name || row.suggested_document_name || 'Previously extracted filing'
+        })
+      }
+
+      const readableDocuments = extractedDocuments.filter((item) => usefulTextCharacterCount(item.text) >= 25)
+      if (!readableDocuments.length) throw new Error('Mio could not obtain readable text from the filing PDF. Open the filing and review it manually before moving the email to Read.')
+
+      const combinedText = readableDocuments.map((item) => `===== BEGIN ${item.fileName} =====\n${item.text}\n===== END ${item.fileName} =====`).join('\n\n')
+      let scan = scanServiceFilingTextForHearing(combinedText)
+      const partial = loaded.partial_attachments || readableDocuments.some((item) => item.completeness !== 'full') || extractedDocuments.some((item) => item.completeness === 'failed')
+      if (partial && scan.status === 'clear') {
+        scan = {
+          ...scan,
+          status: 'possible',
+          level: 'warning',
+          summary: 'The filing scan was incomplete or required partial OCR. Treat this as a possible hearing/setting and review the PDF manually before moving the email to Read.'
+        }
+      }
+      const previousFingerprint = row.hearing_scan_fingerprint || existingAlert.fingerprint || ''
+      const preserveReview = previousFingerprint && previousFingerprint === scan.fingerprint
+      const actualFile = resolveServiceActualPdfFileName(row, loaded.documents[0]?.attachment)
+      const totalPages = readableDocuments.reduce((sum, item) => sum + Number(item.page_count || 0), 0)
+      const pagesScanned = readableDocuments.reduce((sum, item) => sum + Number(item.pages_scanned || 0), 0)
+      const scanAt = new Date().toISOString()
+      const scanWithMetadata = {
+        ...scan,
+        extraction_method: readableDocuments.map((item) => `${item.fileName}: ${item.extraction_method}`).join('; '),
+        completeness: partial ? 'partial' : 'full',
+        page_count: totalPages,
+        pages_scanned: pagesScanned,
+        attachment_count: loaded.documents.length,
+        warnings: extractedDocuments.flatMap((item) => item.warnings || []).slice(0, 20),
+        scanned_at: scanAt
+      }
+      const patch = {
+        attachments: loaded.attachments,
+        has_attachments: loaded.attachments.length > 0 || row.has_attachments,
+        extracted_pdf_name: actualFile.name || row.extracted_pdf_name || loaded.documents[0]?.fileName || '',
+        extracted_pdf_name_source: actualFile.source || row.extracted_pdf_name_source || '',
+        extracted_pdf_name_verified: Boolean(actualFile.name) || row.extracted_pdf_name_verified === true,
+        suggested_document_name: actualFile.name || row.suggested_document_name || loaded.documents[0]?.fileName || '',
+        pdf_text: serviceHearingStoredText(combinedText),
+        hearing_scan_status: scanWithMetadata.status,
+        hearing_alert_level: scanWithMetadata.level,
+        hearing_scan_message: scanWithMetadata.summary,
+        hearing_scan_result: scanWithMetadata,
+        hearing_date_candidates: scanWithMetadata.candidates,
+        hearing_scan_fingerprint: scanWithMetadata.fingerprint,
+        hearing_scan_schema: SERVICE_HEARING_SCAN_SCHEMA,
+        hearing_scan_at: scanAt,
+        hearing_scan_completeness: scanWithMetadata.completeness,
+        hearing_scan_error: '',
+        hearing_pdf_extraction_method: scanWithMetadata.extraction_method,
+        hearing_pdf_page_count: totalPages,
+        hearing_pdf_pages_scanned: pagesScanned,
+        hearing_reviewed_at: preserveReview ? (row.hearing_reviewed_at || '') : '',
+        hearing_review_action: preserveReview ? (row.hearing_review_action || '') : ''
+      }
+      const updated = { ...row, ...patch }
+      if (updateState) setServiceEmailRows((current) => current.map((item) => item.id === row.id ? { ...item, ...patch } : item))
+      if (!options.quiet) setServiceEmailScanNote(scanWithMetadata.status === 'clear' ? 'Hearing safety scan complete: no non-file-stamp date/time or setting language was found.' : scanWithMetadata.summary)
+      return updated
+    } catch (error) {
+      const failedAt = new Date().toISOString()
+      const failedResult = {
+        schema: SERVICE_HEARING_SCAN_SCHEMA,
+        status: 'failed',
+        level: 'critical',
+        summary: 'Mio could not complete the hearing/date scan. The filing must be reviewed manually before this email can be moved to Read.',
+        error: error.message || String(error),
+        candidates: [],
+        primary_candidate: null,
+        completeness: 'failed',
+        scanned_at: failedAt
+      }
+      const patch = {
+        hearing_scan_status: 'failed',
+        hearing_alert_level: 'critical',
+        hearing_scan_message: failedResult.summary,
+        hearing_scan_result: failedResult,
+        hearing_scan_schema: SERVICE_HEARING_SCAN_SCHEMA,
+        hearing_scan_at: failedAt,
+        hearing_scan_completeness: 'failed',
+        hearing_scan_error: failedResult.error,
+        hearing_reviewed_at: '',
+        hearing_review_action: ''
+      }
+      const updated = { ...row, ...patch }
+      if (updateState) setServiceEmailRows((current) => current.map((item) => item.id === row.id ? { ...item, ...patch } : item))
+      if (!options.quiet) setServiceEmailScanNote(`HEARING SAFETY ALERT: ${failedResult.summary} ${failedResult.error}`)
+      return updated
+    }
+  }
+
+  function markNotificationHearingReviewed(row = {}, action = 'manual_pdf_review') {
+    if (!row?.id) return false
+    const alertState = serviceHearingAlertForRow(row)
+    if (action === 'manual_pdf_review') {
+      const confirmed = window.confirm('Confirm that you personally reviewed the complete filing PDF for every hearing, trial, submission, appearance, setting, date, and time, and that no additional calendar entry is needed.')
+      if (!confirmed) return false
+    }
+    if (action === 'calendar_event_saved') {
+      const confirmed = window.confirm('The calendar event was saved. Before Mio clears the red alert, confirm that you reviewed the COMPLETE filing for every other hearing, trial, submission, appearance, setting, date, and time, and that no additional calendar entry is needed.')
+      if (!confirmed) {
+        setServiceEmailScanNote('The calendar event was saved, but the red hearing alert remains because the complete filing has not yet been confirmed reviewed.')
+        return false
+      }
+    }
+    const reviewedAt = new Date().toISOString()
+    setServiceEmailRows((current) => current.map((item) => item.id === row.id ? {
+      ...item,
+      hearing_reviewed_at: reviewedAt,
+      hearing_review_action: action,
+      hearing_scan_result: { ...serviceHearingAlertForRow(item), reviewed_at: reviewedAt, review_action: action }
+    } : item))
+    setServiceEmailScanNote(action === 'calendar_event_saved' ? 'Calendar event saved and complete-filing hearing review confirmed. The red alert is cleared.' : `Hearing safety review recorded. Prior scan status: ${alertState.status}.`)
+    return true
+  }
+
+  function openNotificationHearingReview(row = {}) {
+    if (!row?.id) return
+    setServiceInboxFilter('all')
+    setServiceInboxMailboxFilter('all')
+    setServiceInboxFolderFilter('all')
+    setServiceInboxPhase('notification_service')
+    setShowAcceptedExtractionWindow(true)
+    setShowSavedFilingReviewRows(false)
+    setSelectedFilingReviewRowId(row.id)
+    setSelectedServiceEmailId(row.id)
+    window.setTimeout(() => previewNoticeServiceRow(serviceEmailRows.find((item) => item.id === row.id) || row), 40)
+  }
+
+  async function ensureNotificationHearingSafetyBeforeMove(row = {}, options = {}) {
+    if (!isNotificationServiceHearingRow(row)) return { ok: true, row }
+    let latest = serviceEmailRows.find((item) => item.id === row.id) || row
+    let alertState = serviceHearingAlertForRow(latest)
+    const needsScan = alertState.schema !== SERVICE_HEARING_SCAN_SCHEMA || ['not_scanned', 'scanning'].includes(alertState.status) || !latest.hearing_scan_at
+    if (needsScan) {
+      latest = await scanNotificationServiceRowForHearing(latest, { force: true, updateState: true, quiet: Boolean(options.quiet) })
+      alertState = serviceHearingAlertForRow(latest)
+    }
+    if (alertState.status === 'clear' && alertState.completeness === 'full') return { ok: true, row: latest }
+    if (latest.hearing_reviewed_at || alertState.reviewed_at) return { ok: true, row: latest }
+    if (options.openReview !== false) openNotificationHearingReview(latest)
+    const message = `${serviceHearingStatusLabel(latest)}. Review the red hearing alert and either ADD DATE TO CALENDAR or confirm that you manually reviewed the entire PDF before moving this email to Read.`
+    setServiceEmailScanNote(message)
+    if (!options.quiet) alert(message)
+    return { ok: false, row: latest }
+  }
+
+  async function prepareNotificationRowsForHearingSafety(rows = [], options = {}) {
+    const prepared = []
+    for (let index = 0; index < rows.length; index += 1) {
+      let row = serviceEmailRows.find((item) => item.id === rows[index].id) || rows[index]
+      if (isNotificationServiceHearingRow(row)) {
+        const alertState = serviceHearingAlertForRow(row)
+        if (alertState.schema !== SERVICE_HEARING_SCAN_SCHEMA || ['not_scanned', 'scanning'].includes(alertState.status) || !row.hearing_scan_at) {
+          setServiceEmailScanNote(`Hearing safety preflight ${index + 1} of ${rows.length}: scanning ${row.subject || row.id}.`)
+          row = await scanNotificationServiceRowForHearing(row, { force: true, updateState: true, quiet: true })
+        }
+      }
+      prepared.push(row)
+    }
+    const unresolved = prepared.filter((row) => serviceHearingNeedsAttention(row))
+    if (unresolved.length) {
+      const first = unresolved[0]
+      openNotificationHearingReview(first)
+      const message = `STOP: ${unresolved.length} notification-of-service filing(s) still need hearing/calendar review. Mio will not move them to Read until each red alert is reviewed.`
+      setServiceEmailScanNote(message)
+      if (!options.quiet) alert(message)
+      return { ok: false, rows: prepared, unresolved }
+    }
+    return { ok: true, rows: prepared, unresolved: [] }
+  }
+
+  async function rescanAllNotificationServiceRows() {
+    const rows = serviceEmailRows.filter((row) => !row.moved_to_read && row.status !== 'completed' && isNotificationServiceHearingRow(row))
+    if (!rows.length) {
+      setServiceEmailScanNote('No active notification-of-service filings are available to scan.')
+      return
+    }
+    setServiceGraphBusy(true)
+    try {
+      for (let index = 0; index < rows.length; index += 1) {
+        setServiceEmailScanNote(`Re-scanning notification filing ${index + 1} of ${rows.length}: ${rows[index].subject || rows[index].id}`)
+        await scanNotificationServiceRowForHearing(serviceEmailRows.find((item) => item.id === rows[index].id) || rows[index], { force: true, updateState: true, quiet: true })
+      }
+      setServiceEmailScanNote(`Hearing safety re-scan complete for ${rows.length} notification-of-service filing(s). Review every red alert before moving email to Read.`)
+    } finally {
+      setServiceGraphBusy(false)
+    }
+  }
+
+  function inferNoticeDateTime(row = {}, candidateOverride = null) {
+    const alertState = serviceHearingAlertForRow(row)
+    let candidate = candidateOverride || alertState.primary_candidate || null
+    if (!candidate && String(row.pdf_text || row.extracted_text || '').trim()) {
+      const fallbackScan = scanServiceFilingTextForHearing(row.pdf_text || row.extracted_text || '')
+      candidate = fallbackScan.primary_candidate || null
+    }
+    const context = candidate?.context || candidate?.raw || ''
+    const date = candidate?.date || serviceHearingParseDate(context)
+    const time = candidate?.time || serviceHearingParseTime(context)
+    const lower = `${context} ${row.subject || ''} ${row.suggested_document_name || ''}`.toLowerCase()
+    const category = /trial/.test(lower) ? 'Trial' : /mediation/.test(lower) ? 'Mediation' : /deposition/.test(lower) ? 'Deposition' : /conference/.test(lower) ? 'Conference' : 'Hearing'
+    return { date, time, category, candidate }
   }
 
   function guessServiceReviewTagIds(row = {}, workingTags = filingTagsRef.current) {
@@ -36501,6 +37525,9 @@ Ben`) : '',
 
   async function moveSingleServiceEmailToRead(row, options = {}) {
     if (!row) return false
+    const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row)
+    if (!hearingSafety.ok) return false
+    row = hearingSafety.row || row
     const label = options.label || 'Moved individual no-response email to Read'
     setServiceEmailScanNote(`${label}: ${row.subject || ''}`)
     try {
@@ -36532,6 +37559,9 @@ Ben`) : '',
 
   async function processSingleFilingServiceEmail(row) {
     if (!row) return false
+    const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row)
+    if (!hearingSafety.ok) return false
+    row = hearingSafety.row || row
     const matterId = resolveServiceEmailMatterId(row)
     if (!matterId) {
       alert('Select the matching matter before saving this filing.')
@@ -36592,6 +37622,9 @@ Ben`) : '',
 
   async function sendSingleServiceEmailAndMove(row) {
     if (!row) return false
+    const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row)
+    if (!hearingSafety.ok) return false
+    row = hearingSafety.row || row
     setServiceGraphBusy(true)
     try {
       if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected) await sendLiveServiceEmailResponse(row)
@@ -36612,12 +37645,16 @@ Ben`) : '',
   }
 
   async function moveSelectedServiceEmailsToRead() {
-    const rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'no_response')
+    let rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'no_response')
 
     if (!rows.length) {
       setServiceEmailScanNote('No visible no-response emails to move. Check the no-response column for any emails you want moved, then try again.')
       return
     }
+
+    const hearingSafety = await prepareNotificationRowsForHearingSafety(rows)
+    if (!hearingSafety.ok) return
+    rows = hearingSafety.rows
 
     if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) {
       completeServiceEmailRows(rows.map((row) => row.id), `Moved ${rows.length} selected mock email(s) to Read.`, { removeFromActiveList: true })
@@ -36670,11 +37707,14 @@ Ben`) : '',
   }
 
   async function sendSelectedResponsesAndMoveToRead() {
-    const rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'response_mark_read')
+    let rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'response_mark_read')
     if (!rows.length) {
       setServiceEmailScanNote('No visible response-required emails to send. Check the response column for any emails you want handled, then try again.')
       return
     }
+    const hearingSafety = await prepareNotificationRowsForHearingSafety(rows)
+    if (!hearingSafety.ok) return
+    rows = hearingSafety.rows
     if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) {
       completeServiceEmailRows(rows.map((row) => row.id), `Sent ${rows.length} mock response(s), added approved billing entries, and moved the email(s) to Read.`, { removeFromActiveList: true })
       return
@@ -36719,11 +37759,14 @@ Ben`) : '',
   }
 
   async function approveSelectedFilingActions() {
-    const rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
+    let rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
     if (!rows.length) {
       setServiceEmailScanNote('No visible accepted/notification emails to approve. Check the accepted or notification column for the emails you want handled, then try again.')
       return
     }
+    const hearingSafety = await prepareNotificationRowsForHearingSafety(rows)
+    if (!hearingSafety.ok) return
+    rows = hearingSafety.rows
     if (serviceGraphConfig.mode !== 'live' || !serviceGraphAuth.connected) {
       rows.forEach((row, index) => {
         maybeCreateServiceEmailBillingEntry(row, serviceEmailRowCategory(row) === 'accepted' ? 'Accepted e-filing review' : 'Notification of service review')
@@ -36888,13 +37931,15 @@ Ben`) : (row.draft_response || '') })
     const isNoResponse = normalizedGroup === 'no_response'
     const needsDraft = normalizedGroup === 'response_mark_read'
     const isFiling = normalizedGroup === 'accepted' || normalizedGroup === 'notification_service'
+    const hearingNeedsAttention = serviceHearingNeedsAttention(row)
+    const hearingAlertState = serviceHearingAlertForRow(row)
     const compact = serviceInboxRowDensity === 'compact'
-    const rowBackground = row.status === 'completed' ? '#ecfdf5' : serviceEmailCategoryColor(normalizedGroup)
+    const rowBackground = row.status === 'completed' ? '#ecfdf5' : (hearingNeedsAttention ? '#fff1f2' : serviceEmailCategoryColor(normalizedGroup))
     const cellPadding = compact ? 5 : 7
     const showAccountColumns = serviceInboxSortMode === 'date' || serviceInboxViewMode === 'all'
     return (
       <Fragment key={row.id}>
-        <tr onMouseEnter={() => serviceInboxPreviewMode === 'right' && setSelectedServiceEmailId(row.id)} style={{ borderTop: '1px solid #e5e7eb', background: rowBackground }} title={compact ? cleanEmailPreview(row.body_preview) : ''}>
+        <tr onMouseEnter={() => serviceInboxPreviewMode === 'right' && setSelectedServiceEmailId(row.id)} style={{ borderTop: '1px solid #e5e7eb', borderLeft: hearingNeedsAttention ? '8px solid #dc2626' : undefined, background: rowBackground }} title={compact ? cleanEmailPreview(row.body_preview) : ''}>
           {serviceEmailCategoryValues.map((category) => (
             <td key={category} style={{ padding: cellPadding, verticalAlign: 'top', textAlign: 'center', background: serviceEmailCategoryColor(category) }} title={`Mark this email as ${serviceEmailPhaseLabel(category)}`}>
               <input
@@ -36916,7 +37961,8 @@ Ben`) : (row.draft_response || '') })
           </td>
           <td style={{ padding: cellPadding, verticalAlign: 'top' }}>
             <button type="button" onClick={() => openServiceEmailInOutlook(row)} style={{ border: 0, background: 'transparent', padding: 0, color: '#1d4ed8', textDecoration: 'underline', fontWeight: 700, cursor: 'pointer', textAlign: 'left' }} title="Open this email in Outlook in a new window">{row.subject}</button>
-            {row.has_attachments && <div style={{ marginTop: 3, fontSize: 12, color: '#0f766e' }}>📎 {(row.attachments || []).filter((item) => !item.is_inline).length || 'Attachment'} attachment(s)</div>}
+            {renderServiceHearingAlert(row, { compact: true, hideClear: true })}
+            {row.has_attachments && <div style={{ marginTop: 3, fontSize: 12, color: '#0f766e' }}>Attachment: {(row.attachments || []).filter((item) => !item.is_inline).length || 'Attachment'} attachment(s)</div>}
             {compact ? (
               <div style={{ color: '#64748b', fontSize: 12, marginTop: 2 }}>{shortEmailPreview(row.body_preview, 95)}</div>
             ) : (
@@ -36962,6 +38008,7 @@ Ben`) : (row.draft_response || '') })
           </td>
           <td style={{ padding: cellPadding, verticalAlign: 'top', whiteSpace: 'nowrap', fontSize: compact ? 12 : 13 }}>
             <div>{serviceEmailStatusLabel(row.status)}{row.moved_to_read ? ' / moved' : ''}</div>
+            {isNotificationServiceHearingRow(row) && <div style={{ marginTop: 4, color: hearingNeedsAttention ? '#b91c1c' : (hearingAlertState.status === 'clear' ? '#166534' : '#7f1d1d'), fontSize: 11, fontWeight: 900 }}>{serviceHearingStatusLabel(row)}</div>}
             {!compact && <div style={{ color: '#64748b', fontSize: 12 }}>{row.confidence || 0}% confidence</div>}
             {!compact && <div style={{ color: '#64748b', fontSize: 12 }}>Read folder: {serviceEmailReadFolder(row.source_id)}</div>}
           </td>
@@ -37105,11 +38152,14 @@ Ben`) : (row.draft_response || '') })
 
 
   async function saveVisibleFilingPdfsAndMoveToRead() {
-    const rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
+    let rows = serviceEmailRowsForCurrentView().filter((row) => row.status !== 'completed' && ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row)))
     if (!rows.length) {
       setServiceEmailScanNote('No accepted/notification emails are visible to save and move.')
       return
     }
+    const hearingSafety = await prepareNotificationRowsForHearingSafety(rows)
+    if (!hearingSafety.ok) return
+    rows = hearingSafety.rows
     if (!window.confirm(`Save/process ${rows.length} filing/service email(s), log billing/actions, then move them to Read?`)) return
 
     setServiceGraphBusy(true)
@@ -37227,28 +38277,39 @@ Ben`) : (row.draft_response || '') })
     }
   }
 
-  function addNoticeServiceRowToCalendar(row) {
-    const inferred = inferNoticeDateTime(row)
-    const eventDate = inferred.date || (row?.received_at ? new Date(row.received_at).toISOString().slice(0, 10) : dateToInputValue(new Date()))
-    const startTime = inferred.time || '09:00'
-    const [hour = '09', minute = '00'] = startTime.split(':')
-    const endTime = `${String((Number(hour) + 1) % 24).padStart(2, '0')}:${minute}`
+  function addNoticeServiceRowToCalendar(row, candidateOverride = null) {
+    const latest = serviceEmailRows.find((item) => item.id === row?.id) || row || {}
+    const inferred = inferNoticeDateTime(latest, candidateOverride)
+    const eventDate = inferred.date || ''
+    const startTime = inferred.time || ''
+    let endTime = ''
+    if (startTime) {
+      const [hour = '00', minute = '00'] = startTime.split(':')
+      const totalMinutes = (Number(hour) * 60 + Number(minute) + 60) % (24 * 60)
+      endTime = `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`
+    }
+    const candidate = inferred.candidate || candidateOverride || null
+    const candidateExcerpt = candidate?.context ? `\n\nDetected filing text:\n${candidate.context}` : ''
     setEditingEventId(null)
     setEventForm({
       ...emptyEventForm,
-      matter_id: row?.suggested_matter_id || inferServiceEmailMatter({ subject: row?.subject || '', bodyPreview: serviceReviewText(row) }) || '',
+      matter_id: latest.suggested_matter_id || inferServiceEmailMatter({ subject: latest.subject || '', bodyPreview: serviceReviewText(latest) }) || '',
       event_category: inferred.category,
-      event_subcategory: noticeServiceDocumentType(row),
-      title: `${inferred.category}: ${row?.suggested_document_name || row?.subject || 'Notice of setting'}`,
-      description: `Created from Notice of Service. Mio extracted the event information from the email/PDF text; review it before saving.\n\nFrom: ${row?.from_name || row?.from_email || ''}\nSubject: ${row?.subject || ''}`,
+      event_subcategory: noticeServiceDocumentType(latest),
+      title: `${inferred.category}: ${latest.efile_filing_description || latest.suggested_document_name || latest.subject || 'Notice of setting'}`,
+      description: `Created from a Notification of Service hearing-safety alert. Verify the date, time, court, location/Zoom information, and save the calendar event before returning to the inbox.\n\nFrom: ${latest.from_name || latest.from_email || ''}\nSubject: ${latest.subject || ''}${candidateExcerpt}`,
       start_date: eventDate,
       end_date: eventDate,
       start_time: startTime,
       end_time: endTime,
-      is_active: true
+      is_active: true,
+      source_service_email_row_id: latest.id || ''
     })
     setShowEventWindow(true)
-setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's extracted date, time, type, and matter." : "Calendar event window opened. Mio could not find a reliable setting date, so review and enter the date before saving.")  }
+    setServiceEmailScanNote(eventDate
+      ? `Calendar event window opened with the detected date${startTime ? ' and time' : ''}. Verify all details and SAVE the event; the red hearing alert remains until it is saved.`
+      : 'Calendar event window opened, but Mio did not find a reliable hearing date. Enter the date and save it, or manually review the complete PDF before clearing the red alert.')
+  }
 
   async function addNoticeServiceRowToDiscovery(row) {
     const typeText = `${row?.subject || ''} ${row?.suggested_document_name || ''} ${row?.body_preview || ''} ${serviceEmailDocumentTagLabel(row)}`.toLowerCase()
@@ -37291,16 +38352,35 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
 
   async function previewNoticeServiceRow(row) {
     if (!row) return
-    setSelectedPdfPreviewName(row.suggested_document_name || row.extracted_pdf_name || row.subject || 'Notice document')
-    let attachment = primaryServicePdfAttachment(row)
-    if (!attachment?.content_url) attachment = await ensureAcceptedRowPdf(row.id)
-    if (!attachment?.content_url && primaryServiceFilingLink(row)) attachment = await downloadServiceFilingLink(row, { openOnFail: false })
+    let workingRow = serviceEmailRows.find((item) => item.id === row.id) || row
+    setSelectedPdfPreviewName(workingRow.suggested_document_name || workingRow.extracted_pdf_name || workingRow.subject || 'Notice document')
+    let attachment = primaryServicePdfAttachment(workingRow)
+    const previewBlobIsLive = Boolean(attachment?.blob && (typeof Blob === 'undefined' || attachment.blob instanceof Blob || typeof attachment.blob?.arrayBuffer === 'function'))
+    const previewUrlIsStale = /^blob:/i.test(String(attachment?.content_url || '')) && !previewBlobIsLive
+    if (!attachment?.content_url || previewUrlIsStale) attachment = await ensureAcceptedRowPdf(workingRow.id)
+    if (!attachment?.content_url && primaryServiceFilingLink(workingRow)) attachment = await downloadServiceFilingLink(workingRow, { openOnFail: false })
     if (attachment?.content_url) {
-      setSelectedPdfPreviewName(row.suggested_document_name || attachment.name || row.subject || 'Notice document')
+      setSelectedPdfPreviewName(workingRow.suggested_document_name || attachment.name || workingRow.subject || 'Notice document')
       setSelectedPdfPreviewUrl(attachment.content_url)
+      workingRow = {
+        ...workingRow,
+        attachments: [attachment, ...((workingRow.attachments || []).filter((item) => item.id !== attachment.id && item.name !== attachment.name))]
+      }
     } else {
       setSelectedPdfPreviewUrl('')
-      setServiceEmailScanNote('Mio found the notice/service row but could not preview the PDF yet. Save/process it or click the eFile link to load the PDF.')
+      setServiceEmailScanNote('Mio found the notice/service row but could not preview the PDF yet. The hearing safety alert remains red until the PDF is scanned or manually reviewed.')
+    }
+
+    if (serviceEmailRowCategory(workingRow) === 'notification_service') {
+      const hearingAlert = serviceHearingAlertForRow(workingRow)
+      if (hearingAlert.schema !== SERVICE_HEARING_SCAN_SCHEMA || ['not_scanned', 'failed'].includes(hearingAlert.status) || !workingRow.hearing_scan_at) {
+        const scanned = await scanNotificationServiceRowForHearing(workingRow, { force: true, updateState: true, quiet: false })
+        const scannedAttachment = primaryServicePdfAttachment(scanned)
+        if (scannedAttachment?.content_url) {
+          setSelectedPdfPreviewName(scanned.suggested_document_name || scannedAttachment.name || scanned.subject || 'Notice document')
+          setSelectedPdfPreviewUrl(scannedAttachment.content_url)
+        }
+      }
     }
   }
 
@@ -37449,6 +38529,9 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     const moveRowOnlyToRead = async (row, event = null) => {
       event?.stopPropagation?.()
       if (!row || showSavedFilingReviewRows || serviceGraphBusy) return
+      const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row)
+      if (!hearingSafety.ok) return
+      row = hearingSafety.row || row
       const currentIndex = liveRows.findIndex((item) => item.id === row.id)
       const next = liveRows[currentIndex + 1] || liveRows[currentIndex - 1] || null
       setServiceGraphBusy(true)
@@ -37472,15 +38555,16 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       <>
       <Modal title={isNotice ? 'Notification of Service review' : 'Accepted e-filed document review'} onClose={() => setShowAcceptedExtractionWindow(false)} wide>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16 }}>Bill and save</button>
-          <button type="button" onClick={() => moveRowOnlyToRead(active)} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy}>Move to Read only</button>
+          <button type="button" onClick={saveAndBill} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy || (isNotice && serviceHearingNeedsAttention(active))} title={isNotice && active && serviceHearingNeedsAttention(active) ? 'Resolve the red hearing/calendar alert before saving and moving this email.' : ''} style={{ background: '#312e81', color: 'white', border: 0, borderRadius: 7, padding: '11px 18px', fontWeight: 800, fontSize: 16, opacity: isNotice && active && serviceHearingNeedsAttention(active) ? .45 : 1 }}>Bill and save</button>
+          <button type="button" onClick={() => moveRowOnlyToRead(active)} disabled={!active || showSavedFilingReviewRows || serviceGraphBusy || (isNotice && serviceHearingNeedsAttention(active))} title={isNotice && active && serviceHearingNeedsAttention(active) ? 'Resolve the red hearing/calendar alert before moving this email.' : ''}>Move to Read only</button>
           <button type="button" onClick={() => setShowSavedFilingReviewRows((value) => !value)}>{showSavedFilingReviewRows ? 'Return to unsaved emails' : `Saved emails (${savedFilingReviewRows.filter((row) => serviceEmailRowCategory(row) === kind).length})`}</button>
           <span style={{ color: '#64748b' }}>{showSavedFilingReviewRows ? 'Showing documents saved during this session.' : 'Bill and save saves the PDF to OneDrive/the matter efile folder, adds it to Documents, bills the matter, moves the email to Read, and advances to the next email.'}</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 14, alignItems: 'start', minHeight: '78vh' }}>
           <div style={{ minWidth: 0 }}>
             {active ? <>
-              <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc', marginBottom: 10 }}>
+              <section style={{ border: isNotice && serviceHearingNeedsAttention(active) ? '4px solid #dc2626' : '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: isNotice && serviceHearingNeedsAttention(active) ? '#fff1f2' : '#f8fafc', marginBottom: 10 }}>
+                {isNotice && <div style={{ marginBottom: 12 }}>{renderServiceHearingAlert(active, { showCandidates: true, showActions: !showSavedFilingReviewRows, marginTop: 0 })}</div>}
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(340px, 1.4fr)', gap: 10 }}>
                   <LabeledField label="Matter">
                     {showSavedFilingReviewRows ? <div style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 6 }}>{active.suggested_matter_id ? matterLabel(active.suggested_matter_id) : 'No matter selected'}</div> : <SmartMatterSelect activeOnly value={active.suggested_matter_id || ''} onChange={(value) => updateServiceEmailRowMatter(active.id, value)} placeholder="Type to search all open matters" style={{ width: '100%' }} />}
@@ -37529,7 +38613,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
                 </div>
                 <div style={{ marginTop: 7, color: '#475569', fontSize: 12 }}><strong>Applied Filing Tag path:</strong> {tagIds.length ? filingTagFullName(tagIds[tagIds.length - 1]) : 'No Filing Tag selected'}</div>
                 {activeForFields && renderDocumentFieldsForRow(activeForFields, (fieldKey, value) => updateServiceReviewField(active.id, fieldKey, value))}
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" onClick={() => emailClientForServiceRow(active)} title="Email this filing to the client">✉ Client</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)}>Add to calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}><button type="button" onClick={() => previewNoticeServiceRow(active)}>Reload PDF preview</button><button type="button" onClick={() => openServiceEmailInOutlook(active)}>Open email</button><button type="button" onClick={() => emailClientForServiceRow(active)} title="Email this filing to the client">✉ Client</button><button type="button" disabled={showSavedFilingReviewRows || serviceGraphBusy || (isNotice && serviceHearingNeedsAttention(active))} title={isNotice && serviceHearingNeedsAttention(active) ? 'Resolve the red hearing/calendar alert before moving this email.' : ''} onClick={() => moveRowOnlyToRead(active)}>Move to Read only</button>{isNotice && <button type="button" onClick={openCalendarWindow}>Open calendar</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToCalendar(active)} style={{ background: '#fde047', color: '#713f12', border: '2px solid #facc15', fontWeight: 900 }}>ADD DATE TO CALENDAR</button>}{isNotice && <button type="button" onClick={() => addNoticeServiceRowToDiscovery(active)}>Get discovery responses</button>}</div>
               </section>
               <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', minHeight: 650 }}>
                 <div style={{ fontWeight: 800, marginBottom: 8 }}>{selectedPdfPreviewName || serviceReviewFileName(active) || active.efile_filing_description || active.subject}</div>
@@ -37539,7 +38623,16 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
           </div>
           <aside style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 10, background: '#fff', maxHeight: '82vh', overflow: 'auto', position: 'sticky', top: 0 }}>
             <h3 style={{ marginTop: 0 }}>TOC</h3>
-            {rows.map((row) => <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0', borderRadius: 8, padding: 9, marginBottom: 7, background: row.id === active?.id ? '#eff6ff' : '#fff', cursor: 'pointer', boxSizing: 'border-box' }}><div style={{ fontSize: 12, color: '#64748b' }}>{row.filing_date ? new Date(`${row.filing_date}T12:00:00`).toLocaleDateString() : (row.received_at ? new Date(row.received_at).toLocaleDateString() : '')}</div><div style={{ fontWeight: 700, marginBottom: 4 }}>{row.efile_filing_description || row.suggested_document_name || row.subject || 'Email'}</div><div style={{ fontSize: 11, color: serviceReviewFileName(row) ? '#64748b' : '#991b1b', fontWeight: serviceReviewFileName(row) ? 400 : 700, marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || 'Actual filename not verified'}</div>{!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy} style={{ width: '100%' }}>Move to Read only</button></div>}</div>)}
+            {rows.map((row) => {
+              const hearingAttention = isNotice && serviceHearingNeedsAttention(row)
+              return <div key={row.id} role="button" tabIndex={0} onClick={() => selectRow(row)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') selectRow(row) }} style={{ display: 'block', width: '100%', textAlign: 'left', border: hearingAttention ? '4px solid #dc2626' : (row.id === active?.id ? '2px solid #2563eb' : '1px solid #e2e8f0'), borderRadius: 8, padding: 9, marginBottom: 7, background: hearingAttention ? '#fff1f2' : (row.id === active?.id ? '#eff6ff' : '#fff'), cursor: 'pointer', boxSizing: 'border-box' }}>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{row.filing_date ? new Date(`${row.filing_date}T12:00:00`).toLocaleDateString() : (row.received_at ? new Date(row.received_at).toLocaleDateString() : '')}</div>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>{row.efile_filing_description || row.suggested_document_name || row.subject || 'Email'}</div>
+                {hearingAttention && <div style={{ background: '#b91c1c', color: '#fff', borderRadius: 5, padding: '6px 7px', fontWeight: 950, fontSize: 11, marginBottom: 7 }}>⚠ {serviceHearingStatusLabel(row)}<div style={{ marginTop: 3 }}>{serviceHearingCandidateLabel(serviceHearingAlertForRow(row).primary_candidate) || 'Review for a hearing, setting, date, or time.'}</div></div>}
+                <div style={{ fontSize: 11, color: serviceReviewFileName(row) ? '#64748b' : '#991b1b', fontWeight: serviceReviewFileName(row) ? 400 : 700, marginBottom: 7, wordBreak: 'break-word' }}>{serviceReviewFileName(row) || 'Actual filename not verified'}</div>
+                {!showSavedFilingReviewRows && <div style={{ display: 'grid', gap: 6 }}><button type="button" onClick={(event) => saveAndBillRow(row, event)} disabled={serviceGraphBusy || hearingAttention} title={hearingAttention ? 'Review the red hearing alert first.' : ''} style={{ width: '100%', background: '#312e81', color: 'white', border: 0, borderRadius: 6, padding: '7px 9px', fontWeight: 800, opacity: hearingAttention ? .45 : 1 }}>{serviceGraphBusy && row.id === active?.id ? 'Processing...' : 'Bill and save this file'}</button><button type="button" onClick={(event) => moveRowOnlyToRead(row, event)} disabled={serviceGraphBusy || hearingAttention} title={hearingAttention ? 'Review the red hearing alert first.' : ''} style={{ width: '100%' }}>Move to Read only</button></div>}
+              </div>
+            })}
             {!rows.length && <div style={{ color: '#64748b', padding: 12, textAlign: 'center' }}>No emails to show.</div>}
           </aside>
         </div>
@@ -38612,6 +39705,10 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
     const noResponseActionCount = currentRows.filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'no_response').length
     const responseActionCount = currentRows.filter((row) => row.status !== 'completed' && serviceEmailRowCategory(row) === 'response_mark_read').length
     const filingActionCount = currentRows.filter((row) => row.status !== 'completed' && ['accepted', 'notification_service'].includes(serviceEmailRowCategory(row))).length
+    const hearingAttentionRows = serviceEmailRows.filter((row) => row.status !== 'completed' && !row.moved_to_read && serviceHearingNeedsAttention(row))
+    const hearingHighCount = hearingAttentionRows.filter((row) => serviceHearingAlertForRow(row).status === 'high').length
+    const hearingPossibleCount = hearingAttentionRows.filter((row) => serviceHearingAlertForRow(row).status === 'possible').length
+    const hearingFailedCount = hearingAttentionRows.filter((row) => ['failed', 'not_scanned'].includes(serviceHearingAlertForRow(row).status)).length
     const selectedRow = serviceEmailRows.find((row) => row.id === selectedServiceEmailId)
     const phases = serviceEmailCategoryValues
     const rowsBySection = currentRows.reduce((groups, row) => {
@@ -38628,8 +39725,25 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
       <>
         <h1>Service Inbox</h1>
         <p style={{ color: '#566', maxWidth: 1120 }}>
-          Review Outlook emails by mailbox and folder before the app acts. Use live Microsoft Graph mode for real scan/move testing, or mock mode to keep testing the workflow. The hosted version connects directly to Microsoft; no local helper has to be started. This version supports no-response cleanup, drafted replies, eFileTexas filing review, matter matching, 6-minute billing entries, OneDrive save paths, and moving approved emails to Read.
+          Review Outlook emails by mailbox and folder before the app acts. Notification-of-service filings are now scanned for hearing, trial, setting, courtroom, Zoom, and almost every non-file-stamp date/time reference. A red alert must be reviewed before Mio will move that email to Read.
         </p>
+
+        {hearingAttentionRows.length > 0 && (
+          <section style={{ border: '6px solid #7f1d1d', borderRadius: 10, padding: 15, background: '#b91c1c', color: '#fff', marginBottom: 16, boxShadow: '0 0 0 4px rgba(239,68,68,.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 300 }}>
+                <div style={{ fontSize: 22, fontWeight: 950 }}>&#9888; HEARING / CALENDAR SAFETY ALERT</div>
+                <div style={{ marginTop: 6, fontSize: 16, fontWeight: 800 }}>{hearingAttentionRows.length} notification-of-service filing(s) cannot be moved to Read yet.</div>
+                <div style={{ marginTop: 5 }}>Likely notice: {hearingHighCount} &nbsp;|&nbsp; Possible date/setting: {hearingPossibleCount} &nbsp;|&nbsp; Scan failed/not completed: {hearingFailedCount}</div>
+                <div style={{ marginTop: 7, fontWeight: 750 }}>First alert: {hearingAttentionRows[0]?.subject || hearingAttentionRows[0]?.suggested_document_name || 'Notification of Service'}{serviceHearingCandidateLabel(serviceHearingAlertForRow(hearingAttentionRows[0]).primary_candidate) ? ` - ${serviceHearingCandidateLabel(serviceHearingAlertForRow(hearingAttentionRows[0]).primary_candidate)}` : ''}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => openNotificationHearingReview(hearingAttentionRows[0])} style={{ background: '#fde047', color: '#713f12', border: '3px solid #fef08a', borderRadius: 7, padding: '10px 13px', fontWeight: 950, fontSize: 15 }}>REVIEW FIRST ALERT + ADD DATE TO CALENDAR</button>
+                <button type="button" onClick={rescanAllNotificationServiceRows} disabled={serviceGraphBusy} style={{ background: '#fff', color: '#991b1b', border: '2px solid #fff', borderRadius: 7, padding: '10px 13px', fontWeight: 900 }}>Re-scan all service filings</button>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 14, background: '#f8fbff', marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
@@ -38729,7 +39843,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
             <div style={{ marginTop: 8, color: '#64748b' }}>To reclassify emails, check the correct category column on each row. Use the checkbox at the top of any category column to apply that category to all visible emails in that section.</div>
           )}
           <div style={{ marginTop: 8, color: '#475569' }}>{serviceInboxPhase === 'all' ? 'Showing every proposed action group.' : serviceEmailPhaseDescription(serviceInboxPhase)}</div>
-          {serviceEmailScanNote && <div style={{ marginTop: 8, color: '#166534' }}>{serviceEmailScanNote}</div>}
+          {serviceEmailScanNote && <div style={{ marginTop: 8, color: hearingAttentionRows.length ? '#b91c1c' : '#166534', fontWeight: hearingAttentionRows.length ? 850 : 500 }}>{serviceEmailScanNote}</div>}
         </section>
 
         <section style={{ border: '1px solid #d5dce3', borderRadius: 8, padding: 12, background: '#fff', marginBottom: 16 }}>
@@ -38784,6 +39898,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
               <div><strong>{selectedRow.subject}</strong></div>
               <div style={{ color: '#64748b' }}>{selectedRow.from_name} &lt;{selectedRow.from_email}&gt;</div>
               <div style={{ color: '#64748b' }}>{serviceEmailMailboxAddress(selectedRow.source_id)} / {serviceEmailSourceLabel(selectedRow.source_id)}</div>
+              {renderServiceHearingAlert(selectedRow, { hideClear: true, showActions: true })}
               {selectedRow.has_attachments && <div style={{ marginTop: 8 }}><strong>Attachments:</strong> {(selectedRow.attachments || []).filter((item) => !item.is_inline).length ? (selectedRow.attachments || []).filter((item) => !item.is_inline).map((attachment) => <button key={attachment.id || attachment.name} type="button" onClick={() => openServiceAttachmentPreview(selectedRow.id, attachment)} style={{ marginLeft: 6 }}>{attachment.name}</button>) : 'Attachment present'}</div>}
               <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>{cleanEmailPreview(selectedRow.body_preview)}</div>
             </section>
@@ -38795,6 +39910,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
             <h3 style={{ marginTop: 0 }}>Selected email detail</h3>
             <div><strong>{selectedRow.subject}</strong></div>
             <div>{selectedRow.from_name} &lt;{selectedRow.from_email}&gt; from {serviceEmailMailboxAddress(selectedRow.source_id)} / {serviceEmailSourceLabel(selectedRow.source_id)}</div>
+            {renderServiceHearingAlert(selectedRow, { hideClear: true, showActions: true })}
             {selectedRow.has_attachments && <div style={{ marginTop: 8 }}><strong>Attachments:</strong> {(selectedRow.attachments || []).filter((item) => !item.is_inline).length ? (selectedRow.attachments || []).filter((item) => !item.is_inline).map((attachment) => <button key={attachment.id || attachment.name} type="button" onClick={() => openServiceAttachmentPreview(selectedRow.id, attachment)} style={{ marginLeft: 6 }}>{attachment.name}</button>) : 'Attachment present'}</div>}
             <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{cleanEmailPreview(selectedRow.body_preview)}</div>
           </section>
@@ -38858,6 +39974,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
             <LabeledField label="Default e-service billing time"><input value="6 minutes" readOnly /></LabeledField>
             <LabeledField label="Discovery response calculation"><input value="30 days after received; roll weekend/holiday forward" readOnly /></LabeledField>
             <LabeledField label="Filing save destination"><input value="No automatic folder. Select an existing folder for each matter in the Matter Table." readOnly /></LabeledField>
+            <LabeledField label="Hearing/calendar safety"><input value="Scan every Notification of Service PDF; red alert and block Move to Read until reviewed." readOnly /></LabeledField>
           </div>
           <p style={{ color: '#64748b', marginBottom: 0 }}>
             Live version should let you edit holiday calendars, billing descriptions, response templates, Outlook folder IDs, and which proposed actions require approval before completion.
@@ -38927,7 +40044,7 @@ setServiceEmailScanNote(inferred.date ? "Calendar event window opened with Mio's
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, background: '#f3f4f6' }}><strong>No response, move to Read</strong><br />Checked and gray by default. Bulk move to Read.</div>
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, background: '#fff7ed' }}><strong>Response, non-client</strong><br />Draft response appears under the row. Send responses and move to Read.</div>
             <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, background: '#fff7ed' }}><strong>Client response</strong><br />Always drafts a response and proposes a 6-minute billing entry to the matched matter.</div>
-            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, background: '#f8fbff' }}><strong>Accepted / service review</strong><br />Download link, save to matter efile folder, review PDF for settings/discovery, create billing, and move to Read after approval.</div>
+            <div style={{ border: '3px solid #dc2626', borderRadius: 8, padding: 10, background: '#fff1f2' }}><strong>Accepted / service review</strong><br />Notification-of-service PDFs are scanned for hearing/setting language and every non-file-stamp date/time. A bright red alert blocks Move to Read until the calendar date is saved or the full PDF is manually reviewed.</div>
           </div>
         </section>
       </>
