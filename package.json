@@ -7,11 +7,13 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "efile-agent": "node mio-local-efile-helper.cjs"
   },
   "dependencies": {
     "@azure/msal-browser": "^5.12.0",
     "@supabase/supabase-js": "^2.105.1",
+    "playwright-core": "^1.62.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "xlsx": "^0.18.5"

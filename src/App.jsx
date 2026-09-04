@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V266'
+const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -178,6 +178,79 @@ function importedDiscoRemoveFixHtml() {
 }
 
 const MIO_LOCAL_HELPER_URL = 'http://127.0.0.1:8787'
+const MIO_EFILE_AGENT_STATE_KEY = 'caseMioEfileAgentJobsV267'
+
+function mioEfileAgentId(prefix = 'efile') {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function defaultMioEfileFiling() {
+  return {
+    id: mioEfileAgentId('filing'),
+    filing_code: '',
+    description: '',
+    security: 'public',
+    documents: []
+  }
+}
+
+function defaultMioEfileDraft() {
+  return {
+    id: mioEfileAgentId('envelope'),
+    matter_id: '',
+    filing_kind: 'existing',
+    cause_number: '',
+    case_style: '',
+    court_name: '',
+    efile_location: '',
+    service_type: 'efile_and_serve',
+    payment_account: '',
+    filing_comments: '',
+    filings: [defaultMioEfileFiling()]
+  }
+}
+
+function mioEfilePersistableJob(job = {}) {
+  const page = job.page ? {
+    url: job.page.url || '',
+    title: job.page.title || '',
+    needs_sign_in: Boolean(job.page.needs_sign_in),
+    signed_in: Boolean(job.page.signed_in),
+    ready_for_review: Boolean(job.page.ready_for_review),
+    submitted: Boolean(job.page.submitted),
+    envelope_number: job.page.envelope_number || ''
+  } : null
+  return {
+    ...job,
+    page,
+    filings: (job.filings || []).map((filing) => ({
+      ...filing,
+      documents: (filing.documents || []).map((document) => ({
+        id: document.id,
+        file_name: document.file_name || document.name || '',
+        size: Number(document.size || 0),
+        type: document.type || 'application/pdf',
+        role: document.role || 'lead',
+        local_file_required: document.local_file_required !== false
+      }))
+    }))
+  }
+}
+
+function mioEfileStatusLabel(status = '') {
+  return ({
+    draft: 'Draft',
+    staged: 'Staged locally',
+    preparing: 'Preparing',
+    needs_sign_in: 'Sign-in required',
+    needs_user_input: 'Your input required',
+    ready_for_review: 'Ready for final review',
+    submitted: 'Submitted',
+    submission_unconfirmed: 'Submission must be verified',
+    error: 'Stopped with error'
+  })[status] || status || 'Draft'
+}
 const MIO_REAL_MICROSOFT_TENANT_ID = '12d8cd52-6795-4f9f-b429-42134cb096d3'
 const MIO_OLD_BAD_MICROSOFT_TENANT_ID = '12d8cd52-6795-4f0f-b429-42134cb096d3'
 const MIO_DEFAULT_MICROSOFT_TENANT_ID = MIO_REAL_MICROSOFT_TENANT_ID
@@ -1071,6 +1144,7 @@ const appPages = [
 const MIO_ARCHITECTURE_CHILDREN = {
   billing: ['Firm Billing', 'Clio Billing Integration', 'Client Billing Fields', 'Financial Snapshots', 'Mio Snapshot Graphs', 'Client Bar Graph', 'Client Invoicing', 'Bulk Billing', 'Clio Historical Import'],
   google_ads: ['Marketing Overview', 'Google Ads', 'Facebook / Meta Ads'],
+  efile: ['Browser agent connection', 'Draft envelopes', 'Multiple filings and PDF attachments', 'Attorney review and approval', 'Submission audit trail', 'EFSP API integration (pending)'],
   service_inbox: ['Incoming eFile / service email', 'Accepted filings', 'Filing tags', 'Folder / save workflow'],
   mail_center: ['Compose mailing', 'Mailing history', 'Mailform connection / settings'],
   litigation_tracks: ['Litigation chronology', 'Discovery track', 'Document placements'],
@@ -6536,6 +6610,20 @@ function App() {
   const [matterPageFilterMatterStatus, setMatterPageFilterMatterStatus] = useState(() => initialMatterPageMultiFilter('matterPageFilterMatterStatus'))
   const [matterPageFilterCaseType, setMatterPageFilterCaseType] = useState(() => initialMatterPageMultiFilter('matterPageFilterCaseType'))
   const [matterExternalEfileUrl, setMatterExternalEfileUrl] = useState(() => localStorage.getItem('matterExternalEfileUrl') || 'https://efile.txcourts.gov/')
+  const [efileAgentJobs, setEfileAgentJobs] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MIO_EFILE_AGENT_STATE_KEY) || '[]')
+      return Array.isArray(parsed) ? parsed : []
+    } catch { return [] }
+  })
+  const [efileAgentDraft, setEfileAgentDraft] = useState(() => defaultMioEfileDraft())
+  const [efileAgentSelectedJobId, setEfileAgentSelectedJobId] = useState('')
+  const [efileAgentStatus, setEfileAgentStatus] = useState({ connected: false, browser_found: false, browser_open: false, page: null })
+  const [efileAgentBusy, setEfileAgentBusy] = useState('')
+  const [efileAgentMessage, setEfileAgentMessage] = useState('')
+  const [efileAgentReviewed, setEfileAgentReviewed] = useState(false)
+  const [efileAgentApprovalText, setEfileAgentApprovalText] = useState('')
+  const efileAgentFileObjectsRef = useRef({})
   const [matterColumnWidths, setMatterColumnWidths] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('matterColumnWidths') || '{}')
@@ -6998,6 +7086,7 @@ function App() {
       caseMioMatterEfileFolders: { setter: setMatterEfileFolders, kind: 'object', fallback: {} },
       caseMioMatterEfileFolderRefs: { setter: setMatterEfileFolderRefs, kind: 'object', fallback: {} },
       matterExternalEfileUrl: { setter: setMatterExternalEfileUrl, kind: 'string', fallback: 'https://efile.txcourts.gov/' },
+      caseMioEfileAgentJobsV267: { setter: (value) => setEfileAgentJobs(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioServiceGraphConfig: { setter: setServiceGraphConfig, kind: 'object', fallback: { clientId: '', tenantId: '', redirectUri: '', readFolderName: 'Read', acceptedFolderName: 'Accepted', serviceInboxFolderName: 'Inbox' } },
       caseMioServiceGraphAuth: { setter: setServiceGraphAuth, kind: 'object', fallback: { connected: false, account: null } },
       caseMioTagPageSettings: { setter: (value) => {
@@ -8309,6 +8398,25 @@ function App() {
       saveMioStateKey('caseMioMatterEfileFolderRefs', JSON.stringify(matterEfileFolderRefs || {}))
     } catch {}
   }, [matterEfileFolderRefs])
+
+  useEffect(() => {
+    try {
+      const snapshot = (efileAgentJobs || []).map(mioEfilePersistableJob).slice(0, 100)
+      safeSetLocalStorage(MIO_EFILE_AGENT_STATE_KEY, JSON.stringify(snapshot))
+      saveMioStateKey(MIO_EFILE_AGENT_STATE_KEY, JSON.stringify(snapshot))
+    } catch (error) {
+      console.warn('Could not persist eFile agent metadata:', error)
+    }
+    // State helpers are intentionally omitted; this effect is driven only by envelope changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [efileAgentJobs])
+
+  useEffect(() => {
+    if (page !== 'efile') return
+    refreshMioEfileAgentStatus(true).catch(() => {})
+    // The refresh function is recreated with App; running it on every render would poll continuously.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page])
 
   useEffect(() => {
     if (!matters.length) return
@@ -24591,6 +24699,318 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       </div>}
       {postalTab === 'history' && <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h2 style={{ marginTop: 0 }}>Mailing History</h2><p style={{ color: '#64748b' }}>Provider status, tracking number, cost, recipient snapshot, and exact mailed PDF record.</p></div><button type="button" onClick={() => postalMailings.forEach((record) => record.provider_order_id && refreshPostalMailing(record))} disabled={Boolean(postalBusy)}>Refresh all</button></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={{ textAlign: 'left', padding: 8 }}>Sent</th><th style={{ textAlign: 'left', padding: 8 }}>Matter</th><th style={{ textAlign: 'left', padding: 8 }}>Recipient</th><th style={{ textAlign: 'left', padding: 8 }}>Service</th><th style={{ textAlign: 'left', padding: 8 }}>Status</th><th style={{ textAlign: 'left', padding: 8 }}>Tracking</th><th style={{ textAlign: 'right', padding: 8 }}>Cost</th><th style={{ padding: 8 }}>Action</th></tr></thead><tbody>{postalMailings.map((record) => <tr key={record.id}><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.submitted_at ? new Date(record.submitted_at).toLocaleString() : '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.matter_label || record.matter_id}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}><strong>{record.recipient?.name}</strong><div style={{ fontSize: 12 }}>{[record.recipient?.address1, record.recipient?.city, record.recipient?.state, record.recipient?.postcode].filter(Boolean).join(', ')}</div></td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{MAILFORM_SERVICE_OPTIONS.find((option) => option.value === record.service)?.label || record.service}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.test_mode ? 'TEST - ' : ''}{record.provider_state || '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0', fontFamily: 'monospace' }}>{record.tracking_number || '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0', textAlign: 'right' }}>{postalMoney(record.total_cents)}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => openPostalMailedPdf(record)} disabled={!record.file_path}>PDF</button><button type="button" onClick={() => refreshPostalMailing(record)} disabled={postalBusy === `refresh:${record.id}`}>{postalBusy === `refresh:${record.id}` ? 'Refreshing...' : 'Refresh'}</button></div></td></tr>)}{!postalMailings.length && <tr><td colSpan="8" style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>No mailings have been submitted from Mio yet.</td></tr>}</tbody></table></div></section>}
       {postalTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section className="card"><h2 style={{ marginTop: 0 }}>Mailform connection</h2><div style={{ display: 'grid', gap: 6 }}><div><strong>Configured:</strong> {postalProviderStatus.configured ? 'Yes' : 'No'}</div><div><strong>Mode:</strong> {postalProviderStatus.mode === 'live' ? 'LIVE' : 'TEST'}</div><div><strong>Mail writes enabled:</strong> {postalProviderStatus.writesEnabled ? 'Yes' : 'No'}</div><div><strong>Live-mail safety lock:</strong> {postalProviderStatus.liveEnabled ? 'Enabled' : 'Locked'}</div><div><strong>Mailform account:</strong> {postalProviderStatus.account?.email || postalProviderStatus.account?.name || '-'}</div><div><strong>Mailform balance:</strong> {postalProviderStatus.balance ? postalMoney(postalProviderStatus.balance.amount) : '-'}</div>{postalProviderStatus.connectionError && <div style={{ color: '#991b1b' }}><strong>Connection error:</strong> {postalProviderStatus.connectionError}</div>}</div><button type="button" onClick={loadPostalProviderStatus} disabled={postalBusy === 'status'} style={{ marginTop: 10 }}>Refresh connection</button></section><section className="card"><h2 style={{ marginTop: 0 }}>Vercel environment variables</h2><ol style={{ lineHeight: 1.7 }}><li>Add a Mailform test-mode API key as <code>MAILFORM_TEST_API_KEY</code>.</li><li>Set <code>MIO_MAIL_WRITES_ENABLED=true</code> to allow test submissions.</li><li>Keep <code>MIO_MAILFORM_MODE=test</code> until test mailings work correctly.</li><li>For live mailing later, add <code>MAILFORM_API_KEY</code>, set <code>MIO_MAILFORM_MODE=live</code>, and separately set <code>MIO_MAIL_LIVE_ENABLED=true</code>.</li></ol><p style={{ color: '#64748b' }}>The Mailform key stays on the server and is never returned to the browser.</p></section><section className="card"><h2 style={{ marginTop: 0 }}>Defaults</h2><label>Default mailing method<select value={postalSettings.default_service || 'USPS_CERTIFIED_RECEIPT'} onChange={(e) => { setPostalSettings({ ...postalSettings, default_service: e.target.value }); setPostalForm({ ...postalForm, service: e.target.value }) }}>{MAILFORM_SERVICE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></section></div>}
+    </div>
+  }
+
+  function mioEfileAgentUpsertJob(job) {
+    if (!job?.id) return
+    const safeJob = mioEfilePersistableJob(job)
+    setEfileAgentJobs((current) => [safeJob, ...(current || []).filter((item) => String(item.id) !== String(safeJob.id))].slice(0, 100))
+    setEfileAgentSelectedJobId(safeJob.id)
+    setEfileAgentReviewed(false)
+    setEfileAgentApprovalText('')
+  }
+
+  async function mioEfileAgentRequest(path, payload = null, method = 'POST') {
+    const options = { method, mode: 'cors', cache: 'no-store', headers: {} }
+    if (payload !== null) {
+      options.headers['Content-Type'] = 'application/json'
+      options.body = JSON.stringify(payload)
+    }
+    let response
+    try {
+      response = await fetch(`${MIO_LOCAL_HELPER_URL}${path}`, options)
+    } catch (error) {
+      throw new Error('The Mio eFile Browser Agent is not running on this computer. Double-click start-mio-efile-agent.bat in the Mio project folder, leave that window open, and try again.', { cause: error })
+    }
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok || !data?.ok) throw new Error(data?.error || `The local eFile agent returned ${response.status}.`)
+    return data
+  }
+
+  async function refreshMioEfileAgentStatus(quiet = false) {
+    if (!quiet) setEfileAgentBusy('status')
+    try {
+      const status = await mioEfileAgentRequest('/efile-agent/status', null, 'GET')
+      setEfileAgentStatus({ connected: true, ...status })
+      if (Array.isArray(status.jobs)) {
+        setEfileAgentJobs((current) => {
+          const localById = new Map((current || []).map((item) => [String(item.id), item]))
+          const remoteIds = new Set(status.jobs.map((item) => String(item.id)))
+          return [
+            ...status.jobs.map((item) => mioEfilePersistableJob({ ...(localById.get(String(item.id)) || {}), ...item })),
+            ...(current || []).filter((item) => !remoteIds.has(String(item.id)))
+          ].slice(0, 100)
+        })
+      }
+      if (!quiet) setEfileAgentMessage(status.browser_open ? 'The local browser agent is connected.' : 'The local agent is running. Open its eFileTexas browser when you are ready.')
+      return status
+    } catch (error) {
+      setEfileAgentStatus({ connected: false, browser_found: false, browser_open: false, page: null })
+      if (!quiet) setEfileAgentMessage(error.message || String(error))
+      throw error
+    } finally {
+      if (!quiet) setEfileAgentBusy('')
+    }
+  }
+
+  async function openMioEfileAgentBrowser() {
+    setEfileAgentBusy('open')
+    setEfileAgentMessage('')
+    try {
+      const status = await mioEfileAgentRequest('/efile-agent/open', {})
+      setEfileAgentStatus({ connected: true, ...status })
+      setEfileAgentMessage(status.page?.needs_sign_in
+        ? 'The secure eFileTexas window is open. Sign in there, then return to Mio. Your credentials never pass through Mio.'
+        : 'The eFileTexas browser is open and the agent can see the current page.')
+    } catch (error) {
+      setEfileAgentMessage(error.message || String(error))
+    } finally {
+      setEfileAgentBusy('')
+    }
+  }
+
+  function mioEfileSelectMatter(matterId) {
+    const matter = matters.find((item) => String(item.id) === String(matterId))
+    const court = matter?.courts || courts.find((item) => String(item.id) === String(matter?.court_id || '')) || {}
+    const county = String(court.county || matter?.county || '').replace(/\s+County$/i, '').trim()
+    const isCountyCourt = /county court|county clerk/i.test(String(court.court_name || ''))
+    const inferredLocation = county ? `${county} County - ${isCountyCourt ? 'County' : 'District'} Clerk` : ''
+    setEfileAgentDraft((current) => ({
+      ...current,
+      matter_id: matterId,
+      cause_number: matter?.cause_number || matter?.case_number || '',
+      case_style: matter?.case_style || matter?.caption || matter?.name || matterLabel(matterId) || '',
+      court_name: court.court_name || matter?.court_name || '',
+      efile_location: inferredLocation || current.efile_location || ''
+    }))
+  }
+
+  function mioEfileUpdateFiling(filingId, patch) {
+    setEfileAgentDraft((current) => ({
+      ...current,
+      filings: (current.filings || []).map((filing) => filing.id === filingId ? { ...filing, ...patch } : filing)
+    }))
+  }
+
+  function mioEfileAddFiling() {
+    setEfileAgentDraft((current) => ({ ...current, filings: [...(current.filings || []), defaultMioEfileFiling()] }))
+  }
+
+  function mioEfileRemoveFiling(filingId) {
+    setEfileAgentDraft((current) => {
+      if ((current.filings || []).length <= 1) return current
+      const removed = (current.filings || []).find((filing) => filing.id === filingId)
+      ;(removed?.documents || []).forEach((document) => { delete efileAgentFileObjectsRef.current[document.id] })
+      return { ...current, filings: current.filings.filter((filing) => filing.id !== filingId) }
+    })
+  }
+
+  function mioEfileAddDocuments(filingId, fileList) {
+    const files = Array.from(fileList || [])
+    const invalid = files.find((file) => !/\.pdf$/i.test(file.name || '') || !/pdf/i.test(file.type || 'application/pdf'))
+    if (invalid) return setEfileAgentMessage(`${invalid.name || 'A selected file'} is not a PDF.`)
+    const tooLarge = files.find((file) => Number(file.size || 0) > 50 * 1024 * 1024)
+    if (tooLarge) return setEfileAgentMessage(`${tooLarge.name} is larger than the agent's 50 MB per-PDF limit.`)
+    setEfileAgentDraft((current) => ({
+      ...current,
+      filings: (current.filings || []).map((filing) => {
+        if (filing.id !== filingId) return filing
+        const existingCount = (filing.documents || []).length
+        const added = files.map((file, index) => {
+          const id = mioEfileAgentId('efile-document')
+          efileAgentFileObjectsRef.current[id] = file
+          return { id, file_name: file.name, size: file.size, type: file.type || 'application/pdf', role: existingCount + index === 0 ? 'lead' : 'attachment', local_file_required: true }
+        })
+        return { ...filing, documents: [...(filing.documents || []), ...added] }
+      })
+    }))
+    setEfileAgentMessage('')
+  }
+
+  function mioEfileUpdateDocument(filingId, documentId, patch) {
+    setEfileAgentDraft((current) => ({
+      ...current,
+      filings: (current.filings || []).map((filing) => filing.id === filingId ? {
+        ...filing,
+        documents: (filing.documents || []).map((document) => document.id === documentId ? { ...document, ...patch } : document)
+      } : filing)
+    }))
+  }
+
+  function mioEfileRemoveDocument(filingId, documentId) {
+    delete efileAgentFileObjectsRef.current[documentId]
+    setEfileAgentDraft((current) => ({
+      ...current,
+      filings: (current.filings || []).map((filing) => filing.id === filingId ? { ...filing, documents: (filing.documents || []).filter((document) => document.id !== documentId) } : filing)
+    }))
+  }
+
+  function mioEfileDraftProblem() {
+    if (!efileAgentDraft.matter_id) return 'Select the Mio matter.'
+    if (efileAgentDraft.filing_kind === 'existing' && !String(efileAgentDraft.cause_number || '').trim()) return 'Enter the cause number.'
+    if (!String(efileAgentDraft.efile_location || '').trim()) return 'Enter the eFileTexas filing location exactly as it appears in eFileTexas.'
+    if (!(efileAgentDraft.filings || []).length) return 'Add at least one filing.'
+    const totalPdfBytes = (efileAgentDraft.filings || []).flatMap((filing) => filing.documents || []).reduce((sum, document) => sum + Number(document.size || 0), 0)
+    if (totalPdfBytes > 110 * 1024 * 1024) return 'This envelope contains more than 110 MB of PDFs. Split it into smaller envelopes before staging.'
+    for (let index = 0; index < efileAgentDraft.filings.length; index += 1) {
+      const filing = efileAgentDraft.filings[index]
+      if (!String(filing.filing_code || '').trim()) return `Enter the filing code or its closest visible name for Filing ${index + 1}.`
+      if (!String(filing.description || '').trim()) return `Enter a filing description for Filing ${index + 1}.`
+      if (!(filing.documents || []).length) return `Select at least one PDF for Filing ${index + 1}.`
+      if (filing.documents.filter((document) => document.role === 'lead').length !== 1) return `Choose exactly one lead document for Filing ${index + 1}.`
+      const missing = filing.documents.find((document) => !efileAgentFileObjectsRef.current[document.id])
+      if (missing) return `Select ${missing.file_name || `a PDF in Filing ${index + 1}`} again. Browsers do not retain access to local files after a reload.`
+    }
+    return ''
+  }
+
+  async function stageAndPrepareMioEfileDraft() {
+    const problem = mioEfileDraftProblem()
+    if (problem) return setEfileAgentMessage(problem)
+    setEfileAgentBusy('stage')
+    setEfileAgentMessage('Reading the selected PDFs and staging them only on this computer...')
+    try {
+      const files = []
+      for (const filing of efileAgentDraft.filings || []) {
+        for (const document of filing.documents || []) {
+          const selected = efileAgentFileObjectsRef.current[document.id]
+          const data = await readFileAsDataUrl(selected)
+          files.push({ document_id: document.id, file_name: document.file_name, data_url: data.file_data })
+        }
+      }
+      const staged = await mioEfileAgentRequest('/efile-agent/stage', { ...mioEfilePersistableJob(efileAgentDraft), files })
+      mioEfileAgentUpsertJob(staged.job)
+      setEfileAgentMessage('PDFs staged locally. The agent is opening eFileTexas and preparing the envelope...')
+      setEfileAgentBusy('prepare')
+      const prepared = await mioEfileAgentRequest('/efile-agent/prepare', { id: staged.job.id })
+      mioEfileAgentUpsertJob(prepared.job)
+      setEfileAgentMessage(prepared.job.pause_reason || (prepared.job.status === 'submitted' ? 'Submission confirmed.' : 'Preparation step completed.'))
+      await refreshMioEfileAgentStatus(true).catch(() => {})
+    } catch (error) {
+      setEfileAgentMessage(error.message || String(error))
+    } finally {
+      setEfileAgentBusy('')
+    }
+  }
+
+  async function resumeMioEfileJob(job) {
+    if (!job?.id) return
+    setEfileAgentBusy(`prepare:${job.id}`)
+    setEfileAgentMessage('The agent is checking the current eFileTexas page and continuing safely...')
+    try {
+      const response = await mioEfileAgentRequest('/efile-agent/prepare', { id: job.id })
+      mioEfileAgentUpsertJob(response.job)
+      setEfileAgentMessage(response.job.pause_reason || 'Preparation step completed.')
+      await refreshMioEfileAgentStatus(true).catch(() => {})
+    } catch (error) {
+      setEfileAgentMessage(error.message || String(error))
+    } finally {
+      setEfileAgentBusy('')
+    }
+  }
+
+  async function submitMioEfileJob(job) {
+    if (!job?.id) return
+    const expected = `FILE ${job.cause_number || job.id}`
+    if (!efileAgentReviewed || efileAgentApprovalText.trim() !== expected) return setEfileAgentMessage(`Review the eFileTexas screen, check the approval box, and type exactly “${expected}”.`)
+    if (!window.confirm(`Submit this eFileTexas envelope for ${job.case_style || job.cause_number} now? This is the final filing action.`)) return
+    setEfileAgentBusy(`submit:${job.id}`)
+    setEfileAgentMessage('Submitting the reviewed envelope...')
+    try {
+      const response = await mioEfileAgentRequest('/efile-agent/submit', { id: job.id, reviewed: true, approval_phrase: efileAgentApprovalText.trim() })
+      mioEfileAgentUpsertJob(response.job)
+      setEfileAgentMessage(response.job.status === 'submitted'
+        ? `eFileTexas confirmed submission${response.job.envelope_number ? ` as envelope ${response.job.envelope_number}` : ''}.`
+        : (response.job.pause_reason || 'Submission was not confirmed. Check Filing History before trying again.'))
+      await refreshMioEfileAgentStatus(true).catch(() => {})
+    } catch (error) {
+      setEfileAgentMessage(error.message || String(error))
+    } finally {
+      setEfileAgentBusy('')
+    }
+  }
+
+  function resetMioEfileDraft() {
+    efileAgentFileObjectsRef.current = {}
+    setEfileAgentDraft(defaultMioEfileDraft())
+    setEfileAgentSelectedJobId('')
+    setEfileAgentReviewed(false)
+    setEfileAgentApprovalText('')
+    setEfileAgentMessage('Started a new envelope draft.')
+  }
+
+  function mioEfileStatusColors(status = '') {
+    if (status === 'submitted') return { background: '#dcfce7', border: '#86efac', color: '#166534' }
+    if (status === 'ready_for_review') return { background: '#fef9c3', border: '#fde047', color: '#854d0e' }
+    if (/error|unconfirmed/.test(status)) return { background: '#fef2f2', border: '#fecaca', color: '#991b1b' }
+    if (/needs_/.test(status)) return { background: '#fff7ed', border: '#fed7aa', color: '#9a3412' }
+    return { background: '#eff6ff', border: '#bfdbfe', color: '#1e40af' }
+  }
+
+  function renderMioEfileAgentPage() {
+    const selectedJob = efileAgentJobs.find((job) => String(job.id) === String(efileAgentSelectedJobId)) || efileAgentJobs[0] || null
+    const selectedMatter = matters.find((matter) => String(matter.id) === String(efileAgentDraft.matter_id || ''))
+    const statusStyle = mioEfileStatusColors(selectedJob?.status || '')
+    const totalDocuments = (efileAgentDraft.filings || []).reduce((sum, filing) => sum + (filing.documents || []).length, 0)
+    return <div style={{ maxWidth: 1500 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'start', flexWrap: 'wrap' }}>
+        <div><h1 style={{ marginBottom: 4 }}>Texas eFile Browser Agent</h1><p style={{ color: '#566', marginTop: 0 }}>Prepare one filing or a multi-filing envelope in Mio, let the local agent enter it in eFileTexas, and require your separate approval before submission.</p></div>
+        <span style={{ border: `1px solid ${efileAgentStatus.connected ? '#86efac' : '#fecaca'}`, background: efileAgentStatus.connected ? '#ecfdf5' : '#fef2f2', color: efileAgentStatus.connected ? '#166534' : '#991b1b', borderRadius: 999, padding: '7px 11px', fontWeight: 850 }}>{efileAgentStatus.connected ? 'Local agent connected' : 'Local agent offline'}</span>
+      </div>
+
+      {efileAgentMessage && <div style={{ margin: '10px 0 14px', padding: 11, border: '1px solid #cbd5e1', borderRadius: 8, background: /not running|error|not confirmed|larger|not a pdf|select|enter|required/i.test(efileAgentMessage) ? '#fff7ed' : '#eff6ff', whiteSpace: 'pre-wrap' }}>{efileAgentMessage}</div>}
+
+      <section className="card" style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>1. Connect the private browser</h2><div style={{ color: '#64748b', marginTop: 4 }}>Run the companion on this computer. Sign-in and verification codes are entered only in the eFileTexas window—not in Mio.</div></div><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}><button type="button" onClick={openMioEfileAgentBrowser} disabled={Boolean(efileAgentBusy)}>{efileAgentBusy === 'open' ? 'Opening...' : 'Open eFileTexas browser'}</button><button type="button" onClick={() => refreshMioEfileAgentStatus(false)} disabled={Boolean(efileAgentBusy)}>Refresh connection</button></div></div>
+        {!efileAgentStatus.connected && <div style={{ marginTop: 10, padding: 10, background: '#f8fafc', borderRadius: 8 }}><strong>First use:</strong> in the Mio project folder, double-click <code>start-mio-efile-agent.bat</code> and leave its window open. The companion uses a separate persistent Chrome profile so you normally do not have to sign in for every envelope.</div>}
+        {efileAgentStatus.connected && <div style={{ marginTop: 9, fontSize: 13, color: '#475569' }}>Browser: {efileAgentStatus.browser_open ? 'open' : 'not open'} · Chrome/Edge found: {efileAgentStatus.browser_found ? 'yes' : 'no'}{efileAgentStatus.page?.title ? ` · ${efileAgentStatus.page.title}` : ''}</div>}
+      </section>
+
+      <section className="card" style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>2. Build the envelope</h2><div style={{ color: '#64748b', marginTop: 4 }}>{efileAgentDraft.filings.length} filing{efileAgentDraft.filings.length === 1 ? '' : 's'} · {totalDocuments} PDF{totalDocuments === 1 ? '' : 's'}</div></div><button type="button" onClick={resetMioEfileDraft}>New envelope</button></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 10, marginTop: 12 }}>
+          <label><strong>Mio matter</strong><select value={efileAgentDraft.matter_id} onChange={(event) => mioEfileSelectMatter(event.target.value)}><option value="">Select matter...</option>{matters.map((matter) => <option key={matter.id} value={matter.id}>{formatMatterOption(matter)}</option>)}</select></label>
+          <label><strong>Filing type</strong><select value={efileAgentDraft.filing_kind} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, filing_kind: event.target.value })}><option value="existing">File into existing case</option><option value="new">Start a new case</option></select></label>
+          <label><strong>Cause number</strong><input value={efileAgentDraft.cause_number} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, cause_number: event.target.value })} placeholder="Exact court cause number" /></label>
+          <label><strong>Case style</strong><input value={efileAgentDraft.case_style} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, case_style: event.target.value })} /></label>
+          <label><strong>Court</strong><input value={efileAgentDraft.court_name} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, court_name: event.target.value })} /></label>
+          <label><strong>eFileTexas location</strong><input value={efileAgentDraft.efile_location} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, efile_location: event.target.value })} placeholder="Example: Brazoria County - District Clerk" /></label>
+          <label><strong>Delivery</strong><select value={efileAgentDraft.service_type} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, service_type: event.target.value })}><option value="efile_and_serve">eFile and serve</option><option value="efile_only">eFile only</option></select></label>
+          <label><strong>Payment account</strong><input value={efileAgentDraft.payment_account} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, payment_account: event.target.value })} placeholder="Saved eFileTexas account name (optional)" /></label>
+        </div>
+        {selectedMatter && <div style={{ marginTop: 8, color: '#475569', fontSize: 13 }}>Prefilled from Mio: <strong>{matterClientName(selectedMatter) || selectedMatter.name}</strong>{selectedMatter.cause_number ? ` · ${selectedMatter.cause_number}` : ''}</div>}
+        <label style={{ display: 'block', marginTop: 10 }}><strong>Comments to clerk</strong><textarea value={efileAgentDraft.filing_comments} onChange={(event) => setEfileAgentDraft({ ...efileAgentDraft, filing_comments: event.target.value })} placeholder="Optional; the agent will pause if Tyler requires this on a court-specific screen." /></label>
+
+        <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
+          {(efileAgentDraft.filings || []).map((filing, filingIndex) => <section key={filing.id} style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><h3 style={{ margin: 0 }}>Filing {filingIndex + 1}</h3>{efileAgentDraft.filings.length > 1 && <button type="button" onClick={() => mioEfileRemoveFiling(filing.id)} style={{ color: '#991b1b' }}>Remove filing</button>}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 9, marginTop: 9 }}>
+              <label><strong>Filing code</strong><input value={filing.filing_code} onChange={(event) => mioEfileUpdateFiling(filing.id, { filing_code: event.target.value })} placeholder="Example: Motion" /></label>
+              <label><strong>Filing description</strong><input value={filing.description} onChange={(event) => mioEfileUpdateFiling(filing.id, { description: event.target.value })} placeholder="Exact description for this filing" /></label>
+              <label><strong>Security</strong><select value={filing.security || 'public'} onChange={(event) => mioEfileUpdateFiling(filing.id, { security: event.target.value })}><option value="public">Public</option><option value="sensitive">Sensitive data document</option><option value="confidential">Confidential / sealed</option></select></label>
+            </div>
+            <label style={{ display: 'block', marginTop: 9 }}><strong>Add PDF documents</strong> <input type="file" multiple accept="application/pdf,.pdf" onChange={(event) => { mioEfileAddDocuments(filing.id, event.target.files); event.target.value = '' }} /></label>
+            <div style={{ marginTop: 7, display: 'grid', gap: 6 }}>{(filing.documents || []).map((document, documentIndex) => <div key={document.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) 170px auto', gap: 7, alignItems: 'center', padding: 7, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 7 }}><div><strong>{document.file_name}</strong><div style={{ color: '#64748b', fontSize: 11 }}>{(Number(document.size || 0) / 1024 / 1024).toFixed(2)} MB</div></div><select aria-label={`Role for ${document.file_name}`} value={document.role || (documentIndex === 0 ? 'lead' : 'attachment')} onChange={(event) => mioEfileUpdateDocument(filing.id, document.id, { role: event.target.value })}><option value="lead">Lead document</option><option value="attachment">Attachment</option><option value="proposed_order">Proposed order</option></select><button type="button" onClick={() => mioEfileRemoveDocument(filing.id, document.id)} style={{ color: '#991b1b' }}>Remove</button></div>)}{!(filing.documents || []).length && <div style={{ color: '#64748b' }}>No PDF selected for this filing.</div>}</div>
+          </section>)}
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}><button type="button" onClick={mioEfileAddFiling}>+ Add another filing to this envelope</button><button type="button" onClick={stageAndPrepareMioEfileDraft} disabled={Boolean(efileAgentBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0 }}>{efileAgentBusy === 'stage' ? 'Staging PDFs...' : efileAgentBusy === 'prepare' ? 'Preparing in eFileTexas...' : 'Stage PDFs and prepare envelope'}</button></div>
+        <div style={{ color: '#64748b', fontSize: 12, marginTop: 8 }}>PDF contents stay on this computer and are handed directly to the separate eFileTexas browser. Mio/Supabase stores only envelope metadata and the audit trail.</div>
+      </section>
+
+      <section className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><div><h2 style={{ margin: 0 }}>3. Review, resume, and submit</h2><div style={{ color: '#64748b', marginTop: 4 }}>Each envelope stops before the final submission.</div></div><select value={selectedJob?.id || ''} onChange={(event) => { setEfileAgentSelectedJobId(event.target.value); setEfileAgentReviewed(false); setEfileAgentApprovalText('') }} style={{ maxWidth: 520 }}><option value="">No staged envelope</option>{efileAgentJobs.map((job) => <option key={job.id} value={job.id}>{mioEfileStatusLabel(job.status)} · {job.case_style || job.cause_number || job.id}</option>)}</select></div>
+        {!selectedJob && <div style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>No eFile envelope has been staged yet.</div>}
+        {selectedJob && <div style={{ marginTop: 12 }}>
+          <div style={{ border: `1px solid ${statusStyle.border}`, background: statusStyle.background, color: statusStyle.color, borderRadius: 9, padding: 10 }}><strong>{mioEfileStatusLabel(selectedJob.status)}</strong>{selectedJob.envelope_number ? ` · Envelope ${selectedJob.envelope_number}` : ''}{selectedJob.pause_reason && <div style={{ marginTop: 5 }}>{selectedJob.pause_reason}</div>}{selectedJob.error && <div style={{ marginTop: 5 }}>{selectedJob.error}</div>}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: 8, marginTop: 10 }}><div><strong>Case</strong><br />{selectedJob.case_style || '-'}</div><div><strong>Cause number</strong><br />{selectedJob.cause_number || '-'}</div><div><strong>Location</strong><br />{selectedJob.efile_location || '-'}</div><div><strong>Envelope contents</strong><br />{(selectedJob.filings || []).length} filing(s), {(selectedJob.filings || []).reduce((sum, filing) => sum + (filing.documents || []).length, 0)} PDF(s)</div></div>
+          {['needs_sign_in','needs_user_input','staged','error'].includes(selectedJob.status) && <button type="button" onClick={() => resumeMioEfileJob(selectedJob)} disabled={Boolean(efileAgentBusy)} style={{ marginTop: 12 }}>{efileAgentBusy === `prepare:${selectedJob.id}` ? 'Checking eFileTexas...' : 'Resume preparation'}</button>}
+          {selectedJob.status === 'ready_for_review' && <div style={{ marginTop: 13, padding: 12, border: '2px solid #f59e0b', borderRadius: 10, background: '#fffbeb' }}><h3 style={{ marginTop: 0 }}>Final attorney approval</h3><ol style={{ lineHeight: 1.6 }}><li>Review the actual eFileTexas review screen.</li><li>Confirm every PDF, filing code, service contact, payment account, and fee.</li><li>Check the box and type the exact authorization phrase.</li></ol><label style={{ display: 'flex', gap: 8, alignItems: 'start', fontWeight: 750 }}><input type="checkbox" checked={efileAgentReviewed} onChange={(event) => setEfileAgentReviewed(event.target.checked)} /> I reviewed the complete envelope in eFileTexas and authorize submission.</label><label style={{ display: 'block', marginTop: 10 }}><strong>Type: FILE {selectedJob.cause_number || selectedJob.id}</strong><input value={efileAgentApprovalText} onChange={(event) => setEfileAgentApprovalText(event.target.value)} autoComplete="off" /></label><button type="button" onClick={() => submitMioEfileJob(selectedJob)} disabled={Boolean(efileAgentBusy) || !efileAgentReviewed || efileAgentApprovalText.trim() !== `FILE ${selectedJob.cause_number || selectedJob.id}`} style={{ marginTop: 10, background: '#b91c1c', color: '#fff', border: 0 }}>{efileAgentBusy === `submit:${selectedJob.id}` ? 'Submitting...' : 'Approve and submit this envelope'}</button></div>}
+          <details style={{ marginTop: 12 }}><summary style={{ cursor: 'pointer', fontWeight: 800 }}>Envelope audit trail</summary><div style={{ marginTop: 7, maxHeight: 260, overflow: 'auto' }}>{(selectedJob.audit || []).slice().reverse().map((entry) => <div key={entry.id || `${entry.at}-${entry.action}`} style={{ padding: '6px 0', borderBottom: '1px solid #e2e8f0', fontSize: 13 }}><strong>{entry.action}</strong> · {entry.at ? new Date(entry.at).toLocaleString() : ''}{entry.detail ? <div style={{ color: '#64748b' }}>{entry.detail}</div> : null}</div>)}</div></details>
+        </div>}
+      </section>
+
+      <section className="card" style={{ marginTop: 14, background: '#f8fafc' }}><h3 style={{ marginTop: 0 }}>EFSP API status</h3><p style={{ marginBottom: 0 }}>The browser agent is the active interim filing path. The direct EFSP integration remains pending and can later replace the browser actions without changing Mio's envelope builder or approval workflow.</p></section>
     </div>
   }
 
@@ -57239,9 +57659,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
         {page === 'lawpay' && canOpenPage('lawpay') && renderLawPayPage()}
 
-        {page === 'efile' && canOpenPage('efile') && (
-          <div><h1>Texas eFile</h1><p>This is the EFSP/Direct Filer implementation workspace. It begins with firm users, attorneys, service contacts, payment accounts, court policy, fee calculation, case lookup, initial/subsequent filings, filing status, cancellation, service, and clerk-review results.</p><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><a href="https://www.txcourts.gov/jcit/electronic-filing.aspx" target="_blank" rel="noreferrer">Texas JCIT eFiling resources</a><button type="button" onClick={() => setPage('service_inbox')}>Open filing/service inbox</button></div><section style={{marginTop:14,border:'1px solid #cbd5e1',padding:14,borderRadius:8}}><h3>Implementation status</h3><ul><li>EFSP infrastructure and certification checklist reviewed.</li><li>Firm/user/attorney/service-contact/payment-account modules required.</li><li>Initial and subsequent filing, fees, status, cancellation, service, and review-result workflows required.</li><li>No live filing submission is enabled until OCA/Tyler credentials and certification are completed.</li></ul></section></div>
-        )}
+        {page === 'efile' && canOpenPage('efile') && renderMioEfileAgentPage()}
 
         {page === 'banking' && canOpenPage('banking') && renderBankingPage()}
 
