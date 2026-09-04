@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
 
-const MIO_APP_VERSION = 'Mio V265'
+const MIO_APP_VERSION = 'Mio V266'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
 const MIO_EFILE_HANDLE_STORE_NAME = 'efile-folders'
@@ -1044,6 +1044,7 @@ const appPages = [
   { value: 'efile', label: 'eFile' },
   { value: 'banking', label: 'Accounts' },
   { value: 'service_inbox', label: 'Service Inbox' },
+  { value: 'mail_center', label: 'Mail Center' },
   { value: 'litigation_tracks', label: 'Litigation Tracks' },
   { value: 'requested_relief', label: 'Requested Relief' },
   { value: 'enforcement', label: 'Enforcement' },
@@ -1062,7 +1063,53 @@ const appPages = [
   { value: 'workflow', label: 'Workflow' },
   { value: 'screensaver', label: 'Screensaver' },
   { value: 'ideas', label: 'Website Ideas' },
+  { value: 'mio_planning', label: 'Mio Roadmap' },
   { value: 'settings', label: 'Settings' }
+]
+
+
+const MIO_ARCHITECTURE_CHILDREN = {
+  billing: ['Firm Billing', 'Clio Billing Integration', 'Client Billing Fields', 'Financial Snapshots', 'Mio Snapshot Graphs', 'Client Bar Graph', 'Client Invoicing', 'Bulk Billing', 'Clio Historical Import'],
+  google_ads: ['Marketing Overview', 'Google Ads', 'Facebook / Meta Ads'],
+  service_inbox: ['Incoming eFile / service email', 'Accepted filings', 'Filing tags', 'Folder / save workflow'],
+  mail_center: ['Compose mailing', 'Mailing history', 'Mailform connection / settings'],
+  litigation_tracks: ['Litigation chronology', 'Discovery track', 'Document placements'],
+  requested_relief: ['My Client Requested Relief', 'Opposing Party Requested Relief', 'Existing / Temporary Orders Comparison', 'Templates'],
+  enforcement: ['Violations', 'Violation-Exhibit Matrix', 'Exhibit Violation Relevance', 'Exhibit List', 'Predicates'],
+  need_to_set: ['Current', 'Activities'],
+  discovery: ['Discovery tracking', 'Responding to discovery', 'Production / Bates workflow'],
+  drafting: ['Drafting Studio', 'Templates', 'Client intake', 'Generated documents'],
+  workflow: ['Daily workflow', 'Workflow builder', 'Saved page links'],
+  settings: ['Options', 'Team Members', 'Courts', 'Matter Table', 'Litigation Parties', 'People Template', 'Billing Rates', 'Service Email', 'Email Signature', 'Billing Email Templates', 'Requested Relief', 'Discovery Instructions', 'Drafting', 'AI Documents', 'Fields', 'Timeline', 'Matter Timeline Options', 'Supabase Migration'],
+  mio_planning: ['Future Goals', 'Pages / Architecture']
+}
+
+function mioArchitectureSlug(value = '') {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'item'
+}
+
+function buildMioArchitectureSeed() {
+  const now = new Date().toISOString()
+  const rows = []
+  appPages.forEach((pageItem, pageIndex) => {
+    const pageId = `mio-arch-page-${pageItem.value}`
+    rows.push({ id: pageId, title: pageItem.label, parent_id: '', sort_order: pageIndex + 1, completed: false, kind: 'page', system_page: pageItem.value, is_system: true, notes: '', created_at: now, updated_at: now })
+    ;(MIO_ARCHITECTURE_CHILDREN[pageItem.value] || []).forEach((label, childIndex) => {
+      rows.push({ id: `${pageId}-${mioArchitectureSlug(label)}`, title: label, parent_id: pageId, sort_order: childIndex + 1, completed: false, kind: 'section', system_page: pageItem.value, is_system: true, notes: '', created_at: now, updated_at: now })
+    })
+  })
+  return rows
+}
+
+const MAILFORM_SERVICE_OPTIONS = [
+  { value: 'USPS_FIRST_CLASS', label: 'USPS First Class' },
+  { value: 'USPS_CERTIFIED', label: 'USPS Certified - tracking' },
+  { value: 'USPS_CERTIFIED_RECEIPT', label: 'USPS Certified + electronic return receipt' },
+  { value: 'USPS_CERTIFIED_PHYSICAL_RECEIPT', label: 'USPS Certified + physical green card' },
+  { value: 'USPS_PRIORITY', label: 'USPS Priority' },
+  { value: 'USPS_PRIORITY_EXPRESS', label: 'USPS Priority Express' },
+  { value: 'FEDEX_OVERNIGHT', label: 'FedEx Overnight' },
+  { value: 'UPS_NEXT_DAY_AIR', label: 'UPS Next Day Air' }
 ]
 
 const CLIENT_PAGE_TAB_OPTIONS = {
@@ -1099,6 +1146,7 @@ const screenSaverBasePages = [
   { value: 'google_ads', label: 'Marketing', page: 'google_ads' },
   { value: 'banking', label: 'Banking', page: 'banking' },
   { value: 'service_inbox', label: 'Service Inbox', page: 'service_inbox' },
+  { value: 'mail_center', label: 'Mail Center', page: 'mail_center' },
   { value: 'litigation_tracks', label: 'Litigation Tracks', page: 'litigation_tracks' },
   { value: 'requested_relief', label: 'Requested Relief', page: 'requested_relief' },
   { value: 'enforcement', label: 'Enforcement', page: 'enforcement' },
@@ -5158,6 +5206,38 @@ function App() {
   const websiteIdeaTextRef = useRef(null)
   const websiteIdeaFileInputRef = useRef(null)
 
+  const [mioPlanningTab, setMioPlanningTab] = useState(() => localStorage.getItem('caseMioPlanningTab') || 'goals')
+  const [mioFutureGoals, setMioFutureGoals] = useState(() => {
+    try { const parsed = JSON.parse(localStorage.getItem('caseMioFutureGoals') || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+  })
+  const [mioPageArchitecture, setMioPageArchitecture] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('caseMioPageArchitecture') || '[]')
+      return Array.isArray(parsed) && parsed.length ? parsed : buildMioArchitectureSeed()
+    } catch { return buildMioArchitectureSeed() }
+  })
+  const [mioPlanningShowCompleted, setMioPlanningShowCompleted] = useState(true)
+
+  const [postalMailings, setPostalMailings] = useState(() => {
+    try { const parsed = JSON.parse(localStorage.getItem('caseMioPostalMailings') || '[]'); return Array.isArray(parsed) ? parsed : [] } catch { return [] }
+  })
+  const [postalSettings, setPostalSettings] = useState(() => {
+    try { return { default_service: 'USPS_CERTIFIED_RECEIPT', simplex: false, color: false, ...(JSON.parse(localStorage.getItem('caseMioPostalSettings') || '{}') || {}) } }
+    catch { return { default_service: 'USPS_CERTIFIED_RECEIPT', simplex: false, color: false } }
+  })
+  const [postalTab, setPostalTab] = useState('compose')
+  const [postalProviderStatus, setPostalProviderStatus] = useState({ configured: false, mode: 'test', writesEnabled: false, liveEnabled: false, balance: null, account: null })
+  const [postalBusy, setPostalBusy] = useState('')
+  const [postalMessage, setPostalMessage] = useState('')
+  const [postalQuote, setPostalQuote] = useState(null)
+  const [postalUploadFile, setPostalUploadFile] = useState(null)
+  const [postalPreparedFile, setPostalPreparedFile] = useState(null)
+  const [postalForm, setPostalForm] = useState({
+    matter_id: '', recipient_source: 'client', recipient_name: '', recipient_organization: '', recipient_address1: '', recipient_address2: '', recipient_city: '', recipient_state: 'TX', recipient_postcode: '', recipient_country: 'US',
+    sender_name: 'Beveridge Law Firm', sender_organization: 'Beveridge Law Firm, PLLC', sender_address1: '1600 East Highway 6, Suite 225', sender_address2: '', sender_city: 'Alvin', sender_state: 'TX', sender_postcode: '77511', sender_country: 'US',
+    service: 'USPS_CERTIFIED_RECEIPT', simplex: false, color: false, flat: false, stamp: false, document_ids: [], purpose: 'General correspondence', notes: '', approved_to_send: false
+  })
+
   const [documents, setDocuments] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseControllerDocuments') || '[]') }
     catch { return [] }
@@ -6878,6 +6958,11 @@ function App() {
       caseMioMatterInventories: { setter: setMatterInventories, kind: 'object', fallback: {} },
       caseMioLawFirmProfile: { setter: (value) => setLawFirmProfile({ firm_name: '', address: '', email: '', phone: '', ...(value || {}) }), kind: 'object', fallback: {} },
       caseMioWebsiteIdeas: { setter: setWebsiteIdeas, kind: 'array', fallback: [] },
+      caseMioFutureGoals: { setter: setMioFutureGoals, kind: 'array', fallback: [] },
+      caseMioPageArchitecture: { setter: (value) => setMioPageArchitecture(Array.isArray(value) && value.length ? value : buildMioArchitectureSeed()), kind: 'array', fallback: buildMioArchitectureSeed() },
+      caseMioPlanningTab: { setter: (value) => setMioPlanningTab(value === 'architecture' ? 'architecture' : 'goals'), kind: 'string', fallback: 'goals' },
+      caseMioPostalMailings: { setter: setPostalMailings, kind: 'array', fallback: [] },
+      caseMioPostalSettings: { setter: (value) => setPostalSettings({ default_service: 'USPS_CERTIFIED_RECEIPT', simplex: false, color: false, ...(value || {}) }), kind: 'object', fallback: { default_service: 'USPS_CERTIFIED_RECEIPT', simplex: false, color: false } },
       caseControllerDocuments: { setter: setDocuments, kind: 'array', fallback: [] },
       caseMioLitigationTracks: { setter: (value) => setLitigationTracks((current) => {
         const browser = browserJsonArray('caseMioLitigationTracks').map(ensureLitigationTrackShape)
@@ -8280,6 +8365,15 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioWebsiteIdeas', JSON.stringify(websiteIdeas)) } catch {}
   }, [websiteIdeas])
+
+  useEffect(() => { try { saveMioStateKey('caseMioFutureGoals', JSON.stringify(mioFutureGoals || [])) } catch {} }, [mioFutureGoals])
+  useEffect(() => { try { saveMioStateKey('caseMioPageArchitecture', JSON.stringify(mioPageArchitecture || [])) } catch {} }, [mioPageArchitecture])
+  useEffect(() => { try { saveMioStateKey('caseMioPlanningTab', mioPlanningTab || 'goals') } catch {} }, [mioPlanningTab])
+  useEffect(() => { try { saveMioStateKey('caseMioPostalMailings', JSON.stringify(postalMailings || [])) } catch {} }, [postalMailings])
+  useEffect(() => { try { saveMioStateKey('caseMioPostalSettings', JSON.stringify(postalSettings || {})) } catch {} }, [postalSettings])
+  useEffect(() => {
+    if (page === 'mail_center' && session?.user?.id) loadPostalProviderStatus().catch(() => {})
+  }, [page, session?.user?.id])
 
 
   useEffect(() => {
@@ -24072,6 +24166,432 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   function removeWebsiteIdea(ideaId) {
     if (!confirm('Delete this website idea?')) return
     setWebsiteIdeas((currentIdeas) => currentIdeas.filter((idea) => idea.id !== ideaId))
+  }
+
+  function mioPlannerNewId(prefix = 'mio-plan') {
+    return (typeof crypto !== 'undefined' && crypto.randomUUID) ? `${prefix}-${crypto.randomUUID()}` : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
+  function mioPlannerNormalize(rows = []) {
+    const now = new Date().toISOString()
+    return (Array.isArray(rows) ? rows : []).map((row, index) => ({
+      id: row?.id || mioPlannerNewId('mio-plan'),
+      title: String(row?.title || row?.name || 'Untitled'),
+      parent_id: String(row?.parent_id || ''),
+      sort_order: Number.isFinite(Number(row?.sort_order)) ? Number(row.sort_order) : index + 1,
+      completed: Boolean(row?.completed),
+      kind: row?.kind || 'item',
+      system_page: row?.system_page || '',
+      is_system: Boolean(row?.is_system),
+      notes: String(row?.notes || ''),
+      created_at: row?.created_at || now,
+      updated_at: row?.updated_at || now
+    }))
+  }
+
+  function mioPlannerChildren(rows, parentId = '') {
+    return mioPlannerNormalize(rows).filter((row) => String(row.parent_id || '') === String(parentId || '')).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.title.localeCompare(b.title))
+  }
+
+  function mioPlannerDescendantIds(rows, rowId) {
+    const ids = new Set([String(rowId)])
+    let changed = true
+    while (changed) {
+      changed = false
+      rows.forEach((row) => {
+        if (ids.has(String(row.parent_id || '')) && !ids.has(String(row.id))) { ids.add(String(row.id)); changed = true }
+      })
+    }
+    return ids
+  }
+
+  function mioPlannerSetRows(kind, updater) {
+    const setter = kind === 'architecture' ? setMioPageArchitecture : setMioFutureGoals
+    setter((current) => mioPlannerNormalize(typeof updater === 'function' ? updater(mioPlannerNormalize(current)) : updater))
+  }
+
+  function mioPlannerPatch(kind, rowId, patch) {
+    mioPlannerSetRows(kind, (rows) => rows.map((row) => String(row.id) === String(rowId) ? { ...row, ...patch, updated_at: new Date().toISOString() } : row))
+  }
+
+  function mioPlannerAddRoot(kind) {
+    const title = kind === 'architecture' ? 'Future Page' : 'New Goal'
+    mioPlannerSetRows(kind, (rows) => [...rows, { id: mioPlannerNewId(kind === 'architecture' ? 'mio-page' : 'mio-goal'), title, parent_id: '', sort_order: mioPlannerChildren(rows, '').length + 1, completed: false, kind: kind === 'architecture' ? 'future_page' : 'goal', is_system: false, system_page: '', notes: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }])
+  }
+
+  function mioPlannerAddRelative(kind, rowId, asChild = false) {
+    mioPlannerSetRows(kind, (rows) => {
+      const row = rows.find((item) => String(item.id) === String(rowId))
+      if (!row) return rows
+      const parentId = asChild ? row.id : row.parent_id
+      const siblings = mioPlannerChildren(rows, parentId)
+      const next = { id: mioPlannerNewId(kind === 'architecture' ? 'mio-page-item' : 'mio-goal-item'), title: asChild ? 'New child item' : 'New sibling item', parent_id: parentId || '', sort_order: siblings.length + 1, completed: false, kind: asChild ? 'task' : row.kind, is_system: false, system_page: row.system_page || '', notes: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+      return [...rows, next]
+    })
+  }
+
+  function mioPlannerMove(kind, rowId, direction) {
+    mioPlannerSetRows(kind, (rows) => {
+      const row = rows.find((item) => String(item.id) === String(rowId))
+      if (!row) return rows
+      const siblings = mioPlannerChildren(rows, row.parent_id)
+      const index = siblings.findIndex((item) => String(item.id) === String(rowId))
+      const otherIndex = index + direction
+      if (index < 0 || otherIndex < 0 || otherIndex >= siblings.length) return rows
+      const other = siblings[otherIndex]
+      const aOrder = Number(row.sort_order || index + 1)
+      const bOrder = Number(other.sort_order || otherIndex + 1)
+      return rows.map((item) => String(item.id) === String(row.id) ? { ...item, sort_order: bOrder, updated_at: new Date().toISOString() } : String(item.id) === String(other.id) ? { ...item, sort_order: aOrder, updated_at: new Date().toISOString() } : item)
+    })
+  }
+
+  function mioPlannerIndent(kind, rowId) {
+    mioPlannerSetRows(kind, (rows) => {
+      const row = rows.find((item) => String(item.id) === String(rowId))
+      if (!row) return rows
+      const siblings = mioPlannerChildren(rows, row.parent_id)
+      const index = siblings.findIndex((item) => String(item.id) === String(rowId))
+      if (index <= 0) return rows
+      const newParent = siblings[index - 1]
+      const childCount = mioPlannerChildren(rows, newParent.id).length
+      return rows.map((item) => String(item.id) === String(rowId) ? { ...item, parent_id: newParent.id, sort_order: childCount + 1, updated_at: new Date().toISOString() } : item)
+    })
+  }
+
+  function mioPlannerOutdent(kind, rowId) {
+    mioPlannerSetRows(kind, (rows) => {
+      const row = rows.find((item) => String(item.id) === String(rowId))
+      if (!row || !row.parent_id) return rows
+      const parent = rows.find((item) => String(item.id) === String(row.parent_id))
+      if (!parent) return rows
+      const grandParentId = parent.parent_id || ''
+      const siblings = mioPlannerChildren(rows, grandParentId)
+      const parentIndex = siblings.findIndex((item) => String(item.id) === String(parent.id))
+      const targetOrder = Number(parent.sort_order || parentIndex + 1) + 0.5
+      const shifted = rows.map((item) => {
+        if (String(item.parent_id || '') !== String(grandParentId)) return item
+        if (Number(item.sort_order || 0) > Number(parent.sort_order || 0)) return { ...item, sort_order: Number(item.sort_order || 0) + 1 }
+        return item
+      })
+      return shifted.map((item) => String(item.id) === String(rowId) ? { ...item, parent_id: grandParentId, sort_order: targetOrder, updated_at: new Date().toISOString() } : item)
+    })
+  }
+
+  function mioPlannerDelete(kind, rowId) {
+    const rows = kind === 'architecture' ? mioPageArchitecture : mioFutureGoals
+    const row = rows.find((item) => String(item.id) === String(rowId))
+    if (row?.is_system && kind === 'architecture') {
+      if (!window.confirm('Remove this current Mio page/section from the planning view? You can restore it later with Sync current Mio pages.')) return
+    } else if (!window.confirm('Delete this item and all of its children?')) return
+    const ids = mioPlannerDescendantIds(rows, rowId)
+    mioPlannerSetRows(kind, (current) => current.filter((item) => !ids.has(String(item.id))))
+  }
+
+  function syncCurrentMioArchitecture() {
+    const seed = buildMioArchitectureSeed()
+    setMioPageArchitecture((current) => {
+      const existing = mioPlannerNormalize(current)
+      const ids = new Set(existing.map((row) => String(row.id)))
+      return mioPlannerNormalize([...existing, ...seed.filter((row) => !ids.has(String(row.id)))])
+    })
+  }
+
+  function mioPlannerProgress(rows, rowId) {
+    const descendants = Array.from(mioPlannerDescendantIds(rows, rowId)).filter((id) => String(id) !== String(rowId))
+    if (!descendants.length) return null
+    const relevant = rows.filter((row) => descendants.includes(String(row.id)))
+    const completed = relevant.filter((row) => row.completed).length
+    return { completed, total: relevant.length, percent: relevant.length ? Math.round((completed / relevant.length) * 100) : 0 }
+  }
+
+  function renderMioPlannerTree(kind, rows) {
+    const normalized = mioPlannerNormalize(rows)
+    const visible = mioPlanningShowCompleted ? normalized : normalized.filter((row) => !row.completed || mioPlannerDescendantIds(normalized, row.id).size > 1)
+    const renderLevel = (parentId = '', level = 0) => mioPlannerChildren(visible, parentId).map((row) => {
+      const progress = kind === 'architecture' ? mioPlannerProgress(normalized, row.id) : null
+      const badge = row.kind === 'page' ? 'Current page' : row.kind === 'future_page' ? 'Future page' : row.kind === 'goal' ? 'Goal' : row.kind === 'section' ? 'Section' : 'Task'
+      return <Fragment key={row.id}>
+        <div style={{ marginLeft: level * 24, border: '1px solid #dbe3ea', borderRadius: 10, padding: 9, marginBottom: 7, background: row.completed ? '#f0fdf4' : '#fff', opacity: row.completed ? 0.8 : 1 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(220px,1fr) auto', gap: 8, alignItems: 'center' }}>
+            <input type="checkbox" checked={Boolean(row.completed)} onChange={(event) => mioPlannerPatch(kind, row.id, { completed: event.target.checked })} title="Complete" />
+            <div>
+              <input value={row.title} onChange={(event) => mioPlannerPatch(kind, row.id, { title: event.target.value })} style={{ width: '100%', border: 0, borderBottom: '1px solid #e2e8f0', borderRadius: 0, fontWeight: row.kind === 'page' || row.kind === 'future_page' || row.kind === 'goal' ? 850 : 650, textDecoration: row.completed ? 'line-through' : 'none' }} />
+              <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 4, fontSize: 11, color: '#64748b' }}><span>{badge}</span>{row.system_page && <span>#{row.system_page}</span>}{progress && <span>{progress.completed}/{progress.total} sub-items complete ({progress.percent}%)</span>}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => mioPlannerAddRelative(kind, row.id, false)} style={{ padding: '5px 7px' }}>+ Sibling</button>
+              <button type="button" onClick={() => mioPlannerAddRelative(kind, row.id, true)} style={{ padding: '5px 7px' }}>+ Child</button>
+              <button type="button" onClick={() => mioPlannerMove(kind, row.id, -1)} style={{ padding: '5px 7px' }}>Up</button>
+              <button type="button" onClick={() => mioPlannerMove(kind, row.id, 1)} style={{ padding: '5px 7px' }}>Down</button>
+              <button type="button" onClick={() => mioPlannerIndent(kind, row.id)} style={{ padding: '5px 7px' }}>Indent</button>
+              <button type="button" onClick={() => mioPlannerOutdent(kind, row.id)} style={{ padding: '5px 7px' }}>Outdent</button>
+              <button type="button" onClick={() => mioPlannerDelete(kind, row.id)} style={{ padding: '5px 7px', color: '#991b1b' }}>Delete</button>
+            </div>
+          </div>
+          <textarea value={row.notes || ''} onChange={(event) => mioPlannerPatch(kind, row.id, { notes: event.target.value })} placeholder={kind === 'architecture' ? 'What remains to be done on this page / section?' : 'Notes, success criteria, dependencies, ideas...'} rows={row.notes ? 2 : 1} style={{ width: '100%', marginTop: 7, minHeight: row.notes ? 54 : 34, fontSize: 12 }} />
+        </div>
+        {renderLevel(row.id, level + 1)}
+      </Fragment>
+    })
+    return <div>{renderLevel('', 0)}</div>
+  }
+
+  function renderMioPlanningPage() {
+    const activeRows = mioPlanningTab === 'architecture' ? mioPageArchitecture : mioFutureGoals
+    return <div style={{ maxWidth: 1500 }}>
+      <h1>Mio Roadmap</h1>
+      <p style={{ color: '#566', marginTop: -6 }}>A living plan for future capabilities and for finishing Mio's existing pages. Changes save through Mio cloud state.</p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+        <button type="button" onClick={() => setMioPlanningTab('goals')} style={{ fontWeight: mioPlanningTab === 'goals' ? 900 : 600, background: mioPlanningTab === 'goals' ? '#eff6ff' : '#fff' }}>Future Goals</button>
+        <button type="button" onClick={() => setMioPlanningTab('architecture')} style={{ fontWeight: mioPlanningTab === 'architecture' ? 900 : 600, background: mioPlanningTab === 'architecture' ? '#eff6ff' : '#fff' }}>Pages / Architecture</button>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8 }}><input type="checkbox" checked={mioPlanningShowCompleted} onChange={(event) => setMioPlanningShowCompleted(event.target.checked)} /> Show completed</label>
+      </div>
+      <section style={{ border: '1px solid #d5dce3', borderRadius: 12, padding: 14, background: '#f8fafc' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div><h2 style={{ margin: 0 }}>{mioPlanningTab === 'architecture' ? 'Pages / Architecture' : 'Future Goals'}</h2><div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>{mioPlanningTab === 'architecture' ? 'Current Mio pages are seeded automatically. Add future pages or nested page work, then check off the page itself when you consider it complete.' : 'Build any goal hierarchy you want: initiatives, phases, features, tasks, or experiments.'}</div></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => mioPlannerAddRoot(mioPlanningTab === 'architecture' ? 'architecture' : 'goals')}>{mioPlanningTab === 'architecture' ? '+ Future page' : '+ Goal'}</button>{mioPlanningTab === 'architecture' && <button type="button" onClick={syncCurrentMioArchitecture}>Sync current Mio pages</button>}</div>
+        </div>
+        {!activeRows.length && <div style={{ padding: 20, border: '1px dashed #cbd5e1', borderRadius: 10, color: '#64748b' }}>Nothing here yet. Add the first item above.</div>}
+        {renderMioPlannerTree(mioPlanningTab === 'architecture' ? 'architecture' : 'goals', activeRows)}
+      </section>
+    </div>
+  }
+
+  function postalMatterRecord(matterId = postalForm.matter_id) {
+    return matters.find((matter) => String(matter.id) === String(matterId || '')) || null
+  }
+
+  function postalMatterDocuments(matterId = postalForm.matter_id) {
+    return (documents || []).filter((doc) => String(doc.matter_id || doc.case_id || '') === String(matterId || ''))
+  }
+
+  function postalClientRecord(matter = postalMatterRecord()) {
+    if (!matter) return null
+    return matter.clients || clients.find((client) => String(client.id) === String(matter.client_id)) || null
+  }
+
+  function postalRecipientFromPerson(person = {}) {
+    return { recipient_name: person.name || `${person.first_name || ''} ${person.last_name || ''}`.trim(), recipient_organization: person.organization || '', recipient_address1: person.address || person.address1 || '', recipient_address2: person.address2 || '', recipient_city: person.city || '', recipient_state: person.state || 'TX', recipient_postcode: person.zip || person.postcode || '', recipient_country: person.country || 'US' }
+  }
+
+  function postalSelectMatter(matterId) {
+    const matter = matters.find((row) => String(row.id) === String(matterId || '')) || null
+    const client = postalClientRecord(matter)
+    const recipient = client ? postalRecipientFromPerson({ ...client, name: `${client.first_name || ''} ${client.last_name || ''}`.trim() }) : {}
+    setPostalQuote(null)
+    setPostalPreparedFile(null)
+    setPostalUploadFile(null)
+    setPostalForm((current) => ({ ...current, matter_id: matterId, recipient_source: client ? 'client' : 'custom', document_ids: [], approved_to_send: false, ...recipient }))
+  }
+
+  function postalApplyRecipientSource(source) {
+    const matter = postalMatterRecord()
+    let person = null
+    if (source === 'client') person = postalClientRecord(matter)
+    else if (source.startsWith('person:')) person = (matterPeople || []).find((row) => String(row.id) === source.slice(7)) || null
+    const patch = person ? postalRecipientFromPerson({ ...person, name: person.name || `${person.first_name || ''} ${person.last_name || ''}`.trim() }) : { recipient_name: '', recipient_organization: '', recipient_address1: '', recipient_address2: '', recipient_city: '', recipient_state: 'TX', recipient_postcode: '', recipient_country: 'US' }
+    setPostalQuote(null)
+    setPostalPreparedFile(null)
+    setPostalForm((current) => ({ ...current, recipient_source: source, approved_to_send: false, ...patch }))
+  }
+
+  function postalResetPreparedFile() {
+    setPostalPreparedFile(null)
+    setPostalQuote(null)
+    setPostalForm((current) => ({ ...current, approved_to_send: false }))
+  }
+
+  async function loadPostalProviderStatus() {
+    setPostalBusy((current) => current || 'status')
+    try {
+      const response = await fetchMioAuthenticatedApi('/api/mailform?action=status')
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Mailform status failed (${response.status}).`)
+      setPostalProviderStatus(payload)
+      return payload
+    } catch (error) {
+      setPostalMessage(error.message || String(error))
+      return null
+    } finally { setPostalBusy((current) => current === 'status' ? '' : current) }
+  }
+
+  async function postalApiRequest(action, body = null) {
+    const response = await fetchMioAuthenticatedApi(`/api/mailform?action=${encodeURIComponent(action)}`, {
+      method: body ? 'POST' : 'GET',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload.error || payload.message || `Mailform request failed (${response.status}).`)
+    return payload
+  }
+
+  async function ensurePostalPdfLib() {
+    if (window.PDFLib) return window.PDFLib
+    await new Promise((resolve, reject) => {
+      const src = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'
+      const existing = Array.from(document.scripts).find((script) => script.src === src)
+      if (existing) { existing.addEventListener('load', resolve, { once: true }); existing.addEventListener('error', reject, { once: true }); return }
+      const script = document.createElement('script'); script.src = src; script.async = true; script.onload = resolve; script.onerror = () => reject(new Error('Could not load the PDF library.')); document.head.appendChild(script)
+    })
+    return window.PDFLib
+  }
+
+  async function postalBuildFinalPdfBlob() {
+    const selectedDocs = postalMatterDocuments().filter((doc) => (postalForm.document_ids || []).map(String).includes(String(doc.id)))
+    if (!selectedDocs.length && !postalUploadFile) throw new Error('Select at least one PDF document or upload a PDF.')
+    const sources = []
+    for (const doc of selectedDocs) {
+      const name = doc.file_name || doc.original_file_name || doc.name || 'document'
+      if (!/\.pdf$/i.test(name) && !/pdf/i.test(String(doc.file_type || doc.mime_type || ''))) throw new Error(`${name} is not a PDF. Convert it to PDF before mailing.`)
+      const dataUrl = await loadDocumentFileDataUrl(doc)
+      if (!dataUrl) throw new Error(`Mio could not load ${name}.`)
+      sources.push({ name, bytes: dataUrlToUint8Array(dataUrl) })
+    }
+    if (postalUploadFile) {
+      if (!/\.pdf$/i.test(postalUploadFile.name || '') && postalUploadFile.type !== 'application/pdf') throw new Error('The uploaded mailing file must be a PDF.')
+      sources.push({ name: postalUploadFile.name || 'uploaded.pdf', bytes: new Uint8Array(await postalUploadFile.arrayBuffer()) })
+    }
+    const PDFLib = await ensurePostalPdfLib()
+    const output = await PDFLib.PDFDocument.create()
+    for (const source of sources) {
+      const pdf = await PDFLib.PDFDocument.load(source.bytes)
+      const pages = await output.copyPages(pdf, pdf.getPageIndices())
+      pages.forEach((page) => output.addPage(page))
+    }
+    const bytes = await output.save()
+    let sha256 = ''
+    try {
+      if (globalThis.crypto?.subtle) {
+        const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
+        sha256 = Array.from(digest).map((value) => value.toString(16).padStart(2, '0')).join('')
+      }
+    } catch {}
+    return { blob: new Blob([bytes], { type: 'application/pdf' }), page_count: output.getPageCount(), source_names: sources.map((source) => source.name), sha256 }
+  }
+
+  async function postalPrepareProviderFile() {
+    if (postalPreparedFile?.signed_url && postalPreparedFile?.file_path) return postalPreparedFile
+    const built = await postalBuildFinalPdfBlob()
+    const localId = mioPlannerNewId('mailing')
+    const safeMatter = postalForm.matter_id || 'unassigned'
+    const userPart = session?.user?.id || 'user'
+    const filePath = `${userPart}/${safeMatter}/postal-mail/${localId}/${Date.now()}_mailing.pdf`
+    const { error: uploadError } = await supabase.storage.from(DOCUMENT_BUCKET).upload(filePath, built.blob, { upsert: true, contentType: 'application/pdf' })
+    if (uploadError) throw uploadError
+    const { data: signedData, error: signedError } = await supabase.storage.from(DOCUMENT_BUCKET).createSignedUrl(filePath, 60 * 60)
+    if (signedError || !signedData?.signedUrl) throw signedError || new Error('Could not create a temporary secure URL for Mailform.')
+    const prepared = { id: localId, file_path: filePath, signed_url: signedData.signedUrl, page_count: built.page_count, source_names: built.source_names, sha256: built.sha256 || '', prepared_at: new Date().toISOString() }
+    setPostalPreparedFile(prepared)
+    return prepared
+  }
+
+  function postalProviderPayload(prepared, confirmSend = false) {
+    const reference = `MIO:${String(postalForm.matter_id || 'none').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}:${String(prepared.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(-18)}`.slice(0, 64)
+    return {
+      url: prepared.signed_url,
+      customer_reference: reference,
+      service: postalForm.service || postalSettings.default_service || 'USPS_CERTIFIED_RECEIPT',
+      simplex: Boolean(postalForm.simplex), color: Boolean(postalForm.color), flat: Boolean(postalForm.flat), stamp: Boolean(postalForm.stamp), confirm_send: Boolean(confirmSend),
+      to: { name: postalForm.recipient_name, organization: postalForm.recipient_organization, address1: postalForm.recipient_address1, address2: postalForm.recipient_address2, city: postalForm.recipient_city, state: postalForm.recipient_state, postcode: postalForm.recipient_postcode, country: postalForm.recipient_country || 'US' },
+      from: { name: postalForm.sender_name, organization: postalForm.sender_organization, address1: postalForm.sender_address1, address2: postalForm.sender_address2, city: postalForm.sender_city, state: postalForm.sender_state, postcode: postalForm.sender_postcode, country: postalForm.sender_country || 'US' }
+    }
+  }
+
+  function validatePostalForm() {
+    const required = [['Matter', postalForm.matter_id], ['Recipient name', postalForm.recipient_name], ['Recipient street address', postalForm.recipient_address1], ['Recipient city', postalForm.recipient_city], ['Recipient state', postalForm.recipient_state], ['Recipient ZIP', postalForm.recipient_postcode], ['Sender name', postalForm.sender_name], ['Sender street address', postalForm.sender_address1], ['Sender city', postalForm.sender_city], ['Sender state', postalForm.sender_state], ['Sender ZIP', postalForm.sender_postcode]]
+    const missing = required.filter(([, value]) => !String(value || '').trim()).map(([label]) => label)
+    if (missing.length) throw new Error(`Complete these fields first: ${missing.join(', ')}.`)
+  }
+
+  async function quotePostalMailing() {
+    setPostalBusy('quote'); setPostalMessage(''); setPostalQuote(null)
+    try {
+      validatePostalForm()
+      const prepared = await postalPrepareProviderFile()
+      const payload = await postalApiRequest('quote', postalProviderPayload(prepared, false))
+      setPostalQuote(payload.pricing || payload)
+      setPostalMessage(`Quote ready for ${prepared.page_count} page${prepared.page_count === 1 ? '' : 's'}.`)
+    } catch (error) { setPostalMessage(error.message || String(error)) }
+    finally { setPostalBusy('') }
+  }
+
+  async function sendPostalMailing() {
+    setPostalBusy('send'); setPostalMessage('')
+    try {
+      validatePostalForm()
+      if (!postalForm.approved_to_send) throw new Error('Check the approval box before sending.')
+      const prepared = await postalPrepareProviderFile()
+      const cents = Number(postalQuote?.total || postalQuote?.cost || 0)
+      const costText = cents ? `$${(cents / 100).toFixed(2)}` : 'the quoted amount'
+      if (!window.confirm(`Send this mailing through Mailform for ${costText}?`)) return
+      const payload = await postalApiRequest('send', postalProviderPayload(prepared, true))
+      const order = payload.data || payload.order || payload
+      const matter = postalMatterRecord()
+      const lineItem = Array.isArray(order.lineitems) ? order.lineitems[0] : null
+      const record = {
+        id: prepared.id, matter_id: postalForm.matter_id, matter_label: matterClientName(matter) || matter?.name || matter?.cause_number || '', provider: 'mailform', provider_order_id: order.id || '', provider_state: order.state || 'submitted', test_mode: Boolean(order.test_mode), customer_reference: order.customer_reference || postalProviderPayload(prepared).customer_reference,
+        service: postalForm.service, recipient: { name: postalForm.recipient_name, organization: postalForm.recipient_organization, address1: postalForm.recipient_address1, address2: postalForm.recipient_address2, city: postalForm.recipient_city, state: postalForm.recipient_state, postcode: postalForm.recipient_postcode, country: postalForm.recipient_country }, sender: { name: postalForm.sender_name, organization: postalForm.sender_organization, address1: postalForm.sender_address1, address2: postalForm.sender_address2, city: postalForm.sender_city, state: postalForm.sender_state, postcode: postalForm.sender_postcode, country: postalForm.sender_country }, document_ids: [...(postalForm.document_ids || [])], source_names: prepared.source_names || [], file_path: prepared.file_path, file_sha256: prepared.sha256 || '', page_count: prepared.page_count, purpose: postalForm.purpose, notes: postalForm.notes, total_cents: Number(order.total || postalQuote?.total || 0), tracking_number: lineItem?.tracking_number || '', created_at: new Date().toISOString(), submitted_at: order.created || new Date().toISOString(), last_refreshed_at: new Date().toISOString(), approved_by: session?.user?.email || '', events: [{ type: 'submitted', at: new Date().toISOString(), state: order.state || 'submitted' }]
+      }
+      setPostalMailings((current) => [record, ...current.filter((item) => String(item.id) !== String(record.id))])
+      setPostalMessage(order.test_mode ? 'Test mailing submitted. Mailform test-mode orders are automatically cancelled and do not incur mailing charges.' : 'Mailing submitted to Mailform.')
+      setPostalTab('history')
+      setPostalForm((current) => ({ ...current, approved_to_send: false, document_ids: [] }))
+      setPostalUploadFile(null); setPostalPreparedFile(null); setPostalQuote(null)
+      loadPostalProviderStatus().catch(() => {})
+    } catch (error) { setPostalMessage(error.message || String(error)) }
+    finally { setPostalBusy('') }
+  }
+
+  async function refreshPostalMailing(record) {
+    if (!record?.provider_order_id) return
+    setPostalBusy(`refresh:${record.id}`); setPostalMessage('')
+    try {
+      const response = await fetchMioAuthenticatedApi(`/api/mailform?action=get&order_id=${encodeURIComponent(record.provider_order_id)}`)
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Mailform refresh failed (${response.status}).`)
+      const order = payload.data || payload.order || payload
+      const lineItem = Array.isArray(order.lineitems) ? order.lineitems[0] : null
+      setPostalMailings((current) => current.map((item) => String(item.id) === String(record.id) ? { ...item, provider_state: order.state || item.provider_state, test_mode: typeof order.test_mode === 'boolean' ? order.test_mode : item.test_mode, total_cents: Number(order.total || item.total_cents || 0), tracking_number: lineItem?.tracking_number || item.tracking_number || '', provider_snapshot: order, last_refreshed_at: new Date().toISOString(), events: [...(item.events || []), { type: 'refresh', at: new Date().toISOString(), state: order.state || item.provider_state, tracking_number: lineItem?.tracking_number || '' }].slice(-40) } : item))
+    } catch (error) { setPostalMessage(error.message || String(error)) }
+    finally { setPostalBusy('') }
+  }
+
+  async function openPostalMailedPdf(record) {
+    if (!record?.file_path) return
+    try {
+      const { data, error } = await supabase.storage.from(DOCUMENT_BUCKET).createSignedUrl(record.file_path, 10 * 60)
+      if (error || !data?.signedUrl) throw error || new Error('Could not create a secure PDF link.')
+      window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
+    } catch (error) { setPostalMessage(error.message || String(error)) }
+  }
+
+  function postalMoney(cents) {
+    if (cents === null || cents === undefined || cents === '') return '-'
+    const value = Number(cents)
+    return Number.isFinite(value) ? `$${(value / 100).toFixed(2)}` : '-'
+  }
+
+  function renderMailCenterPage() {
+    const matter = postalMatterRecord()
+    const matterDocs = postalMatterDocuments()
+    const people = (matterPeople || []).filter((person) => String(person.matter_id || '') === String(postalForm.matter_id || ''))
+    const quoteTotal = Number(postalQuote?.total || 0)
+    const tabStyle = (name) => ({ fontWeight: postalTab === name ? 900 : 600, background: postalTab === name ? '#eff6ff' : '#fff' })
+    return <div style={{ maxWidth: 1500 }}>
+      <h1>Mail Center</h1>
+      <p style={{ color: '#566', marginTop: -6 }}>Send PDF correspondence by physical mail through Mailform, keep the exact mailed PDF in Mio, and track provider status by matter.</p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}><button type="button" style={tabStyle('compose')} onClick={() => setPostalTab('compose')}>Compose</button><button type="button" style={tabStyle('history')} onClick={() => setPostalTab('history')}>Mailing History</button><button type="button" style={tabStyle('settings')} onClick={() => { setPostalTab('settings'); loadPostalProviderStatus().catch(() => {}) }}>Connection / Settings</button></div>
+      {postalMessage && <div style={{ marginBottom: 12, padding: 10, borderRadius: 8, background: /failed|error|complete these|must|could not/i.test(postalMessage) ? '#fef2f2' : '#eff6ff', border: '1px solid #cbd5e1' }}>{postalMessage}</div>}
+      {postalTab === 'compose' && <div style={{ display: 'grid', gap: 14 }}>
+        <section className="card"><h2 style={{ marginTop: 0 }}>1. Matter and documents</h2><div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(320px,2fr)', gap: 12, alignItems: 'start' }}><label><strong>Matter</strong><select value={postalForm.matter_id} onChange={(event) => postalSelectMatter(event.target.value)} style={{ marginTop: 5 }}><option value="">Select matter...</option>{matters.map((row) => <option key={row.id} value={row.id}>{matterClientName(row) || row.name || row.cause_number || row.id}</option>)}</select></label><div><strong>Mail these PDFs</strong><div style={{ maxHeight: 190, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, marginTop: 5 }}>{matterDocs.filter((doc) => /\.pdf$/i.test(doc.file_name || doc.original_file_name || doc.name || '') || /pdf/i.test(String(doc.file_type || doc.mime_type || ''))).map((doc) => <label key={doc.id} style={{ display: 'flex', gap: 7, alignItems: 'center', padding: '4px 0' }}><input type="checkbox" checked={(postalForm.document_ids || []).map(String).includes(String(doc.id))} onChange={(event) => { const ids = new Set((postalForm.document_ids || []).map(String)); event.target.checked ? ids.add(String(doc.id)) : ids.delete(String(doc.id)); setPostalForm((current) => ({ ...current, document_ids: Array.from(ids), approved_to_send: false })); postalResetPreparedFile() }} />{doc.file_name || doc.original_file_name || doc.name || 'PDF document'}</label>)}{!matterDocs.length && <div style={{ color: '#64748b' }}>No matter documents loaded.</div>}</div><label style={{ display: 'block', marginTop: 8 }}>Or add a PDF from this computer <input type="file" accept="application/pdf,.pdf" onChange={(event) => { setPostalUploadFile(event.target.files?.[0] || null); postalResetPreparedFile() }} /></label>{postalUploadFile && <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>Upload: {postalUploadFile.name}</div>}</div></div></section>
+        <section className="card"><h2 style={{ marginTop: 0 }}>2. Recipient</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}><label><strong>Use address from</strong><select value={postalForm.recipient_source} onChange={(event) => postalApplyRecipientSource(event.target.value)}><option value="client">Matter client</option>{people.map((person) => <option key={person.id} value={`person:${person.id}`}>{person.name || 'Matter person'}</option>)}<option value="custom">Custom recipient</option></select></label><label>Name<input value={postalForm.recipient_name} onChange={(e) => { setPostalForm({ ...postalForm, recipient_name: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label><label>Organization<input value={postalForm.recipient_organization} onChange={(e) => { setPostalForm({ ...postalForm, recipient_organization: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label><label style={{ gridColumn: 'span 2' }}>Street address<input value={postalForm.recipient_address1} onChange={(e) => { setPostalForm({ ...postalForm, recipient_address1: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label><label>Address 2<input value={postalForm.recipient_address2} onChange={(e) => { setPostalForm({ ...postalForm, recipient_address2: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label><label>City<input value={postalForm.recipient_city} onChange={(e) => { setPostalForm({ ...postalForm, recipient_city: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label><label>State<input value={postalForm.recipient_state} onChange={(e) => { setPostalForm({ ...postalForm, recipient_state: e.target.value.toUpperCase(), approved_to_send: false }); postalResetPreparedFile() }} /></label><label>ZIP<input value={postalForm.recipient_postcode} onChange={(e) => { setPostalForm({ ...postalForm, recipient_postcode: e.target.value, approved_to_send: false }); postalResetPreparedFile() }} /></label></div></section>
+        <section className="card"><h2 style={{ marginTop: 0 }}>3. Mailing method</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10 }}><label><strong>Service</strong><select value={postalForm.service} onChange={(e) => { setPostalForm({ ...postalForm, service: e.target.value, approved_to_send: false }); setPostalQuote(null) }}>{MAILFORM_SERVICE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>Purpose<select value={postalForm.purpose} onChange={(e) => setPostalForm({ ...postalForm, purpose: e.target.value })}><option>General correspondence</option><option>Courtesy copy</option><option>Contractual notice</option><option>Statutory notice</option><option>Discovery correspondence</option><option>Certified legal notice</option><option>Claimed service under a rule</option><option>Other</option></select></label><label style={{ display: 'flex', gap: 7, alignItems: 'center', marginTop: 24 }}><input type="checkbox" checked={postalForm.simplex} onChange={(e) => { setPostalForm({ ...postalForm, simplex: e.target.checked, approved_to_send: false }); setPostalQuote(null) }} /> One-sided printing</label><label style={{ display: 'flex', gap: 7, alignItems: 'center', marginTop: 24 }}><input type="checkbox" checked={postalForm.color} onChange={(e) => { setPostalForm({ ...postalForm, color: e.target.checked, approved_to_send: false }); setPostalQuote(null) }} /> Color printing</label></div><label style={{ display: 'block', marginTop: 10 }}>Internal notes<textarea value={postalForm.notes} onChange={(e) => setPostalForm({ ...postalForm, notes: e.target.value })} /></label></section>
+        <section className="card"><h2 style={{ marginTop: 0 }}>4. Quote and approve</h2><div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><button type="button" onClick={quotePostalMailing} disabled={Boolean(postalBusy)}>{postalBusy === 'quote' ? 'Quoting...' : 'Get exact Mailform quote'}</button>{postalQuote && <div style={{ fontWeight: 850, fontSize: 17 }}>Total: {postalMoney(postalQuote.total)}{postalPreparedFile?.page_count ? ` for ${postalPreparedFile.page_count} page${postalPreparedFile.page_count === 1 ? '' : 's'}` : ''}</div>}</div>{postalQuote && <div style={{ marginTop: 10, padding: 10, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}><div>Print/postage: {postalMoney(postalQuote.cost)}</div><div>Tax: {postalMoney(postalQuote.tax)}</div><div><strong>Total: {postalMoney(quoteTotal)}</strong></div></div>}<label style={{ display: 'flex', gap: 8, alignItems: 'start', marginTop: 12, fontWeight: 750 }}><input type="checkbox" checked={postalForm.approved_to_send} onChange={(e) => setPostalForm({ ...postalForm, approved_to_send: e.target.checked })} /> I reviewed the final recipient, mailing method, and documents and authorize Mio to submit this mailing.</label><button type="button" onClick={sendPostalMailing} disabled={Boolean(postalBusy) || !postalQuote || !postalForm.approved_to_send} style={{ marginTop: 12, background: '#1d4ed8', color: '#fff', border: 0 }}>{postalBusy === 'send' ? 'Submitting...' : postalProviderStatus.mode === 'live' ? 'Send live mailing' : 'Send TEST mailing'}</button><div style={{ color: '#64748b', fontSize: 12, marginTop: 8 }}>Mio stores an exact combined PDF in Supabase Storage and gives Mailform a temporary signed URL. A Mailform order is not treated as legal service merely because it was submitted or delivered.</div></section>
+      </div>}
+      {postalTab === 'history' && <section className="card"><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}><div><h2 style={{ marginTop: 0 }}>Mailing History</h2><p style={{ color: '#64748b' }}>Provider status, tracking number, cost, recipient snapshot, and exact mailed PDF record.</p></div><button type="button" onClick={() => postalMailings.forEach((record) => record.provider_order_id && refreshPostalMailing(record))} disabled={Boolean(postalBusy)}>Refresh all</button></div><div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}><thead><tr><th style={{ textAlign: 'left', padding: 8 }}>Sent</th><th style={{ textAlign: 'left', padding: 8 }}>Matter</th><th style={{ textAlign: 'left', padding: 8 }}>Recipient</th><th style={{ textAlign: 'left', padding: 8 }}>Service</th><th style={{ textAlign: 'left', padding: 8 }}>Status</th><th style={{ textAlign: 'left', padding: 8 }}>Tracking</th><th style={{ textAlign: 'right', padding: 8 }}>Cost</th><th style={{ padding: 8 }}>Action</th></tr></thead><tbody>{postalMailings.map((record) => <tr key={record.id}><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.submitted_at ? new Date(record.submitted_at).toLocaleString() : '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.matter_label || record.matter_id}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}><strong>{record.recipient?.name}</strong><div style={{ fontSize: 12 }}>{[record.recipient?.address1, record.recipient?.city, record.recipient?.state, record.recipient?.postcode].filter(Boolean).join(', ')}</div></td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{MAILFORM_SERVICE_OPTIONS.find((option) => option.value === record.service)?.label || record.service}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}>{record.test_mode ? 'TEST - ' : ''}{record.provider_state || '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0', fontFamily: 'monospace' }}>{record.tracking_number || '-'}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0', textAlign: 'right' }}>{postalMoney(record.total_cents)}</td><td style={{ padding: 8, borderTop: '1px solid #e2e8f0' }}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><button type="button" onClick={() => openPostalMailedPdf(record)} disabled={!record.file_path}>PDF</button><button type="button" onClick={() => refreshPostalMailing(record)} disabled={postalBusy === `refresh:${record.id}`}>{postalBusy === `refresh:${record.id}` ? 'Refreshing...' : 'Refresh'}</button></div></td></tr>)}{!postalMailings.length && <tr><td colSpan="8" style={{ padding: 20, textAlign: 'center', color: '#64748b' }}>No mailings have been submitted from Mio yet.</td></tr>}</tbody></table></div></section>}
+      {postalTab === 'settings' && <div style={{ display: 'grid', gap: 14 }}><section className="card"><h2 style={{ marginTop: 0 }}>Mailform connection</h2><div style={{ display: 'grid', gap: 6 }}><div><strong>Configured:</strong> {postalProviderStatus.configured ? 'Yes' : 'No'}</div><div><strong>Mode:</strong> {postalProviderStatus.mode === 'live' ? 'LIVE' : 'TEST'}</div><div><strong>Mail writes enabled:</strong> {postalProviderStatus.writesEnabled ? 'Yes' : 'No'}</div><div><strong>Live-mail safety lock:</strong> {postalProviderStatus.liveEnabled ? 'Enabled' : 'Locked'}</div><div><strong>Mailform account:</strong> {postalProviderStatus.account?.email || postalProviderStatus.account?.name || '-'}</div><div><strong>Mailform balance:</strong> {postalProviderStatus.balance ? postalMoney(postalProviderStatus.balance.amount) : '-'}</div>{postalProviderStatus.connectionError && <div style={{ color: '#991b1b' }}><strong>Connection error:</strong> {postalProviderStatus.connectionError}</div>}</div><button type="button" onClick={loadPostalProviderStatus} disabled={postalBusy === 'status'} style={{ marginTop: 10 }}>Refresh connection</button></section><section className="card"><h2 style={{ marginTop: 0 }}>Vercel environment variables</h2><ol style={{ lineHeight: 1.7 }}><li>Add a Mailform test-mode API key as <code>MAILFORM_TEST_API_KEY</code>.</li><li>Set <code>MIO_MAIL_WRITES_ENABLED=true</code> to allow test submissions.</li><li>Keep <code>MIO_MAILFORM_MODE=test</code> until test mailings work correctly.</li><li>For live mailing later, add <code>MAILFORM_API_KEY</code>, set <code>MIO_MAILFORM_MODE=live</code>, and separately set <code>MIO_MAIL_LIVE_ENABLED=true</code>.</li></ol><p style={{ color: '#64748b' }}>The Mailform key stays on the server and is never returned to the browser.</p></section><section className="card"><h2 style={{ marginTop: 0 }}>Defaults</h2><label>Default mailing method<select value={postalSettings.default_service || 'USPS_CERTIFIED_RECEIPT'} onChange={(e) => { setPostalSettings({ ...postalSettings, default_service: e.target.value }); setPostalForm({ ...postalForm, service: e.target.value }) }}>{MAILFORM_SERVICE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></section></div>}
+    </div>
   }
 
   async function resetEventToNeedDate(sourceEvent) {
@@ -56529,6 +57049,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </a>
         )}
 
+        {canOpenPage('mail_center') && (
+          <a href="#mail_center" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('mail_center') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'mail_center' ? 900 : undefined, color: page === 'mail_center' ? '#1d4ed8' : undefined }}>
+            Mail Center
+          </a>
+        )}
 
         {canOpenPage('litigation_tracks') && (
           <a href="#litigation_tracks" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('litigation_tracks') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'litigation_tracks' ? 900 : undefined, color: page === 'litigation_tracks' ? '#1d4ed8' : undefined }}>
@@ -56623,6 +57148,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {canOpenPage('ideas') && (
           <a href="#ideas" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('ideas') }} style={{ display: 'block', marginBottom: 10 }}>
             Website Ideas
+          </a>
+        )}
+
+        {canOpenPage('mio_planning') && (
+          <a href="#mio_planning" onClick={(e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return; e.preventDefault(); setPage('mio_planning') }} style={{ display: 'block', marginBottom: 10, fontWeight: page === 'mio_planning' ? 900 : undefined, color: page === 'mio_planning' ? '#1d4ed8' : undefined }}>
+            Mio Roadmap
           </a>
         )}
 
@@ -56721,6 +57252,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
         {page === 'requested_relief' && canOpenPage('requested_relief') && renderRequestedReliefPage()}
 
         {page === 'enforcement' && canOpenPage('enforcement') && renderEnforcementPage()}
+
+        {page === 'mail_center' && canOpenPage('mail_center') && renderMailCenterPage()}
+
+        {page === 'mio_planning' && canOpenPage('mio_planning') && renderMioPlanningPage()}
 
         {page === 'ideas' && canOpenPage('ideas') && (
           <>
