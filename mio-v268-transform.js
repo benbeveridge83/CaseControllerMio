@@ -16,7 +16,7 @@ export default function mioV268Transform() {
     name: 'mio-v268-calculated-trust-account',
     enforce: 'pre',
     transform(source, id) {
-      if (!/[\\/]src[\\/]App\\.jsx(?:\\?|$)/.test(id)) return null
+      if (!id.includes('/src/App.jsx')) return null
       let code = source
 
       code = replaceRequired(code, "const MIO_APP_VERSION = 'Mio V267'", "const MIO_APP_VERSION = 'Mio V268'", 'V267 version constant')
@@ -80,7 +80,7 @@ export default function mioV268Transform() {
         date: new Date(timestamp).toISOString(),
         balance: Number(total.toFixed(2)),
         graph_events: graphEvents,
-        graph_event_label: singleEvent?.label || (graphEvents.length > 1 ? \\`\\${graphEvents.length} trust ledger changes\\` : ''),
+        graph_event_label: singleEvent?.label || (graphEvents.length > 1 ? String(graphEvents.length) + ' trust ledger changes' : ''),
         graph_event_source: singleEvent?.source || '',
         graph_event_direction: singleEvent?.direction || '',
         graph_event_amount: singleEvent?.amount || 0,
@@ -104,7 +104,7 @@ export default function mioV268Transform() {
     const rows = []
     ;(series.points || []).forEach((point) => {
       ;(point.graph_events || []).forEach((event, eventIndex) => rows.push({
-        id: \\`firm-trust-\\${point.date}-\\${eventIndex}-\\${event.matter_id || ''}\\`,
+        id: 'firm-trust-' + point.date + '-' + eventIndex + '-' + (event.matter_id || ''),
         date: event.date || point.date,
         matter_id: event.matter_id || '',
         matter_name: event.matter_name || '',
