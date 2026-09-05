@@ -1,4 +1,4 @@
-// Synthetic fixtures only. All external requests are intercepted; no real mail/filing/account is used.
+// Synthetic fixtures only. External requests are intercepted; no real mail or filings.
 import {chromium} from 'playwright-core'
 import JSZip from 'jszip'
 import {createRequire} from 'node:module'
@@ -57,7 +57,8 @@ try{
  const changed=workflows.get(ids[1]);changed.state=applyWithdrawalEvent(changed.state,{type:'email_received',step_id:'decision',message_id:'synthetic-reply',received_at:ago(.05),source_key:'synthetic-thread',source_version:'reply'},now);changed.revision++
  await page.getByRole('button',{name:'Refresh linked activity',exact:true}).click();await page.waitForTimeout(300);assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Beta matter'}).innerText(),/NEEDS ME/)
  await page.reload();await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000});assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Alpha matter'}).innerText(),/WAITING/)
- await page.goto('http://127.0.0.1:4173/#drafting',{waitUntil:'domcontentloaded'})
+ // A changed query forces a new document load; this app does not route on an arbitrary hash-only browser change.
+ await page.goto('http://127.0.0.1:4173/?test-view=drafting#drafting',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor({timeout:60000})
  await page.getByRole('button',{name:'Signature block',exact:true}).click();await page.getByRole('dialog').waitFor();assert.match(await page.locator('.mio-component-paper').innerText(),/Test Attorney/)
  await page.getByLabel('Edit populated wording').fill('Custom Attorney - this motion only')
