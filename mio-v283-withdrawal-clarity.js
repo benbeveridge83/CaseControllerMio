@@ -13,7 +13,7 @@ export default function mioV283WithdrawalClarity() {
     transform(source, id) {
       const path = id.split('?')[0].replaceAll('\\', '/')
       if (path.endsWith('/src/App.jsx')) {
-        return { code: replaceOnce(source, "const MIO_APP_VERSION = 'Mio V282 (multi-select editor)'", "const MIO_APP_VERSION = 'Mio V283 (withdrawal clarity)'", 'version'), map: null }
+        return { code: replaceOnce(source, "const MIO_APP_VERSION = 'Mio V281 (template blocks)'", "const MIO_APP_VERSION = 'Mio V283 (withdrawal clarity)'", 'version'), map: null }
       }
       if (!path.endsWith('/src/MioWithdrawalDashboard.jsx')) return null
       let code = source
