@@ -1,7 +1,7 @@
 name: Mio cloud storage safety
 on:
   push:
-    branches: [fix/cloud-persistence-audit-20260905]
+    branches: [main, fix/cloud-persistence-audit-20260905]
   pull_request:
     branches: [main]
 permissions:
@@ -19,7 +19,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: node --test tests/cloud-storage.test.js
+      - run: node --test tests/*.test.js
       - run: npm run build
       - name: Install test browser
         run: node node_modules/playwright-core/cli.js install --with-deps chromium

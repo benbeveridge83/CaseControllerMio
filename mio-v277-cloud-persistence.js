@@ -72,6 +72,12 @@ export function transformMioCloudPersistence(source){
     } catch (error) { alert('Recovery copy could not be verified: ' + (error.message || String(error))) }
   }`)
  code=code.replaceAll('Local audit trail of approved attempts from this browser. Vercel logs also record successful server mutations.','Cloud-saved audit trail of approved attempts. Vercel logs also record successful server mutations.')
+ code=code.replace(/^.*sessionStorage\.setItem\('caseMioContinueReliefMatter(?:Name|Id)'.*\n/gm,'')
+ code=code.replaceAll('Saved automatically on this browser.', 'Saved automatically to Supabase.')
+ code=code.replaceAll('Download emergency local backup', 'Download app-data backup')
+ code=code.replaceAll('Migrate local data to Supabase</button>', 'Preserve cloud recovery copy</button>')
+ code=code.replaceAll('Clear browser log', 'Clear saved log')
+ code=code.replaceAll('was too large for localStorage. Large file contents were not saved locally.', 'could not be queued for cloud saving. Check the save-status panel.')
  if(code.includes('localStorage.clear()')||code.includes('window.localStorage'))throw new Error('V277 left a direct browser-storage escape')
  return code
 }

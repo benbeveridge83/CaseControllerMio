@@ -36,7 +36,9 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   const enqueue=(s,fn)=>{const p=s.tail.catch(()=>{}).then(fn);s.tail=p.catch(()=>{});return p}
   const schedule=s=>{clearTimeout(s.timer);s.timer=setTimeout(()=>{if(current===s&&s.phase==='ready')void flushAll()},delay);s.timer.unref?.()}
   function stage(key,value,deleting=false) {
-    const s=ready();key=String(key)
+    const s=current
+    if(!s || !['ready','preserving'].includes(s.phase))throw new Error('Cloud data is not ready.')
+    key=String(key)
     if(!isAppKey(key))throw new Error('Unregistered application storage key.')
     const text=deleting?null:String(value??'')
     if(deleting)s.values.delete(key);else s.values.set(key,text)
@@ -113,12 +115,12 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
       for(let i=0;i<entries.length;i+=8)await archive(entries.slice(i,i+8).map(([key,change])=>({key,raw_value:change.deleting?JSON.stringify({mio_recovery_operation:'delete'}):change.raw})),'pending-edit')
       for(const [key,change] of entries)if(s.pending.get(key)===change){s.pending.delete(key);s.conflicts.delete(key)}
       notify();return !s.pending.size
-    }finally{if(current===s){s.phase='ready';notify()}}
+    }finally{if(current===s){s.phase='ready';notify();if(s.pending.size)schedule(s)}}
   }
   const storage={
     getItem(key){key=String(key);return isAppKey(key)?current?.values.get(key)??null:nativeStorage.getItem(key)},
-    setItem(key,value){key=String(key);if(isAppKey(key)){if(current?.phase==='ready')stage(key,value);return}if(!isNativeKey(key))throw new Error('Application data cannot be written to browser storage.');nativeStorage.setItem(key,String(value))},
-    removeItem(key){key=String(key);if(isAppKey(key)){if(current?.phase==='ready')stage(key,null,true);return}if(isNativeKey(key))nativeStorage.removeItem(key)},
+    setItem(key,value){key=String(key);if(isAppKey(key)){if(['ready','preserving'].includes(current?.phase))stage(key,value);return}if(!isNativeKey(key))throw new Error('Application data cannot be written to browser storage.');nativeStorage.setItem(key,String(value))},
+    removeItem(key){key=String(key);if(isAppKey(key)){if(['ready','preserving'].includes(current?.phase))stage(key,null,true);return}if(isNativeKey(key))nativeStorage.removeItem(key)},
     clear(){throw new Error('Bulk browser clearing is disabled. Preserve records in Supabase first.')},
     key(index){return [...new Set([...nativeKeys().filter(isNativeKey),...(current?.values.keys()||[])])][index]??null},
     get length(){return new Set([...nativeKeys().filter(isNativeKey),...(current?.values.keys()||[])]).size},
