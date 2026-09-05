@@ -14,7 +14,11 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   async function read(id) {
     const rows=[]
     for(let start=0;;start+=250){
-      const {data,error}=await client.from('case_mio_user_state').select('key,raw_value,json_value,updated_at').eq('user_id',id).order('key').range(start,start+249)
+      // All active Mio cloud rows are stored in raw_value. Do not preload json_value as well:
+      // large records such as drafting templates were being transferred twice and could leave
+      // the app stuck indefinitely on “Loading Mio from Supabase”. The obsolete live snapshot
+      // is not an application key and is excluded server-side because it is several MB by itself.
+      const {data,error}=await client.from('case_mio_user_state').select('key,raw_value,updated_at').eq('user_id',id).neq('key','__mio_live_state_snapshot__').order('key').range(start,start+249)
       if(error)throw error
       rows.push(...(data||[]).filter(r=>isAppKey(r.key)).map(r=>({...r,raw_value:raw(r)})))
       if(!data||data.length<250)return rows
