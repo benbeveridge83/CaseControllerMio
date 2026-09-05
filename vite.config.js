@@ -12,8 +12,9 @@ import mioV278DraftingComponents from './mio-v278-drafting-components.js'
 import mioV280DraftingDocumentSetup from './mio-v280-drafting-document-setup.js'
 import mioV281DraftingBlocks from './mio-v281-drafting-blocks.js'
 import mioV283WithdrawalClarity from './mio-v283-withdrawal-clarity.js'
+import mioV284DraftingStructuralDelete from './mio-v284-drafting-structural-delete.js'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), react()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), react()],
 })
