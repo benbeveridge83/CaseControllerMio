@@ -1,0 +1,2 @@
+import fs from 'node:fs'
+export async function transformAll(){let code=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8');for(const name of ['mio-v268-transform','mio-v268-hotfix','mio-v272-drafting-formatting','mio-v274-drafting-layout','mio-v275-drafting-editor','mio-v276-autofill-picker','mio-v277-cloud-persistence','mio-v278-drafting-components','mio-v279-withdrawal-dashboard']){const result=await(await import(`../${name}.js`)).default().transform(code,'/repo/src/App.jsx');code=typeof result==='string'?result:result?.code||code}return code}
