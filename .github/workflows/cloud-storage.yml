@@ -1,0 +1,52 @@
+name: Mio cloud storage safety
+on:
+  push:
+    branches: [fix/cloud-persistence-audit-20260905]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/cloud-storage.test.js
+      - run: npm run build
+      - name: Install test browser
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Browser verification with synthetic accounts only
+        shell: bash
+        run: |
+          mkdir -p test-results
+          npm run preview -- --host 127.0.0.1 --port 4173 > test-results/preview.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173 >/dev/null && break; sleep 1; done
+          export AGENT_BROWSER_EXECUTABLE_PATH="$(node --input-type=module -e "import{chromium}from'playwright-core';console.log(chromium.executablePath())")"
+          npx --yes agent-browser open http://127.0.0.1:4173
+          npx --yes agent-browser snapshot -i > test-results/agent-browser-snapshot.txt
+          npx --yes agent-browser screenshot test-results/agent-browser-login.png
+          npx --yes agent-browser close
+          node tests/cloud-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-cloud-storage-verification
+          retention-days: 3
+          path: |
+            test-results
+            dist
+            src/mioCloudStore.js
+            src/MioCloudBoundary.jsx
+            src/mioCloudRuntime.js
+            mio-v277-cloud-persistence.js
+            tests
