@@ -9,8 +9,9 @@ import mioV276AutofillPicker from './mio-v276-autofill-picker.js'
 import mioV277CloudPersistence from './mio-v277-cloud-persistence.js'
 import mioV279WithdrawalDashboard from './mio-v279-withdrawal-dashboard.js'
 import mioV278DraftingComponents from './mio-v278-drafting-components.js'
+import mioV280DraftingDocumentSetup from './mio-v280-drafting-document-setup.js'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), react()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), react()],
 })
