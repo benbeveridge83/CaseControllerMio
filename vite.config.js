@@ -19,8 +19,11 @@ import mioV292DraftingNonblocking from './mio-v292-drafting-nonblocking.js'
 import mioV293TemplateMatterTest from './mio-v293-template-matter-test.js'
 import mioV294TemplateOpenDownloadFix from './mio-v294-template-open-download-fix.js'
 import mioV295BindingReanchor from './mio-v295-binding-reanchor.js'
+import mioV296DraftingSanitize from './mio-v296-drafting-sanitize.js'
+import mioV296AiPronouns from './mio-v296-ai-pronouns.js'
+import mioV296MatterInformation from './mio-v296-matter-information.js'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), react()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV296DraftingSanitize(), mioV296AiPronouns(), mioV296MatterInformation(), react()],
 })
