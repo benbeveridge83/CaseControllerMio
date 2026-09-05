@@ -14,7 +14,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   async function read(id) {
     const rows=[]
     for(let start=0;;start+=250){
-      const {data,error}=await client.from('case_mio_user_state').select('key,raw_value,json_value,updated_at').eq('user_id',id).order('key').range(start,start+249)
+      const {data,error}=await client.from('case_mio_user_state').select('key,raw_value,updated_at').eq('user_id',id).neq('key','__mio_live_state_snapshot__').order('key').range(start,start+249)
       if(error)throw error
       rows.push(...(data||[]).filter(r=>isAppKey(r.key)).map(r=>({...r,raw_value:raw(r)})))
       if(!data||data.length<250)return rows
@@ -93,7 +93,6 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   }
   async function migrateLegacy() {
     const s=current;if(s?.phase!=='prepared')throw new Error('Migration must finish before the workspace opens.')
-    // The caller asks the user to confirm ownership because old keys were unscoped.
     const rows=legacyEntries();let removed=0,conflicts=0
     for(let i=0;i<rows.length;i+=8){
       const batch=rows.slice(i,i+8);await archive(batch);check(s)
