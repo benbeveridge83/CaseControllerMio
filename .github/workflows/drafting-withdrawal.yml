@@ -1,0 +1,33 @@
+name: Drafting and withdrawal verification
+on:
+  push:
+    branches: [feature/drafting-withdrawal-20260905]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture source for reproducible offline verification
+        run: |
+          mkdir -p test-results
+          tar --exclude=.git --exclude=node_modules --exclude=test-results --exclude='.env*' -czf test-results/source.tar.gz .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/*.test.js
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-drafting-withdrawal-verification
+          retention-days: 3
+          path: test-results
