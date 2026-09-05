@@ -1,0 +1,18 @@
+import {newWithdrawal,applyWithdrawalEvent} from './mioWithdrawalWorkflow.js'
+export function createWithdrawalRepository(client){
+ let owner='',epoch=0,snapshot={rows:{},loading:false,error:''};const listeners=new Set(),queues=new Map()
+ const emit=patch=>{snapshot={...snapshot,...patch};listeners.forEach(fn=>fn())}
+ const check=(id,ticket)=>{if(owner!==id||epoch!==ticket)throw new Error('Account changed. Reload Withdrawals before saving.')}
+ const account=id=>{if(owner!==id){owner=id;epoch++;emit({rows:{},loading:false,error:''})}}
+ async function load(id){account(id);if(!id)return;const ticket=epoch;emit({loading:true,error:''});try{
+  const rows=[];for(let from=0;;from+=100){const{data,error}=await client.from('mio_withdrawal_workflows').select('*').eq('owner_id',id).order('matter_id').range(from,from+99);if(error)throw error;rows.push(...(data||[]));if((data||[]).length<100)break}
+  check(id,ticket);const merged={...snapshot.rows};for(const row of rows)if(!merged[row.matter_id]||row.revision>=merged[row.matter_id].revision)merged[row.matter_id]=row;emit({rows:merged,loading:false})
+ }catch(e){if(owner===id&&epoch===ticket)emit({loading:false,error:e.message||String(e)});throw e}}
+ async function fetchRow(id,matter){const{data,error}=await client.from('mio_withdrawal_workflows').select('*').eq('owner_id',id).eq('matter_id',matter).maybeSingle();if(error)throw error;return data}
+ function transact(id,matter,fn){if(!id||owner!==id)return Promise.reject(new Error('Account changed. Reload Withdrawals before saving.'));const ticket=epoch,key=id+':'+matter;const task=(queues.get(key)||Promise.resolve()).catch(()=>{}).then(()=>{check(id,ticket);return fn(ticket)});queues.set(key,task);task.finally(()=>{if(queues.get(key)===task)queues.delete(key)}).catch(()=>{});return task}
+ async function write(id,matter,old,state,event,ticket){check(id,ticket);const{data,error}=await client.rpc('mio_save_withdrawal_v1',{p_owner_id:id,p_matter_id:matter,p_expected_revision:old?.revision||0,p_state:state,p_event_id:event.event_id||crypto.randomUUID(),p_event:event});check(id,ticket);if(error){emit({error:error.code==='40001'?'Another window changed this workflow. Refresh and review before retrying.':error.message});throw error}if(!data?.state||String(data.matter_id)!==String(matter))throw new Error('Supabase did not acknowledge the workflow. Refresh before retrying.');emit({rows:{...snapshot.rows,[matter]:data},error:''});return data}
+ const initialize=(id,matter,startedAt=null)=>transact(id,matter,async ticket=>{const old=await fetchRow(id,matter);check(id,ticket);if(old){emit({rows:{...snapshot.rows,[matter]:old}});return old}return write(id,matter,null,newWithdrawal(matter,startedAt),{type:'initialize',note:startedAt?'Recorded withdrawal-entry date retained.':'Historical start unknown; not inferred from matter creation.'},ticket)})
+ const apply=(id,matter,event)=>transact(id,matter,async ticket=>{const old=snapshot.rows[matter]||await fetchRow(id,matter);check(id,ticket);if(!old)throw new Error('Initialize this matter on Withdrawals first.');const state=applyWithdrawalEvent(old.state,event);return state===old.state?old:write(id,matter,old,state,event,ticket)})
+ async function history(id,matter){const ticket=epoch;check(id,ticket);const{data,error}=await client.from('mio_withdrawal_events').select('event_id,event,recorded_at,revision').eq('owner_id',id).eq('matter_id',matter).order('revision',{ascending:false}).limit(100);check(id,ticket);if(error)throw error;return data||[]}
+ return{account,load,initialize,apply,history,getSnapshot:()=>snapshot,subscribe:fn=>{listeners.add(fn);return()=>listeners.delete(fn)}}
+}
