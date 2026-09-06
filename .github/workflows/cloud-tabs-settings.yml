@@ -33,17 +33,47 @@ jobs:
             index.html
       - run: npm ci
       - name: Unit regressions
-        run: node --test tests/*.test.js
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          node --test tests/*.test.js | tee test-results/unit-regressions.log
       - name: Build production application and validate emitted syntax
         run: npm run build
       - name: Install browser
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Browser regression checks
         run: |
+          set -euo pipefail
           npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
-          node tests/cloud-startup-browser.mjs
-          if test -f tests/cloud-tabs-browser.mjs; then node tests/cloud-tabs-browser.mjs; fi
+          node tests/cloud-startup-browser.mjs | tee test-results/cloud-startup-browser.log
+          node tests/cloud-tabs-browser.mjs | tee test-results/cloud-tabs-browser.log
+      - name: Verify public main deployment matches tested bundle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          python3 - <<'PY'
+          import pathlib,re,urllib.request,urllib.parse,time,json,hashlib,os
+          root='https://case-controller-mio.vercel.app/'
+          expected=re.search(r'src="([^"]+\.js)"',pathlib.Path('dist/index.html').read_text()).group(1)
+          local=pathlib.Path('dist'+expected).read_bytes()
+          def get(url):
+              return urllib.request.urlopen(urllib.request.Request(url,headers={'Cache-Control':'no-cache'}),timeout=20).read()
+          last=''
+          for attempt in range(36):
+              try:
+                  html=get(root+'?mio_release='+os.environ['GITHUB_SHA']).decode()
+                  if expected not in html: raise RuntimeError('Production is still serving an earlier bundle')
+                  remote=get(urllib.parse.urljoin(root,expected))
+                  if hashlib.sha256(remote).digest()!=hashlib.sha256(local).digest(): raise RuntimeError('Production bundle does not match the tested build')
+                  if b'Mio V301 (fast tabs / precise settings)' not in remote: raise RuntimeError('Expected release marker is missing')
+                  result={'production_url':root,'commit':os.environ['GITHUB_SHA'],'bundle':expected,'sha256':hashlib.sha256(remote).hexdigest(),'exact_tested_bundle':True,'status':'passed'}
+                  pathlib.Path('test-results/production-smoke.json').write_text(json.dumps(result,indent=2))
+                  print(json.dumps(result));break
+              except Exception as error:
+                  last=str(error)
+                  if attempt==35: raise RuntimeError('Production verification failed: '+last)
+                  time.sleep(5)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
