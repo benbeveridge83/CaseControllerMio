@@ -1,12 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { COMPONENTS, resolveCaseStyle, fileComponentData, fillComponent, validateLayout, componentIssues, semanticSuggestions, reviewSuggestions, componentHasTarget } from '../src/mioDraftingComponents.js'
+import { COMPONENTS, generatedCaseCaption, resolveCaseStyle, fileComponentData, fillComponent, validateLayout, componentIssues, semanticSuggestions, reviewSuggestions, componentHasTarget } from '../src/mioDraftingComponents.js'
 import { transformDraftingComponents } from '../mio-v278-drafting-components.js'
 const profile = { default_case_style_id: 'sapcr', case_styles: [{id:'divorce-children',kind:'divorce',requires_children:true},{id:'divorce',kind:'divorce',requires_children:false},{id:'sapcr',kind:'sapcr'},{id:'custom',kind:'custom'}] }
-test('divorce captions are child-aware; all other types use configurable fallback', () => {
-  assert.equal(resolveCaseStyle(profile,'Divorce',true).id,'divorce-children')
-  assert.equal(resolveCaseStyle(profile,'DIVORCE',false).id,'divorce')
+test('automatic divorce style is child-aware within the generated caption', () => {
+  assert.equal(resolveCaseStyle(profile,'Divorce',true).id,'@divorce')
+  assert.equal(resolveCaseStyle(profile,'DIVORCE',false).id,'@divorce')
+  const data={case_type:'Divorce',petitioner_name:'Alpha',respondent_name:'Beta'}
+  assert.doesNotMatch(generatedCaseCaption(data,profile),/CHILDREN|A CHILD/)
+  assert.match(generatedCaseCaption({...data,children:[{name:'Child One'}]},profile),/CHILD ONE\nA CHILD/)
   for(const type of ['SAPCR modification','Enforcement','Other','']) assert.equal(resolveCaseStyle(profile,type,false).id,'sapcr')
 })
 test('case mapping, document override, and reset have predictable precedence', () => {
@@ -29,17 +32,18 @@ test('append does not change a pre-existing mapped block',()=>{
 })
 test('unpopulated service facts are visible, never invented',()=>{
  assert.equal(fillComponent('Served {{who}} on {{date}}',{who:'Counsel'}),'Served Counsel on [Missing: date]')
- assert.equal(componentIssues({drafting_components:{a:{certificate:{text:'[Missing: date]',placement:'bound'}}}},{id:'a'}).length,1)
+ assert.equal(componentIssues({drafting_components:{a:{certificate_detailed:{text:'[Missing: date]',placement:'bound'}}}},{id:'a'}).length,1)
 })
 test('layout validation rejects corrupt or unsafe dimensions',()=>{
  for(const v of [{font:'Times',size:0,line:1,margin:1},{font:'Times',size:12,line:'NaN',margin:1},{font:'Times',size:12,line:1,margin:9}])assert.throws(()=>validateLayout(v))
  assert.deepEqual(validateLayout({font:'Times',size:'12',line:'1.5',margin:'1'}),{font:'Times',size:12,line:1.5,margin:1})
 })
 test('component targets are file-scoped and inactive bindings do not count',()=>{
- const c=COMPONENTS.find(c=>c.key==='certificate'), t={bindings:[{kind:'component_block',field_key:c.token,file_id:'a',is_active:true}]}
+ const c=COMPONENTS.find(c=>c.key==='certificate_detailed'), t={bindings:[{kind:'component_block',field_key:c.token,file_id:'a',is_active:true}]}
  assert.equal(componentHasTarget(c,t,{id:'a'}),true)
  assert.equal(componentHasTarget(c,t,{id:'b'}),false)
- assert.equal(componentHasTarget(c,{bindings:[]},{id:'a'},'{{certificate_of_service_text}}'),true)
+ assert.equal(componentHasTarget(c,{bindings:[{...t.bindings[0],is_active:false}]},{id:'a'}),false)
+ assert.equal(componentHasTarget(c,{bindings:[]},{id:'a'},'{{certificate_of_service_detailed_text}}'),true)
 })
 test('detector rejects legal-language false positives and does not globalize pronouns',()=>{
  const results=reviewSuggestions([{kind:'field',source_text:'Texas Rules'},{kind:'field',source_text:'Civil Procedure'},{kind:'pronoun',source_text:'his',replace_all:true,source:'local_ai'}])

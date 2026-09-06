@@ -7,14 +7,6 @@ for(const plugin of config.plugins.flat(Infinity).filter(Boolean)){
  const r=await plugin.transform(code,process.cwd()+'/src/App.jsx');if(r)code=typeof r==='string'?r:r.code
 }
 const ast=parse(code,{sourceType:'module',plugins:['jsx']})
-const names=new Set(['draftingStudioEnsureField','mergeBuiltInDraftingTemplates','draftingStudioOpenTemplate','renderDraftingVisualBuilder','draftingWordSetElementText','generateDocxFromTemplateFile','draftingBindingValue','draftingResolveFieldSource','draftingStudioV274ParagraphNode','draftingV276ChooseSource'])
-function walk(node){
- if(!node||typeof node!=='object')return
- if(node.type==='FunctionDeclaration'){
-   const source=code.slice(node.start,node.end)
-   if(names.has(node.id?.name)||(source.length<20000&&source.includes('mioApplyComponentXml('))){console.log('\nFUNCTION '+node.id.name+'\n'+source);names.delete(node.id.name)}
- }
- for(const [key,value] of Object.entries(node)){if(['loc','start','end','extra'].includes(key))continue;if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value)}
-}
-walk(ast)
-console.log('Unmatched names:',[...names])
+const names=new Set(['draftingApplyVisualBindings','renderDraftingSettingsLegacy','draftingStudioV284SelectParagraph'])
+function walk(node){if(!node||typeof node!=='object')return;if(node.type==='FunctionDeclaration'&&names.has(node.id?.name)){console.log('\nFUNCTION '+node.id.name+'\n'+code.slice(node.start,node.end));names.delete(node.id.name)}for(const [key,value] of Object.entries(node)){if(['loc','start','end','extra'].includes(key))continue;if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value)}}
+walk(ast);console.log('PASS: complete transformed application parses without syntax errors')
