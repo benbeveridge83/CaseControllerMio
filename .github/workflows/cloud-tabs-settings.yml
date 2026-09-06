@@ -1,0 +1,54 @@
+name: Cloud tabs and precise settings verification
+on:
+  push:
+    branches: [fix/cloud-tabs-settings-301, main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Inspect startup and hearing integration
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          p=pathlib.Path('src/App.jsx'); lines=p.read_text().splitlines()
+          print('APP lines',len(lines))
+          for i,line in enumerate(lines[:60]): print(f'{i+1}: {line[:1200]}')
+          for i,line in enumerate(lines):
+            if re.search(r'(?:function|const|let)\s+\w*(?:[Hh]earing|[Ss]ettingAlert|[Cc]alendarAlert)\w*',line): print(f'SYMBOL {i+1}: {line[:1200]}')
+            if 'Detected non-file-stamp' in line or 'LIKELY HEARING / SETTING' in line:
+              print('\nALERT',i+1)
+              for j in range(max(0,i-8),min(len(lines),i+14)): print(f'{j+1}: {lines[j][:1500]}')
+          print('FILES',*[str(f) for f in pathlib.Path('src').glob('*')],*[str(f) for f in pathlib.Path('tests').glob('*')],sep='\n')
+          print('VITE CONFIG',pathlib.Path('vite.config.js').read_text())
+          PY
+      - run: npm ci
+      - name: Unit regressions
+        run: node --test tests/*.test.js
+      - name: Build production application and validate emitted syntax
+        run: npm run build
+      - name: Install browser
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Browser regression checks
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/cloud-startup-browser.mjs
+          if test -f tests/cloud-tabs-browser.mjs; then node tests/cloud-tabs-browser.mjs; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-cloud-tabs-settings
+          retention-days: 3
+          path: test-results
