@@ -1,0 +1,99 @@
+--- a/src/mioDraftingComponents.js
++++ b/src/mioDraftingComponents.js
+@@ -11,6 +11,7 @@
+ 
+ export const CASE_STYLE_OPTIONS = [
+   { id: '@divorce', label: 'Divorce — petitioner, respondent, then children', kind: 'divorce' },
++  { id: '@modification', label: 'Modification — In the Interest of child / children', kind: 'sapcr' },
+   { id: '@sapcr', label: 'SAPCR — In the Interest of child / children', kind: 'sapcr' },
+   { id: '@habeas', label: 'Habeas Corpus — Ex Parte child / children', kind: 'habeas' },
+   { id: '@civil', label: 'Civil — Petitioner / Plaintiff v. Respondent / Defendant', kind: 'civil' }
+@@ -65,7 +66,9 @@
+   if (mapped && byId(mapped)) return byId(mapped)
+   if (/\bdivorce\b/.test(key)) return builtinStyle('@divorce')
+   if (/habeas/.test(key)) return builtinStyle('@habeas')
+-  if (hasChildren && /(sapcr|parent|custody|modification|enforcement|support|possession)/.test(key)) return builtinStyle('@sapcr')
++  if (/modification/.test(key)) return builtinStyle('@modification')
++  if (/sapcr|parentage|suit affecting|custody/.test(key)) return builtinStyle('@sapcr')
++  if (hasChildren && /(parent|enforcement|support|possession)/.test(key)) return builtinStyle('@sapcr')
+   return byId(profile?.default_case_style_id) || (hasChildren ? builtinStyle('@sapcr') : builtinStyle('@civil')) || styles[0] || null
+ }
+ 
+@@ -93,11 +96,11 @@
+   if (Array.isArray(data.children)) children = data.children.filter(Boolean)
+   else if (Array.isArray(data.child_list)) children = data.child_list.filter(Boolean)
+   else if (Array.isArray(data.children_detail)) children = data.children_detail.filter(Boolean)
+-  if (!children.length) {
+-    const names = String(data.children_names || data.child_names || '').split(/\n|;|,(?=\s*[A-Z])/).map(v => v.trim()).filter(Boolean)
++  if (!Array.isArray(data.children) && !Array.isArray(data.child_list) && !Array.isArray(data.children_detail)) {
++    const names = String(data.children_names || data.child_names || '').split(/\n|;/).map(v => v.trim()).filter(Boolean)
+     children = names.map(name => ({ name }))
+   }
+-  return children.map((child, index) => ({ child, index, name: nameOfChild(child), dob: dateValue(child), age: Number(child?.age) })).filter(item => item.name).sort((a, b) => {
++  return children.map((child, index) => ({ child, index, name: nameOfChild(child), dob: dateValue(child), age: child?.age === '' || child?.age == null ? NaN : Number(child.age) })).filter(item => item.name || item.child?.id).sort((a, b) => {
+     if (a.dob != null && b.dob != null) return a.dob - b.dob
+     if (Number.isFinite(a.age) && Number.isFinite(b.age)) return b.age - a.age
+     return a.index - b.index
+@@ -113,12 +116,16 @@
+ }
+ 
+ export function childCaptionLines(data = {}) {
+-  const names = sortedChildren(data).map(nameOfChild).filter(Boolean)
+-  return {
+-    names,
+-    names_text: formatNamesWithAnd(names),
+-    child_word: names.length === 1 ? 'A CHILD' : 'CHILDREN'
+-  }
++  const names = sortedChildren(data).map(child => nameOfChild(child) || '[Missing: child name]')
++  const lines = names.length < 2
++    ? [names[0] ? names[0].replace(/,+$/, '') + ',' : '[Missing: child name],']
++    : names.map((name, index) => {
++        const clean = name.replace(/,+$/, '')
++        if (index === names.length - 1) return clean + ','
++        if (index === names.length - 2) return clean + (names.length > 2 ? ', AND' : ' AND')
++        return clean + ','
++      })
++  return { names, names_text: formatNamesWithAnd(names), lines, child_word: names.length === 1 ? 'A CHILD' : 'CHILDREN' }
+ }
+ 
+ export function generatedCaseCaption(data = {}, profile = {}) {
+@@ -127,11 +134,11 @@
+   const petitioner = String(data.petitioner_name || data.petitioner || data.client_name || '[PETITIONER]').trim().toUpperCase()
+   const respondent = String(data.respondent_name || data.respondent || data.opposing_party_name || '[RESPONDENT]').trim().toUpperCase()
+   const child = childCaptionLines(data)
+-  if (style.kind === 'sapcr') return ['IN THE INTEREST OF', child.names_text || '[CHILD NAME]', child.child_word].join('\n')
+-  if (style.kind === 'habeas') return [`EX PARTE ${child.names_text || '[CHILD NAME]'}`, child.child_word].join('\n')
++  if (style.kind === 'sapcr') return ['IN THE INTEREST OF', ...child.lines, child.child_word].join('\n')
++  if (style.kind === 'habeas') return ['EX PARTE', ...child.lines, child.child_word].join('\n')
+   if (style.kind === 'civil') return [petitioner, 'v.', respondent].join('\n')
+   const lines = ['IN THE MATTER OF THE', 'MARRIAGE OF', petitioner, 'AND', respondent]
+-  if (child.names.length) lines.push('AND IN THE INTEREST OF', child.names_text, child.child_word)
++  if (child.names.length) lines.push('AND IN THE INTEREST OF', ...child.lines, child.child_word)
+   return lines.join('\n')
+ }
+ 
+@@ -182,8 +189,9 @@
+ export function fileComponentData(data, file, profile) {
+   const fileKey = String(file?.id || file?.name || '')
+   const saved = data?.drafting_components?.[fileKey] || {}
+-  const result = { ...data }
+-  for (const c of COMPONENTS) result[c.token] = saved[c.key]?.placement === 'bound' ? String(saved[c.key].text ?? '') : componentDefault(c.key, data, profile)
++  const chosenStyle = data?._case_style_override || saved.case_style_id || data?.case_style_id || ''
++  const result = { ...data, case_style_id: chosenStyle }
++  for (const c of COMPONENTS) result[c.token] = saved[c.key]?.placement === 'bound' ? String(saved[c.key].text ?? '') : componentDefault(c.key, result, profile)
+   if (saved.caption?.placement === 'bound') {
+     const lines = result.case_caption_text.split('\n')
+     result.caption_left_line_1 = lines[0] || ''
+@@ -192,6 +200,12 @@
+   } else if (result.case_style_id?.startsWith?.('@') || resolveCaseStyle(profile, result.matter_case_type || result.case_type || '', sortedChildren(result).length > 0, result.case_style_id || '')?.generated) {
+     result.case_caption_text = generatedCaseCaption(result, profile)
+   }
++  if (result.case_caption_text) {
++    const lines = result.case_caption_text.split('\n')
++    result.caption_left_line_1 = lines[0] || ''
++    result.caption_left_line_2 = lines[1] || ''
++    result.caption_left_line_3 = lines.slice(2).join('\n')
++  }
+   const sharedSetup = normalizePageSetup(profile?.page_setup_defaults || {})
+   result._page_setup = normalizePageSetup(saved.page_setup || (profile?.page_setup_apply_by_default ? sharedSetup : DEFAULT_PAGE_SETUP))
+   result._page_setup_explicit = !!saved.page_setup || profile?.page_setup_apply_by_default === true
