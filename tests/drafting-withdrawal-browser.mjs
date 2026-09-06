@@ -64,7 +64,7 @@ try{
  await page.locator('summary').filter({hasText:'Matter data & document options'}).click({timeout:60000})
  await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor()
  await page.getByRole('button',{name:'Signature block',exact:true}).click();await page.getByRole('dialog').waitFor();assert.match(await page.locator('.mio-component-paper').innerText(),/Test Attorney/)
- await page.getByLabel('Populated wording',{exact:true}).fill('Custom Attorney - this motion only')
+ await page.getByRole('dialog').locator('textarea').fill('Custom Attorney - this motion only')
  await page.getByRole('button',{name:'Apply to this draft',exact:true}).click()
  await page.getByLabel(/^File to customize/).selectOption('word-b')
  await page.getByRole('button',{name:'Signature block',exact:true}).click();assert.doesNotMatch(await page.locator('.mio-component-paper').innerText(),/Custom Attorney/);await page.getByRole('button',{name:'Close preview',exact:true}).click()
