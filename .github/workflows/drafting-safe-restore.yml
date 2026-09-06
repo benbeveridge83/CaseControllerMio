@@ -23,39 +23,18 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Inspect drafting integration only
-        run: |
-          mkdir -p test-results
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import config from './vite.config.js';
-          let code=fs.readFileSync('src/App.jsx','utf8');
-          for (const p of config.plugins.flat(Infinity).filter(Boolean)) {
-            if (!p.name?.startsWith('mio-') || !p.transform) continue;
-            const result=await p.transform(code,process.cwd()+'/src/App.jsx');
-            if(result) code=typeof result==='string'?result:result.code;
-          }
-          fs.writeFileSync('test-results/App.transformed.jsx',code);
-          const names=['cleanDraftingTemplate','draftingNormalizeBinding','draftingStudioCurrentTemplate','draftingStudioCurrentFile','draftingStudioCommitBinding','draftingStudioAddBindingFromSelection','draftingStudioCaptureSelection','draftingStudioDeleteBinding','draftingApplyBindingsToXml','draftingReplacePlainTextInElement','renderDraftingVisualBuilder'];
-          for(const name of names){
-            const pattern=new RegExp('^([ \\t]*)(?:async )?function '+name+'\\(', 'm');
-            const m=code.match(pattern); if(!m){console.log('MISSING '+name);continue;}
-            const tail=code.slice(m.index+m[0].length);
-            const end=tail.search(new RegExp('^'+m[1]+'(?:async )?function \\w+\\(', 'm'));
-            const text=code.slice(m.index,m.index+m[0].length+(end<0?8000:end));
-            fs.writeFileSync('test-results/'+name+'.txt',text);
-            if(name!=='renderDraftingVisualBuilder') console.log('\nFUNCTION '+name+'\n'+text.slice(0,20000));
-          }
-          console.log('\nDRAFTING STATE/SAVE REFERENCES');
-          const lines=code.split('\n'); for(let i=0;i<lines.length;i++) if(/caseMioDraftingTemplates|setDraftingTemplateForm\(clean|setDraftingTemplates\(/.test(lines[i])) console.log((i+1)+': '+lines.slice(Math.max(0,i-1),i+3).join('\n').slice(0,1200));
-          NODE
+        run: node tests/inspect-drafting-safe.mjs
       - name: Unit regressions
         run: node --test tests/*.test.js
       - name: Build complete application
         run: npm run build
       - name: Validate generated JavaScript syntax
-        run: find dist/assets -name '*.js' -exec node --check '{}' ';'
-      - name: Install Chromium
-        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+        run: |
+          for file in dist/assets/*.js; do node --check "$file" || exit 1; done
+      - name: Install Chromium and DOCX test dependency
+        run: |
+          npm install --no-save jszip@3.10.1
+          node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Browser startup and drafting regression checks
         run: |
           npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
