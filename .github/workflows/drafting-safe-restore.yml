@@ -1,0 +1,70 @@
+name: Isolated drafting repair verification
+on:
+  push:
+    branches: [fix/v299-safe-restore-20260906]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: drafting-safe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Inspect drafting integration only
+        run: |
+          mkdir -p test-results
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import config from './vite.config.js';
+          let code=fs.readFileSync('src/App.jsx','utf8');
+          for (const p of config.plugins.flat(Infinity).filter(Boolean)) {
+            if (!p.name?.startsWith('mio-') || !p.transform) continue;
+            const result=await p.transform(code,process.cwd()+'/src/App.jsx');
+            if(result) code=typeof result==='string'?result:result.code;
+          }
+          fs.writeFileSync('test-results/App.transformed.jsx',code);
+          const names=['cleanDraftingTemplate','draftingNormalizeBinding','draftingStudioCurrentTemplate','draftingStudioCurrentFile','draftingStudioCommitBinding','draftingStudioAddBindingFromSelection','draftingStudioCaptureSelection','draftingStudioDeleteBinding','draftingApplyBindingsToXml','draftingReplacePlainTextInElement','renderDraftingVisualBuilder'];
+          for(const name of names){
+            const pattern=new RegExp('^([ \\t]*)(?:async )?function '+name+'\\(', 'm');
+            const m=code.match(pattern); if(!m){console.log('MISSING '+name);continue;}
+            const tail=code.slice(m.index+m[0].length);
+            const end=tail.search(new RegExp('^'+m[1]+'(?:async )?function \\w+\\(', 'm'));
+            const text=code.slice(m.index,m.index+m[0].length+(end<0?8000:end));
+            fs.writeFileSync('test-results/'+name+'.txt',text);
+            if(name!=='renderDraftingVisualBuilder') console.log('\nFUNCTION '+name+'\n'+text.slice(0,20000));
+          }
+          console.log('\nDRAFTING STATE/SAVE REFERENCES');
+          const lines=code.split('\n'); for(let i=0;i<lines.length;i++) if(/caseMioDraftingTemplates|setDraftingTemplateForm\(clean|setDraftingTemplates\(/.test(lines[i])) console.log((i+1)+': '+lines.slice(Math.max(0,i-1),i+3).join('\n').slice(0,1200));
+          NODE
+      - name: Unit regressions
+        run: node --test tests/*.test.js
+      - name: Build complete application
+        run: npm run build
+      - name: Validate generated JavaScript syntax
+        run: find dist/assets -name '*.js' -exec node --check '{}' ';'
+      - name: Install Chromium
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Browser startup and drafting regression checks
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/cloud-startup-browser.mjs
+          if test -f tests/drafting-safe-browser.mjs; then node tests/drafting-safe-browser.mjs; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drafting-safe-verification
+          retention-days: 3
+          path: test-results
