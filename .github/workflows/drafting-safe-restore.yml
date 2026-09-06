@@ -1,0 +1,52 @@
+name: Isolated drafting repair verification
+on:
+  push:
+    branches: [fix/v299-safe-restore-20260906]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: drafting-safe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Inspect drafting integration only
+        run: node tests/inspect-drafting-safe.mjs
+      - name: Unit regressions
+        run: |
+          mkdir -p test-results
+          node --test tests/*.test.js > test-results/unit-tests.log 2>&1 || { cat test-results/unit-tests.log; exit 1; }
+          tail -n 10 test-results/unit-tests.log
+      - name: Build complete application
+        run: npm run build
+      - name: Validate generated JavaScript syntax
+        run: |
+          for file in dist/assets/*.js; do node --check "$file" || exit 1; done
+      - name: Install Chromium and DOCX test dependency
+        run: |
+          npm install --no-save jszip@3.10.1
+          node node_modules/playwright-core/cli.js install --with-deps chromium > /tmp/browser-install.log 2>&1 || { tail -n 50 /tmp/browser-install.log; exit 1; }
+      - name: Browser startup and drafting regression checks
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/cloud-startup-browser.mjs
+          node tests/drafting-safe-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drafting-safe-verification
+          retention-days: 3
+          path: test-results

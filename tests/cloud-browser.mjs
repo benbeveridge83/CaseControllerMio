@@ -2,6 +2,7 @@
 import {chromium} from 'playwright-core'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import {chunkRows} from './cloud-chunk-fixture.js'
 fs.mkdirSync('test-results',{recursive:true})
 const browser=await chromium.launch({headless:true})
 const id='00000000-0000-4000-8000-000000000277',email='storage-test@example.invalid'
@@ -22,6 +23,7 @@ async function open({loggedIn=false,legacy=false,failRead=false}={}){
   if(!url.hostname.endsWith('.supabase.co'))return respond({})
   if(url.pathname.includes('/auth/v1/'))return respond(url.pathname.endsWith('/user')?user:session)
   const table=url.pathname.split('/').pop()
+  if(table==='mio_cloud_state_read_chunks_v297')return failRead?respond({message:'Synthetic cloud read failure'},503):respond(chunkRows([...states.values()].map(row=>({...row,user_id:id})),request.postDataJSON()))
   if(table==='mio_cloud_state_write_v277'){
     const p=request.postDataJSON(),old=states.get(p.p_key)
     if(old?.raw_value!==p.p_raw&&(!!old!==p.p_expected_exists||(old&&old.updated_at!==p.p_expected_at)))return respond({code:'40001',message:'Synthetic stale write'},409)

@@ -5,6 +5,7 @@ import {createRequire} from 'node:module'
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {newWithdrawal,applyWithdrawalEvent} from '../src/mioWithdrawalWorkflow.js'
+import {chunkRows} from './cloud-chunk-fixture.js'
 const require=createRequire(import.meta.url),browser=await chromium.launch({headless:true})
 fs.mkdirSync('test-results',{recursive:true})
 const owner='00000000-0000-4000-8000-000000000279',email='workflow-test@example.invalid',now=new Date().toISOString()
@@ -25,6 +26,7 @@ const template={id:'template-test',name:'Synthetic Word template',status:'approv
 const states=new Map(Object.entries({caseMioDraftingProfile:profile,caseMioDraftingTemplates:[template],caseMioDraftingSessionV278:{matter_id:ids[0],template_id:template.id,selected_file_names:['word-a','word-b'],field_values:{}}}).map(([key,value])=>[key,{key,raw_value:JSON.stringify(value),json_value:value,updated_at:ago(1)}]))
 const context=await browser.newContext({viewport:{width:1500,height:1000}}),page=await context.newPage(),errors=[],events=[]
 page.on('pageerror',error=>errors.push(error.message))
+page.on('dialog',async dialog=>{if(dialog.type()==='beforeunload')await dialog.accept();else await dialog.dismiss()})
 await context.addInitScript({path:require.resolve('jszip/dist/jszip.min.js')})
 await context.addInitScript(({session})=>{localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session));window.__appDiskWrites=[];const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(this===localStorage&&/^(caseMio|caseController)/.test(key)&&!/^caseMio(BackgroundLeaseV258:|SupabaseSessionV1$)/.test(key))window.__appDiskWrites.push(key);return original.call(this,key,value)}},{session})
 await page.route('**/*',async route=>{
@@ -33,6 +35,7 @@ await page.route('**/*',async route=>{
  if(!url.hostname.endsWith('.supabase.co'))return respond({})
  if(url.pathname.includes('/auth/v1/'))return respond(url.pathname.endsWith('/user')?user:session)
  const table=url.pathname.split('/').pop(),single=req.headers().accept?.includes('vnd.pgrst.object')
+ if(table==='mio_cloud_state_read_chunks_v297')return respond(chunkRows([...states.values()].map(row=>({...row,user_id:owner})),req.postDataJSON()))
  if(table==='mio_cloud_state_write_v277'){const p=req.postDataJSON(),old=states.get(p.p_key);if(old?.raw_value!==p.p_raw&&(!!old!==p.p_expected_exists||old&&old.updated_at!==p.p_expected_at))return respond({code:'40001',message:'Stale write'},409);const row={key:p.p_key,raw_value:p.p_raw,json_value:null,updated_at:new Date().toISOString()};states.set(p.p_key,row);return respond(row)}
  if(table==='case_mio_user_state'){let data=[...states.values()];const key=url.searchParams.get('key');if(key?.startsWith('eq.'))data=data.filter(r=>r.key===key.slice(3));return respond(single?data[0]||null:data)}
  if(table==='matters')return respond(single?matters[0]:matters)
@@ -56,17 +59,17 @@ try{
  assert.equal(workflows.get(ids[0]).state.steps.decision.status,'waiting')
  const changed=workflows.get(ids[1]);changed.state=applyWithdrawalEvent(changed.state,{type:'email_received',step_id:'decision',message_id:'synthetic-reply',received_at:ago(.05),source_key:'synthetic-thread',source_version:'reply'},now);changed.revision++
  await page.getByRole('button',{name:'Refresh linked activity',exact:true}).click();await page.waitForTimeout(300);assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Beta matter'}).innerText(),/NEEDS ME/)
- await page.reload();await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000});assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Alpha matter'}).innerText(),/WAITING/)
- // A changed query forces a new document load; this app does not route on an arbitrary hash-only browser change.
+ await page.reload({waitUntil:'domcontentloaded'});await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000});assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Alpha matter'}).innerText(),/WAITING/)
  await page.goto('http://127.0.0.1:4173/?test-view=drafting#drafting',{waitUntil:'domcontentloaded'})
- await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor({timeout:60000})
+ await page.locator('summary').filter({hasText:'Matter data & document options'}).click({timeout:60000})
+ await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor()
  await page.getByRole('button',{name:'Signature block',exact:true}).click();await page.getByRole('dialog').waitFor();assert.match(await page.locator('.mio-component-paper').innerText(),/Test Attorney/)
- await page.getByLabel('Edit populated wording').fill('Custom Attorney - this motion only')
- await page.getByRole('button',{name:'Apply to this document',exact:true}).click()
+ await page.getByRole('dialog').locator('textarea').fill('Custom Attorney - this motion only')
+ await page.getByRole('button',{name:'Apply to this draft',exact:true}).click()
  await page.getByLabel(/^File to customize/).selectOption('word-b')
  await page.getByRole('button',{name:'Signature block',exact:true}).click();assert.doesNotMatch(await page.locator('.mio-component-paper').innerText(),/Custom Attorney/);await page.getByRole('button',{name:'Close preview',exact:true}).click()
- await page.getByLabel(/^File to customize/).selectOption('word-a');await page.getByRole('button',{name:'Signature block (customized)',exact:true}).click();assert.match(await page.locator('.mio-component-paper').innerText(),/Custom Attorney/);await page.screenshot({path:'test-results/drafting-component-preview.png'});await page.getByRole('button',{name:'Close preview',exact:true}).click()
- await page.getByRole('button',{name:'Drafting settings',exact:true}).click();await page.getByRole('heading',{name:'Case type connections and reusable components',exact:true}).waitFor();await page.getByLabel(/^Modification/).selectOption('divorce-test');await page.getByRole('button',{name:'Save shared defaults',exact:true}).click();await page.getByText('Saved to Supabase',{exact:true}).first().waitFor();assert.equal(JSON.parse(states.get('caseMioDraftingProfile').raw_value).case_type_style_map.Modification,'divorce-test');await page.screenshot({path:'test-results/drafting-bottom-settings.png'})
+ await page.getByLabel(/^File to customize/).selectOption('word-a');await page.getByRole('button',{name:'Signature block (configured)',exact:true}).click();assert.match(await page.locator('.mio-component-paper').innerText(),/Custom Attorney/);await page.screenshot({path:'test-results/drafting-component-preview.png'});await page.getByRole('button',{name:'Close preview',exact:true}).click()
+ await page.getByRole('button',{name:'Drafting settings',exact:true}).click();await page.getByRole('heading',{name:'Case styles, reusable blocks, and page defaults',exact:true}).waitFor();await page.getByLabel(/^Modification/).selectOption('divorce-test');await page.getByRole('button',{name:'Save shared defaults',exact:true}).click();await page.getByText('Saved to Supabase',{exact:true}).first().waitFor();assert.equal(JSON.parse(states.get('caseMioDraftingProfile').raw_value).case_type_style_map.Modification,'divorce-test');await page.screenshot({path:'test-results/drafting-bottom-settings.png'})
  await page.waitForTimeout(800);assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
  console.log('PASS: dashboard attention and age sorts, waiting update, reply promotion, reload, per-file populated editable preview, shared settings and no app data written to browser storage')
 }catch(error){await page.screenshot({path:'test-results/failure.png',fullPage:true});fs.writeFileSync('test-results/failure.txt',String(error)+'\n'+errors.join('\n')+'\n'+await page.locator('body').innerText());throw error}finally{await browser.close()}
