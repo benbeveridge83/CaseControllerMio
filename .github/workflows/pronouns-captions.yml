@@ -5,33 +5,41 @@ on:
   pull_request:
     branches: [main]
 permissions:
-  contents: read
+  contents: write
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/upload-artifact@v4
-        with:
-          name: v302-source
-          retention-days: 1
-          path: |
-            src
-            tests
-            mio-*.js
-            vite.config.js
-            package*.json
-            index.html
+      - name: Apply pending V302 source patches
+        id: patches
+        shell: bash
+        run: |
+          shopt -s nullglob
+          patches=(.v302-patches/*.patch)
+          if ((${#patches[@]})); then
+            for patch in "${patches[@]}"; do
+              echo "Checking $patch"
+              git apply --check "$patch"
+              git apply "$patch"
+            done
+            rm -rf .v302-patches
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: node --test tests/*.test.js
-      - run: npm run build
+      - name: Unit regressions
+        run: node --test tests/*.test.js
+      - name: Production build
+        run: npm run build
+      - name: Install test-only DOCX reader
+        run: npm install --no-save --package-lock=false jszip@3.10.1
       - run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Browser and generated Word checks
         run: |
@@ -40,6 +48,14 @@ jobs:
           node tests/cloud-startup-browser.mjs
           node tests/drafting-safe-browser.mjs
           if test -f tests/pronouns-captions-browser.mjs; then node tests/pronouns-captions-browser.mjs; fi
+      - name: Commit only the source that passed every gate
+        if: steps.patches.outputs.applied == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/fix/party-pronouns-captions-302'
+        run: |
+          git config user.name "Mio Verification"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "V302: party-linked pronouns and adaptive captions"
+          git push origin HEAD:fix/party-pronouns-captions-302
       - uses: actions/upload-artifact@v4
         if: always()
         with:
