@@ -1,3 +1,4 @@
+import {chunkRows} from './cloud-chunk-fixture.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -9,7 +10,7 @@ function fixture(local={},initial=[]) {
  const faults={read:false,write:false,archive:false,readback:false},writes=[]
  const nativeStorage={getItem:k=>disk.get(k)??null,setItem(k,v){disk.set(k,v)},removeItem:k=>disk.delete(k),key:i=>[...disk.keys()][i]??null,get length(){return disk.size}}
  const client={from(table){
-  const q={table,mode:'read',filters:[],start:0,end:Infinity,select(){return this},eq(k,v){this.filters.push(r=>r[k]===v);return this},in(k,v){this.filters.push(r=>v.includes(r[k]));return this},order(){return this},range(a,b){this.start=a;this.end=b;return this},insert(data){this.mode='insert';this.data=data;return this},upsert(data,options){this.mode='upsert';this.data=data;this.options=options;return this},then(resolve,reject){return Promise.resolve().then(()=>{
+  const q={table,mode:'read',filters:[],start:0,end:Infinity,select(){return this},eq(k,v){this.filters.push(r=>r[k]===v);return this},neq(k,v){this.filters.push(r=>r[k]!==v);return this},in(k,v){this.filters.push(r=>v.includes(r[k]));return this},order(){return this},range(a,b){this.start=a;this.end=b;return this},insert(data){this.mode='insert';this.data=data;return this},upsert(data,options){this.mode='upsert';this.data=data;this.options=options;return this},then(resolve,reject){return Promise.resolve().then(()=>{
     if(table==='case_mio_user_state'){
       if(this.mode==='read'){if(faults.read)return{data:null,error:{message:'offline'}};return{data:[...rows.values()].filter(r=>this.filters.every(f=>f(r))).sort((a,b)=>a.key.localeCompare(b.key)).slice(this.start,this.end+1),error:null}}
       for(const r of this.data){const key=r.user_id+'|'+r.key;if(!this.options?.ignoreDuplicates||!rows.has(key))rows.set(key,{...r,updated_at:String(++clock)})}return{error:null}
@@ -18,7 +19,7 @@ function fixture(local={},initial=[]) {
     if(faults.readback)return{data:[],error:null}
     return{data:recoveries.filter(r=>this.filters.every(f=>f(r))),error:null}
   }).then(resolve,reject)}};return q
- },async rpc(name,p){writes.push(p);if(faults.write)return{error:{message:'offline'}}
+ },async rpc(name,p){if(name==='mio_cloud_state_read_chunks_v297'){if(faults.read)return{error:{message:'offline'}};return{data:chunkRows([...rows.values()],p),error:null}};writes.push(p);if(faults.write)return{error:{message:'offline'}}
    const key=p.p_user_id+'|'+p.p_key,old=rows.get(key)
    if(old?.raw_value===p.p_raw&&!p.p_delete)return{data:old,error:null}
    if(!!old!==p.p_expected_exists||(old&&old.updated_at!==p.p_expected_at))return{error:{code:'40001',message:'stale'}}

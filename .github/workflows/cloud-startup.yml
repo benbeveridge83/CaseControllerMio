@@ -1,0 +1,38 @@
+name: Cloud startup repair verification
+on:
+  push:
+    branches: [fix/cloud-startup-297, main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  startup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Cloud loading and storage safety regressions
+        run: node --test tests/cloud-*.test.js
+      - name: Build complete production application
+        run: npm run build
+      - name: Install browser
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Verify startup and retry in browser with synthetic accounts
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/cloud-startup-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-cloud-startup-297
+          retention-days: 3
+          path: test-results

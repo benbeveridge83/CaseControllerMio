@@ -1,3 +1,4 @@
+import {readMioCloudRows} from './mioCloudRead.js'
 // Supabase is durable storage; values awaiting acknowledgement exist only in RAM.
 const otherKeys = new Set(['matterColumnWidths','matterExternalEfileUrl','matterPageFilterCaseStatus','matterPageFilterCaseType','matterPageFilterMatterStatus','matterPageSearch','serviceInboxFilter','serviceInboxFolderFilter','serviceInboxMailboxFilter','serviceInboxPhase','serviceInboxPreviewMode','serviceInboxRowDensity','serviceInboxSortMode','serviceInboxViewMode','showMatterStepsOnMatterPage','showUnpopulatedMatterStatuses','taskSubpartCompletions','visibleMatterColumns'])
 export const isNativeKey = key => /^(sb-|msal\.|murski-auth-token$|caseMioSupabaseSessionV1$|caseMioBackgroundLeaseV258:)/i.test(key) || /supabase\.auth\.token|login\.windows\.net|microsoftonline|msal/i.test(key)
@@ -5,33 +6,38 @@ export const isAppKey = key => typeof key === 'string' && !isNativeKey(key) && (
 const raw = row => row.raw_value != null ? String(row.raw_value) : typeof row.json_value === 'string' ? row.json_value : JSON.stringify(row.json_value ?? null)
 export function createMioCloudStore({client, nativeStorage, origin='', delay=350}) {
   const listeners=new Set(), accounts=new Map()
-  let current=null, generation=0, version=0, notifying=false
+  let current=null, generation=0, version=0, notifying=false, loadController=null
   const notify=()=>{version++;if(!notifying){notifying=true;queueMicrotask(()=>{notifying=false;listeners.forEach(fn=>fn())})}}
   const nativeKeys=()=>{const out=[];for(let i=0;i<nativeStorage.length;i++){const key=nativeStorage.key(i);if(key)out.push(key)}return out}
   const check=s=>{if(current!==s)throw new Error('Account changed; this operation was stopped.')}
   const ready=()=>{if(current?.phase!=='ready')throw new Error('Cloud data is not ready. This change has not been saved.');return current}
-  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',pending:current?.pending.size||0,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
-  async function read(id) {
-    const rows=[]
-    for(let start=0;;start+=250){
-      const {data,error}=await client.from('case_mio_user_state').select('key,raw_value,updated_at').eq('user_id',id).neq('key','__mio_live_state_snapshot__').order('key').range(start,start+249)
-      if(error)throw error
-      rows.push(...(data||[]).filter(r=>isAppKey(r.key)).map(r=>({...r,raw_value:raw(r)})))
-      if(!data||data.length<250)return rows
-    }
+  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',loadProgress:current?.loadProgress||null,pending:current?.pending.size||0,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
+  async function read(id, options = {}) {
+    const rows=await readMioCloudRows(client,id,{isAppKey,...options})
+    return rows.map(row=>({...row,raw_value:raw(row)}))
   }
   async function prepare(id) {
     const ticket=++generation
+    loadController?.abort()
+    const controller=new AbortController();loadController=controller
     if(current){clearTimeout(current.timer);current.phase='paused'}
     current=null;notify()
     if(!id)return
     const s=accounts.get(id)||{id,values:new Map(),baseline:new Map(),pending:new Map(),conflicts:new Set(),tail:Promise.resolve(),error:'',phase:'loading'}
-    accounts.set(id,s);current=s;s.phase='loading'
-    const rows=await read(id)
-    if(ticket!==generation||current!==s)return
-    for(const key of s.values.keys())if(!s.pending.has(key)){s.values.delete(key);s.baseline.delete(key)}
-    for(const row of rows)if(!s.pending.has(row.key)){s.values.set(row.key,row.raw_value);s.baseline.set(row.key,row)}
-    s.phase='prepared';notify()
+    accounts.set(id,s);current=s;s.phase='loading';s.loadProgress={phase:'listing',loaded:0,total:0};notify()
+    try {
+      const rows=await read(id,{signal:controller.signal,onProgress:progress=>{
+        if(ticket===generation&&current===s){s.loadProgress=progress;notify()}
+      }})
+      if(ticket!==generation||current!==s)return
+      // Only commit a complete read. Timeouts must not enable empty defaults.
+      for(const key of s.values.keys())if(!s.pending.has(key)){s.values.delete(key);s.baseline.delete(key)}
+      for(const row of rows)if(!s.pending.has(row.key)){s.values.set(row.key,row.raw_value);s.baseline.set(row.key,row)}
+      s.phase='prepared';s.loadProgress=null;if(!s.pending.size)s.error='';notify()
+    } catch(error) {
+      if(ticket!==generation||current!==s)return
+      s.phase='error';s.error=error.message||String(error);notify();throw error
+    }
   }
   const enqueue=(s,fn)=>{const p=s.tail.catch(()=>{}).then(fn);s.tail=p.catch(()=>{});return p}
   const schedule=s=>{clearTimeout(s.timer);s.timer=setTimeout(()=>{if(current===s&&s.phase==='ready')void flushAll()},delay);s.timer.unref?.()}
@@ -93,6 +99,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   }
   async function migrateLegacy() {
     const s=current;if(s?.phase!=='prepared')throw new Error('Migration must finish before the workspace opens.')
+    // The caller asks the user to confirm ownership because old keys were unscoped.
     const rows=legacyEntries();let removed=0,conflicts=0
     for(let i=0;i<rows.length;i+=8){
       const batch=rows.slice(i,i+8);await archive(batch);check(s)
