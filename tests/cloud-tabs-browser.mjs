@@ -62,6 +62,8 @@ async function open({loggedIn=false,legacy=false,failRead=false,large=false}={})
   return respond(request.headers().accept?.includes('vnd.pgrst.object')?null:[])
  })
  await context.addInitScript(({session,loggedIn,legacy})=>{
+  // The context also creates about:blank and opaque preview frames.
+  if(location.origin!=='http://127.0.0.1:4173')return
   if(!sessionStorage.getItem('test-initialized')){
     if(loggedIn)localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session))
     if(legacy){localStorage.setItem('caseMioSnapshotGraphShowInvoicesV259','false');localStorage.setItem('caseMioBrowserMigrationTestV277','synthetic-only')}
