@@ -61,7 +61,9 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     if(s.conflicts.has(key))throw new Error('Another tab changed this record. Preserve the pending edit before reloading.')
     const old=s.baseline.get(key)
     const {data,error}=await client.rpc('mio_cloud_state_write_v277',{p_user_id:s.id,p_key:key,p_raw:change.raw,p_expected_at:old?.updated_at??null,p_expected_exists:!!old,p_delete:change.deleting,p_origin:origin})
-    if(error){s.error=error.message||String(error);if(error.code==='40001')s.conflicts.add(key);notify();throw error}
+    // PT409 is a permanent application-version conflict, not a retryable SQL serialization failure.
+    // Keep legacy 40001 recognition while older servers/tabs finish rolling over.
+    if(error){s.error=error.message||String(error);if(['PT409','40001'].includes(error.code))s.conflicts.add(key);notify();throw error}
     if(!data||(change.deleting?!data.deleted:data.raw_value!==change.raw)){
       s.error='Supabase did not acknowledge this value. Keep this tab open.';notify();throw new Error(s.error)
     }
