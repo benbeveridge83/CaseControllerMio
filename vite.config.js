@@ -20,9 +20,10 @@ import mioV293TemplateMatterTest from './mio-v293-template-matter-test.js'
 import mioV294TemplateOpenDownloadFix from './mio-v294-template-open-download-fix.js'
 import mioV295BindingReanchor from './mio-v295-binding-reanchor.js'
 import mioV300TemplateRepair from './mio-v300-template-repair.js'
+import mioV301StartupSettings from './mio-v301-startup-settings.js'
 import mioBrowserSyntaxCheck from './mio-browser-syntax-check.js'
 
 // V298/V299 stay disabled. V300 is isolated on the repair branch pending all verification gates.
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), react(), mioBrowserSyntaxCheck()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), mioV301StartupSettings(), react(), mioBrowserSyntaxCheck()],
 })

@@ -40,7 +40,7 @@ export async function cloudReadRequest(makeQuery, { signal, timeoutMs = 15000 } 
 }
 
 export async function readMioCloudRows(client, userId, {
-  isAppKey, signal, onProgress = () => {}, timeoutMs = 15000, retryDelayMs = 300,
+  isAppKey, signal, onProgress = () => {}, timeoutMs = 15000, retryDelayMs = 300, cachedRows = [], concurrency = 4,
 } = {}) {
   const request = factory => cloudReadRequest(factory, { signal, timeoutMs })
   const retry = async factory => {
@@ -52,20 +52,28 @@ export async function readMioCloudRows(client, userId, {
     }
   }
   // Only names are listed here; document values never enter the manifest response.
-  const keys = [], seen = new Set()
+  const keys = [], seen = new Set(), manifest = new Map()
   for (let start = 0; ; start += 100) {
     onProgress({ phase: 'listing', loaded: 0, total: keys.length, characters: 0 })
-    const page = await retry(() => client.from(TABLE).select('key').eq('user_id', userId)
+    const page = await retry(() => client.from(TABLE).select('key,updated_at').eq('user_id', userId)
       .neq('key', LEGACY_SNAPSHOT).order('key').range(start, start + 99))
     for (const row of page) {
       if (typeof row.key !== 'string' || seen.has(row.key)) throw new Error('The cloud record list changed while loading. Please retry.')
       seen.add(row.key)
-      if (isAppKey(row.key)) keys.push(row.key)
+      if (isAppKey(row.key)) { keys.push(row.key); manifest.set(row.key, row.updated_at) }
     }
     if (page.length < 100) break
   }
-  let loaded = 0, characters = 0
-  const progress = () => onProgress({ phase: 'reading', loaded, total: keys.length, characters })
+  // Only Supabase-confirmed baseline values may be supplied here. Every reused
+  // version is checked against the current, account-scoped cloud manifest.
+  const cached = new Map((await cachedRows).filter(row => row && typeof row.key === 'string' &&
+    typeof row.raw_value === 'string' && typeof row.updated_at === 'string' && row.updated_at &&
+    manifest.get(row.key) === row.updated_at).map(row => [row.key, row]))
+  const rows = keys.filter(key => cached.has(key)).map(key => cached.get(key))
+  const missing = keys.filter(key => !cached.has(key))
+  const reused = rows.length
+  let loaded = reused, characters = 0
+  const progress = () => onProgress({ phase: 'reading', loaded, total: keys.length, characters, reused })
   progress()
   const chunks = (group, offset) => retry(() => client.rpc(RPC, {
     p_user_id: userId, p_keys: group, p_offset: offset, p_chunk_chars: Math.floor(262144 / group.length),
@@ -120,12 +128,21 @@ export async function readMioCloudRows(client, userId, {
     }
     return result
   }
-  const rows = []
-  // At most four records and 262144 characters per request, even for a huge single row.
-  for (let start = 0; start < keys.length; start += 4) {
-    const group = await readGroup(keys.slice(start, start + 4))
-    rows.push(...group); loaded += group.length; progress()
+  // A small fixed worker pool avoids dozens of serial round trips without
+  // increasing the existing server-side 4-record / 256KiB response bounds.
+  let cursor = 0, failure = null
+  const worker = async () => {
+    while (!failure && cursor < missing.length) {
+      const start = cursor; cursor += 4
+      try {
+        const group = await readGroup(missing.slice(start, start + 4))
+        if (failure) return
+        rows.push(...group); loaded += group.length; progress()
+      } catch (error) { failure ||= error }
+    }
   }
+  await Promise.all(Array.from({length: Math.min(4, Math.max(1, Math.floor(concurrency) || 1))}, worker))
+  if (failure) throw failure
   if (signal?.aborted) throw cancelled()
   return rows
 }

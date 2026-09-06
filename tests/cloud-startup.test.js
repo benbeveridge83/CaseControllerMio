@@ -45,7 +45,7 @@ test('loads 501 keys and a 3.5MB record without any large-record REST request',a
   const result=await load(f)
   assert.equal(result.length,502)
   assert.equal(result.find(r=>r.key==='caseMioDraftingTemplates').raw_value,'x'.repeat(3500000))
-  assert.ok(f.calls.filter(c=>c.columns).every(c=>c.columns==='key'))
+  assert.ok(f.calls.filter(c=>c.columns).every(c=>c.columns==='key,updated_at'))
   assert.ok(f.calls.filter(c=>c.rpc).every(c=>c.p_keys.length<=4&&c.p_keys.length*c.p_chunk_chars<=262144&&!c.p_keys.includes('__mio_live_state_snapshot__')))
   assert.equal(f.writes.length,0);assert.equal(f.disk.size,0)
 })
@@ -110,4 +110,34 @@ test('mid-read changes restart that record rather than combining different versi
   const f=fixture([row('caseMioLarge','a'.repeat(300000))]);let changed=false
   f.settings.hook=state=>{if(state.p_offset>0&&!changed){changed=true;f.rows[0].raw_value='b'.repeat(300000);f.rows[0].updated_at='new'} }
   assert.equal((await load(f))[0].raw_value,'b'.repeat(300000))
+})
+
+test('warm tab validates a fresh manifest and reads only changed or added records',async()=>{
+ const f=fixture([row('caseMioA','saved'),row('caseMioB','new'),row('caseMioC','created')])
+ const cachedRows=[{key:'caseMioA',raw_value:'saved',updated_at:'original'},{key:'caseMioB',raw_value:'old',updated_at:'old-version'},{key:'caseMioDeleted',raw_value:'must-not-return',updated_at:'original'}]
+ const progress=[]
+ const result=await readMioCloudRows(f.client,'account-a',{isAppKey,cachedRows,onProgress:p=>progress.push(p)})
+ assert.equal(result.length,3);assert.equal(result.find(r=>r.key==='caseMioB').raw_value,'new')
+ assert.ok(!result.some(r=>r.key==='caseMioDeleted'))
+ assert.deepEqual(f.calls.filter(c=>c.rpc).flatMap(c=>c.p_keys).sort(),['caseMioB','caseMioC'])
+ assert.equal(progress.at(-1).reused,1);assert.equal(f.writes.length,0)
+})
+test('a warm handoff never bypasses a denied cloud read',async()=>{
+ const f=fixture([row('caseMioA','saved')],{fail:403})
+ await assert.rejects(readMioCloudRows(f.client,'account-a',{isAppKey,cachedRows:[{key:'caseMioA',raw_value:'saved',updated_at:'original'}]}))
+ assert.equal(f.writes.length,0)
+})
+test('cold reads have bounded parallelism rather than serial batches',async()=>{
+ let active=0,peak=0
+ const f=fixture(Array.from({length:32},(_,i)=>row('caseMioParallel'+i,String(i))),{hook:async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,5));active--;return null}})
+ assert.equal((await load(f)).length,32);assert.ok(peak>1&&peak<=4)
+})
+test('confirmed handoff records never include pending edits, pending inserts, deletes, or credentials',async()=>{
+ const f=fixture([row('caseMioA','saved'),row('caseMioB','delete later')]);await f.store.prepare('account-a');f.store.activate()
+ f.store.stage('caseMioA','not-saved');f.store.stage('caseMioNew','not-saved');f.store.stage('caseMioB',null,true)
+ const records=f.store.confirmedRecords()
+ assert.equal(records.find(r=>r.key==='caseMioA').raw_value,'saved')
+ assert.equal(records.find(r=>r.key==='caseMioB').raw_value,'delete later')
+ assert.ok(!records.some(r=>r.key==='caseMioNew'))
+ await f.store.prepare(null);assert.deepEqual(f.store.confirmedRecords(),[])
 })

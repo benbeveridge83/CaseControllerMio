@@ -4,7 +4,7 @@ const otherKeys = new Set(['matterColumnWidths','matterExternalEfileUrl','matter
 export const isNativeKey = key => /^(sb-|msal\.|murski-auth-token$|caseMioSupabaseSessionV1$|caseMioBackgroundLeaseV258:)/i.test(key) || /supabase\.auth\.token|login\.windows\.net|microsoftonline|msal/i.test(key)
 export const isAppKey = key => typeof key === 'string' && !isNativeKey(key) && (/^(caseMio|caseController)/.test(key) || otherKeys.has(key) || /^(taskTemplateSubparts|taskMarkReviewWhen|taskPriority):/.test(key))
 const raw = row => row.raw_value != null ? String(row.raw_value) : typeof row.json_value === 'string' ? row.json_value : JSON.stringify(row.json_value ?? null)
-export function createMioCloudStore({client, nativeStorage, origin='', delay=350}) {
+export function createMioCloudStore({client, nativeStorage, origin='', delay=350, getCachedRows=async()=>[]}) {
   const listeners=new Set(), accounts=new Map()
   let current=null, generation=0, version=0, notifying=false, loadController=null
   const notify=()=>{version++;if(!notifying){notifying=true;queueMicrotask(()=>{notifying=false;listeners.forEach(fn=>fn())})}}
@@ -26,7 +26,8 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     const s=accounts.get(id)||{id,values:new Map(),baseline:new Map(),pending:new Map(),conflicts:new Set(),tail:Promise.resolve(),error:'',phase:'loading'}
     accounts.set(id,s);current=s;s.phase='loading';s.loadProgress={phase:'listing',loaded:0,total:0};notify()
     try {
-      const rows=await read(id,{signal:controller.signal,onProgress:progress=>{
+      const cachedRows=Promise.resolve().then(()=>getCachedRows(id,{signal:controller.signal})).catch(()=>[])
+      const rows=await read(id,{cachedRows,signal:controller.signal,onProgress:progress=>{
         if(ticket===generation&&current===s){s.loadProgress=progress;notify()}
       }})
       if(ticket!==generation||current!==s)return
@@ -136,6 +137,9 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   return {storage:new Proxy(storage,{ownKeys:()=>Array.from({length:storage.length},(_,i)=>storage.key(i)),getOwnPropertyDescriptor(target,key){if(storage.getItem(key)!=null)return{enumerable:true,configurable:true,value:storage.getItem(key)};return Object.getOwnPropertyDescriptor(target,key)}}),
     prepare,activate(){if(current?.phase==='prepared'){current.phase='ready';notify();if(current.pending.size)schedule(current)}},
     stage,saveNow,flushAll,archive,migrateLegacy,legacyEntries,preservePending,status,
+    // Deliberately excludes pending edits and credentials. Do not use records()
+    // for tab handoff: that method includes unsaved working values.
+    confirmedRecords:()=>['ready','prepared'].includes(current?.phase)?[...current.baseline.values()].filter(r=>isAppKey(r.key)&&typeof r.raw_value==='string').map(r=>({key:r.key,raw_value:r.raw_value,updated_at:r.updated_at})):[],
     records:()=>current?[...current.values].map(([key,raw_value])=>({...current.baseline.get(key),key,raw_value,json_value:null})):[],
     snapshot:()=>Object.fromEntries(current?.values||[]),
     subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)},getVersion:()=>version,
