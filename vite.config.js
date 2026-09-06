@@ -19,10 +19,9 @@ import mioV292DraftingNonblocking from './mio-v292-drafting-nonblocking.js'
 import mioV293TemplateMatterTest from './mio-v293-template-matter-test.js'
 import mioV294TemplateOpenDownloadFix from './mio-v294-template-open-download-fix.js'
 import mioV295BindingReanchor from './mio-v295-binding-reanchor.js'
-import mioV298TemplatePlaceholders from './mio-v298-template-placeholders.js'
-import mioV299FieldSelectorCaption from './mio-v299-field-selector-caption.js'
 
-// https://vite.dev/config/
+// Emergency production-safe rollback: V298/V299 remain in the repo but are not loaded
+// until their transformed browser output is verified end-to-end.
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV298TemplatePlaceholders(), mioV299FieldSelectorCaption(), react()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), react()],
 })
