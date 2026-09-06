@@ -84,47 +84,58 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
       return true
     }catch(error){if(throwOnError)throw error;return false}
   }
-  async function removeNow(key,{throwOnError=false}={}) {
-    try{const s=ready();stage(key,null,true);await enqueue(s,()=>write(s,key));if(s.baseline.has(key))throw new Error('Supabase did not confirm deletion.');return true}catch(error){if(throwOnError)throw error;return false}
-  }
-  async function archive(s,entries,reason) {
-    if(!entries.length)return []
-    check(s)
-    const rows=entries.map(e=>({user_id:s.id,storage_key:e.key,raw_value:e.raw_value,source_origin:origin||location?.origin||'',reason}))
-    const {data,error}=await client.from('case_mio_browser_recovery').insert(rows).select('id,storage_key,raw_value')
+  const legacyEntries=()=>nativeKeys().filter(isAppKey).map(key=>({key,raw_value:nativeStorage.getItem(key)})).filter(r=>r.raw_value!=null)
+  async function archive(rows,reason='legacy-browser') {
+    const s=current;if(!s)throw new Error('Sign in before preserving browser data.');check(s)
+    const payload=rows.filter(r=>isAppKey(r.key)).map(r=>({user_id:s.id,key:r.key,raw_value:String(r.raw_value),origin,reason}))
+    if(!payload.length)return
+    const {data,error}=await client.from('case_mio_browser_recovery').insert(payload).select('id,key')
     if(error)throw error
-    if(!data||data.length!==rows.length)throw new Error('Cloud recovery archive was not verified; browser records were left untouched.')
-    return data
+    if(data?.length!==payload.length)throw new Error('Recovery copy was incomplete. Browser records were retained.')
+    const {data:verified,error:readError}=await client.from('case_mio_browser_recovery').select('id,user_id,key,raw_value').eq('user_id',s.id).in('id',data.map(r=>r.id))
+    if(readError)throw readError
+    for(const row of payload)if(!verified?.some(r=>r.user_id===s.id&&r.key===row.key&&r.raw_value===row.raw_value))throw new Error('Recovery read-back failed. Browser records were retained.')
+    check(s)
   }
   async function migrateLegacy() {
-    const s=current;check(s);if(!s||!['prepared','ready'].includes(s.phase))throw new Error('Cloud state must load before browser migration.')
-    const entries=nativeKeys().filter(isAppKey).map(key=>({key,raw_value:nativeStorage.getItem(key)})).filter(e=>e.raw_value!==null)
-    if(!entries.length)return{archived:0,imported:0,conflicts:0,remaining:0}
-    const archived=await archive(s,entries,'legacy-browser-migration-v277')
-    const ids=archived.map(r=>r.id);const {data:verified,error}=await client.from('case_mio_browser_recovery').select('id,storage_key,raw_value').eq('user_id',s.id).in('id',ids)
-    if(error||!verified||verified.length!==archived.length)throw error||new Error('Cloud recovery readback failed; browser records were left untouched.')
-    const imported=[],conflicts=[]
-    for(const entry of entries){const old=s.baseline.get(entry.key);if(!old)imported.push({user_id:s.id,key:entry.key,raw_value:entry.raw_value,json_value:null,origin:'legacy-browser-migration'});else if(old.raw_value!==entry.raw_value)conflicts.push(entry)}
-    if(imported.length){const {error:e}=await client.from('case_mio_user_state').upsert(imported,{onConflict:'user_id,key',ignoreDuplicates:true});if(e)throw e}
-    const fresh=await read(s.id);check(s);for(const row of fresh){s.values.set(row.key,row.raw_value);s.baseline.set(row.key,row)}
-    for(const entry of entries){const cloud=s.baseline.get(entry.key);if(!cloud)throw new Error('Cloud verification is incomplete; browser records were left untouched.');const found=verified.some(v=>v.storage_key===entry.key&&v.raw_value===entry.raw_value);if(!found)throw new Error('Recovery archive mismatch; browser records were left untouched.')}
-    for(const entry of entries)if(nativeStorage.getItem(entry.key)===entry.raw_value)nativeStorage.removeItem(entry.key)
-    const remaining=nativeKeys().filter(isAppKey).length;notify();return{archived:entries.length,imported:imported.length,conflicts:conflicts.length,remaining}
+    const s=current;if(s?.phase!=='prepared')throw new Error('Migration must finish before the workspace opens.')
+    // The caller asks the user to confirm ownership because old keys were unscoped.
+    const rows=legacyEntries();let removed=0,conflicts=0
+    for(let i=0;i<rows.length;i+=8){
+      const batch=rows.slice(i,i+8);await archive(batch);check(s)
+      const missing=batch.filter(r=>!s.baseline.has(r.key))
+      conflicts+=batch.filter(r=>s.baseline.has(r.key)&&s.baseline.get(r.key).raw_value!==r.raw_value).length
+      if(missing.length){const {error}=await client.from('case_mio_user_state').upsert(missing.map(r=>({user_id:s.id,...r,json_value:null,origin,updated_at:new Date().toISOString()})),{onConflict:'user_id,key',ignoreDuplicates:true});if(error)throw error}
+      check(s)
+      for(const row of batch)if(nativeStorage.getItem(row.key)===row.raw_value){nativeStorage.removeItem(row.key);removed++}
+    }
+    const fresh=await read(s.id);check(s)
+    for(const row of fresh)if(!s.pending.has(row.key)){s.values.set(row.key,row.raw_value);s.baseline.set(row.key,row)}
+    notify();return{archived:rows.length,removed,conflicts,remaining:legacyEntries().length}
   }
   async function preservePending() {
-    const s=current;check(s);if(!s||!s.pending.size)return true
-    const snapshot=[...s.pending].map(([key,p])=>({key,raw_value:p.deleting?'__MIO_DELETE_PENDING__':p.raw}))
-    const expected=new Map(snapshot.map(e=>[e.key,s.pending.get(e.key)]))
-    s.phase='preserving';clearTimeout(s.timer);notify()
-    try{await archive(s,snapshot,'unsaved-memory-before-reload');check(s);for(const [key,change] of expected)if(s.pending.get(key)===change)s.pending.delete(key);s.phase='ready';notify();return s.pending.size===0}catch(error){s.error=error.message||String(error);s.phase='ready';notify();throw error}
+    const s=ready();clearTimeout(s.timer);s.phase='preserving';notify()
+    try {
+      await s.tail;check(s)
+      const entries=[...s.pending]
+      for(let i=0;i<entries.length;i+=8)await archive(entries.slice(i,i+8).map(([key,change])=>({key,raw_value:change.deleting?JSON.stringify({mio_recovery_operation:'delete'}):change.raw})),'pending-edit')
+      for(const [key,change] of entries)if(s.pending.get(key)===change){s.pending.delete(key);s.conflicts.delete(key)}
+      notify();return !s.pending.size
+    }finally{if(current===s){s.phase='ready';notify();if(s.pending.size)schedule(s)}}
   }
   const storage={
-    get length(){return current?.values.size||0},
-    key(i){return current?[...current.values.keys()][i]??null:null},
-    getItem(key){return current?.values.has(String(key))?current.values.get(String(key)):null},
-    setItem(key,value){if(current?.phase==='ready')stage(key,value)},
-    removeItem(key){if(current?.phase==='ready')stage(key,null,true)},
-    clear(){throw new Error('Mio application storage cannot be cleared from the browser.')},
+    getItem(key){key=String(key);return isAppKey(key)?current?.values.get(key)??null:nativeStorage.getItem(key)},
+    setItem(key,value){key=String(key);if(isAppKey(key)){if(['ready','preserving'].includes(current?.phase))stage(key,value);return}if(!isNativeKey(key))throw new Error('Application data cannot be written to browser storage.');nativeStorage.setItem(key,String(value))},
+    removeItem(key){key=String(key);if(isAppKey(key)){if(['ready','preserving'].includes(current?.phase))stage(key,null,true);return}if(isNativeKey(key))nativeStorage.removeItem(key)},
+    clear(){throw new Error('Bulk browser clearing is disabled. Preserve records in Supabase first.')},
+    key(index){return [...new Set([...nativeKeys().filter(isNativeKey),...(current?.values.keys()||[])])][index]??null},
+    get length(){return new Set([...nativeKeys().filter(isNativeKey),...(current?.values.keys()||[])]).size},
   }
-  return{storage,prepare,activate(){if(current?.phase==='prepared'){current.phase='ready';notify();schedule(current)}},stage,saveNow,removeNow,flushAll,migrateLegacy,preservePending,status,records:()=>current?[...current.values]:[],legacyEntries:()=>nativeKeys().filter(isAppKey).map(key=>({key,raw_value:nativeStorage.getItem(key)})).filter(e=>e.raw_value!==null),subscribe:fn=>(listeners.add(fn),()=>listeners.delete(fn)),getVersion:()=>version}
+  return {storage:new Proxy(storage,{ownKeys:()=>Array.from({length:storage.length},(_,i)=>storage.key(i)),getOwnPropertyDescriptor(target,key){if(storage.getItem(key)!=null)return{enumerable:true,configurable:true,value:storage.getItem(key)};return Object.getOwnPropertyDescriptor(target,key)}}),
+    prepare,activate(){if(current?.phase==='prepared'){current.phase='ready';notify();if(current.pending.size)schedule(current)}},
+    stage,saveNow,flushAll,archive,migrateLegacy,legacyEntries,preservePending,status,
+    records:()=>current?[...current.values].map(([key,raw_value])=>({...current.baseline.get(key),key,raw_value,json_value:null})):[],
+    snapshot:()=>Object.fromEntries(current?.values||[]),
+    subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn)},getVersion:()=>version,
+  }
 }
