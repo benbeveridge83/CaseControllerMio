@@ -23,13 +23,13 @@ const cause={id:'cause-binding',kind:'field',file_id:'word-a',label:'Cause numbe
 const template={id:'template-safe',name:'Synthetic withdrawal',status:'approved',engine:'docx_assembly',is_active:true,fields:[{id:'cause-field',label:'Cause number',key:'cause_number',source:'matter.cause_number',type:'text'}],bindings:[cause],files:[{id:'word-a',name:'Motion.docx',file_data:encoded,include_by_default:true},{id:'word-b',name:'Other.docx',file_data:encoded,include_by_default:false}]}
 const profile={active_signature_block_id:'sig-test',default_case_style_id:'@divorce',case_styles:[],signature_blocks:[{id:'sig-test',name:'Synthetic signature',attorney_name:'Test Attorney',firm_name:'Test Firm',signature_text:'/s/ {{attorney_name}}\n{{firm_name}}',is_active:true}]}
 const matterId='00000000-0000-4000-8000-000000000301'
-const matter={id:matterId,name:'Synthetic matter',case_type:'Divorce',is_active:true,case_status:'Active',cause_number:'NEW-001',created_at:now,clients:{first_name:'Replacement',last_name:'Client',email:'new@example.invalid'},courts:{court_name:'300th Judicial District Court',county:'Brazoria'}}
+const matter={id:matterId,name:'Synthetic matter',case_type:'Divorce',is_active:true,case_status:'Active',cause_number:'NEW-001',created_at:now,petitioner_name:'Petitioner Test',respondent_name:'Respondent Test',clients:{first_name:'Replacement',last_name:'Client',address:'202 Replacement Avenue',phone:'555-0200',email:'new@example.invalid'},courts:{court_name:'300th Judicial District Court',county:'Brazoria'}}
 const states=new Map(Object.entries({caseMioDraftingProfile:profile,caseMioDraftingTemplates:[template]}).map(([key,value])=>[key,{key,raw_value:JSON.stringify(value),updated_at:now}]))
 const failures={writes:false},errors=[],dialogs=[]
 let page,context
 async function open(hash='settings'){
  context=await browser.newContext({viewport:{width:1720,height:1100}});page=await context.newPage();page.setDefaultTimeout(15000)
- page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{dialogs.push(d.message());await d.dismiss()})
+ page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{if(d.type()==='beforeunload'){await d.accept();return}dialogs.push(d.message());await d.dismiss()})
  await context.addInitScript({path:require.resolve('jszip/dist/jszip.min.js')})
  await context.addInitScript(({session})=>{
   localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session));window.__appDiskWrites=[];window.__docxResults=[]
@@ -99,7 +99,7 @@ try{
  assert.doesNotMatch(await page.locator('#drafting-paragraph-4').innerText(),/101 Sample/)
  await page.getByRole('button',{name:/Template Library/i}).click();await builder()
  assert.match(await page.locator('#drafting-paragraph-4').innerText(),/mailing address/);assert.doesNotMatch(await page.locator('#drafting-paragraph-4').innerText(),/101 Sample/)
- await page.reload();await builder();assert.doesNotMatch(await page.locator('#drafting-paragraph-4').innerText(),/101 Sample/)
+ await page.reload({waitUntil:'domcontentloaded'});await builder();assert.doesNotMatch(await page.locator('#drafting-paragraph-4').innerText(),/101 Sample/)
  const fileSelect=page.locator('select').filter({has:page.locator('option[value="word-b"]')}).first();await fileSelect.selectOption('word-b');await page.locator('#drafting-paragraph-4').filter({hasText:'101 Sample'}).waitFor();await fileSelect.selectOption('word-a');await page.locator('#drafting-paragraph-4').filter({hasText:'mailing address'}).waitFor()
  if(await page.getByRole('button',{name:'Field Selector',exact:true}).count())await page.getByRole('button',{name:'Field Selector',exact:true}).click()
  await highlight(5,'Alex',1);await pick(/Client.*full name/);await ack()
@@ -116,7 +116,7 @@ try{
  assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
  await page.screenshot({path:'test-results/template-field-builder.png',fullPage:true})
  await context.close()
- const values={cause_number:'NEW-001',client_address_inline:'202 Replacement Avenue',client_name:'Replacement Client',client_phone:'555-0200',client_email:'new@example.invalid',petitioner_name:'Petitioner Test',respondent_name:'Respondent Test',children_names:'Child Alpha; Child Beta',court_name:'300th Judicial District Court',county:'Brazoria',case_style_id:'@divorce',attorney_signature_block:'/s/ Test Attorney\nTest Firm'}
+ const values={cause_number:'NEW-001',client_address_override:'202 Replacement Avenue',client_name:'Replacement Client',client_phone:'555-0200',client_email:'new@example.invalid',petitioner_name:'Petitioner Test',respondent_name:'Respondent Test',children:[{name:'Child Alpha'},{name:'Child Beta'}],children_names:'Child Alpha; Child Beta',court_name:'300th Judicial District Court',county:'Brazoria',case_style_id:'@divorce',attorney_signature_block:'/s/ Test Attorney\nTest Firm'}
  states.set('caseMioDraftingSessionV278',{key:'caseMioDraftingSessionV278',raw_value:JSON.stringify({matter_id:matterId,template_id:'template-safe',selected_file_names:['word-a'],field_values:values}),updated_at:new Date().toISOString()})
  await open('drafting')
  await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor({timeout:30000})
@@ -125,10 +125,11 @@ try{
  await page.waitForFunction(()=>window.__docxResults?.length>0,undefined,{timeout:45000})
  const result=Buffer.from(await page.evaluate(()=>window.__docxResults.at(-1)),'base64'),output=await JSZip.loadAsync(result),generated=await output.file('word/document.xml').async('string')
  const check=await page.evaluate(({xml,ns})=>{const d=new DOMParser().parseFromString(xml,'application/xml'),tables=[...d.getElementsByTagNameNS(ns,'tbl')];return {invalid:d.getElementsByTagName('parsererror').length,tables:tables.map(t=>[...t.getElementsByTagNameNS(ns,'tc')].map(c=>c.textContent)),text:[...d.getElementsByTagNameNS(ns,'t')].map(t=>t.textContent).join(' '),notices:[...d.getElementsByTagNameNS(ns,'p')].filter(p=>p.textContent.replace(/\s/g,'').includes('NOTICE:THISDOCUMENTCONTAINSSENSITIVEDATA')).length}},{xml:generated,ns})
+ fs.writeFileSync('test-results/mio-synthetic-generated.docx',result);fs.writeFileSync('test-results/mio-synthetic-generated.xml',generated)
  assert.equal(check.invalid,0);assert.equal(check.tables[0].length,3);assert.match(check.tables[0][1],/\u00a7/);assert.match(check.tables[0][2],/300TH JUDICIAL DISTRICT/);assert.match(check.tables[0][2],/BRAZORIA COUNTY, TEXAS/);assert.equal(check.notices,1)
+ assert.match(check.tables[0][0],/PETITIONER TEST/);assert.match(check.tables[0][0],/RESPONDENT TEST/);assert.match(check.tables[0][0],/Child Alpha/);assert.match(check.tables[0][0],/Child Beta/)
  assert.match(check.text,/202 Replacement Avenue/);assert.doesNotMatch(check.text,/101 Sample|OLD-001|old@example.invalid|\[\[MIO_BLOCK:/)
  assert.match(generated,/w:val="both"/);assert.equal(check.tables.at(-1).length,2)
- fs.writeFileSync('test-results/mio-synthetic-generated.docx',result);fs.writeFileSync('test-results/mio-synthetic-generated.xml',generated)
  assert.deepEqual(errors,[]);assert.deepEqual(dialogs,[]);assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
  console.log('PASS: built-app startup, saved field labels, automatic field selector, exact repeated occurrence, second field after a chip, reopen/reload persistence, file scoping, failed-save recovery, no app disk writes, actual generated DOCX caption/table/notice/field values')
 }catch(e){console.log('BROWSER_FAILURE',String(e),'ERRORS',errors,'DIALOGS',dialogs);if(page){console.log((await page.locator('body').innerText()).slice(0,18000));await page.screenshot({path:'test-results/template-safe-failure.png',fullPage:true})}throw e}finally{await browser.close()}
