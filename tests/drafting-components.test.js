@@ -9,8 +9,9 @@ test('automatic divorce style is child-aware within the generated caption', () =
   assert.equal(resolveCaseStyle(profile,'DIVORCE',false).id,'@divorce')
   const data={case_type:'Divorce',petitioner_name:'Alpha',respondent_name:'Beta'}
   assert.doesNotMatch(generatedCaseCaption(data,profile),/CHILDREN|A CHILD/)
-  assert.match(generatedCaseCaption({...data,children:[{name:'Child One'}]},profile),/Child One\nA CHILD/)
-  for(const type of ['SAPCR modification','Enforcement','Other','']) assert.equal(resolveCaseStyle(profile,type,false).id,'sapcr')
+  assert.match(generatedCaseCaption({...data,children:[{name:'Child One'}]},profile),/Child One,\nA CHILD/)
+  assert.equal(resolveCaseStyle(profile,'SAPCR modification',false).id,'@modification')
+  for(const type of ['Enforcement','Other','']) assert.equal(resolveCaseStyle(profile,type,false).id,'sapcr')
 })
 test('case mapping, document override, and reset have predictable precedence', () => {
   const p={...profile,case_type_style_map:{'SAPCR modification':'custom'}}
@@ -65,4 +66,13 @@ test('integration composes all earlier releases and fails closed on changed anch
  assert.ok(next.indexOf('const [mioCloudHydrationDone')<next.indexOf("saveMioStateKey('caseMioDraftingSessionV278'"))
  assert.throws(()=>transformDraftingComponents(code.replace('function draftingResolveCaseStyle','function movedCaseStyle')))
  assert.throws(()=>transformDraftingComponents(next))
+})
+
+test('adaptive SAPCR and modification captions use child count, commas, and separate child lines', () => {
+  const one={case_type:'SAPCR',children:[{name:'Alex Child'}]}
+  assert.equal(resolveCaseStyle(profile,'SAPCR',true).id,'@sapcr')
+  assert.match(generatedCaseCaption(one,profile),/IN THE INTEREST OF\nAlex Child,\nA CHILD/)
+  const two={case_type:'Modification',children:[{name:'Alex Child'},{name:'Bailey Child'}]}
+  assert.equal(resolveCaseStyle(profile,'Modification',true).id,'@modification')
+  assert.match(generatedCaseCaption(two,profile),/IN THE INTEREST OF\nAlex Child AND\nBailey Child,\nCHILDREN/)
 })
