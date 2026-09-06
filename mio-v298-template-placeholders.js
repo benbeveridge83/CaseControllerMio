@@ -1,6 +1,6 @@
 // Mio V298: make the visual template builder read like a reusable form, not the uploaded case.
-// Saved bindings are displayed as generic field placeholders while keeping the original source
-// text underneath (transparent) so selection offsets and V295 source-text anchors stay stable.
+// Saved bindings are displayed as generic field placeholders while the original source text stays
+// in the stored Word template for stable anchoring and generation.
 function replaceRequired(code, from, to, label) {
   if (!code.includes(from)) throw new Error('V298 integration anchor changed: ' + label)
   return code.replace(from, to)
@@ -15,7 +15,7 @@ export default function mioV298TemplatePlaceholders() {
       if (!path.endsWith('/src/App.jsx')) return null
       let code = source
 
-      code = code.replace(/const MIO_APP_VERSION = 'Mio V295[^']*'/, "const MIO_APP_VERSION = 'Mio V298 (visual template fields)'")
+      code = code.replace(/const MIO_APP_VERSION = 'Mio V\d+[^']*'/, "const MIO_APP_VERSION = 'Mio V298 (visual template fields)'")
 
       const paragraphAnchor = "  function draftingStudioV274ParagraphNode(paragraph, template, keyPrefix = '') {"
       if (!code.includes(paragraphAnchor)) throw new Error('V298 integration anchor changed: V274 paragraph renderer')
@@ -56,7 +56,7 @@ export default function mioV298TemplatePlaceholders() {
     try { sourceLabel = source && source !== 'manual' && typeof draftingV276SourceLabel === 'function' ? String(draftingV276SourceLabel(source) || '') : '' } catch {}
     const rawKey = String(binding?.field_key || '').replace(/[_.-]+/g, ' ').trim()
     let base = explicit || sourceLabel || rawKey || 'Template value'
-    base = base.replace(/\\s*[—–]\\s*(full name|first name|last name|mailing address|email|phone|current date).*$/i, '').trim() || base
+    base = base.replace(/\s*[\u2014\u2013-]\s*/g, ' ').replace(/\s+/g, ' ').trim()
     const kind = String(binding?.kind || 'field')
     if (kind === 'pronoun') return /pronoun/i.test(base) ? base : base + ' pronoun field'
     if (kind === 'paragraph_choice') return /paragraph|choice/i.test(base) ? base : base + ' paragraph choice'
@@ -64,11 +64,36 @@ export default function mioV298TemplatePlaceholders() {
     return base + ' field'
   }
 
+  function draftingStudioV298FieldChip(label, key = '') {
+    return <span key={key || label} contentEditable={false} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minHeight: 18, minWidth: 80, padding: '1px 5px', margin: '1px 2px', border: '1px dashed #2563eb', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', fontFamily: 'Arial,sans-serif', fontSize: 9, fontWeight: 900, letterSpacing: '.02em', lineHeight: 1.2, whiteSpace: 'nowrap', verticalAlign: 'baseline', boxSizing: 'border-box' }}>{String(label || 'Template field').toUpperCase()}</span>
+  }
+
+  function draftingStudioV298CaptionPreview() {
+    const sectionMarks = Array.from({ length: 8 }, (_, index) => <div key={index}>{'\u00a7'}</div>)
+    return <div contentEditable={false} style={{ width: '100%', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 24px minmax(0,1fr)', gap: 8, alignItems: 'stretch', fontFamily: 'Times New Roman,serif', fontSize: '9.5pt', lineHeight: 1.12, color: '#111827' }}>
+      <div style={{ textAlign: 'left' }}>
+        <div>IN THE MATTER OF THE</div><div>MARRIAGE OF</div>
+        <div>{draftingStudioV298FieldChip('Petitioner name field', 'caption-petitioner')}</div>
+        <div>AND</div>
+        <div>{draftingStudioV298FieldChip('Respondent name field', 'caption-respondent')}</div>
+        <div>AND IN THE INTEREST OF</div>
+        <div>{draftingStudioV298FieldChip('Child / children names field', 'caption-children')}</div>
+        <div>CHILDREN</div>
+      </div>
+      <div aria-hidden="true" style={{ textAlign: 'center', fontWeight: 700 }}>{sectionMarks}</div>
+      <div style={{ textAlign: 'center', display: 'grid', alignContent: 'space-between', minHeight: 112 }}>
+        <div>IN THE DISTRICT COURT</div>
+        <div>{draftingStudioV298FieldChip('Court name field', 'caption-court')}</div>
+        <div>{draftingStudioV298FieldChip('County field', 'caption-county')}, TEXAS</div>
+      </div>
+    </div>
+  }
+
   function draftingStudioV298BlockSpec(key) {
     const specs = {
       caption: {
         label: 'Heading / case caption block',
-        fields: ['Case style', 'Petitioner / client name', 'Respondent / opposing party name', 'Child / children names']
+        fields: ['Petitioner name', 'Respondent name', 'Child / children names', 'Court name', 'County']
       },
       signature: {
         label: 'Signature block',
@@ -99,10 +124,11 @@ export default function mioV298TemplatePlaceholders() {
   }
 
   function draftingStudioV298BlockPreview(key) {
+    if (String(key || '').toLowerCase() === 'caption') return draftingStudioV298CaptionPreview()
     const spec = draftingStudioV298BlockSpec(key)
-    return <span className="mio-template-block-preview" contentEditable={false}>
-      <span className="mio-template-block-title">{spec.label}</span>
-      <span className="mio-template-block-fields">{spec.fields.map((field) => <span key={field} className="mio-template-block-field">{field + ' field'}</span>)}</span>
+    return <span contentEditable={false} style={{ display: 'grid', gap: 5, width: 'min(100%,440px)', padding: '7px 9px', border: '1px solid #7c3aed', borderRadius: 7, background: '#faf5ff', color: '#581c87', fontFamily: 'Arial,sans-serif', textAlign: 'left', boxSizing: 'border-box' }}>
+      <span style={{ fontSize: 9, fontWeight: 900, letterSpacing: '.05em', textTransform: 'uppercase' }}>{spec.label}</span>
+      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>{spec.fields.map((field) => <span key={field} style={{ padding: '2px 5px', border: '1px dashed #a855f7', borderRadius: 4, background: '#fff', color: '#6b21a8', fontSize: 9, fontWeight: 800 }}>{field + ' field'}</span>)}</span>
     </span>
   }
 
@@ -143,22 +169,20 @@ export default function mioV298TemplatePlaceholders() {
 
   function draftingStudioV298ParagraphHasTemplateControls(paragraph, template) {
     const text = String(paragraph?.text || '')
-    if (/^\\s*\\[\\[MIO_BLOCK:[a-z0-9_]+\\]\\]\\s*$/i.test(text)) return true
+    if (/^\s*\[\[MIO_BLOCK:[a-z0-9_]+\]\]\s*$/i.test(text)) return true
     return draftingStudioV298ParagraphRanges(paragraph, template).length > 0
   }
 
   function draftingStudioV298InlineField(sourceText, binding, key) {
     const label = draftingStudioV298BindingLabel(binding)
     const displayLabel = String(label || 'Template field').toUpperCase()
-    const minWidth = Math.max(8, Math.min(46, Math.max(String(sourceText || '').length, displayLabel.length + 2)))
-    return <span key={key} className="mio-template-field-placeholder" data-mio-template-label={displayLabel} title={label} style={{ minWidth: minWidth + 'ch' }} contentEditable={false}>
-      <span className="mio-template-field-source">{sourceText || ' '}</span>
-    </span>
+    const minWidth = Math.max(8, Math.min(48, Math.max(String(sourceText || '').length, displayLabel.length + 2)))
+    return <span key={key} onClick={(event) => { event.stopPropagation(); if (typeof mioEditBindingV293 === 'function') mioEditBindingV293(binding) }} title={label + ' - click to edit'} contentEditable={false} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: minWidth + 'ch', minHeight: 18, padding: '1px 5px', margin: '0 2px', border: '1px dashed #2563eb', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', fontFamily: 'Arial,sans-serif', fontSize: 9, fontWeight: 900, letterSpacing: '.02em', lineHeight: 1.2, whiteSpace: 'nowrap', verticalAlign: 'baseline', boxSizing: 'border-box', cursor: 'pointer' }}>{displayLabel}</span>
   }
 
   function draftingStudioV298RenderTemplateParagraph(paragraph, template) {
     const text = String(paragraph?.text || '')
-    const block = text.trim().match(/^\\[\\[MIO_BLOCK:([a-z0-9_]+)\\]\\]$/i)
+    const block = text.trim().match(/^\[\[MIO_BLOCK:([a-z0-9_]+)\]\]$/i)
     if (block) return draftingStudioV298BlockPreview(block[1])
     const ranges = draftingStudioV298ParagraphRanges(paragraph, template)
     if (!ranges.length) return renderDraftingStudioHighlightedText(paragraph, template)
