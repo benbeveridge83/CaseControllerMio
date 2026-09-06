@@ -25,7 +25,10 @@ jobs:
       - name: Inspect drafting integration only
         run: node tests/inspect-drafting-safe.mjs
       - name: Unit regressions
-        run: node --test tests/*.test.js
+        run: |
+          mkdir -p test-results
+          node --test tests/*.test.js > test-results/unit-tests.log 2>&1 || { cat test-results/unit-tests.log; exit 1; }
+          tail -n 10 test-results/unit-tests.log
       - name: Build complete application
         run: npm run build
       - name: Validate generated JavaScript syntax
@@ -34,13 +37,18 @@ jobs:
       - name: Install Chromium and DOCX test dependency
         run: |
           npm install --no-save jszip@3.10.1
-          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node node_modules/playwright-core/cli.js install --with-deps chromium > /tmp/browser-install.log 2>&1 || { tail -n 50 /tmp/browser-install.log; exit 1; }
+      - name: Capture reproducible isolated test workspace
+        run: |
+          mkdir -p test-results
+          tar --exclude=.git --exclude=test-results --exclude='.env*' --exclude='*.ttf' --exclude='*.woff*' --exclude='*.otf' -czf /tmp/mio-test-workspace.tar.gz .
+          mv /tmp/mio-test-workspace.tar.gz test-results/workspace.tar.gz
       - name: Browser startup and drafting regression checks
         run: |
           npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
           node tests/cloud-startup-browser.mjs
-          if test -f tests/drafting-safe-browser.mjs; then node tests/drafting-safe-browser.mjs; fi
+          node tests/drafting-safe-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
