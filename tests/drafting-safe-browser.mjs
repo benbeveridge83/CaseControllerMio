@@ -72,7 +72,10 @@ async function builder(){
 }
 async function highlight(index,needle,occurrence=0){
  await page.locator('#drafting-paragraph-'+index).scrollIntoViewIfNeeded()
- await page.evaluate(({index,needle,occurrence})=>{
+ if(needle==='555-0100'){
+  const points=await page.evaluate(({index,needle})=>{const p=document.getElementById('drafting-paragraph-'+index),span=[...p.querySelectorAll('[data-mio-source-start]:not([data-mio-field-id])')].find(s=>s.textContent.includes(needle)),at=span.textContent.indexOf(needle);const r=document.createRange();r.setStart(span.firstChild,at);r.setEnd(span.firstChild,at+1);const first=r.getBoundingClientRect();r.setStart(span.firstChild,at+needle.length-1);r.setEnd(span.firstChild,at+needle.length);const last=r.getBoundingClientRect();return {x1:first.left+.2,y1:first.top+first.height/2,x2:last.right-.2,y2:last.top+last.height/2}},{index,needle})
+  await page.mouse.move(points.x1,points.y1);await page.mouse.down();await page.mouse.move(points.x2,points.y2,{steps:12});await page.mouse.up()
+ }else await page.evaluate(({index,needle,occurrence})=>{
   const p=document.getElementById('drafting-paragraph-'+index),spans=Array.from(p.querySelectorAll('[data-mio-source-start]:not([data-mio-field-id])'));let count=0
   for(const span of spans){let at=span.textContent.indexOf(needle);while(at>=0){if(count++===occurrence){const r=document.createRange();r.setStart(span.firstChild,at);r.setEnd(span.firstChild,at+needle.length);const s=getSelection();s.removeAllRanges();s.addRange(r);span.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));return}at=span.textContent.indexOf(needle,at+needle.length)}}throw new Error('Source text not found: '+needle)
  },{index,needle,occurrence})
@@ -80,7 +83,7 @@ async function highlight(index,needle,occurrence=0){
 }
 async function pick(label,category='Parties & children'){
  await page.getByRole('button',{name:category,exact:false}).click()
- await page.getByRole('button',{name:label}).click()
+ await page.locator('button').filter({hasText:label}).click()
  await page.getByRole('heading',{name:'Choose auto-fill source',exact:true}).waitFor({state:'hidden'})
 }
 const savedTemplate=()=>JSON.parse(states.get('caseMioDraftingTemplates').raw_value).find(t=>t.id==='template-safe')
@@ -107,6 +110,7 @@ try{
  await highlight(5,'Alex',0);await pick(/Client.*full name/);await ack()
  assert.equal(savedTemplate().bindings.filter(b=>b.field_key==='client_name').length,2)
  await highlight(6,'555-0100');await pick(/Client.*phone/);await ack()
+ assert.equal(savedTemplate().bindings.find(b=>b.field_key==='client_phone').source_text,'555-0100')
  failures.writes=true
  await highlight(6,'old@example.invalid');await pick(/Client.*email/)
  await page.getByLabel('Template save status').filter({hasText:'Not saved:'}).waitFor({timeout:45000})
@@ -131,5 +135,5 @@ try{
  assert.match(check.text,/202 Replacement Avenue/);assert.doesNotMatch(check.text,/101 Sample|OLD-001|old@example.invalid|\[\[MIO_BLOCK:/)
  assert.match(generated,/w:val="both"/);assert.equal(check.tables.at(-1).length,2)
  assert.deepEqual(errors,[]);assert.deepEqual(dialogs,[]);assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
- console.log('PASS: built-app startup, saved field labels, automatic field selector, exact repeated occurrence, second field after a chip, reopen/reload persistence, file scoping, failed-save recovery, no app disk writes, actual generated DOCX caption/table/notice/field values')
+ console.log('PASS: built-app startup, saved field labels, automatic field selector including mouse drag, exact repeated occurrence, second field after a chip, reopen/reload persistence, file scoping, failed-save recovery, no app disk writes, actual generated DOCX caption/table/notice/field values')
 }catch(e){console.log('BROWSER_FAILURE',String(e),'ERRORS',errors,'DIALOGS',dialogs);if(page){console.log((await page.locator('body').innerText()).slice(0,18000));await page.screenshot({path:'test-results/template-safe-failure.png',fullPage:true})}throw e}finally{await browser.close()}
