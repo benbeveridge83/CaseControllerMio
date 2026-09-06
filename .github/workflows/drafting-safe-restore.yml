@@ -38,11 +38,6 @@ jobs:
         run: |
           npm install --no-save jszip@3.10.1
           node node_modules/playwright-core/cli.js install --with-deps chromium > /tmp/browser-install.log 2>&1 || { tail -n 50 /tmp/browser-install.log; exit 1; }
-      - name: Capture reproducible isolated test workspace
-        run: |
-          mkdir -p test-results
-          tar --exclude=.git --exclude=test-results --exclude='.env*' --exclude='*.ttf' --exclude='*.woff*' --exclude='*.otf' -czf /tmp/mio-test-workspace.tar.gz .
-          mv /tmp/mio-test-workspace.tar.gz test-results/workspace.tar.gz
       - name: Browser startup and drafting regression checks
         run: |
           npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &

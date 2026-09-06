@@ -5,7 +5,7 @@ import {createRequire} from 'node:module'
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {chunkRows} from './cloud-chunk-fixture.js'
-const require=createRequire(import.meta.url),browser=await chromium.launch({headless:true})
+const require=createRequire(import.meta.url),browser=await chromium.launch({headless:true,...(process.env.MIO_CHROMIUM_PATH ? {executablePath:process.env.MIO_CHROMIUM_PATH} : {})})
 fs.mkdirSync('test-results',{recursive:true})
 const owner='00000000-0000-4000-8000-000000000300',email='template-test@example.invalid',now=new Date().toISOString()
 const user={id:owner,email,aud:'authenticated',role:'authenticated',app_metadata:{provider:'email'},user_metadata:{},identities:[],created_at:now}
@@ -60,6 +60,7 @@ async function open(hash='settings'){
  await page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:60000})
 }
 async function builder(){
+ await page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:60000})
  if(!await page.getByRole('heading',{name:'Mio Drafting Studio',exact:true}).count()){
   const drafting=page.getByRole('button',{name:/Drafting/,exact:false});if(!await drafting.count())throw new Error('Drafting navigation not found: '+(await page.getByRole('button').allTextContents()).join('|'));await drafting.first().click()
  }
@@ -78,7 +79,7 @@ async function highlight(index,needle,occurrence=0){
  await page.getByRole('heading',{name:'Choose auto-fill source',exact:true}).waitFor()
 }
 async function pick(label,category='Parties & children'){
- await page.getByRole('button',{name:category,exact:true}).click()
+ await page.getByRole('button',{name:category,exact:false}).click()
  await page.getByRole('button',{name:label}).click()
  await page.getByRole('heading',{name:'Choose auto-fill source',exact:true}).waitFor({state:'hidden'})
 }
@@ -90,6 +91,7 @@ try{
  assert.match(await page.locator('#drafting-paragraph-1').innerText(),/Cause number/)
  assert.doesNotMatch(await page.locator('#drafting-paragraph-1').innerText(),/OLD-001/)
  const caption=page.getByRole('table',{name:'Caption fields'});assert.equal(await caption.locator('td').count(),3);assert.match(await caption.innerText(),/Court name/);assert.match(await caption.locator('td').nth(1).innerText(),/\u00a7/)
+ await caption.screenshot({path:'test-results/caption-preview.png'})
  await page.getByRole('button',{name:'Field Selector',exact:true}).click()
  await highlight(4,address);await pick(/Client.*mailing address/);await ack()
  assert.equal(savedTemplate().bindings.find(b=>b.field_key==='client_address_inline').source_text,address)
@@ -127,7 +129,6 @@ try{
  assert.match(check.text,/202 Replacement Avenue/);assert.doesNotMatch(check.text,/101 Sample|OLD-001|old@example.invalid|\[\[MIO_BLOCK:/)
  assert.match(generated,/w:val="both"/);assert.equal(check.tables.at(-1).length,2)
  fs.writeFileSync('test-results/mio-synthetic-generated.docx',result);fs.writeFileSync('test-results/mio-synthetic-generated.xml',generated)
- console.log('SYNTHETIC_DOCX_BASE64:'+result.toString('base64'))
  assert.deepEqual(errors,[]);assert.deepEqual(dialogs,[]);assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
  console.log('PASS: built-app startup, saved field labels, automatic field selector, exact repeated occurrence, second field after a chip, reopen/reload persistence, file scoping, failed-save recovery, no app disk writes, actual generated DOCX caption/table/notice/field values')
 }catch(e){console.log('BROWSER_FAILURE',String(e),'ERRORS',errors,'DIALOGS',dialogs);if(page){console.log((await page.locator('body').innerText()).slice(0,18000));await page.screenshot({path:'test-results/template-safe-failure.png',fullPage:true})}throw e}finally{await browser.close()}
