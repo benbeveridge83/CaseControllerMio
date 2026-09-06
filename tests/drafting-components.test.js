@@ -9,7 +9,7 @@ test('automatic divorce style is child-aware within the generated caption', () =
   assert.equal(resolveCaseStyle(profile,'DIVORCE',false).id,'@divorce')
   const data={case_type:'Divorce',petitioner_name:'Alpha',respondent_name:'Beta'}
   assert.doesNotMatch(generatedCaseCaption(data,profile),/CHILDREN|A CHILD/)
-  assert.match(generatedCaseCaption({...data,children:[{name:'Child One'}]},profile),/CHILD ONE\nA CHILD/)
+  assert.match(generatedCaseCaption({...data,children:[{name:'Child One'}]},profile),/Child One\nA CHILD/)
   for(const type of ['SAPCR modification','Enforcement','Other','']) assert.equal(resolveCaseStyle(profile,type,false).id,'sapcr')
 })
 test('case mapping, document override, and reset have predictable precedence', () => {
