@@ -1,0 +1,48 @@
+name: Party pronouns and adaptive captions
+on:
+  push:
+    branches: [fix/party-pronouns-captions-302, main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v302-source
+          retention-days: 1
+          path: |
+            src
+            tests
+            mio-*.js
+            vite.config.js
+            package*.json
+            index.html
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/*.test.js
+      - run: npm run build
+      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Browser and generated Word checks
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/cloud-startup-browser.mjs
+          node tests/drafting-safe-browser.mjs
+          if test -f tests/pronouns-captions-browser.mjs; then node tests/pronouns-captions-browser.mjs; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v302-verification
+          retention-days: 3
+          path: test-results
