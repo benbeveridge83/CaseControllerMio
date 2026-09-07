@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-const bridge=fs.readFileSync(new URL('./src/mioWithdrawalBlocksApp.inc',import.metaurl||import.meta.url),'utf8')
+const bridge=fs.readFileSync(new URL('./src/mioWithdrawalBlocksApp.inc',import.meta.url),'utf8')
 function once(code,from,to,label){const i=code.indexOf(from);if(i<0||code.indexOf(from,i+from.length)>=0)throw new Error('V305 integration anchor changed: '+label);return code.replace(from,to)}
 export default function mioV305WorkflowBlocks(){return{name:'mio-v305-workflow-blocks',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
