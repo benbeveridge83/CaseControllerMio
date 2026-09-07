@@ -1,6 +1,8 @@
 function once(code,from,to,label){const i=code.indexOf(from);if(i<0||code.indexOf(from,i+from.length)>=0)throw new Error('V304.2 integration anchor changed: '+label);return code.replace(from,to)}
 export default function mioV3042WithdrawalSimpleComplete(){return{name:'mio-v3042-withdrawal-simple-complete',enforce:'pre',transform(source,id){
- const path=id.split('?')[0].replaceAll('\\','/');if(!path.endsWith('/src/MioWithdrawalDashboard.jsx'))return null
+ const path=id.split('?')[0].replaceAll('\\','/')
+ if(path.endsWith('/src/App.jsx'))return{code:once(source,"Mio V304.1 (sign-in recovery / inline withdrawal workspace)","Mio V304.2 (simple withdrawal next actions)",'version'),map:null}
+ if(!path.endsWith('/src/MioWithdrawalDashboard.jsx'))return null
  let code=source
  code=once(code,
  ` const completeStep=(row,d)=>{edit(row,d);setEditor(current=>({...current,title:completionLabels[d.id]||d.name,status:'complete',note:completionLabels[d.id]||d.name,reference:row.state.steps[d.id].document_ids?.join(', ')||row.state.steps[d.id].evidence?.reference||(d.id==='decision'?'Attorney withdrawal approval':''),confirmed:false}))}`,
@@ -8,7 +10,7 @@ export default function mioV3042WithdrawalSimpleComplete(){return{name:'mio-v304
  'simple complete helper')
  code=once(code,
  `<button type="button" disabled={busy||selected.state.paused||(['drafting','notice'].includes(d.id)&&!t.document_ids?.length)} onClick={()=>completeStep(selected,d)}>{completionLabels[d.id]||'Confirm completion'}</button>}<button type="button" disabled={busy||selected.state.paused} onClick={()=>edit(selected,d)}>Waiting / correct status</button>`,
- `<button type="button" disabled={busy||selected.state.paused||(['drafting','notice'].includes(d.id)&&!t.document_ids?.length)} onClick={()=>completeStep(selected,d)}>{completionLabels[d.id]||'Complete step'}</button><button type="button" className="mio-wd-secondary" disabled={busy||selected.state.paused} onClick={()=>completeStep(selected,d,true)}>Already completed</button>}<button type="button" disabled={busy||selected.state.paused} onClick={()=>edit(selected,d)}>Waiting / correct status</button>`,
+ `<><button type="button" disabled={busy||selected.state.paused||(['drafting','notice'].includes(d.id)&&!t.document_ids?.length)} onClick={()=>completeStep(selected,d)}>{completionLabels[d.id]||'Complete step'}</button><button type="button" className="mio-wd-secondary" disabled={busy||selected.state.paused} onClick={()=>completeStep(selected,d,true)}>Already completed</button></>}<button type="button" disabled={busy||selected.state.paused} onClick={()=>edit(selected,d)}>Waiting / correct status</button>`,
  'historical bypass button')
  return{code,map:null}
 }}}
