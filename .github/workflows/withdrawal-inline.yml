@@ -1,0 +1,47 @@
+name: Inline withdrawal workspace
+on:
+  push:
+    branches: [feature/withdrawal-inline-v304]
+  pull_request:
+    branches: [main]
+    paths: ['src/**', 'mio-v304-*', 'tests/**', 'vite.config.js', '.github/workflows/withdrawal-inline.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture reproducible source without credentials or case data
+        run: |
+          mkdir -p test-results
+          tar --exclude=.git --exclude=node_modules --exclude=test-results --exclude='.env*' -czf test-results/source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: withdrawal-source
+          retention-days: 1
+          path: test-results/source.tar.gz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/*.test.js
+      - run: npm run build
+      - name: Browser regression checks
+        run: |
+          if [ -f tests/withdrawal-inline-browser.mjs ]; then
+            npx playwright-core install --with-deps chromium
+            npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
+            for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+            node tests/withdrawal-inline-browser.mjs
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: withdrawal-inline-results
+          retention-days: 3
+          path: test-results
