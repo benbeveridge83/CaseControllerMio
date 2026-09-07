@@ -2,7 +2,6 @@ function once(code,from,to,label){const i=code.indexOf(from);if(i<0||code.indexO
 export default function mioV3044WithdrawalFlow(){return{name:'mio-v3044-withdrawal-flow',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
  if(path.endsWith('/src/App.jsx')){
-  code=once(code,"const MIO_APP_VERSION = 'Mio V304.1 (sign-in recovery / inline withdrawal workspace)'","const MIO_APP_VERSION = 'Mio V304.4 (withdrawal flow / status graph controls)'",'version')
   code=once(code,"  async function mioWdPrepareEfile(matterId,step,state,documentId){",`  async function mioWdRelease(matterId){
     const matter=matters.find(m=>String(m.id)===String(matterId));if(!matter)throw new Error('Matter not found.')
     if(matterWithdrawalStatus(matter)!=='withdrawing')return
