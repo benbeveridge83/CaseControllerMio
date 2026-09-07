@@ -36,7 +36,7 @@ jobs:
         run: |
           folders="dist"
           for name in playwright-core jszip pako lie immediate readable-stream safe-buffer setimmediate inherits util-deprecate string_decoder process-nextick-args core-util-is isarray; do
-            if [ -d "node_modules/$name" ]; then folders="$folders node_modules/$name; fi
+            if [ -d "node_modules/$name" ]; then folders="$folders node_modules/$name"; fi
           done
           tar -czf test-results/browser-runtime.tar.gz $folders
       - uses: actions/upload-artifact@v4
