@@ -18,6 +18,16 @@ export function applyWithdrawalEvent(current,event,at=new Date().toISOString()){
   return {...current,workspace_notes:[...notes,{step_id:event.step_id,note,created_at:at}]}
  }
  if(current.paused&&!['email_received','email_sent','efile_update'].includes(event.type))throw new Error('Resume this withdrawal before changing a step.')
+ if(event.type==='historical_complete'){
+  const step=current.steps[event.step_id]
+  if(!step)throw new Error('Unknown withdrawal step.')
+  if(['complete','cancelled'].includes(step.status))return current
+  if(!event.confirmed)throw new Error('Confirm that this step was already completed.')
+  const reference=String(event.reference||'Attorney marked this step as already completed in Mio').trim()
+  const s=JSON.parse(JSON.stringify(current))
+  s.steps[event.step_id]={...s.steps[event.step_id],status:'complete',attention_since:null,waiting_on:'',due_at:null,note:String(event.note||'Already completed before or outside this workflow.'),evidence:{...(s.steps[event.step_id].evidence||{}),reference},completed_at:at,entered_at:at,historical_confirmed:true}
+  return baseApply(s,{type:'module_opened',step_id:event.step_id},at)
+ }
  if(event.type==='template_link'||event.type==='document_link'){
   const step=current.steps[event.step_id]
   if(!step||!(event.type==='document_link'?['drafting','notice','filing']:['drafting','notice']).includes(event.step_id)||['complete','cancelled'].includes(step.status))throw new Error('Link documents or templates to an unfinished drafting step.')
@@ -34,9 +44,9 @@ export function sortWithdrawalRows(rows,mode,now){const sorted=baseSort(rows,mod
 export function nextPrompt(s,id){
  const step=s?.steps?.[id]
  if(s?.paused)return 'This withdrawal is paused. Notes remain available; resume to continue the steps.'
- if(id==='drafting')return step?.document_ids?.length?'Draft saved or linked. Review the actual documents, then approve them to move to e-filing.':'Withdrawal decision complete. The next step is to draft the motion / order. Use the connected template?'
- if(id==='filing')return 'Draft approved. The next step is to e-file the reviewed PDF. Prepare the envelope, review court, recipients and fees, then authorize submission in the eFile agent. Submission alone is not clerk acceptance.'
- if(id==='notice')return 'Use the connected hearing-notice template, then verify filing, service and any required mailing.'
+ if(id==='drafting')return step?.document_ids?.length?'Draft saved or linked. Review the document, then mark this step complete.':'Withdrawal decision complete. The next step is to draft the motion / order. Use the connected template?'
+ if(id==='filing')return 'Draft complete. Next: e-file the reviewed PDF. If it was already filed, use Already completed.'
+ if(id==='notice')return 'Use the connected hearing-notice template, then verify filing, service and any required mailing. If already done, use Already completed.'
  return ''
 }
 export function withdrawalTimeEntries(entries,matterId){return (entries||[]).filter(e=>String(e.matter_id)===String(matterId)&&/^Withdrawal - /.test(e.matter_step||'')).sort((a,b)=>String(b.date||b.created_at||'').localeCompare(String(a.date||a.created_at||'')))}
