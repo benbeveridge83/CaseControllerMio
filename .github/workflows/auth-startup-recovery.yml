@@ -1,0 +1,73 @@
+name: Mio sign-in recovery verification
+on:
+  push:
+    branches: [fix/auth-startup-v305]
+permissions:
+  contents: write
+concurrency:
+  group: mio-auth-startup-v305
+  cancel-in-progress: true
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/fix/auth-startup-v305'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Pin SDK with upstream lock and refresh fixes
+        shell: bash
+        run: |
+          npm install --package-lock-only --ignore-scripts --save-exact @supabase/supabase-js@2.108.2
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mio-v304-withdrawal-inline.js')
+          text = p.read_text()
+          old = "Mio V304 (inline withdrawal workspace)"
+          new = "Mio V304.1 (sign-in recovery / inline withdrawal workspace)"
+          assert text.count(old) == 1 or text.count(new) == 1
+          p.write_text(text.replace(old, new))
+          PY
+      - run: npm ci
+      - name: Unit and integration tests
+        shell: bash
+        run: |
+          mkdir -p test-results
+          node --test tests/*.test.js | tee test-results/unit-tests.log
+      - name: Production build
+        shell: bash
+        run: npm run build | tee test-results/build.log
+      - run: npm install --no-save --package-lock=false jszip@3.10.1
+      - name: Browser verification with synthetic accounts
+        shell: bash
+        run: |
+          npx playwright-core install --with-deps chromium > test-results/browser-install.log 2>&1
+          npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          timeout 180 node tests/auth-startup-browser.mjs | tee test-results/auth-browser.log
+          timeout 180 node tests/cloud-browser.mjs | tee test-results/cloud-browser.log
+          timeout 180 node tests/withdrawal-inline-browser.mjs | tee test-results/withdrawal-browser.log
+      - name: Commit verified dependency and version changes to isolated branch only
+        shell: bash
+        run: |
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json mio-v304-withdrawal-inline.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'Pin tested Supabase 2.108.2 and release Mio V304.1 sign-in recovery'
+            git push origin HEAD:refs/heads/fix/auth-startup-v305
+          fi
+          git rev-parse HEAD > test-results/verified-commit.txt
+          sha256sum dist/assets/*.js > test-results/built-asset-sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-auth-recovery-checks
+          retention-days: 3
+          path: test-results
