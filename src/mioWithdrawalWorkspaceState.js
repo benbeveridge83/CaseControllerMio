@@ -5,6 +5,12 @@ export const moduleLabels={drafting:'Yes, draft using this template',efile:'Prep
 export function canCompleteWithdrawal(s){return !!s&&!s.paused&&['signed_order','status_update','closeout_email'].every(k=>s.steps[k].status==='complete')&&['setting_cleanup','reply_review'].every(k=>['not_started','complete','cancelled'].includes(s.steps[k].status))}
 export function applyWithdrawalEvent(current,event,at=new Date().toISOString()){
  if(!current||!event?.type)return baseApply(current,event,at)
+ if(event.type==='workflow_release'){
+  if(current.status==='released')return current
+  if(current.status!=='active')throw new Error('Only an active withdrawal can be released.')
+  if(!event.confirmed)throw new Error('Confirm release from withdrawal status.')
+  return {...current,status:'released',paused:false,paused_at:null,released_at:at,release_note:String(event.note||'Attorney released matter from withdrawal status. Workflow history retained.')}
+ }
  if(current.status!=='active')throw new Error('This workflow is closed.')
  if(event.source_key&&current.source_versions[event.source_key]===event.source_version)return current
  if(event.type==='workspace_pause'){
@@ -39,7 +45,10 @@ export function applyWithdrawalEvent(current,event,at=new Date().toISOString()){
  if(event.type==='documents_saved'&&next!==current)return {...next,steps:{...next.steps,[event.step_id]:{...next.steps[event.step_id],document_ids:[...new Set((event.document_ids||[]).map(String))]}}}
  return next
 }
-export function workflowAttention(s,now){return s?.paused&&s.status!=='complete'?{kind:'paused',needsMe:false,since:null,next:'Paused - resume when ready',waiting:[]}:baseAttention(s,now)}
+export function workflowAttention(s,now){
+ if(s?.status==='released')return {kind:'released',needsMe:false,since:null,next:'Released from withdrawal',waiting:[]}
+ return s?.paused&&s.status!=='complete'?{kind:'paused',needsMe:false,since:null,next:'Paused - resume when ready',waiting:[]}:baseAttention(s,now)
+}
 export function sortWithdrawalRows(rows,mode,now){const sorted=baseSort(rows,mode,now);return mode==='attention'?[...sorted.filter(r=>!r.state?.paused),...sorted.filter(r=>r.state?.paused)]:sorted}
 export function nextPrompt(s,id){
  const step=s?.steps?.[id]
