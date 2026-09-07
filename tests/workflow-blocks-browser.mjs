@@ -131,7 +131,8 @@ try{
  await page.getByText('Workflow input PDFs connected.',{exact:false}).waitFor({timeout:15000})
  assert.match(await page.locator('body').innerText(),/Alpha-reviewed-motion.pdf/)
  assert.equal(events.some(e=>e.event.type==='efile_update'),false)
- await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
+ // Different query forces a full reload instead of racing the app's hash sync after setPage('efile').
+ await page.goto('http://127.0.0.1:4173/?workflow-return=1#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
  if(!(await detail().count()))await alpha().getByRole('button',{name:'Review',exact:true}).click()
  console.log('PASS notes, pause/resume, billing, shared slots, step approval and real PDF handoff without submitting')
