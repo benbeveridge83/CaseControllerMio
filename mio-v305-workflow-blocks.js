@@ -1,11 +1,12 @@
 import fs from 'node:fs'
-const bridge=fs.readFileSync(new URL('./src/mioWithdrawalBlocksApp.inc',import.meta.url),'utf8')
+const bridge=fs.readFileSync(new URL('./src/mioWithdrawalBlocksApp.inc',import.metaurl||import.meta.url),'utf8')
 function once(code,from,to,label){const i=code.indexOf(from);if(i<0||code.indexOf(from,i+from.length)>=0)throw new Error('V305 integration anchor changed: '+label);return code.replace(from,to)}
 export default function mioV305WorkflowBlocks(){return{name:'mio-v305-workflow-blocks',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
  if(path.endsWith('/src/MioWithdrawalBlocks.jsx')||path.endsWith('/src/MioWorkflowBuilder.jsx')){
   code=code.replace(/<label>([^<{"\n]+)<(select|input|textarea)\b/g,(_match,label,control)=>'<label>'+label+'<'+control+' aria-label="'+label.trim()+'"')
   code=code.replace('<label>{slot.name}<select','<label>{slot.name}<select aria-label={slot.name}')
+  if(path.endsWith('/src/MioWithdrawalBlocks.jsx'))code=once(code,"if(key!==selectedKey.current){selectedKey.current=key;setSelectedId(attention?.step_id||'')}","if(key!==selectedKey.current){const changedMatter=selectedKey.current.split(':')[0]!==expanded;selectedKey.current=key;if(changedMatter||attention?.step_id)setSelectedId(attention?.step_id||'')}",'preserve selected step on pause')
   return {code,map:null}
  }
  if(path.endsWith('/src/mioWithdrawalRepository.js')){
