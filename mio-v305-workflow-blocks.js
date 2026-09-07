@@ -3,6 +3,11 @@ const bridge=fs.readFileSync(new URL('./src/mioWithdrawalBlocksApp.inc',import.m
 function once(code,from,to,label){const i=code.indexOf(from);if(i<0||code.indexOf(from,i+from.length)>=0)throw new Error('V305 integration anchor changed: '+label);return code.replace(from,to)}
 export default function mioV305WorkflowBlocks(){return{name:'mio-v305-workflow-blocks',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
+ if(path.endsWith('/src/MioWithdrawalBlocks.jsx')||path.endsWith('/src/MioWorkflowBuilder.jsx')){
+  code=code.replace(/<label>([^<{"\n]+)<(select|input|textarea)\b/g,(_match,label,control)=>'<label>'+label+'<'+control+' aria-label="'+label.trim()+'"')
+  code=code.replace('<label>{slot.name}<select','<label>{slot.name}<select aria-label={slot.name}')
+  return {code,map:null}
+ }
  if(path.endsWith('/src/mioWithdrawalRepository.js')){
   code=once(code,"from './mioWithdrawalWorkspaceState.js'","from './mioWithdrawalBlocksState.js'",'block reducer')
   code=once(code,"client.rpc('mio_save_withdrawal_v1',","client.rpc(state.definition||['workflow_release','workflow_reactivate'].includes(event.type)?'mio_save_workflow_blocks_v1':'mio_save_withdrawal_v1',",'block save RPC')
