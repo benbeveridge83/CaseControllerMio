@@ -1,4 +1,5 @@
 import React from 'react'
+import './mioWithdrawalFlow.css'
 
 export const WITHDRAWAL_FLOW_SHEET=[
  {lane:'Preparation',step:'1. Approve withdrawal',complete:'Attorney confirms the matter should enter withdrawal status.',mio:'Start the motion / proposed-order drafting step and offer the connected withdrawal template.',you:'Approve the withdrawal decision.',wait:'None.'},
