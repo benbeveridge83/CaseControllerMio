@@ -10,9 +10,22 @@
     const at=new Date().toISOString(),extra={...matterExtraInfoById,[matterId]:{...cloneMatterExtraInfo(matterExtraInfoById[matterId]||{}),withdrawal_status:'withdrawing',withdrawal_entered_at:matterExtraInfoById[matterId]?.withdrawal_entered_at||at}}
     await saveMioStateKeyNow('caseControllerMatterExtraInfo',JSON.stringify(extra),{throwOnError:true})
     await mioWithdrawalStore.initialize(session.user.id,String(matterId),extra[matterId].withdrawal_entered_at)
-    const current=mioWithdrawalStore.getSnapshot().rows[matterId]?.state
+    let current=mioWithdrawalStore.getSnapshot().rows[matterId]?.state
+    if(current?.status==='released'){
+      await mioWithdrawalStore.apply(session.user.id,String(matterId),{type:'workflow_reactivate',confirmed:true,note:'Attorney returned matter to withdrawal status from the withdrawal graph.'})
+      current=mioWithdrawalStore.getSnapshot().rows[matterId]?.state
+    }
     if(current?.steps.decision.status!=='complete')await mioWithdrawalStore.apply(session.user.id,String(matterId),{type:'step_update',step_id:'decision',status:'complete',note:'Attorney confirmed this matter should enter withdrawal.',evidence:{reference:'Attorney approval on the withdrawal candidate panel'},confirmed:true})
     setMatterExtraInfoById(extra);setMioWdFocusMatter(String(matterId))
+  }
+  async function mioWdRelease(matterId){
+    const matter=matters.find(m=>String(m.id)===String(matterId));if(!matter)throw new Error('Matter not found.')
+    if(!window.confirm('Release '+matterClientName(matter)+' - '+matter.name+' from withdrawal status? The withdrawal workflow history will be preserved, but the matter will no longer be treated as an active withdrawal.'))return
+    const extra={...matterExtraInfoById,[matterId]:{...cloneMatterExtraInfo(matterExtraInfoById[matterId]||{}),withdrawal_status:'',withdrawal_released_at:new Date().toISOString()}}
+    await saveMioStateKeyNow('caseControllerMatterExtraInfo',JSON.stringify(extra),{throwOnError:true})
+    const state=mioWithdrawalStore.getSnapshot().rows[matterId]?.state
+    if(state?.status==='active')await mioWithdrawalStore.apply(session.user.id,String(matterId),{type:'workflow_release',confirmed:true,note:'Attorney released matter from withdrawal status from the withdrawal graph.'})
+    setMatterExtraInfoById(extra);if(mioWdFocusMatter===String(matterId))setMioWdFocusMatter('')
   }
   async function mioWdPrepareEfile(matterId,step,state,documentId){
     if(state.paused)throw new Error('Resume this withdrawal before preparing a filing.')
@@ -47,11 +60,11 @@
       const workflow=mioWithdrawalSnapshot.rows[id]?.state
       for(const [stepId,step]of Object.entries(workflow?.steps||{}))if(step.last_outbound_at)notices.push({date:step.last_outbound_at,series_id:id,invoice_id:'withdrawal-'+stepId,invoice_number:WITHDRAWAL_STEPS.find(s=>s.id===stepId)?.name||'Withdrawal email',label:'Withdrawal email: '+(WITHDRAWAL_STEPS.find(s=>s.id===stepId)?.name||stepId),graph_event_kind:'withdrawal_email_sent',graph_event_source:'Recorded withdrawal workflow email send'})
       const latest=sent[0],below=Number(finance.trust)<Number(finance.minimumBalance)
-      return {matter_id:id,name:m.name||'',client:matterClientName(m),cause_number:m.cause_number||'',case_type:String(m.case_type||m.matter_type||clioFixedCaseTypeForMioMatter(m)||'Unspecified'),matter_status:m.matter_status||m.case_status||'',active:m.is_active!==false&&!/closed|inactive/i.test([m.matter_status,m.case_status].join(' ')),trust:finance.trust,minimum:finance.minimumBalance,below,candidate:below&&!!latest&&invoiceBalanceAmount(latest.invoice)>0&&Date.now()-Date.parse(latest.first)>=7*86400000,withdrawing:matterWithdrawalStatus(m)==='withdrawing',complete:workflow?.status==='complete',last_invoice_sent:latest?.last,last_withdrawal_sent:notices.filter(n=>n.graph_event_kind==='withdrawal_email_sent').map(n=>n.date).sort().at(-1),points:byMatter.get(id)||[],notices}
+      return {matter_id:id,name:m.name||'',client:matterClientName(m),cause_number:m.cause_number||'',case_type:String(m.case_type||m.matter_type||clioFixedCaseTypeForMioMatter(m)||'Unspecified'),matter_status:m.matter_status||m.case_status||'',active:m.is_active!==false&&!/closed|inactive/i.test([m.matter_status,m.case_status].join(' ')),trust:finance.trust,minimum:finance.minimumBalance,below,candidate:below&&!!latest&&invoiceBalanceAmount(latest.invoice)>0&&Date.now()-Date.parse(latest.first)>=7*86400000,withdrawing:matterWithdrawalStatus(m)==='withdrawing'&&workflow?.status!=='released',complete:workflow?.status==='complete',last_invoice_sent:latest?.last,last_withdrawal_sent:notices.filter(n=>n.graph_event_kind==='withdrawal_email_sent').map(n=>n.date).sort().at(-1),points:byMatter.get(id)||[],notices}
     })
   }
   function mioWdRenderGraph(rows){
-    const series=rows.map(r=>({matter_id:r.matter_id,display_number:r.client+' - '+r.name,mio_matter_ids:[r.matter_id],matter_names:[{id:r.matter_id,name:r.name}],points:r.points}))
-    if(rows.length===1&&rows[0].points.length){const r=rows[0];series.push({matter_id:'minimum-'+r.matter_id,display_number:'Minimum trust balance',points:[{date:r.points[0].date,balance:r.minimum},{date:new Date().toISOString(),balance:r.minimum}]})}
+    const series=rows.map(r=>({matter_id:r.matter_id,display_number:r.client+' - '+r.name,mio_matter_ids:[r.matter_id],matter_names:[{id:r.matter_id,name:r.name}],points:r.points,color:r.withdrawing?'#c62828':'#111111'}))
+    if(rows.length===1&&rows[0].points.length){const r=rows[0];series.push({matter_id:'minimum-'+r.matter_id,display_number:'Minimum trust balance',points:[{date:r.points[0].date,balance:r.minimum},{date:new Date().toISOString(),balance:r.minimum}],color:'#7a7a7a'})}
     return renderClioGraph(series,{small:true,step:true,extendToToday:true,invoiceMarkers:rows.flatMap(r=>r.notices)})
   }
