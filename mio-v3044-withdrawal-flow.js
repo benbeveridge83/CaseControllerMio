@@ -15,7 +15,7 @@ export default function mioV3044WithdrawalFlow(){return{name:'mio-v3044-withdraw
   code=once(code,"series.push({matter_id:'minimum-'+r.matter_id,display_number:'Minimum trust balance',points:[{date:r.points[0].date,balance:r.minimum},{date:new Date().toISOString(),balance:r.minimum}]})","series.push({matter_id:'minimum-'+r.matter_id,display_number:'Minimum trust balance',points:[{date:r.points[0].date,balance:r.minimum},{date:new Date().toISOString(),balance:r.minimum}],color:'#64748b'})",'minimum line color')
   code=once(code,"color: graphColors[seriesIndex % graphColors.length]","color: series.color || graphColors[seriesIndex % graphColors.length]",'marker graph color')
   code=once(code,"const color = graphColors[seriesIndex % graphColors.length]","const color = series.color || graphColors[seriesIndex % graphColors.length]",'line graph color')
-  code=once(code,"background: graphColors[index % graphColors.length]","background: series.color || graphColors[index % graphColors.length]",'legend graph color')
+  code=code.replace("background: graphColors[index % graphColors.length]","background: series.color || graphColors[index % graphColors.length]")
   code=once(code,"const ids=new Set([...withdrawalMatters.map(m=>String(m.id)),...Object.keys(mioWithdrawalSnapshot.rows)])","const ids=new Set([...withdrawalMatters.map(m=>String(m.id)),...Object.keys(mioWithdrawalSnapshot.rows).filter(id=>matterExtraFor(id).withdrawal_status!=='not_withdrawing')])",'active withdrawal rows')
   code=once(code,"onEnter={mioWdEnter} onRefreshFinance={refreshMioFinancialGraphData}","onEnter={mioWdEnter} onRelease={mioWdRelease} onRefreshFinance={refreshMioFinancialGraphData}",'release prop')
   return{code,map:null}
