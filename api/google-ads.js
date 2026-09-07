@@ -88,7 +88,7 @@ async function googleAccessToken() {
   const unsigned = `${encodedHeader}.${encodedPayload}`
   const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), serviceAccount.private_key)
   const assertion = `${unsigned}.${base64url(signature)}`
-  const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth2:grant-type:jwt-bearer', assertion })
+  const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion })
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
