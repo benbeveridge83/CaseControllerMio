@@ -1,7 +1,7 @@
 name: Inline withdrawal workspace
 on:
   push:
-    branches: [feature/withdrawal-inline-v304, fix/withdrawal-simple-complete-v3042, fix/withdrawal-flow-v3044]
+    branches: [main, feature/withdrawal-inline-v304, fix/withdrawal-simple-complete-v3042, fix/withdrawal-flow-v3044]
   pull_request:
     branches: [main]
     paths: ['src/**', 'mio-v304-*', 'mio-v3042-*', 'mio-v3043-*', 'mio-v3044-*', 'tests/**', 'vite.config.js', '.github/workflows/withdrawal-inline.yml']
@@ -36,7 +36,7 @@ jobs:
         run: |
           folders="dist"
           for name in playwright-core jszip pako lie immediate readable-stream safe-buffer setimmediate inherits util-deprecate string_decoder process-nextick-args core-util-is isarray; do
-            if [ -d "node_modules/$name" ]; then folders="$folders node_modules/$name"; fi
+            if [ -d "node_modules/$name" ]; then folders="$folders node_modules/$name; fi
           done
           tar -czf test-results/browser-runtime.tar.gz $folders
       - uses: actions/upload-artifact@v4
