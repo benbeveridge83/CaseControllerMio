@@ -1,10 +1,10 @@
 name: Inline withdrawal workspace
 on:
   push:
-    branches: [feature/withdrawal-inline-v304]
+    branches: [feature/withdrawal-inline-v304, fix/withdrawal-simple-complete-v3042]
   pull_request:
     branches: [main]
-    paths: ['src/**', 'mio-v304-*', 'tests/**', 'vite.config.js', '.github/workflows/withdrawal-inline.yml']
+    paths: ['src/**', 'mio-v304-*', 'mio-v3042-*', 'tests/**', 'vite.config.js', '.github/workflows/withdrawal-inline.yml']
 permissions:
   contents: read
 jobs:
