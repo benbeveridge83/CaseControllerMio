@@ -32,14 +32,24 @@ jobs:
       - run: node --test tests/*.test.js
       - run: npm run build
       - run: npm install --no-save jszip@3.10.1
+      - name: Capture isolated UI runtime
+        run: |
+          folders="dist"
+          for name in playwright-core jszip pako lie immediate readable-stream safe-buffer setimmediate inherits util-deprecate string_decoder process-nextick-args core-util-is isarray; do
+            if [ -d "node_modules/$name" ]; then folders="$folders node_modules/$name"; fi
+          done
+          tar -czf test-results/browser-runtime.tar.gz $folders
+      - uses: actions/upload-artifact@v4
+        with:
+          name: withdrawal-browser-runtime
+          retention-days: 1
+          path: test-results/browser-runtime.tar.gz
       - name: Browser regression checks
         run: |
-          if [ -f tests/withdrawal-inline-browser.mjs ]; then
-            npx playwright-core install --with-deps chromium
-            npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
-            for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
-            node tests/withdrawal-inline-browser.mjs
-          fi
+          npx playwright-core install --with-deps chromium
+          npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          timeout 180 node tests/withdrawal-inline-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
