@@ -1,0 +1,43 @@
+name: Workflow blocks verification
+on:
+  push:
+    branches: [feature/workflow-blocks-v305]
+  pull_request:
+    branches: [main]
+    paths: ['src/**','mio-v305-*','tests/**','vite.config.js','.github/workflows/workflow-blocks.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/*.test.js
+      - run: npm run build
+      - run: npm install --no-save jszip@3.10.1
+      - name: Browser checks
+        run: |
+          mkdir -p test-results
+          npx playwright-core install --with-deps chromium
+          npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/workflow-blocks-browser.mjs 2>&1 | tee test-results/browser.log
+      - name: Record tested source
+        if: always()
+        run: |
+          mkdir -p test-results
+          tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=test-results --exclude='.env*' -czf test-results/source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workflow-blocks-results
+          retention-days: 1
+          path: test-results
