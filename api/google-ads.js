@@ -2,8 +2,13 @@ import crypto from 'node:crypto'
 
 const GOOGLE_ADS_API_VERSION = 'v25'
 const GOOGLE_ADS_SCOPE = 'https://www.googleapis.com/auth/adwords'
+const DEFAULT_APPROVER_EMAIL = 'ben@beveridgelawfirm.com'
 
 function cleanCustomerId(value = '') {
+  return String(value || '').replace(/[^0-9]/g, '')
+}
+
+function cleanId(value = '') {
   return String(value || '').replace(/[^0-9]/g, '')
 }
 
@@ -15,6 +20,10 @@ function json(res, status, body) {
 
 function base64url(value) {
   return Buffer.from(value).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+function boolEnv(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase())
 }
 
 function serviceAccountConfig() {
@@ -48,6 +57,22 @@ async function requireFirmUser(req) {
   return user
 }
 
+function writeModeForUser(user, connected = true) {
+  const actorEmail = String(user?.email || '').trim().toLowerCase()
+  const serverEnabled = boolEnv(process.env.GOOGLE_ADS_WRITES_ENABLED)
+  const configured = String(process.env.GOOGLE_ADS_WRITE_APPROVER_EMAILS || DEFAULT_APPROVER_EMAIL)
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+  const userAuthorized = Boolean(actorEmail && configured.includes(actorEmail))
+  return {
+    serverEnabled,
+    userAuthorized,
+    ready: Boolean(serverEnabled && userAuthorized && connected && connectionMissing().length === 0),
+    actorEmail
+  }
+}
+
 async function googleAccessToken() {
   const serviceAccount = serviceAccountConfig()
   if (!serviceAccount) throw new Error('GOOGLE_ADS_SERVICE_ACCOUNT_JSON is not configured.')
@@ -63,7 +88,7 @@ async function googleAccessToken() {
   const unsigned = `${encodedHeader}.${encodedPayload}`
   const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), serviceAccount.private_key)
   const assertion = `${unsigned}.${base64url(signature)}`
-  const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion })
+  const body = new URLSearchParams({ grant_type: 'urn:ietf:params:oauth2:grant-type:jwt-bearer', assertion })
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -85,21 +110,30 @@ function googleAdsHeaders(accessToken) {
   return headers
 }
 
-async function googleAdsSearch(accessToken, query) {
-  const customerId = cleanCustomerId(process.env.GOOGLE_ADS_CUSTOMER_ID || '')
-  if (!customerId) throw new Error('GOOGLE_ADS_CUSTOMER_ID is not configured.')
-  const response = await fetch(`https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${customerId}/googleAds:searchStream`, {
+async function googleAdsPost(accessToken, servicePath, body) {
+  const response = await fetch(`https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/${servicePath}`, {
     method: 'POST',
     headers: googleAdsHeaders(accessToken),
-    body: JSON.stringify({ query })
+    body: JSON.stringify(body)
   })
   const text = await response.text()
   let payload
-  try { payload = text ? JSON.parse(text) : [] } catch { payload = [] }
+  try { payload = text ? JSON.parse(text) : {} } catch { payload = {} }
+  const requestId = response.headers.get('request-id') || response.headers.get('x-request-id') || ''
   if (!response.ok) {
     const detail = payload?.error?.details?.[0]?.errors?.[0]?.message || payload?.error?.message || text || `Google Ads API returned ${response.status}.`
-    throw new Error(detail)
+    const error = new Error(detail)
+    error.requestId = requestId
+    error.googlePayload = payload
+    throw error
   }
+  return { payload, requestId }
+}
+
+async function googleAdsSearch(accessToken, query) {
+  const customerId = cleanCustomerId(process.env.GOOGLE_ADS_CUSTOMER_ID || '')
+  if (!customerId) throw new Error('GOOGLE_ADS_CUSTOMER_ID is not configured.')
+  const { payload } = await googleAdsPost(accessToken, `customers/${customerId}/googleAds:searchStream`, { query })
   const batches = Array.isArray(payload) ? payload : [payload]
   return batches.flatMap((batch) => Array.isArray(batch?.results) ? batch.results : [])
 }
@@ -193,7 +227,8 @@ async function buildReport(days) {
 
   const campaignRows = await safeQuery(accessToken, 'campaigns', `
     SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type,
-           campaign.bidding_strategy_type, campaign_budget.amount_micros,
+           campaign.bidding_strategy_type, campaign_budget.resource_name,
+           campaign_budget.amount_micros, campaign_budget.explicitly_shared, campaign_budget.reference_count,
            metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc,
            metrics.cost_micros, metrics.conversions, metrics.all_conversions,
            metrics.conversions_from_interactions_rate, metrics.cost_per_conversion
@@ -207,13 +242,60 @@ async function buildReport(days) {
     status: row.campaign?.status || '',
     advertisingChannelType: row.campaign?.advertisingChannelType || '',
     biddingStrategyType: row.campaign?.biddingStrategyType || '',
+    budgetResourceName: row.campaignBudget?.resourceName || '',
     dailyBudget: micros(row.campaignBudget?.amountMicros),
+    budgetExplicitlyShared: Boolean(row.campaignBudget?.explicitlyShared),
+    budgetReferenceCount: number(row.campaignBudget?.referenceCount),
+    ...metricRow(row.metrics || {})
+  }))
+
+  const adGroupRows = await safeQuery(accessToken, 'ad groups', `
+    SELECT campaign.id, campaign.name, ad_group.id, ad_group.name, ad_group.status, ad_group.type,
+           metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc,
+           metrics.cost_micros, metrics.conversions, metrics.all_conversions,
+           metrics.conversions_from_interactions_rate, metrics.cost_per_conversion
+    FROM ad_group
+    WHERE ${dateWhere(range)} AND ad_group.status != 'REMOVED'
+    ORDER BY metrics.cost_micros DESC
+  `, warnings)
+  const adGroups = adGroupRows.map((row) => ({
+    campaignId: String(row.campaign?.id || ''),
+    campaignName: row.campaign?.name || '',
+    id: String(row.adGroup?.id || ''),
+    name: row.adGroup?.name || '',
+    status: row.adGroup?.status || '',
+    type: row.adGroup?.type || '',
+    ...metricRow(row.metrics || {})
+  }))
+
+  const adRows = await safeQuery(accessToken, 'ads', `
+    SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
+           ad_group_ad.status, ad_group_ad.ad.id, ad_group_ad.ad.name,
+           ad_group_ad.ad.type, ad_group_ad.ad.final_urls,
+           metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc,
+           metrics.cost_micros, metrics.conversions, metrics.all_conversions,
+           metrics.conversions_from_interactions_rate, metrics.cost_per_conversion
+    FROM ad_group_ad
+    WHERE ${dateWhere(range)} AND ad_group_ad.status != 'REMOVED'
+    ORDER BY metrics.cost_micros DESC
+  `, warnings)
+  const ads = adRows.map((row) => ({
+    campaignId: String(row.campaign?.id || ''),
+    campaignName: row.campaign?.name || '',
+    adGroupId: String(row.adGroup?.id || ''),
+    adGroupName: row.adGroup?.name || '',
+    id: String(row.adGroupAd?.ad?.id || ''),
+    name: row.adGroupAd?.ad?.name || '',
+    type: row.adGroupAd?.ad?.type || '',
+    finalUrls: Array.isArray(row.adGroupAd?.ad?.finalUrls) ? row.adGroupAd.ad.finalUrls : [],
+    status: row.adGroupAd?.status || '',
     ...metricRow(row.metrics || {})
   }))
 
   const keywordRows = await safeQuery(accessToken, 'keywords', `
     SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
-           ad_group_criterion.criterion_id, ad_group_criterion.status,
+           ad_group_criterion.criterion_id, ad_group_criterion.resource_name,
+           ad_group_criterion.status, ad_group_criterion.negative,
            ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type,
            metrics.impressions, metrics.clicks, metrics.ctr, metrics.average_cpc,
            metrics.cost_micros, metrics.conversions, metrics.all_conversions,
@@ -228,11 +310,57 @@ async function buildReport(days) {
     adGroupId: String(row.adGroup?.id || ''),
     adGroupName: row.adGroup?.name || '',
     criterionId: String(row.adGroupCriterion?.criterionId || ''),
+    resourceName: row.adGroupCriterion?.resourceName || '',
     status: row.adGroupCriterion?.status || '',
+    negative: Boolean(row.adGroupCriterion?.negative),
     keyword: row.adGroupCriterion?.keyword?.text || '',
     matchType: row.adGroupCriterion?.keyword?.matchType || '',
     ...metricRow(row.metrics || {})
   }))
+
+  const campaignNegativeRows = await safeQuery(accessToken, 'campaign negatives', `
+    SELECT campaign.id, campaign.name, campaign_criterion.criterion_id,
+           campaign_criterion.resource_name, campaign_criterion.negative,
+           campaign_criterion.keyword.text, campaign_criterion.keyword.match_type
+    FROM campaign_criterion
+    WHERE campaign_criterion.negative = TRUE
+  `, warnings)
+  const campaignNegatives = campaignNegativeRows
+    .filter((row) => Boolean(row.campaignCriterion?.keyword?.text))
+    .map((row) => ({
+      scope: 'campaign',
+      campaignId: String(row.campaign?.id || ''),
+      campaignName: row.campaign?.name || '',
+      adGroupId: '',
+      adGroupName: '',
+      criterionId: String(row.campaignCriterion?.criterionId || ''),
+      resourceName: row.campaignCriterion?.resourceName || '',
+      keyword: row.campaignCriterion?.keyword?.text || '',
+      matchType: row.campaignCriterion?.keyword?.matchType || ''
+    }))
+
+  const adGroupNegativeRows = await safeQuery(accessToken, 'ad group negatives', `
+    SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
+           ad_group_criterion.criterion_id, ad_group_criterion.resource_name,
+           ad_group_criterion.status, ad_group_criterion.negative,
+           ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type
+    FROM ad_group_criterion
+    WHERE ad_group_criterion.negative = TRUE AND ad_group_criterion.status != 'REMOVED'
+  `, warnings)
+  const adGroupNegatives = adGroupNegativeRows
+    .filter((row) => Boolean(row.adGroupCriterion?.keyword?.text))
+    .map((row) => ({
+      scope: 'ad_group',
+      campaignId: String(row.campaign?.id || ''),
+      campaignName: row.campaign?.name || '',
+      adGroupId: String(row.adGroup?.id || ''),
+      adGroupName: row.adGroup?.name || '',
+      criterionId: String(row.adGroupCriterion?.criterionId || ''),
+      resourceName: row.adGroupCriterion?.resourceName || '',
+      keyword: row.adGroupCriterion?.keyword?.text || '',
+      matchType: row.adGroupCriterion?.keyword?.matchType || ''
+    }))
+  const negativeKeywords = [...campaignNegatives, ...adGroupNegatives]
 
   const searchTermRows = await safeQuery(accessToken, 'search terms', `
     SELECT campaign.id, campaign.name, ad_group.id, ad_group.name,
@@ -307,7 +435,24 @@ async function buildReport(days) {
   `, warnings)
   const devices = deviceRows.map((row) => ({ device: row.segments?.device || 'UNKNOWN', ...metricRow(row.metrics || {}) }))
 
-  return { ok: true, apiVersion: GOOGLE_ADS_API_VERSION, range, account, overview, daily, campaigns, keywords, searchTerms, conversionActions, devices, warnings, fetchedAt: new Date().toISOString() }
+  return {
+    ok: true,
+    apiVersion: GOOGLE_ADS_API_VERSION,
+    range,
+    account,
+    overview,
+    daily,
+    campaigns,
+    adGroups,
+    ads,
+    keywords,
+    negativeKeywords,
+    searchTerms,
+    conversionActions,
+    devices,
+    warnings,
+    fetchedAt: new Date().toISOString()
+  }
 }
 
 function connectionMissing() {
@@ -322,7 +467,7 @@ async function runAiAudit(report) {
   const apiKey = process.env.OPENAI_API_KEY || ''
   if (!apiKey) throw Object.assign(new Error('OPENAI_API_KEY is not configured on the server.'), { statusCode: 400 })
   const model = process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-5.6-luna'
-  const instructions = `You are the Google Ads auditor for a small Texas law firm. Analyze only the supplied Google Ads report. The firm cares about actual phone calls, successful web forms, qualified consultations, signed clients, and minimizing wasted spend. Be skeptical of reported zero conversions when tracking may be broken. Do not recommend raising budget unless the current traffic and conversion tracking justify it. Identify concrete campaign, keyword, search-term, device, and conversion-tracking issues. Distinguish facts from inferences. Give a concise executive summary, then prioritized findings, then exact recommended next actions. Never claim you changed the account; this tool is read-only.`
+  const instructions = `You are the Google Ads auditor for a small Texas law firm. Analyze only the supplied Google Ads report. The firm cares about actual phone calls, successful web forms, qualified consultations, signed clients, and minimizing wasted spend. Be skeptical of reported zero conversions when tracking may be broken. Do not recommend raising budget unless the current traffic and conversion tracking justify it. Identify concrete campaign, keyword, search-term, device, and conversion-tracking issues. Distinguish facts from inferences. Give a concise executive summary, then prioritized findings, then exact recommended next actions. This audit route cannot itself change the account; proposed changes still require the separate Mio approval flow.`
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -335,22 +480,300 @@ async function runAiAudit(report) {
   return direct || nested || 'The AI audit completed but returned no text.'
 }
 
+function normalizeStatus(value, allowed) {
+  const status = String(value || '').trim().toUpperCase()
+  if (!allowed.includes(status)) throw Object.assign(new Error(`Unsupported status: ${status || '(blank)'}.`), { statusCode: 400 })
+  return status
+}
+
+function normalizeMatchType(value) {
+  return normalizeStatus(value || 'EXACT', ['EXACT', 'PHRASE', 'BROAD'])
+}
+
+function normalizeKeyword(value) {
+  const keyword = String(value || '').trim().replace(/\s+/g, ' ')
+  if (!keyword) throw Object.assign(new Error('A keyword is required.'), { statusCode: 400 })
+  if (keyword.length > 80) throw Object.assign(new Error('Google Ads keywords may not exceed 80 characters.'), { statusCode: 400 })
+  return keyword
+}
+
+function requireId(value, label) {
+  const id = cleanId(value)
+  if (!id) throw Object.assign(new Error(`${label} is required.`), { statusCode: 400 })
+  return id
+}
+
+function resourceNameFor(kind, idParts = []) {
+  const customerId = cleanCustomerId(process.env.GOOGLE_ADS_CUSTOMER_ID || '')
+  if (!customerId) throw Object.assign(new Error('GOOGLE_ADS_CUSTOMER_ID is not configured.'), { statusCode: 500 })
+  if (kind === 'campaign') return `customers/${customerId}/campaigns/${requireId(idParts[0], 'Campaign ID')}`
+  if (kind === 'adGroup') return `customers/${customerId}/adGroups/${requireId(idParts[0], 'Ad group ID')}`
+  if (kind === 'adGroupAd') return `customers/${customerId}/adGroupAds/${requireId(idParts[0], 'Ad group ID')}~${requireId(idParts[1], 'Ad ID')}`
+  if (kind === 'adGroupCriterion') return `customers/${customerId}/adGroupCriteria/${requireId(idParts[0], 'Ad group ID')}~${requireId(idParts[1], 'Criterion ID')}`
+  if (kind === 'conversionAction') return `customers/${customerId}/conversionActions/${requireId(idParts[0], 'Conversion action ID')}`
+  throw Object.assign(new Error('Unsupported Google Ads resource type.'), { statusCode: 400 })
+}
+
+function validatedExistingResourceName(value, collection) {
+  const customerId = cleanCustomerId(process.env.GOOGLE_ADS_CUSTOMER_ID || '')
+  const resourceName = String(value || '').trim()
+  const pattern = new RegExp(`^customers/${customerId}/${collection}/[0-9~]+$`)
+  if (!resourceName || !pattern.test(resourceName)) throw Object.assign(new Error(`A valid ${collection} resource name from this Google Ads account is required.`), { statusCode: 400 })
+  return resourceName
+}
+
+function maxBudgetDollars() {
+  const configured = Number(process.env.GOOGLE_ADS_MAX_BUDGET_DOLLARS || 1000)
+  return Number.isFinite(configured) && configured > 0 ? configured : 1000
+}
+
+function buildMutationPlan(mutation = {}) {
+  const type = String(mutation?.type || '').trim()
+  const customerId = cleanCustomerId(process.env.GOOGLE_ADS_CUSTOMER_ID || '')
+  if (!type) throw Object.assign(new Error('A mutation type is required.'), { statusCode: 400 })
+
+  if (type === 'campaign_status') {
+    const campaignId = requireId(mutation.campaignId, 'Campaign ID')
+    const status = normalizeStatus(mutation.status, ['ENABLED', 'PAUSED'])
+    return {
+      type,
+      summary: `${status === 'PAUSED' ? 'Pause' : 'Enable'} campaign ${campaignId}`,
+      servicePath: `customers/${customerId}/campaigns:mutate`,
+      operations: [{ update: { resourceName: resourceNameFor('campaign', [campaignId]), status }, updateMask: 'status' }]
+    }
+  }
+
+  if (type === 'campaign_budget') {
+    const dailyBudget = Number(mutation.dailyBudget)
+    if (!Number.isFinite(dailyBudget) || dailyBudget <= 0) throw Object.assign(new Error('Daily budget must be greater than $0.'), { statusCode: 400 })
+    if (dailyBudget > maxBudgetDollars()) throw Object.assign(new Error(`Daily budget exceeds Mio's $${maxBudgetDollars().toLocaleString()} safety cap.`), { statusCode: 400 })
+    const resourceName = validatedExistingResourceName(mutation.budgetResourceName, 'campaignBudgets')
+    return {
+      type,
+      summary: `Set campaign budget to $${dailyBudget.toFixed(2)} per day`,
+      servicePath: `customers/${customerId}/campaignBudgets:mutate`,
+      operations: [{ update: { resourceName, amountMicros: Math.round(dailyBudget * 1_000_000).toString() }, updateMask: 'amountMicros' }]
+    }
+  }
+
+  if (type === 'ad_group_status') {
+    const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+    const status = normalizeStatus(mutation.status, ['ENABLED', 'PAUSED'])
+    return {
+      type,
+      summary: `${status === 'PAUSED' ? 'Pause' : 'Enable'} ad group ${adGroupId}`,
+      servicePath: `customers/${customerId}/adGroups:mutate`,
+      operations: [{ update: { resourceName: resourceNameFor('adGroup', [adGroupId]), status }, updateMask: 'status' }]
+    }
+  }
+
+  if (type === 'ad_status') {
+    const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+    const adId = requireId(mutation.adId, 'Ad ID')
+    const status = normalizeStatus(mutation.status, ['ENABLED', 'PAUSED'])
+    return {
+      type,
+      summary: `${status === 'PAUSED' ? 'Pause' : 'Enable'} ad ${adId}`,
+      servicePath: `customers/${customerId}/adGroupAds:mutate`,
+      operations: [{ update: { resourceName: resourceNameFor('adGroupAd', [adGroupId, adId]), status }, updateMask: 'status' }]
+    }
+  }
+
+  if (type === 'keyword_status') {
+    const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+    const criterionId = requireId(mutation.criterionId, 'Criterion ID')
+    const status = normalizeStatus(mutation.status, ['ENABLED', 'PAUSED'])
+    return {
+      type,
+      summary: `${status === 'PAUSED' ? 'Pause' : 'Enable'} keyword criterion ${criterionId}`,
+      servicePath: `customers/${customerId}/adGroupCriteria:mutate`,
+      operations: [{ update: { resourceName: resourceNameFor('adGroupCriterion', [adGroupId, criterionId]), status }, updateMask: 'status' }]
+    }
+  }
+
+  if (type === 'remove_keyword') {
+    const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+    const criterionId = requireId(mutation.criterionId, 'Criterion ID')
+    return {
+      type,
+      summary: `Remove keyword criterion ${criterionId}`,
+      servicePath: `customers/${customerId}/adGroupCriteria:mutate`,
+      operations: [{ remove: resourceNameFor('adGroupCriterion', [adGroupId, criterionId]) }]
+    }
+  }
+
+  if (type === 'add_keyword') {
+    const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+    const keyword = normalizeKeyword(mutation.keyword)
+    const matchType = normalizeMatchType(mutation.matchType)
+    return {
+      type,
+      summary: `Add ${matchType.toLowerCase()} keyword "${keyword}"`,
+      servicePath: `customers/${customerId}/adGroupCriteria:mutate`,
+      operations: [{ create: { adGroup: resourceNameFor('adGroup', [adGroupId]), status: 'ENABLED', negative: false, keyword: { text: keyword, matchType } } }]
+    }
+  }
+
+  if (type === 'add_negative_keyword') {
+    const keyword = normalizeKeyword(mutation.keyword)
+    const matchType = normalizeMatchType(mutation.matchType)
+    const scope = String(mutation.scope || 'campaign').trim().toLowerCase()
+    if (scope === 'ad_group') {
+      const adGroupId = requireId(mutation.adGroupId, 'Ad group ID')
+      return {
+        type,
+        summary: `Add ad-group negative "${keyword}"`,
+        servicePath: `customers/${customerId}/adGroupCriteria:mutate`,
+        operations: [{ create: { adGroup: resourceNameFor('adGroup', [adGroupId]), status: 'ENABLED', negative: true, keyword: { text: keyword, matchType } } }]
+      }
+    }
+    if (scope !== 'campaign') throw Object.assign(new Error('Negative keyword scope must be campaign or ad_group.'), { statusCode: 400 })
+    const campaignId = requireId(mutation.campaignId, 'Campaign ID')
+    return {
+      type,
+      summary: `Add campaign negative "${keyword}"`,
+      servicePath: `customers/${customerId}/campaignCriteria:mutate`,
+      operations: [{ create: { campaign: resourceNameFor('campaign', [campaignId]), negative: true, keyword: { text: keyword, matchType } } }]
+    }
+  }
+
+  if (type === 'remove_negative_keyword') {
+    const resourceName = String(mutation.resourceName || '').trim()
+    if (resourceName.includes('/adGroupCriteria/')) {
+      return {
+        type,
+        summary: `Remove ad-group negative "${String(mutation.keyword || '').trim()}"`,
+        servicePath: `customers/${customerId}/adGroupCriteria:mutate`,
+        operations: [{ remove: validatedExistingResourceName(resourceName, 'adGroupCriteria') }]
+      }
+    }
+    if (resourceName.includes('/campaignCriteria/')) {
+      return {
+        type,
+        summary: `Remove campaign negative "${String(mutation.keyword || '').trim()}"`,
+        servicePath: `customers/${customerId}/campaignCriteria:mutate`,
+        operations: [{ remove: validatedExistingResourceName(resourceName, 'campaignCriteria') }]
+      }
+    }
+    throw Object.assign(new Error('A valid negative-keyword resource name is required.'), { statusCode: 400 })
+  }
+
+  if (type === 'conversion_primary') {
+    const resourceName = mutation.resourceName
+      ? validatedExistingResourceName(mutation.resourceName, 'conversionActions')
+      : resourceNameFor('conversionAction', [mutation.conversionActionId])
+    const primaryForGoal = Boolean(mutation.primaryForGoal)
+    return {
+      type,
+      summary: `${primaryForGoal ? 'Make primary' : 'Make secondary'} conversion action`,
+      servicePath: `customers/${customerId}/conversionActions:mutate`,
+      operations: [{ update: { resourceName, primaryForGoal }, updateMask: 'primaryForGoal' }]
+    }
+  }
+
+  if (type === 'conversion_status') {
+    const resourceName = mutation.resourceName
+      ? validatedExistingResourceName(mutation.resourceName, 'conversionActions')
+      : resourceNameFor('conversionAction', [mutation.conversionActionId])
+    const status = normalizeStatus(mutation.status, ['ENABLED', 'HIDDEN'])
+    return {
+      type,
+      summary: `${status === 'ENABLED' ? 'Enable' : 'Hide'} conversion action`,
+      servicePath: `customers/${customerId}/conversionActions:mutate`,
+      operations: [{ update: { resourceName, status }, updateMask: 'status' }]
+    }
+  }
+
+  throw Object.assign(new Error(`Unsupported Google Ads mutation type: ${type}.`), { statusCode: 400 })
+}
+
+function mutationResultResources(payload) {
+  const rows = Array.isArray(payload?.results) ? payload.results : []
+  return rows.map((row) => row?.resourceName || row?.resource_name || '').filter(Boolean)
+}
+
+async function applyApprovedMutation(accessToken, user, body = {}) {
+  const writeMode = writeModeForUser(user, true)
+  if (!writeMode.serverEnabled) throw Object.assign(new Error('Google Ads live writes are locked on the server.'), { statusCode: 403 })
+  if (!writeMode.userAuthorized) throw Object.assign(new Error('Your Mio account is not authorized to approve Google Ads writes.'), { statusCode: 403 })
+  if (String(body?.confirmation || '') !== 'APPLY') throw Object.assign(new Error('Explicit APPLY confirmation is required.'), { statusCode: 400 })
+  if (!body?.mutation || typeof body.mutation !== 'object' || Array.isArray(body.mutation)) throw Object.assign(new Error('A structured Google Ads mutation is required.'), { statusCode: 400 })
+
+  const plan = buildMutationPlan(body.mutation)
+  const validate = await googleAdsPost(accessToken, plan.servicePath, {
+    operations: plan.operations,
+    validateOnly: true,
+    partialFailure: false
+  })
+
+  const applied = await googleAdsPost(accessToken, plan.servicePath, {
+    operations: plan.operations,
+    validateOnly: false,
+    partialFailure: false
+  })
+
+  const log = {
+    type: plan.type,
+    summary: plan.summary,
+    actorEmail: writeMode.actorEmail,
+    reason: String(body?.reason || '').trim().slice(0, 1000),
+    validated: true,
+    validationRequestId: validate.requestId || '',
+    requestId: applied.requestId || '',
+    resultResources: mutationResultResources(applied.payload),
+    appliedAt: new Date().toISOString()
+  }
+  console.info('GOOGLE_ADS_LIVE_CHANGE', JSON.stringify(log))
+  return { ok: true, applied: true, log }
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return json(res, 204, {})
   try {
-    await requireFirmUser(req)
+    const user = await requireFirmUser(req)
     const action = String(req.query?.action || 'status').toLowerCase()
 
     if (action === 'status') {
       const missing = connectionMissing()
       const serviceAccount = process.env.GOOGLE_ADS_SERVICE_ACCOUNT_JSON ? serviceAccountConfig() : null
-      if (missing.length) return json(res, 200, { ok: true, configured: false, connected: false, missing, serviceAccountEmail: serviceAccount?.client_email || '', apiVersion: GOOGLE_ADS_API_VERSION, aiConfigured: Boolean(process.env.OPENAI_API_KEY) })
+      if (missing.length) {
+        return json(res, 200, {
+          ok: true,
+          configured: false,
+          connected: false,
+          missing,
+          serviceAccountEmail: serviceAccount?.client_email || '',
+          apiVersion: GOOGLE_ADS_API_VERSION,
+          aiConfigured: Boolean(process.env.OPENAI_API_KEY),
+          writeMode: writeModeForUser(user, false)
+        })
+      }
       try {
         const accessToken = await googleAccessToken()
         const account = await accountInfo(accessToken)
-        return json(res, 200, { ok: true, configured: true, connected: true, missing: [], account, serviceAccountEmail: serviceAccount?.client_email || '', apiVersion: GOOGLE_ADS_API_VERSION, aiConfigured: Boolean(process.env.OPENAI_API_KEY) })
+        return json(res, 200, {
+          ok: true,
+          configured: true,
+          connected: true,
+          missing: [],
+          account,
+          serviceAccountEmail: serviceAccount?.client_email || '',
+          apiVersion: GOOGLE_ADS_API_VERSION,
+          aiConfigured: Boolean(process.env.OPENAI_API_KEY),
+          writeMode: writeModeForUser(user, true)
+        })
       } catch (error) {
-        return json(res, 200, { ok: true, configured: true, connected: false, missing: [], error: error?.message || String(error), serviceAccountEmail: serviceAccount?.client_email || '', apiVersion: GOOGLE_ADS_API_VERSION, aiConfigured: Boolean(process.env.OPENAI_API_KEY) })
+        return json(res, 200, {
+          ok: true,
+          configured: true,
+          connected: false,
+          missing: [],
+          error: error?.message || String(error),
+          serviceAccountEmail: serviceAccount?.client_email || '',
+          apiVersion: GOOGLE_ADS_API_VERSION,
+          aiConfigured: Boolean(process.env.OPENAI_API_KEY),
+          writeMode: writeModeForUser(user, false)
+        })
       }
     }
 
@@ -368,9 +791,17 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, audit })
     }
 
+    if (action === 'mutate') {
+      if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Use POST for Google Ads mutations.' })
+      if (connectionMissing().length) return json(res, 400, { ok: false, error: `Google Ads server configuration is incomplete: ${connectionMissing().join(', ')}` })
+      const accessToken = await googleAccessToken()
+      const result = await applyApprovedMutation(accessToken, user, req.body || {})
+      return json(res, 200, result)
+    }
+
     return json(res, 404, { ok: false, error: 'Unknown Google Ads action.' })
   } catch (error) {
     console.error('Google Ads API route error:', error)
-    return json(res, error?.statusCode || 500, { ok: false, error: error?.message || 'Google Ads request failed.' })
+    return json(res, error?.statusCode || 500, { ok: false, error: error?.message || 'Google Ads request failed.', requestId: error?.requestId || '' })
   }
 }
