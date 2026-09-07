@@ -14,7 +14,7 @@ const user={id:owner,email,aud:'authenticated',role:'authenticated',app_metadata
 const b64=x=>Buffer.from(JSON.stringify(x)).toString('base64url'),exp=Math.floor(Date.now()/1000)+3600
 const session={access_token:`${b64({alg:'HS256',typ:'JWT'})}.${b64({sub:owner,email,role:'authenticated',exp,aud:'authenticated'})}.test`,refresh_token:'test-only',expires_at:exp,expires_in:3600,token_type:'bearer',user}
 const ids=['00000000-0000-4000-8000-000000000281','00000000-0000-4000-8000-000000000282','00000000-0000-4000-8000-000000000283']
-const matters=ids.map((id,i)=>({id,name:['Alpha matter','Beta matter','Gamma matter'][i],case_type:i===0?'Divorce':'Modification',is_active:true,case_status:'Active',cause_number:`TEST-${i+1}`,created_at:ago(90),clients:{first_name:['Alpha','Beta','Gamma'][i],last_name:'Client',email:`client${i}@example.invalid`},courts:{court_name:'Synthetic court',county:'Synthetic'}}))
+const matters=ids.map((id,i)=>({id,name:['Alpha matter','Beta matter','Gamma matter'][i],case_type:i===0?'Divorce':'Modification',matter_type:i===0?'Divorce':'SAPCR/Modification',matter_status:'Served- Need to Finalize',is_active:true,case_status:'Open',cause_number:`TEST-${i+1}`,created_at:ago(90),clients:{first_name:['Alpha','Beta','Gamma'][i],last_name:'Client',email:`client${i}@example.invalid`},courts:{court_name:'Synthetic court',county:'Synthetic'}}))
 const a=newWithdrawal(ids[0],ago(15),ago(7)),b=newWithdrawal(ids[1],ago(30),ago(3)),c=newWithdrawal(ids[2],ago(4),ago(2))
 b.steps.decision={...b.steps.decision,status:'waiting',attention_since:null,waiting_on:'Client response',due_at:future(5),last_outbound_at:ago(3)}
 const workflows=new Map([a,b,c].map(state=>[state.matter_id,{owner_id:owner,matter_id:state.matter_id,state,revision:1}]))
@@ -39,8 +39,9 @@ await page.route('**/*',async route=>{
  if(table==='mio_cloud_state_write_v277'){const p=req.postDataJSON(),old=states.get(p.p_key);if(old?.raw_value!==p.p_raw&&(!!old!==p.p_expected_exists||old&&old.updated_at!==p.p_expected_at))return respond({code:'40001',message:'Stale write'},409);const row={key:p.p_key,raw_value:p.p_raw,json_value:null,updated_at:new Date().toISOString()};states.set(p.p_key,row);return respond(row)}
  if(table==='case_mio_user_state'){let data=[...states.values()];const key=url.searchParams.get('key');if(key?.startsWith('eq.'))data=data.filter(r=>r.key===key.slice(3));return respond(single?data[0]||null:data)}
  if(table==='matters')return respond(single?matters[0]:matters)
+ if(table==='setting_options')return respond(Object.entries({matter_status:['PNC- Need to Consult','Consult- Need to Client','Client-Need to Draft','Drafted- Need to Serve','Served- Need to Finalize','Finalized- Need Order','Order- Need to Close','Closed'],case_status:['Closed','Open','Open- Withdrawing'],matter_type:['DFPS','SAPCR/Modification','Divorce','Other']}).flatMap(([category,names])=>names.map((name,i)=>({id:category+'-'+i,category,name,is_active:true,sort_order:i}))))
  if(table==='mio_withdrawal_workflows'){let rows=[...workflows.values()];const id=url.searchParams.get('matter_id');if(id?.startsWith('eq.'))rows=rows.filter(r=>r.matter_id===id.slice(3));return respond(single?rows[0]||null:rows)}
- if(table==='mio_save_withdrawal_v1'){const p=req.postDataJSON(),old=workflows.get(p.p_matter_id);if((old?.revision||0)!==p.p_expected_revision)return respond({code:'40001',message:'Stale workflow'},409);const row={owner_id:owner,matter_id:p.p_matter_id,revision:(old?.revision||0)+1,state:p.p_state};workflows.set(p.p_matter_id,row);events.push({event_id:p.p_event_id,event:p.p_event,revision:row.revision,recorded_at:new Date().toISOString()});return respond(row)}
+ if(['mio_save_withdrawal_v1','mio_save_workflow_blocks_v1'].includes(table)){const p=req.postDataJSON(),old=workflows.get(p.p_matter_id);if((old?.revision||0)!==p.p_expected_revision)return respond({code:'40001',message:'Stale workflow'},409);const row={owner_id:owner,matter_id:p.p_matter_id,revision:(old?.revision||0)+1,state:p.p_state};workflows.set(p.p_matter_id,row);events.push({event_id:p.p_event_id,event:p.p_event,revision:row.revision,recorded_at:new Date().toISOString()});return respond(row)}
  if(table==='mio_withdrawal_events')return respond(events)
  if(table==='team_members'){const m={id:'test-member',email,first_name:'Synthetic',last_name:'Attorney',is_active:true,page_access:[]};return respond(single?m:[m])}
  return respond(single?null:[])
@@ -48,18 +49,20 @@ await page.route('**/*',async route=>{
 try{
  await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
- const names=()=>page.locator('.mio-wd-table tbody tr td:first-child strong').allTextContents()
- assert.deepEqual(await names(),['Alpha matter','Gamma matter','Beta matter'])
- await page.getByLabel(/^Sort/).selectOption('oldest');assert.deepEqual(await names(),['Beta matter','Alpha matter','Gamma matter'])
- await page.getByLabel(/^Sort/).selectOption('attention');await page.screenshot({path:'test-results/withdrawal-dashboard.png'})
- await page.locator('.mio-wd-table tbody tr').filter({hasText:'Alpha matter'}).getByRole('button',{name:'Review',exact:true}).click()
- await page.locator('.mio-wd-step').filter({hasText:'Approve withdrawal'}).getByRole('button',{name:'Record update / evidence'}).click()
- await page.getByLabel(/^Status/).selectOption('waiting');await page.getByLabel('Update / evidence explanation').fill('Synthetic waiting update');await page.getByLabel('Waiting on',{exact:true}).fill('Client');await page.getByLabel('Follow-up due').fill(dateInput(future(2)))
- await page.getByRole('button',{name:'Save to workflow',exact:true}).click();await page.locator('dialog[open]').waitFor({state:'hidden'})
+ const names=()=>page.locator('tr.mio-block-summary td:first-child strong').allTextContents()
+ assert.deepEqual(await names(),['Alpha Client','Gamma Client','Beta Client'])
+ await page.getByLabel('Sort',{exact:true}).selectOption('oldest');assert.deepEqual(await names(),['Beta Client','Alpha Client','Gamma Client'])
+ await page.getByLabel('Sort',{exact:true}).selectOption('attention');await page.screenshot({path:'test-results/withdrawal-dashboard.png'})
+ const row=name=>page.locator('tr.mio-block-summary').filter({hasText:name})
+ await row('Alpha matter').getByRole('button',{name:'Review',exact:true}).click()
+ await page.locator('.mio-block-expanded').getByRole('button',{name:/Waiting \/ skip/}).click()
+ const modal=page.locator('dialog[open]')
+ await modal.getByLabel('Status',{exact:true}).selectOption('waiting');await modal.getByLabel('Note / reason',{exact:true}).fill('Synthetic waiting update');await modal.getByLabel('Waiting on',{exact:true}).fill('Client');await modal.getByLabel('Follow up date',{exact:true}).fill(dateInput(future(2)))
+ await modal.getByRole('button',{name:'Save step status',exact:true}).click();await modal.waitFor({state:'hidden'})
  assert.equal(workflows.get(ids[0]).state.steps.decision.status,'waiting')
  const changed=workflows.get(ids[1]);changed.state=applyWithdrawalEvent(changed.state,{type:'email_received',step_id:'decision',message_id:'synthetic-reply',received_at:ago(.05),source_key:'synthetic-thread',source_version:'reply'},now);changed.revision++
- await page.getByRole('button',{name:'Refresh linked activity',exact:true}).click();await page.waitForTimeout(300);assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Beta matter'}).innerText(),/NEEDS ME/)
- await page.reload({waitUntil:'domcontentloaded'});await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000});assert.match(await page.locator('.mio-wd-table tbody tr').filter({hasText:'Alpha matter'}).innerText(),/WAITING/)
+ await page.getByRole('button',{name:'Refresh linked activity',exact:true}).click();await page.waitForTimeout(300);assert.match(await row('Beta matter').innerText(),/NEEDS ME/)
+ await page.reload({waitUntil:'domcontentloaded'});await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000});assert.match(await row('Alpha matter').innerText(),/WAITING/)
  await page.goto('http://127.0.0.1:4173/?test-view=drafting#drafting',{waitUntil:'domcontentloaded'})
  await page.locator('summary').filter({hasText:'Matter data & document options'}).click({timeout:60000})
  await page.getByRole('heading',{name:'Preview and customize this document',exact:true}).waitFor()
@@ -73,4 +76,4 @@ try{
  await page.waitForTimeout(800);assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__appDiskWrites),[])
  console.log('PASS: dashboard attention and age sorts, waiting update, reply promotion, reload, per-file populated editable preview, shared settings and no app data written to browser storage')
 }catch(error){await page.screenshot({path:'test-results/failure.png',fullPage:true});fs.writeFileSync('test-results/failure.txt',String(error)+'\n'+errors.join('\n')+'\n'+await page.locator('body').innerText());throw error}finally{await browser.close()}
-function dateInput(v){const d=new Date(v);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)}
+function dateInput(v){const d=new Date(v);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)}
