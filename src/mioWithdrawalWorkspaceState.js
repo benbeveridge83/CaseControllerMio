@@ -11,6 +11,12 @@ export function applyWithdrawalEvent(current,event,at=new Date().toISOString()){
   if(!event.confirmed)throw new Error('Confirm release from withdrawal status.')
   return {...current,status:'released',paused:false,paused_at:null,released_at:at,release_note:String(event.note||'Attorney released matter from withdrawal status. Workflow history retained.')}
  }
+ if(event.type==='workflow_reactivate'){
+  if(current.status==='active')return current
+  if(current.status!=='released')throw new Error('Only a released withdrawal can be reactivated.')
+  if(!event.confirmed)throw new Error('Confirm return to withdrawal status.')
+  return {...current,status:'active',released_at:null,release_note:'',reactivated_at:at}
+ }
  if(current.status!=='active')throw new Error('This workflow is closed.')
  if(event.source_key&&current.source_versions[event.source_key]===event.source_version)return current
  if(event.type==='workspace_pause'){
