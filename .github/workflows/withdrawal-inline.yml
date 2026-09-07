@@ -31,6 +31,7 @@ jobs:
       - run: npm ci
       - run: node --test tests/*.test.js
       - run: npm run build
+      - run: npm install --no-save jszip@3.10.1
       - name: Browser regression checks
         run: |
           if [ -f tests/withdrawal-inline-browser.mjs ]; then
