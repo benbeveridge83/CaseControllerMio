@@ -5,7 +5,7 @@ export default function mioV304WithdrawalInline(){return {name:'mio-v304-withdra
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
  if(path.endsWith('/src/mioWithdrawalRepository.js'))return {code:once(code,"from './mioWithdrawalWorkflow.js'","from './mioWithdrawalWorkspaceState.js'",'workspace events'),map:null}
  if(path.endsWith('/src/App.jsx')){
-  code=once(code,"const MIO_APP_VERSION = 'Mio V303 (withdrawal next-action dashboard)'","const MIO_APP_VERSION = 'Mio V304 (inline withdrawal workspace)'",'version')
+  code=once(code,"const MIO_APP_VERSION = 'Mio V303 (withdrawal next-action dashboard)'","const MIO_APP_VERSION = 'Mio V304.1 (sign-in recovery / inline withdrawal workspace)'",'version')
   code=once(code,"  const [mioWithdrawalIntegrationError,setMioWithdrawalIntegrationError]=useState('')","  const [mioWithdrawalIntegrationError,setMioWithdrawalIntegrationError]=useState('')\n  const [mioWdDraftRequest,setMioWdDraftRequest]=useState(null),[mioWdFocusMatter,setMioWdFocusMatter]=useState('')",'draft request')
   code=once(code,'  function renderWithdrawalsPage() {',app+'\n  function renderWithdrawalsPage() {','adapters')
   code=once(code,"if(!matter||!state||state.status!=='active')throw new Error('Open an active withdrawal first.')","if(!matter||!state||state.status!=='active'||state.paused)throw new Error('Open an active, unpaused withdrawal first.')\n    setMioWdFocusMatter(String(matterId))",'paused module')

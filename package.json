@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@azure/msal-browser": "^5.12.0",
-    "@supabase/supabase-js": "^2.105.1",
+    "@supabase/supabase-js": "2.108.2",
     "playwright-core": "^1.62.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
