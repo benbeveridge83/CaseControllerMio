@@ -1,0 +1,7 @@
+import React,{useEffect,useState} from 'react'
+export default function MioDropboxSignStatus(){
+ const[state,setState]=useState({loading:true,connected:false,error:'',account_email:'',test_mode:true})
+ const load=async()=>{setState(s=>({...s,loading:true,error:''}));try{const r=await fetch('/api/dropbox-sign?action=status',{cache:'no-store'}),data=await r.json();if(!r.ok||!data.connected)throw new Error(data.error||'Dropbox Sign is not connected.');setState({loading:false,connected:true,error:'',account_email:data.account_email||'',test_mode:data.test_mode!==false})}catch(e){setState({loading:false,connected:false,error:e.message||String(e),account_email:'',test_mode:true})}}
+ useEffect(()=>{void load()},[])
+ return <section className="mio-block-box"><header><div><h3>Dropbox Sign</h3><small>Signature steps use Dropbox Sign directly after you approve the signer(s) and PDF(s).</small></div><button type="button" onClick={load} disabled={state.loading}>{state.loading?'Checking...':'Check connection'}</button></header>{state.connected?<p className="mio-block-success"><strong>Connected</strong>{state.account_email?' as '+state.account_email:''}. {state.test_mode?'Test mode is ON.':'Live signature requests are enabled.'}</p>:<p className="mio-block-error"><strong>Not connected.</strong> {state.error||'Add DROPBOX_SIGN_API_KEY to the Vercel project environment.'}</p>}<p className="mio-block-note">The API key stays server-side. Mio does not store it in the browser or in a matter.</p></section>
+}

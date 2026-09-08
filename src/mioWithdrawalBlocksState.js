@@ -8,6 +8,6 @@ export function applyWithdrawalEvent(state,event,at){
  }
  const next=applyWorkflowBlockEvent(state,event,at)
  if(next===null)return legacyApply(state,event,at)
- if(event.type==='step_config'&&next.steps[event.step_id])return {...next,steps:{...next.steps,[event.step_id]:{...next.steps[event.step_id],client_links:event.client_links??next.steps[event.step_id].client_links,links_verified:event.links_verified??next.steps[event.step_id].links_verified}}}
+ if(event.type==='step_config'&&next.steps[event.step_id])return {...next,steps:{...next.steps,[event.step_id]:{...next.steps[event.step_id],client_links:event.client_links??next.steps[event.step_id].client_links,links_verified:event.links_verified??next.steps[event.step_id].links_verified,signature_provider:event.signature_provider??next.steps[event.step_id].signature_provider,signature_request_id:event.signature_request_id??next.steps[event.step_id].signature_request_id,signature_status:event.signature_status??next.steps[event.step_id].signature_status,signature_details_url:event.signature_details_url??next.steps[event.step_id].signature_details_url,signature_test_mode:event.signature_test_mode??next.steps[event.step_id].signature_test_mode,signature_sent_at:event.signature_sent_at??next.steps[event.step_id].signature_sent_at,signature_completed_at:event.signature_completed_at??next.steps[event.step_id].signature_completed_at}}}
  return next
 }
