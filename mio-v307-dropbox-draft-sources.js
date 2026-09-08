@@ -20,6 +20,24 @@ const helperBlock=`  function mioV307CleanOneDrivePath(value){const text=String(
     const data=await graphFetch(endpoint,{allowInteractive:true}),items=Array.isArray(data?.value)?data.value:[]
     return{path:clean,folders:items.filter(item=>item.folder).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),undefined,{numeric:true,sensitivity:'base'})).map(item=>({id:item.id,name:item.name,path:mioV307CleanOneDrivePath(clean+'/'+item.name)}))}
   }
+  async function mioWdListDocumentSourceFiles(matterId,source){
+    if(source==='matter_documents')return documents.filter(d=>String(d.matter_id)===String(matterId)).map(d=>({id:d.id,name:d.file_name||d.name||'Document',matter_document:true}))
+    const sources=mioWdGetMatterDocumentSources(matterId),folder=source==='onedrive_draft'?sources.draft.path:source==='onedrive_efile'?sources.efile.path:''
+    if(!folder)throw new Error(source==='onedrive_draft'?'Assign a OneDrive Draft folder to this matter first.':'Assign a OneDrive E-file folder to this matter first.')
+    const clean=mioV307CleanOneDrivePath(folder),endpoint='/me/drive/root:'+encodeURI(clean)+':/children?$top=200'
+    const data=await graphFetch(endpoint,{allowInteractive:true}),items=Array.isArray(data?.value)?data.value:[]
+    return items.filter(item=>item.file).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),undefined,{numeric:true,sensitivity:'base'})).map(item=>({id:item.id,name:item.name,size:Number(item.size||0),mime:item.file?.mimeType||'application/octet-stream',download_url:item['@microsoft.graph.downloadUrl']||'',source,path:mioV307CleanOneDrivePath(clean+'/'+item.name)}))
+  }
+  async function mioV307BlobDataUrl(blob){return await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(reader.error||new Error('The OneDrive file could not be read.'));reader.readAsDataURL(blob)})}
+  async function mioWdImportDocumentSourceFile(matterId,item){
+    if(!item?.download_url)throw new Error('OneDrive did not provide a downloadable file. Refresh the source list and try again.')
+    if(Number(item.size||0)>24*1024*1024)throw new Error('This OneDrive file is larger than 24 MB. Save a smaller copy before importing it to Matter Documents.')
+    const response=await fetch(item.download_url,{cache:'no-store'});if(!response.ok)throw new Error('OneDrive download failed ('+response.status+'). Refresh the source list and try again.')
+    const blob=await response.blob(),fileData=await mioV307BlobDataUrl(blob),documentId=globalThis.crypto?.randomUUID?.()||('mio-'+Date.now()+'-'+Math.random().toString(36).slice(2))
+    const row={user_id:session.user.id,document_id:documentId,matter_id:String(matterId),category:'Workflow source',doc_date:new Date().toISOString().slice(0,10),description:'Imported from '+(item.source==='onedrive_efile'?'OneDrive E-file':'OneDrive Draft')+' folder: '+item.path,file_name:item.name,file_type:blob.type||item.mime||'application/octet-stream',file_size:blob.size,file_data:fileData}
+    const {error}=await mioV307Supabase.from('mio_documents').insert(row);if(error)throw error
+    return{id:documentId,document_id:documentId,matter_id:String(matterId),name:item.name,file_name:item.name,file_type:row.file_type,file_size:row.file_size,file_data:fileData,category:row.category,doc_date:row.doc_date,description:row.description}
+  }
 `
 const esignBlock=`    if(step.action==='esign_document'){
       const people=mioWdBlockPeople(matterId),chosen=people.filter(p=>(current.recipient_ids||[]).includes(p.key))
@@ -62,6 +80,7 @@ const esignBlock=`    if(step.action==='esign_document'){
       return
     }
 `
+const sourcePicker=`{editorSource!=='matter_documents'&&<fieldset><legend>{editorSource==='onedrive_draft'?'OneDrive Draft folder':'OneDrive E-file folder'}</legend><p className="mio-block-note">This step is configured to pull documents from the assigned OneDrive folder. Choose a file here; Mio imports a durable copy to this matter Documents before attaching it to the workflow slot.</p><button type="button" disabled={busy} onClick={()=>run(loadEditorSourceFiles)}>Load files from assigned folder</button>{Array.isArray(editor.sourceFiles)&&<label>OneDrive file<select value={editor.sourceFileId||''} onChange={e=>setEditor({...editor,sourceFileId:e.target.value})}><option value="">Select a file</option>{editor.sourceFiles.map(file=><option key={file.id} value={file.id}>{file.name}</option>)}</select></label>}<button type="button" className="mio-block-primary" disabled={busy||!editor.sourceFileId} onClick={()=>run(importEditorSourceFile)}>Import selected file to Matter Documents</button></fieldset>}`
 export default function mioV307DropboxDraftSources(){return{name:'mio-v307-dropbox-draft-sources',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\\\','/');let code=source
  if(path.endsWith('/src/mioWorkflowBlocks.js')){
@@ -77,15 +96,20 @@ export default function mioV307DropboxDraftSources(){return{name:'mio-v307-dropb
  }
  if(path.endsWith('/src/MioWithdrawalBlocks.jsx')){
   code="import MioMatterDocumentSources from './MioMatterDocumentSources.jsx'\n"+code
-  code=once(code,"onAction,getPeople,initialExpanded=''","onAction,getPeople,getMatterDocumentSources,onSaveDraftFolder,onBrowseOneDrive,initialExpanded=''",'dashboard source props')
+  code=once(code,"onAction,getPeople,initialExpanded=''","onAction,getPeople,getMatterDocumentSources,onSaveDraftFolder,onBrowseOneDrive,onListDocumentSourceFiles,onImportDocumentSourceFile,initialExpanded=''",'dashboard source props')
+  code=once(code," const init=useRef(new Set()),initial=useRef(''),selectedKey=useRef('')"," const[importedDocs,setImportedDocs]=useState([])\n const init=useRef(new Set()),initial=useRef(''),selectedKey=useRef('')",'imported document state')
+  code=once(code,"editorDocs=editorRow?documents.filter(d=>String(d.matter_id)===editorRow.matter_id):[]","editorDocs=editorRow?[...documents,...importedDocs].filter(d=>String(d.matter_id)===editorRow.matter_id):[]",'include imported source documents')
+  code=once(code," const cloud=mioCloudStore.status(),settingsVersion=mioStorage.getItem(definitionKey)||'default'",` const editorSource=editorStep?.document_source||'matter_documents'\n async function loadEditorSourceFiles(){if(!onListDocumentSourceFiles)throw new Error('OneDrive document source browsing is unavailable.');const files=await onListDocumentSourceFiles(editor.matter,editorSource);setEditor({...editor,sourceFiles:files,sourceFileId:''})}\n async function importEditorSourceFile(){if(!onImportDocumentSourceFile)throw new Error('OneDrive document importing is unavailable.');const item=(editor.sourceFiles||[]).find(file=>String(file.id)===String(editor.sourceFileId));if(!item)throw new Error('Choose a OneDrive file first.');const doc=await onImportDocumentSourceFile(editor.matter,item);setImportedDocs(previous=>[...previous.filter(d=>String(d.id)!==String(doc.id)),doc]);setEditor({...editor,documentId:doc.id,sourceFileId:'',sourceFiles:editor.sourceFiles});setMessage(doc.file_name+' was imported from OneDrive to this matter Documents and is ready to attach.')}\n const cloud=mioCloudStore.status(),settingsVersion=mioStorage.getItem(definitionKey)||'default'`,'source file editor helpers')
+  code=once(code,"</p><label>Saved matter document<select value={editor.documentId}","</p>"+sourcePicker+"<label>Saved matter document<select value={editor.documentId}",'slot source picker')
+  code=once(code,"{editor.type==='outputs'&&editorStep&&<><p>Connect the actual output document(s), then approve this step. Missing files are never invented from a status label.</p>","{editor.type==='outputs'&&editorStep&&<><p>Connect the actual output document(s), then approve this step. Missing files are never invented from a status label.</p>"+sourcePicker,'output source picker')
   code=once(code,'</section></td></tr>}</React.Fragment>',`</section><MioMatterDocumentSources matterId={row.matter_id} getSources={getMatterDocumentSources} onSaveDraftFolder={onSaveDraftFolder} onBrowseOneDrive={onBrowseOneDrive}/></td></tr>}</React.Fragment>`,'matter source controls')
   return{code,map:null}
  }
  if(!path.endsWith('/src/App.jsx'))return null
- code="import {mioCloudStore as mioV307CloudStore,mioStorage as mioV307Storage} from './mioCloudRuntime.js'\n"+code
+ code="import {mioCloudStore as mioV307CloudStore,mioStorage as mioV307Storage} from './mioCloudRuntime.js'\nimport {supabase as mioV307Supabase} from './supabaseClient.js'\n"+code
  code=once(code,'  function mioWdBlockPeople(matterId){',helperBlock+'  function mioWdBlockPeople(matterId){','source adapter helpers')
  code=once(code,"    if(['draft_email','esign_document'].includes(step.action)){",esignBlock+"    if(step.action==='draft_email'){",'live Dropbox Sign action')
- code=once(code,'getPeople={mioWdBlockPeople}','getPeople={mioWdBlockPeople} getMatterDocumentSources={mioWdGetMatterDocumentSources} onSaveDraftFolder={mioWdSaveDraftFolder} onBrowseOneDrive={mioWdBrowseOneDrive}','dashboard source adapters')
+ code=once(code,'getPeople={mioWdBlockPeople}','getPeople={mioWdBlockPeople} getMatterDocumentSources={mioWdGetMatterDocumentSources} onSaveDraftFolder={mioWdSaveDraftFolder} onBrowseOneDrive={mioWdBrowseOneDrive} onListDocumentSourceFiles={mioWdListDocumentSourceFiles} onImportDocumentSourceFile={mioWdImportDocumentSourceFile}','dashboard source adapters')
  code=code.replace('Mio V305 (editable withdrawal workflows)','Mio V307 (Dropbox Sign + document sources)')
  return{code,map:null}
 }}}
