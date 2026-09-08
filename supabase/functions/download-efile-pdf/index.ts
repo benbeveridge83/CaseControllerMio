@@ -23,6 +23,43 @@ function safeFileName(name = 'efile-document.pdf') {
   return /\.pdf$/i.test(clean) ? clean : `${clean || 'efile-document'}.pdf`
 }
 
+function verifiedTylerFileName(name = '') {
+  const clean = safeFileName(name || '')
+  const compact = clean.toLowerCase().replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/\s+pdf$/i, '').trim()
+  if (!name || /view(?:service)?documents(?:\.aspx)?/i.test(clean)) return ''
+  if (/^(?:file|document|attachment|download|efile document|efile download|efile-document)$/i.test(compact)) return ''
+  return clean
+}
+
+function contentDispositionFileName(value = '') {
+  const raw = String(value || '')
+  if (!raw) return ''
+  const encoded = raw.match(/filename\*\s*=\s*(?:UTF-8''|)([^;]+)/i)?.[1] || ''
+  const quoted = raw.match(/filename\s*=\s*"([^"]+)"/i)?.[1]
+    || raw.match(/filename\s*=\s*'([^']+)'/i)?.[1]
+    || raw.match(/filename\s*=\s*([^;]+)/i)?.[1]
+    || ''
+  const candidate = (encoded || quoted).trim().replace(/^['"]|['"]$/g, '')
+  if (!candidate) return ''
+  try { return decodeURIComponent(candidate) } catch { return candidate }
+}
+
+function fileNameFromUrl(url = '') {
+  try {
+    const parsed = new URL(url)
+    const queryKeys = ['originalFileName', 'original_file_name', 'fileName', 'filename', 'documentName', 'document_name', 'download', 'name']
+    for (const key of queryKeys) {
+      const value = parsed.searchParams.get(key) || ''
+      const candidate = verifiedTylerFileName(value)
+      if (candidate) return candidate
+    }
+    const tail = decodeURIComponent((parsed.pathname || '').split('/').filter(Boolean).pop() || '')
+    return verifiedTylerFileName(tail)
+  } catch {
+    return ''
+  }
+}
+
 function bytesToBase64(bytes: Uint8Array) {
   let binary = ''
   const chunkSize = 0x8000
@@ -57,6 +94,11 @@ Deno.serve(async (req) => {
       return json({ error: `Tyler download returned ${response.status}`, status: response.status }, 502)
     }
 
+    const dispositionName = verifiedTylerFileName(contentDispositionFileName(response.headers.get('content-disposition') || ''))
+    const finalUrlName = fileNameFromUrl(response.url || targetUrl)
+    const requestedName = verifiedTylerFileName(String(file_name || ''))
+    const actualFileName = dispositionName || finalUrlName || requestedName || ''
+
     const arrayBuffer = await response.arrayBuffer()
     const bytes = new Uint8Array(arrayBuffer)
     const textProbe = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 300))).toLowerCase()
@@ -77,7 +119,11 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true,
-      file_name: safeFileName(file_name || 'efile-document.pdf'),
+      file_name: actualFileName || 'efile-document.pdf',
+      original_file_name: dispositionName || actualFileName,
+      content_disposition_filename: dispositionName,
+      download_file_name: actualFileName,
+      final_url: response.url || targetUrl,
       content_type: looksLikePdf ? 'application/pdf' : contentType,
       file_base64: bytesToBase64(bytes),
       size: bytes.length,
