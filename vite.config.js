@@ -30,9 +30,10 @@ import mioV3044WithdrawalFlow from './mio-v3044-withdrawal-flow.js'
 import mioV305WorkflowBlocks from './mio-v305-workflow-blocks.js'
 import mioV306WithdrawalGraphTable from './mio-v306-withdrawal-graph-table.js'
 import mioV307DropboxSignOneDrive from './mio-v307-dropbox-sign-onedrive.js'
+import mioV307DraftFolderSettings from './mio-v307-draft-folder-settings.js'
 import mioBrowserSyntaxCheck from './mio-browser-syntax-check.js'
 
 // Keep earlier guarded transforms intact; the final workspace integration is independently tested.
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), mioV301StartupSettings(), mioV302PartyPronouns(), mioV303WithdrawalNextAction(), mioV304WithdrawalInline(), mioV3042WithdrawalSimpleComplete(), mioV3043WithdrawalGlance(), mioV3044WithdrawalFlow(), mioV305WorkflowBlocks(), mioV306WithdrawalGraphTable(), mioV307DropboxSignOneDrive(), react(), mioBrowserSyntaxCheck()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), mioV301StartupSettings(), mioV302PartyPronouns(), mioV303WithdrawalNextAction(), mioV304WithdrawalInline(), mioV3042WithdrawalSimpleComplete(), mioV3043WithdrawalGlance(), mioV3044WithdrawalFlow(), mioV305WorkflowBlocks(), mioV306WithdrawalGraphTable(), mioV307DropboxSignOneDrive(), mioV307DraftFolderSettings(), react(), mioBrowserSyntaxCheck()],
 })
