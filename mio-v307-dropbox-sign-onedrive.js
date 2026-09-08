@@ -33,9 +33,6 @@ export default function mioV307DropboxSignOneDrive(){return{name:'mio-v307-dropb
  }
  if(path.endsWith('/src/App.jsx')){
   code=once(code,"Mio V305 (editable withdrawal workflows)","Mio V307 (Dropbox Sign + OneDrive workflow sources)",'version')
-  code=once(code,"async function mioDropboxSignCall(actionName,{method='GET',body:payload=null,query:params={}}={})","async function mioDropboxSignCall(actionName,{method='GET',body:payload=null,query:params={}}={})".replace("body:payload=null,query:params={}","body:null=null,query:{}={}"),'Dropbox Sign defaults')
-  code=code.replace("async function mioDropboxSignCall(actionName,{method='GET',body:null=null,query:{}={}}={})","async function mioDropboxSignCall(actionName,{method='GET',body:payload=null,query:params={}}={})")
-  code=once(code,"const token=session?.access_token;if(!token)throw new Error('Sign in to Mio before using Dropbox Sign.')\n    const search=new URLSearchParams({action:actionName,...params}),response=await fetch('/api/dropbox-sign?'+search.toString(),{method,headers:{Authorization:`Bearer ${token}`,...(payload?{'Content-Type':'application/json'}:{})},...(payload?{body:JSON.stringify(payload)}:{})})","const token=session?.access_token;if(!token)throw new Error('Sign in to Mio before using Dropbox Sign.')\n    const search=new URLSearchParams({action:actionName,...params}),response=await fetch('/api/dropbox-sign?'+search.toString(),{method,headers:{Authorization:`Bearer ${token}`,...(payload?{'Content-Type':'application/json'}:{})},...(payload?{body:JSON.stringify(payload)}:{})})",'Dropbox Sign request body')
   code=once(code,"onAction={mioWdBlockAction} getPeople={mioWdBlockPeople}","onAction={mioWdBlockAction} getPeople={mioWdBlockPeople} getMatterFolders={mioWdMatterFolders} onSaveMatterFolder={mioWdSaveMatterFolder} onListOneDriveFiles={mioWdListOneDriveFiles} onImportOneDriveFile={mioWdImportOneDriveFile}",'new workflow props')
   return{code,map:null}
  }
