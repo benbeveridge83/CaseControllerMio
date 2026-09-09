@@ -1,0 +1,63 @@
+name: Withdrawal release verification
+on:
+  push:
+    branches: [main, fix/withdrawal-build-verified]
+    paths:
+      - '.github/workflows/withdrawal-release-verification.yml'
+      - 'mio-v310-mailform-snail-mail.js'
+      - 'mio-v311-withdrawal-row-controls.js'
+      - 'src/mioWithdrawalRowActions.js'
+      - 'src/mioWithdrawalRepository.js'
+      - 'scripts/test-withdrawal-release.mjs'
+      - 'scripts/test-withdrawal-release-browser.mjs'
+      - 'vite.config.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: withdrawal-release-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Regression tests
+        run: |
+          node --test tests/workflow-blocks.test.js tests/withdrawal-workflow.test.js tests/withdrawal-inline.test.js
+          node scripts/test-service-v309.mjs
+          if [ -f scripts/test-withdrawal-release.mjs ]; then node scripts/test-withdrawal-release.mjs; fi
+      - name: Full production build
+        run: npm run build
+      - name: Browser regression tests
+        run: |
+          if [ -f scripts/test-withdrawal-release-browser.mjs ]; then
+            npx playwright-core install --with-deps chromium
+            node scripts/test-withdrawal-release-browser.mjs
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: withdrawal-release-source
+          retention-days: 1
+          path: |
+            src
+            lib
+            api
+            tests
+            scripts
+            supabase/migrations
+            mio-*.js
+            vite.config.js
+            package.json
+            package-lock.json
+            index.html
+            vercel.json
+            dist
+            withdrawal-test-results
