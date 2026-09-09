@@ -13,6 +13,7 @@ export default function mioV310MailformSnailMail() {
 
       if (path.endsWith('/src/mioWorkflowBlocks.js')) {
         let code = source
+        if (code.includes("id:'mailform'")) return { code, map: null }
         const efileAction = " {id:'efile_document',label:'E-file document',button:'Prepare e-filing',module:'efile',input:true},"
         code = once(
           code,
@@ -25,6 +26,7 @@ export default function mioV310MailformSnailMail() {
 
       if (!path.endsWith('/src/App.jsx')) return null
       let code = source
+      if (code.includes('Mio V310 (Mailform snail mail + workflow block)')) return { code, map: null }
 
       code = code.replaceAll('Mail Center', 'Snail Mail')
       code = code.replace('Mio V309 (multi-file eService + document sources)', 'Mio V310 (Mailform snail mail + workflow block)')
