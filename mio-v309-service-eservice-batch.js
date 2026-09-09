@@ -1,11 +1,3 @@
-function injectBeforeOnce(code, marker, insertion, label) {
-  const first = code.indexOf(marker)
-  if (first < 0 || code.indexOf(marker, first + marker.length) >= 0) {
-    throw new Error('V309 integration anchor changed: ' + label)
-  }
-  return code.slice(0, first) + insertion + '\n\n' + code.slice(first)
-}
-
 function findMatchingBrace(source, openIndex) {
   if (source[openIndex] !== '{') return -1
   let depth = 0
@@ -93,21 +85,6 @@ function findMatchingBrace(source, openIndex) {
   return -1
 }
 
-function rewriteAsyncFunction(code, functionName, rewrite) {
-  const marker = `async function ${functionName}(`
-  const start = code.indexOf(marker)
-  if (start < 0 || code.indexOf(marker, start + marker.length) >= 0) {
-    throw new Error('V309 integration anchor changed: ' + functionName)
-  }
-  const open = code.indexOf('{', start + marker.length)
-  const close = findMatchingBrace(code, open)
-  if (open < 0 || close < 0) throw new Error('V309 could not isolate ' + functionName)
-  const original = code.slice(start, close + 1)
-  const updated = rewrite(original)
-  if (updated === original) throw new Error('V309 made no changes inside ' + functionName)
-  return code.slice(0, start) + updated + code.slice(close + 1)
-}
-
 function removeManualClioGate(handler) {
   const blockPattern = /if\s*\(([^)]*matterPracticeId[^)]*)\)\s*\{[\s\S]{0,900}?\}/g
   handler = handler.replace(blockPattern, (block, condition) => {
@@ -119,6 +96,47 @@ function removeManualClioGate(handler) {
   const oneLinePattern = /if\s*\(\s*!\s*matterPracticeId\s*\)\s*(?:return\s+)?(?:window\.)?alert\([^;]{0,700}?\)\s*;?/g
   handler = handler.replace(oneLinePattern, (line) => /clio/i.test(line) ? '' : line)
   return handler
+}
+
+function rewriteBillAndSaveHandlers(code) {
+  const marker = 'async function handleServiceBillAndSave('
+  const starts = []
+  let cursor = 0
+  while (true) {
+    const start = code.indexOf(marker, cursor)
+    if (start < 0) break
+    starts.push(start)
+    cursor = start + marker.length
+  }
+  if (!starts.length) throw new Error('V309 could not find the Service Inbox Bill + save handler')
+
+  let changed = 0
+  for (let index = starts.length - 1; index >= 0; index -= 1) {
+    const start = starts[index]
+    const open = code.indexOf('{', start + marker.length)
+    const close = findMatchingBrace(code, open)
+    if (open < 0 || close < 0) throw new Error('V309 could not isolate a Service Inbox Bill + save handler')
+    const original = code.slice(start, close + 1)
+    let next = original
+
+    if (/await\s+askUserForExistingPdf\(\)/.test(next)) {
+      next = next.replace(/await\s+askUserForExistingPdf\(\)/g, 'await askUserForExistingPdfBatch()')
+    }
+
+    const saveAnchor = 'await saveEFilePDF(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)'
+    if (next.includes(saveAnchor)) {
+      next = next.replaceAll(saveAnchor, 'await saveEFilePDFBatchAware(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)')
+    }
+
+    next = removeManualClioGate(next)
+    if (next !== original) {
+      code = code.slice(0, start) + next + code.slice(close + 1)
+      changed += 1
+    }
+  }
+
+  if (!changed) throw new Error('V309 found the Bill + save handler but none of the expected eService save anchors were present')
+  return code
 }
 
 const batchHelpers = `  // V309: an eService/Tyler notification can point to an HTML document list instead of one PDF.
@@ -246,27 +264,18 @@ export default function mioV309ServiceEserviceBatch() {
       if (!path.endsWith('/src/App.jsx')) return null
       let code = source
 
+      // Earlier Mio transforms intentionally advance the visible version as features are layered.
+      // V309 is the final Service Inbox layer in this build, so make the live badge unambiguous.
+      code = code.replace(/const MIO_APP_VERSION = 'Mio V\d+'/g, "const MIO_APP_VERSION = 'Mio V309'")
+
       const handlerMarker = 'async function handleServiceBillAndSave('
-      code = injectBeforeOnce(code, handlerMarker, batchHelpers, 'service Bill + save handler')
+      const firstHandler = code.indexOf(handlerMarker)
+      if (firstHandler < 0) throw new Error('V309 could not find the Service Inbox Bill + save handler')
+      if (!code.includes('async function askUserForExistingPdfBatch()')) {
+        code = code.slice(0, firstHandler) + batchHelpers + '\n\n' + code.slice(firstHandler)
+      }
 
-      code = rewriteAsyncFunction(code, 'handleServiceBillAndSave', (handler) => {
-        let next = handler
-        const pickerCalls = (next.match(/await\s+askUserForExistingPdf\(\)/g) || []).length
-        if (pickerCalls !== 1) throw new Error('V309 expected one eService fallback PDF picker, found ' + pickerCalls)
-        next = next.replace('await askUserForExistingPdf()', 'await askUserForExistingPdfBatch()')
-
-        const saveAnchor = 'await saveEFilePDF(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)'
-        const saveCalls = next.split(saveAnchor).length - 1
-        if (saveCalls !== 1) throw new Error('V309 expected one eFile PDF save call in Bill + save, found ' + saveCalls)
-        next = next.replace(saveAnchor, 'await saveEFilePDFBatchAware(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)')
-
-        // Service/eService processing must not stop just because a Mio matter lacks a manually
-        // entered Clio matter number. If a Clio mapping exists the normal billing call still uses it;
-        // otherwise saving the filing and moving the email are allowed to proceed.
-        next = removeManualClioGate(next)
-        return next
-      })
-
+      code = rewriteBillAndSaveHandlers(code)
       return { code, map: null }
     }
   }
