@@ -1,7 +1,7 @@
 function once(code, from, to, label) {
   const first = code.indexOf(from)
   if (first < 0 || code.indexOf(from, first + from.length) >= 0) throw new Error('V310 Mailform integration anchor changed: ' + label)
-  return code.replace(from, to)
+  return code.replace(from, () => to)
 }
 
 export default function mioV310MailformSnailMail() {
@@ -10,35 +10,25 @@ export default function mioV310MailformSnailMail() {
     enforce: 'pre',
     transform(source, id) {
       const path = id.split('?')[0].replaceAll('\\', '/')
-
       if (path.endsWith('/src/mioWorkflowBlocks.js')) {
         let code = source
         if (code.includes("id:'mailform'")) return { code, map: null }
         const efileAction = " {id:'efile_document',label:'E-file document',button:'Prepare e-filing',module:'efile',input:true},"
-        code = once(
-          code,
-          efileAction,
-          efileAction + "\n {id:'mailform',label:'Send by snail mail (Mailform)',button:'Prepare snail mail',module:'mail_center',input:true},",
-          'workflow Mailform action'
-        )
+        code = once(code, efileAction, efileAction + "\n {id:'mailform',label:'Send by snail mail (Mailform)',button:'Prepare snail mail',module:'mail_center',input:true},", 'workflow Mailform action')
         return { code, map: null }
       }
-
       if (!path.endsWith('/src/App.jsx')) return null
       let code = source
       if (code.includes('Mio V310 (Mailform snail mail + workflow block)')) return { code, map: null }
-
       code = code.replaceAll('Mail Center', 'Snail Mail')
       code = code.replace('Mio V309 (multi-file eService + document sources)', 'Mio V310 (Mailform snail mail + workflow block)')
-
-      code = once(
-        code,
+      code = once(code,
         "    setPostalForm((current) => ({ ...current, matter_id: matterId, recipient_source: client ? 'client' : 'custom', document_ids: [], approved_to_send: false, ...recipient }))",
         "    setPostalForm((current) => ({ ...current, matter_id: matterId, recipient_source: client ? 'client' : 'custom', document_ids: [], approved_to_send: false, workflow_matter_id: '', workflow_step_id: '', ...recipient }))",
-        'clear workflow binding on manual matter selection'
-      )
-
-      const emailActionAnchor = "    if(['draft_email','esign_document'].includes(step.action)){"
+        'clear workflow binding on manual matter selection')
+      // V307 already separated Dropbox Sign from draft_email. Target the actual
+      // post-V307 handler, not the obsolete combined action expression.
+      const emailActionAnchor = "    if(step.action==='draft_email'){"
       const mailformAction = `    if(step.action==='mailform'){
       const documentIds=[]
       for(const input of inputs){
@@ -55,11 +45,8 @@ export default function mioV310MailformSnailMail() {
     }
 ${emailActionAnchor}`
       code = once(code, emailActionAnchor, mailformAction, 'workflow action adapter')
-
       const postalMessageLine = "      setPostalMessage(order.test_mode ? 'Test mailing submitted. Mailform test-mode orders are automatically cancelled and do not incur mailing charges.' : 'Mailing submitted to Mailform.')"
-      code = once(
-        code,
-        postalMessageLine,
+      code = once(code, postalMessageLine,
         `      let workflowNote = ''
       if (postalForm.workflow_matter_id && postalForm.workflow_step_id) {
         if (order.test_mode) {
@@ -85,16 +72,11 @@ ${emailActionAnchor}`
         }
       }
       setPostalMessage((order.test_mode ? 'Test mailing submitted. Mailform test-mode orders are automatically cancelled and do not incur mailing charges.' : 'Mailing submitted to Mailform.') + workflowNote)`,
-        'workflow completion after provider submission'
-      )
-
-      code = once(
-        code,
+        'workflow completion after provider submission')
+      code = once(code,
         "      setPostalForm((current) => ({ ...current, approved_to_send: false, document_ids: [] }))",
         "      setPostalForm((current) => ({ ...current, approved_to_send: false, document_ids: [], workflow_matter_id: '', workflow_step_id: '' }))",
-        'clear workflow binding after submission'
-      )
-
+        'clear workflow binding after submission')
       return { code, map: null }
     }
   }
