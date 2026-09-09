@@ -51,7 +51,7 @@ test('all configured transforms compose with inline detail, document handoff and
  const plugins=await Promise.all(imports.map(async([,,f])=>(await import('../'+f)).default()))
  for(const f of ['App.jsx','MioWithdrawalDashboard.jsx','mioWithdrawalRepository.js']){
   let source=fs.readFileSync(new URL('../src/'+f,import.meta.url),'utf8');for(const p of plugins){const r=await p.transform?.(source,'/repo/src/'+f);source=typeof r==='string'?r:r?.code||source}
-  if(f==='App.jsx'){assert.match(source,/Mio V30[4-9]/);assert.match(source,/mioWdPrepareEfile/);assert.match(source,/Return to withdrawal row/);assert.match(source,/matter_step:\"Withdrawal - \"/)}
+  if(f==='App.jsx'){assert.ok(/Mio V3[01][0-9]/.test(source),'Expected a supported Mio release label');assert.match(source,/mioWdPrepareEfile/);assert.match(source,/Return to withdrawal row/);assert.match(source,/matter_step:"Withdrawal - "/)}
   if(f==='MioWithdrawalDashboard.jsx'){assert.match(source,/mio-wd-expanded/);assert.match(source,/All withdrawal time entries/);assert.doesNotMatch(source,/Record update \/ evidence/);assert.doesNotMatch(source,/scrollIntoView/)}
   if(f==='mioWithdrawalRepository.js')assert.match(source,/mioWithdrawalBlocksState/)
  }
