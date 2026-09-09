@@ -59,7 +59,7 @@ const settle=async fn=>{for(let i=0;i<100;i++){if(await fn())return;await page.w
 const table=()=>page.locator('.mio-discovery-compact')
 const due=()=>table().locator('tbody tr[id]').evaluateAll(rows=>rows.map(r=>r.children[7].textContent.trim()))
 const caseFilter=()=>page.locator('details').filter({has:page.locator('summary').filter({hasText:/^Case Status/})}).first()
-const navigate=async hash=>{await page.evaluate(hash=>location.hash=hash,hash)}
+const navigate=async hash=>{await page.getByRole('link',{name:hash==='matters'?'Matters':'Discovery',exact:true}).click()}
 fs.mkdirSync('native-filter-test-results',{recursive:true})
 try{
  await page.goto('http://127.0.0.1:4173/#discovery',{waitUntil:'domcontentloaded'})
