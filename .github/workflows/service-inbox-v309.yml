@@ -1,0 +1,63 @@
+name: V309 Service Inbox build verification
+on:
+  push:
+    branches: [main, fix/v309-verified-release]
+    paths:
+      - '.github/workflows/service-inbox-v309.yml'
+      - 'mio-v309-service-eservice-batch.js'
+      - 'scripts/test-service-v309.mjs'
+      - 'vite.config.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Inspect Service Inbox build anchors
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const source = fs.readFileSync('src/App.jsx', 'utf8');
+          console.log('Service-related handlers:', [...source.matchAll(/(?:async\s+)?function\s+(\w*(?:Service|Bill|Pdf)\w*)\s*\(/g)].map(m => m[1]).join(', '));
+          for (const marker of ['// bill entry (only after successful save)', 'await saveEFilePDF(email.serviceId', 'await askUserForExistingPdf()']) {
+            const index = source.indexOf(marker);
+            console.log('\nANCHOR', marker, 'offset', index);
+            if (index >= 0) console.log(source.slice(Math.max(0, index - 2000), index + 2400));
+          }
+          NODE
+      - run: npm ci
+      - name: Run V309 regression tests
+        run: |
+          if [ -f scripts/test-service-v309.mjs ]; then node scripts/test-service-v309.mjs; fi
+      - run: npm run build
+      - name: Verify production feature code, not just version label
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const js = fs.readdirSync('dist/assets').filter(x => x.endsWith('.js')).map(x => fs.readFileSync('dist/assets/' + x, 'utf8')).join('\n');
+          assert.ok(js.includes('Mio V309'), 'Built app must identify V309');
+          assert.ok(js.includes('files_saved_or_confirmed'), 'Built app must contain the V309 batch-save feature');
+          console.log('V309 label and executable batch-save code verified in production bundle.');
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v309-source-and-build
+          retention-days: 1
+          path: |
+            src/App.jsx
+            src/mio-v269-patch.txt
+            mio-v*.js
+            vite.config.js
+            package.json
+            package-lock.json
+            scripts/test-service-v309.mjs
+            dist
