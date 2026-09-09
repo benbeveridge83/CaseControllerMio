@@ -52,22 +52,19 @@ export default function mioV308ServiceInboxFixes() {
       code = code.replaceAll('opacity: isNotice && active && serviceHearingNeedsAttention(active) ? .45 : 1', 'opacity: 1')
       code = code.replaceAll("'Resolve the red hearing/calendar alert before saving and moving this email.'", "'Calendar review can remain pending; Bill and save will still process this filing.'")
 
-      // Do not show a blocking alert immediately before the browser file picker. That alert can
-      // consume Chrome's transient user activation and prevent showOpenFilePicker from opening.
-      code = once(
-        code,
+      // Do not let a blocking alert consume Chrome's transient user activation before a file
+      // picker. This is deliberately optional because an earlier transform may already have
+      // rewritten the same message by the time V308 runs.
+      code = code.replace(
         "window.alert(`Case Controller could not verify the original filename from the eFile link",
-        "setServiceEmailScanNote(`Case Controller could not verify the original filename from the eFile link",
-        'pre-picker blocking alert'
+        "setServiceEmailScanNote(`Case Controller could not verify the original filename from the eFile link"
       )
 
-      // If a PDF genuinely cannot be loaded, show one concise failure rather than claiming that
-      // Chrome necessarily displayed a picker.
-      code = once(
-        code,
+      // Improve the final failure text when that exact legacy wording is still present. This is
+      // also optional because other transforms may already have modernized it.
+      code = code.replace(
         "throw new Error('The PDF was not selected or loaded. Open/download the eFile PDF if needed, click Bill and save again, and choose that PDF when Chrome asks. No file was saved, billed, or moved.')",
-        "throw new Error('Mio could not load the eFile PDF. Nothing was saved, billed, or moved. Open/download the PDF once from the filing link, then click Bill and save again; if Mio cannot fetch it automatically, select the downloaded PDF from Downloads.')",
-        'save failure guidance'
+        "throw new Error('Mio could not load the eFile PDF. Nothing was saved, billed, or moved. Open/download the PDF once from the filing link, then click Bill and save again; if Mio cannot fetch it automatically, select the downloaded PDF from Downloads.')"
       )
 
       return { code, map: null }
