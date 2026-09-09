@@ -1,0 +1,40 @@
+name: Native matters and persistent filter release
+on:
+  push:
+    branches: [fix/native-matters-v312]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Full production build and emitted browser syntax validation
+        run: npm run build
+      - name: Native matter and date/filter regression checks
+        run: node scripts/test-native-discovery-filters.mjs
+      - name: Actual withdrawal pipeline and persistence tests
+        run: node scripts/test-withdrawal-release.mjs
+      - name: Existing cloud and workflow regression tests
+        run: node --test tests/cloud-storage.test.js tests/cloud-conflict.test.js tests/workflow-blocks.test.js tests/withdrawal-workflow.test.js
+      - name: Install test browser
+        run: npx playwright-core install --with-deps chromium
+      - name: Actual production browser withdrawal controls
+        run: node scripts/test-withdrawal-release-browser.mjs
+      - name: Actual production browser native matters and Discovery filters
+        run: node scripts/test-native-discovery-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v312-browser-verification
+          path: |
+            withdrawal-test-results
+            native-filter-test-results
+          retention-days: 2

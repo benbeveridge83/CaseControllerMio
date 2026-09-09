@@ -54,7 +54,7 @@ fs.mkdirSync('withdrawal-test-results',{recursive:true})
 try{
  await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
- assert.ok((await page.locator('body').innerText()).includes('Mio V311'))
+ assert.match(await page.locator('body').innerText(),/Mio V31[12]/)
  await page.getByText('Review all 73 matching matters / change status',{exact:true}).click()
  assert.equal(await reviewTable().locator('tbody tr').count(),73)
  await candidate(73).getByRole('button',{name:'Change status',exact:true}).click()

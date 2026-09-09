@@ -10,7 +10,7 @@ const plugins=await Promise.all(specs.map(async([,,file])=>(await import('../'+f
 export async function transformed(file){let code=fs.readFileSync(file,'utf8');for(const p of plugins){const out=await p.transform?.(code,'/repo/'+file);code=typeof out==='string'?out:out?.code??code}return code}
 const app=await transformed('src/App.jsx'),ui=await transformed('src/MioWithdrawalBlocks.jsx'),repo=await transformed('src/mioWithdrawalRepository.js')
 const has=(code,text,label)=>assert.ok(code.includes(text),label)
-has(app,'Mio V311 (withdrawal rows + matter status)','Actual app release label')
+assert.match(app,/Mio V31[12] \(.*\)/,'Actual app release label')
 has(app,"if(step.action==='mailform')",'Mailform action survives Dropbox Sign transform')
 has(app,'onMatterStatus={mioWdChangeMatterStatus}','Status callback is passed')
 has(ui,'onAction,onMatterStatus,getPeople,','Status callback is declared alongside post-V307 document-source props')
@@ -28,7 +28,7 @@ console.log('PASS actual configured transforms: Mailform, document sources, all 
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mio-withdrawal-test-'))
 try{
  fs.writeFileSync(path.join(dir,'package.json'),'{"type":"module"}')
- for(const file of ['mioWorkflowBlocks.js','mioWithdrawalBlocksState.js','mioWithdrawalWorkspaceState.js','mioWithdrawalWorkflow.js','mioWithdrawalRepository.js'])fs.writeFileSync(path.join(dir,file),await transformed('src/'+file))
+ for(const file of ['mioStickyFilterValues.js','mioWorkflowBlocks.js','mioWithdrawalBlocksState.js','mioWithdrawalWorkspaceState.js','mioWithdrawalWorkflow.js','mioWithdrawalRepository.js'])fs.writeFileSync(path.join(dir,file),await transformed('src/'+file))
  const {newWithdrawal,applyWithdrawalEvent}=await import(pathToFileURL(path.join(dir,'mioWithdrawalBlocksState.js')))
  const {configureWorkflow,defaultWithdrawalDefinition}=await import(pathToFileURL(path.join(dir,'mioWorkflowBlocks.js')))
  const {createWithdrawalRepository}=await import(pathToFileURL(path.join(dir,'mioWithdrawalRepository.js')))
