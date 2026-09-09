@@ -4,16 +4,6 @@ function once(code, from, to, label) {
   return code.replace(from, to)
 }
 
-function onceAfter(code, anchor, from, to, label) {
-  const anchorIndex = code.indexOf(anchor)
-  if (anchorIndex < 0 || code.indexOf(anchor, anchorIndex + anchor.length) >= 0) throw new Error('V308 integration anchor changed: ' + label + ' anchor')
-  const index = code.indexOf(from, anchorIndex + anchor.length)
-  if (index < 0) throw new Error('V308 integration anchor changed: ' + label)
-  const nextAnchor = code.indexOf(anchor, anchorIndex + anchor.length)
-  if (nextAnchor >= 0 && index > nextAnchor) throw new Error('V308 integration anchor moved: ' + label)
-  return code.slice(0, index) + to + code.slice(index + from.length)
-}
-
 export default function mioV308ServiceInboxFixes() {
   return {
     name: 'mio-v308-service-inbox-fixes',
@@ -32,9 +22,7 @@ export default function mioV308ServiceInboxFixes() {
         'generic Tyler service filename rejection'
       )
 
-      // Restore the legacy eFile filename fields that older Service Inbox versions populated.
-      // This lets already-parsed rows retain their actual Tyler filename instead of falling back
-      // to the URL endpoint name.
+      // Restore legacy filename fields populated by older Service Inbox versions.
       code = once(
         code,
         "const rowCandidate = verifiedServicePdfFileName(row.extracted_pdf_name || row.efile_actual_file_name || '')",
@@ -54,41 +42,18 @@ export default function mioV308ServiceInboxFixes() {
         'local service filename fallback'
       )
 
-      // Calendar/setting review is advisory for this action. Bill + save must still save the PDF,
-      // add the document, bill the matter, move the email to Read, and advance. The alert remains
-      // unresolved until the user handles it separately.
-      code = once(
-        code,
-        "disabled={!active || showSavedFilingReviewRows || serviceGraphBusy || (isNotice && serviceHearingNeedsAttention(active))} title={isNotice && active && serviceHearingNeedsAttention(active) ? 'Resolve the red hearing/calendar alert before saving and moving this email.' : ''}",
-        "disabled={!active || showSavedFilingReviewRows || serviceGraphBusy} title={isNotice && active && serviceHearingNeedsAttention(active) ? 'Calendar review can remain pending; Bill and save will still process this filing.' : ''}",
-        'modal Bill and save calendar gate'
-      )
-      code = once(
-        code,
-        "opacity: isNotice && active && serviceHearingNeedsAttention(active) ? .45 : 1",
-        "opacity: 1",
-        'modal Bill and save opacity'
-      )
-
-      const rowSaveAnchor = 'onClick={(event) => saveAndBillRow(row, event)}'
-      code = onceAfter(
-        code,
-        rowSaveAnchor,
-        "disabled={serviceGraphBusy || hearingAttention} title={hearingAttention ? 'Review the red hearing alert first.' : ''}",
-        "disabled={serviceGraphBusy} title={hearingAttention ? 'Calendar review can remain pending; Bill and save will still process this filing.' : ''}",
-        'row Bill and save calendar gate'
-      )
-      code = onceAfter(
-        code,
-        rowSaveAnchor,
-        'opacity: hearingAttention ? .45 : 1',
-        'opacity: 1',
-        'row Bill and save opacity'
-      )
+      // Calendar/setting review is advisory for Bill + save. Earlier Vite transforms may have
+      // already rewritten the surrounding button markup, so remove only the actual gate rather
+      // than depending on the full JSX attribute string.
+      code = code.replaceAll(' || (isNotice && serviceHearingNeedsAttention(active))', '')
+      code = code.replaceAll('disabled={serviceGraphBusy || hearingAttention}', 'disabled={serviceGraphBusy}')
+      code = code.replaceAll("title={hearingAttention ? 'Review the red hearing alert first.' : ''}", "title={hearingAttention ? 'Calendar review can remain pending; Bill and save will still process this filing.' : ''}")
+      code = code.replaceAll('opacity: hearingAttention ? .45 : 1', 'opacity: 1')
+      code = code.replaceAll('opacity: isNotice && active && serviceHearingNeedsAttention(active) ? .45 : 1', 'opacity: 1')
+      code = code.replaceAll("'Resolve the red hearing/calendar alert before saving and moving this email.'", "'Calendar review can remain pending; Bill and save will still process this filing.'")
 
       // Do not show a blocking alert immediately before the browser file picker. That alert can
       // consume Chrome's transient user activation and prevent showOpenFilePicker from opening.
-      // Keep the same guidance as an in-page status note instead.
       code = once(
         code,
         "window.alert(`Case Controller could not verify the original filename from the eFile link",
@@ -96,8 +61,8 @@ export default function mioV308ServiceInboxFixes() {
         'pre-picker blocking alert'
       )
 
-      // If a PDF really cannot be loaded, show one concise failure instead of instructing the user
-      // that Chrome necessarily displayed a picker.
+      // If a PDF genuinely cannot be loaded, show one concise failure rather than claiming that
+      // Chrome necessarily displayed a picker.
       code = once(
         code,
         "throw new Error('The PDF was not selected or loaded. Open/download the eFile PDF if needed, click Bill and save again, and choose that PDF when Chrome asks. No file was saved, billed, or moved.')",
