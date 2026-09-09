@@ -1,0 +1,38 @@
+name: Discovery and persistent filter verification
+on:
+  push:
+    branches: [fix/discovery-persistent-filters]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Inspect filter and discovery integration
+        run: |
+          grep -nE 'function (renderDiscovery|sortRows|.*Filter)|discoverySort|response_due|[Ff]ilter[Cc]ase[Ss]tatus|caseStatusFilter|[Ff]ilter.*useState|Request document' src/App.jsx | head -240
+          cat mio-v310-mailform-snail-mail.js
+          cat mio-v311-withdrawal-row-controls.js
+      - run: npm ci
+      - name: Full production build
+        run: npm run build
+      - name: Regression tests
+        run: node --test tests/*.test.js
+      - name: Export source for verification
+        if: always()
+        run: git archive --format=tar HEAD > source.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: discovery-filter-verification
+          path: |
+            source.tar
+            dist
+          retention-days: 2
