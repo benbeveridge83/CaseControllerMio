@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/dropbox-sign",
+      "destination": "/api/auth/callback?integration=dropbox_sign"
+    }
+  ]
+}

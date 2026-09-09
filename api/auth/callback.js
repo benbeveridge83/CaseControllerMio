@@ -1,4 +1,10 @@
+import dropboxSignHandler from '../../lib/dropbox-sign.js'
+
 export default async function handler(req, res) {
+  if (String(req.query?.integration || '').trim().toLowerCase() === 'dropbox_sign') {
+    return dropboxSignHandler(req, res)
+  }
+
   const { code } = req.query;
 
   if (!code) {
