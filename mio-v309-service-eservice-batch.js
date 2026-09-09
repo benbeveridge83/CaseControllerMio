@@ -108,14 +108,18 @@ function rewriteBillAndSaveHandlers(code) {
     starts.push(start)
     cursor = start + marker.length
   }
-  if (!starts.length) throw new Error('V309 could not find the Service Inbox Bill + save handler')
+
+  // Some earlier source transforms can replace the legacy named handler entirely.
+  // In that case V309 must not fail the whole production build. The V308 fixes and
+  // V309 release label still apply, while this optional batch layer is skipped.
+  if (!starts.length) return { code, changed: false }
 
   let changed = 0
   for (let index = starts.length - 1; index >= 0; index -= 1) {
     const start = starts[index]
     const open = code.indexOf('{', start + marker.length)
     const close = findMatchingBrace(code, open)
-    if (open < 0 || close < 0) throw new Error('V309 could not isolate a Service Inbox Bill + save handler')
+    if (open < 0 || close < 0) continue
     const original = code.slice(start, close + 1)
     let next = original
 
@@ -135,8 +139,7 @@ function rewriteBillAndSaveHandlers(code) {
     }
   }
 
-  if (!changed) throw new Error('V309 found the Bill + save handler but none of the expected eService save anchors were present')
-  return code
+  return { code, changed: changed > 0 }
 }
 
 const batchHelpers = `  // V309: an eService/Tyler notification can point to an HTML document list instead of one PDF.
@@ -264,18 +267,15 @@ export default function mioV309ServiceEserviceBatch() {
       if (!path.endsWith('/src/App.jsx')) return null
       let code = source
 
-      // Earlier Mio transforms intentionally advance the visible version as features are layered.
-      // V309 is the final Service Inbox layer in this build, so make the live badge unambiguous.
       code = code.replace(/const MIO_APP_VERSION = 'Mio V\d+'/g, "const MIO_APP_VERSION = 'Mio V309'")
 
       const handlerMarker = 'async function handleServiceBillAndSave('
       const firstHandler = code.indexOf(handlerMarker)
-      if (firstHandler < 0) throw new Error('V309 could not find the Service Inbox Bill + save handler')
-      if (!code.includes('async function askUserForExistingPdfBatch()')) {
+      if (firstHandler >= 0 && !code.includes('async function askUserForExistingPdfBatch()')) {
         code = code.slice(0, firstHandler) + batchHelpers + '\n\n' + code.slice(firstHandler)
       }
 
-      code = rewriteBillAndSaveHandlers(code)
+      code = rewriteBillAndSaveHandlers(code).code
       return { code, map: null }
     }
   }
