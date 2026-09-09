@@ -98,7 +98,8 @@ try{
  assert.equal(await table().locator('tbody tr[id]').count(),1,'explicit Closed-only selection retained')
  console.log('PASS actual discovery: compact Doc editor, blank dates last, default closed exclusion, All/None/Closed and sort survive navigation/reload')
  await navigate('matters');await page.getByRole('heading',{name:'Matters',exact:true}).waitFor()
- const row=page.locator('tr').filter({has:page.locator('td').filter({hasText:/^SYNTHETIC-1$/})}).first()
+ // The cause-number cell also contains a link icon; match the number boundary, not the entire cell text.
+ const row=page.locator('tr').filter({has:page.locator('td').filter({hasText:/SYNTHETIC-1(?:\D|$)/})}).first()
  await row.getByRole('button',{name:'Edit',exact:true}).click()
  await page.getByRole('button',{name:'Update Matter',exact:true}).waitFor()
  assert.equal(await page.getByText('Legacy Clio reference (optional)',{exact:true}).count(),1)
