@@ -1,262 +1,160 @@
-function findMatchingBrace(source, openIndex) {
-  if (source[openIndex] !== '{') return -1
-  let depth = 0
-  let mode = 'code'
-  const templateReturnDepths = []
-
-  for (let i = openIndex; i < source.length; i += 1) {
-    const char = source[i]
-    const next = source[i + 1]
-
-    if (mode === 'line-comment') {
-      if (char === '\n') mode = 'code'
-      continue
-    }
-    if (mode === 'block-comment') {
-      if (char === '*' && next === '/') {
-        mode = 'code'
-        i += 1
-      }
-      continue
-    }
-    if (mode === 'single-quote') {
-      if (char === '\\') i += 1
-      else if (char === "'") mode = 'code'
-      continue
-    }
-    if (mode === 'double-quote') {
-      if (char === '\\') i += 1
-      else if (char === '"') mode = 'code'
-      continue
-    }
-    if (mode === 'template') {
-      if (char === '\\') {
-        i += 1
-        continue
-      }
-      if (char === '`') {
-        mode = 'code'
-        continue
-      }
-      if (char === '$' && next === '{') {
-        depth += 1
-        templateReturnDepths.push(depth - 1)
-        mode = 'code'
-        i += 1
-      }
-      continue
-    }
-
-    if (char === '/' && next === '/') {
-      mode = 'line-comment'
-      i += 1
-      continue
-    }
-    if (char === '/' && next === '*') {
-      mode = 'block-comment'
-      i += 1
-      continue
-    }
-    if (char === "'") {
-      mode = 'single-quote'
-      continue
-    }
-    if (char === '"') {
-      mode = 'double-quote'
-      continue
-    }
-    if (char === '`') {
-      mode = 'template'
-      continue
-    }
-    if (char === '{') {
-      depth += 1
-      continue
-    }
-    if (char === '}') {
-      depth -= 1
-      if (templateReturnDepths.length && depth === templateReturnDepths[templateReturnDepths.length - 1]) {
-        templateReturnDepths.pop()
-        mode = 'template'
-      }
-      if (depth === 0) return i
-    }
+// Integrate with the current Service Inbox, not the removed legacy Clio handler.
+// Missing anchors are a release error: never publish a V309 label without its feature.
+function replaceOnce(code, from, to, label) {
+  const at = code.indexOf(from)
+  if (at < 0 || code.indexOf(from, at + from.length) >= 0) {
+    throw new Error('V309 integration anchor changed: ' + label)
   }
-  return -1
+  return code.slice(0, at) + to + code.slice(at + from.length)
 }
 
-function removeManualClioGate(handler) {
-  const blockPattern = /if\s*\(([^)]*matterPracticeId[^)]*)\)\s*\{[\s\S]{0,900}?\}/g
-  handler = handler.replace(blockPattern, (block, condition) => {
-    const isMissingMatterGate = /!\s*matterPracticeId/.test(condition)
-    const isManualClioBlock = /clio/i.test(block) && /return\b/.test(block)
-    return isMissingMatterGate && isManualClioBlock ? '' : block
-  })
-
-  const oneLinePattern = /if\s*\(\s*!\s*matterPracticeId\s*\)\s*(?:return\s+)?(?:window\.)?alert\([^;]{0,700}?\)\s*;?/g
-  handler = handler.replace(oneLinePattern, (line) => /clio/i.test(line) ? '' : line)
-  return handler
+function replaceSection(code, start, end, transform, label) {
+  const at = code.indexOf(start)
+  const stop = code.indexOf(end, at + start.length)
+  if (at < 0 || stop < 0 || code.indexOf(start, at + start.length) >= 0) {
+    throw new Error('V309 integration section changed: ' + label)
+  }
+  return code.slice(0, at) + transform(code.slice(at, stop)) + code.slice(stop)
 }
 
-function rewriteBillAndSaveHandlers(code) {
-  const marker = 'async function handleServiceBillAndSave('
-  const starts = []
-  let cursor = 0
-  while (true) {
-    const start = code.indexOf(marker, cursor)
-    if (start < 0) break
-    starts.push(start)
-    cursor = start + marker.length
+export const serviceV309Helpers = String.raw`  // A separate queue per email survives React re-renders and failed save retries.
+  const serviceV309BatchesRef = useRef(new Map())
+  const serviceV309DocumentsRef = useRef(documents)
+  useEffect(() => { serviceV309DocumentsRef.current = documents }, [documents])
+
+  async function serviceV309PdfBytes(attachment) {
+    if (!attachment) return null
+    let blob = await normalizeServicePdfBlob(attachment.blob || attachment.file || null, attachment.content_type || 'application/pdf')
+    if (!blob && attachment.content_url) {
+      const response = await fetch(attachment.content_url)
+      if (!response.ok) return null
+      blob = await response.blob()
+    }
+    if (!blob || !blob.size) return null
+    // Tyler can return a document-list/sign-in HTML page with a PDF-looking URL.
+    const header = await blob.slice(0, 1024).text()
+    return /%PDF-\d\.\d/.test(header) ? blob : null
   }
 
-  // Some earlier source transforms can replace the legacy named handler entirely.
-  // In that case V309 must not fail the whole production build. The V308 fixes and
-  // V309 release label still apply, while this optional batch layer is skipped.
-  if (!starts.length) return { code, changed: false }
+  function serviceV309PickWithButton() {
+    // An awaited download can consume browser user activation. A new explicit click
+    // is reliable, unlike repeatedly opening a blocked file picker or an alert loop.
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div')
+      Object.assign(overlay.style, { position: 'fixed', inset: '0', zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.4)' })
+      const panel = document.createElement('div')
+      panel.setAttribute('role', 'dialog')
+      panel.setAttribute('aria-modal', 'true')
+      panel.setAttribute('aria-label', 'Choose downloaded eService PDFs')
+      Object.assign(panel.style, { background: 'white', color: '#111827', padding: '24px', borderRadius: '10px', width: '460px', maxWidth: '90vw', fontFamily: 'sans-serif' })
+      const title = document.createElement('h3')
+      title.textContent = 'Choose downloaded eService PDFs'
+      const help = document.createElement('p')
+      help.textContent = 'Select all PDFs from this email together. Mio will keep each original filename, save every selected PDF, and bill this email only once after all saves succeed.'
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.pdf,application/pdf'
+      input.multiple = true
+      input.style.display = 'none'
+      const choose = document.createElement('button')
+      choose.type = 'button'
+      choose.textContent = 'Choose PDFs from Downloads'
+      const cancel = document.createElement('button')
+      cancel.type = 'button'
+      cancel.textContent = 'Cancel'
+      cancel.style.marginLeft = '12px'
+      let finished = false
+      const previousFocus = document.activeElement
+      const finish = (files) => {
+        if (finished) return
+        finished = true
+        overlay.remove()
+        previousFocus?.focus?.()
+        resolve(files)
+      }
+      input.onchange = () => finish(Array.from(input.files || []))
+      input.oncancel = () => finish([])
+      choose.onclick = () => input.click()
+      cancel.onclick = () => finish([])
+      overlay.onkeydown = (event) => {
+        if (event.key === 'Escape') { event.preventDefault(); finish([]) }
+        if (event.key === 'Tab') {
+          if (event.shiftKey && document.activeElement === choose) { event.preventDefault(); cancel.focus() }
+          else if (!event.shiftKey && document.activeElement === cancel) { event.preventDefault(); choose.focus() }
+        }
+      }
+      panel.append(title, help, input, choose, cancel)
+      overlay.append(panel)
+      document.body.append(overlay)
+      choose.focus()
+    })
+  }
 
-  let changed = 0
-  for (let index = starts.length - 1; index >= 0; index -= 1) {
-    const start = starts[index]
-    const open = code.indexOf('{', start + marker.length)
-    const close = findMatchingBrace(code, open)
-    if (open < 0 || close < 0) continue
-    const original = code.slice(start, close + 1)
-    let next = original
-
-    if (/await\s+askUserForExistingPdf\(\)/.test(next)) {
-      next = next.replace(/await\s+askUserForExistingPdf\(\)/g, 'await askUserForExistingPdfBatch()')
-    }
-
-    const saveAnchor = 'await saveEFilePDF(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)'
-    if (next.includes(saveAnchor)) {
-      next = next.replaceAll(saveAnchor, 'await saveEFilePDFBatchAware(email.serviceId, email.mailboxKey, folderPath, blob, chosenName)')
-    }
-
-    next = removeManualClioGate(next)
-    if (next !== original) {
-      code = code.slice(0, start) + next + code.slice(close + 1)
-      changed += 1
+  async function pickLocalServicePdfAttachment(row) {
+    let files = []
+    try {
+      setServiceEmailScanNote('Select all downloaded PDFs for this eService email. Mio will preserve each filename and save the complete batch before billing.')
+      if (typeof window.showOpenFilePicker === 'function') {
+        try {
+          const handles = await window.showOpenFilePicker({ multiple: true, startIn: 'downloads', types: [{ description: 'PDF files', accept: { 'application/pdf': ['.pdf'] } }] })
+          files = await Promise.all(handles.map((handle) => handle.getFile()))
+        } catch (error) {
+          if (error?.name === 'AbortError') return null
+          if (!['SecurityError', 'NotAllowedError'].includes(error?.name)) throw error
+          files = await serviceV309PickWithButton()
+        }
+      } else {
+        files = await serviceV309PickWithButton()
+      }
+      if (!files.length) return null
+      const attachments = []
+      const names = new Set()
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index]
+        const name = verifiedServicePdfFileName(file.name || '')
+        if (!name || !/\.pdf$/i.test(file.name || '')) throw new Error('Select the actual downloaded PDF with its original filename, not the Tyler document-list page.')
+        if (names.has(name.toLowerCase())) throw new Error('Two selected PDFs have the same filename. Select distinct filenames so one document cannot replace another.')
+        names.add(name.toLowerCase())
+        if (!await serviceV309PdfBytes({ blob: file })) throw new Error(name + ' is not a readable PDF. Nothing was saved, billed, or moved.')
+        attachments.push({ id: 'v309-local-' + row.id + '-' + Date.now() + '-' + index, name, actual_name_verified: true, file_name_source: 'selected_file', content_type: 'application/pdf', size: file.size, is_inline: false, content_loaded: true, blob: file })
+      }
+      // Validate the entire selection before exposing it to the save operation.
+      attachments.forEach((item) => { item.content_url = URL.createObjectURL(item.blob) })
+      serviceV309BatchesRef.current.set(String(row.id), attachments)
+      setServiceEmailRows((rows) => rows.map((item) => item.id === row.id ? {
+        ...item, has_attachments: true,
+        attachments: [...attachments, ...(item.attachments || []).filter((existing) => !attachments.some((chosen) => chosen.name === existing.name))],
+        extracted_pdf_name: attachments[0].name, extracted_pdf_name_source: 'selected_file', extracted_pdf_name_verified: true, suggested_document_name: attachments[0].name
+      } : item))
+      setSelectedPdfPreviewName(attachments[0].name)
+      setSelectedPdfPreviewUrl(attachments[0].content_url)
+      setServiceEmailScanNote('Selected ' + attachments.length + ' PDF(s). All will be saved with their original filenames; billing occurs once after the complete batch succeeds.')
+      return attachments[0]
+    } catch (error) {
+      setServiceEmailScanNote('Could not select eService PDFs: ' + (error.message || error))
+      throw error
     }
   }
 
-  return { code, changed: changed > 0 }
-}
-
-const batchHelpers = `  // V309: an eService/Tyler notification can point to an HTML document list instead of one PDF.
-  // Chrome cannot safely expose Tyler's cross-origin document list to Mio, so when the normal
-  // direct-PDF path cannot resolve one file, let the user choose every already-downloaded PDF
-  // in one picker. The existing Bill + save handler still owns the single 0.1-hour billing call.
-  let servicePendingPdfBatch = []
-  let servicePendingPdfBatchFirstBlob = null
-
-  function servicePdfSelection(file) {
-    if (!file) return null
-    const filename = String(file.name || '').trim()
-    if (!filename || (file.type !== 'application/pdf' && !/\\.pdf$/i.test(filename))) {
-      throw new Error('Every selected eService document must be a PDF. Remove non-PDF files and try again.')
+  async function saveServiceV309Batch(row, attachments, options) {
+    // Revalidate all bytes before any write, including retries after partial failures.
+    for (const item of attachments) {
+      if (!verifiedServicePdfFileName(item.name) || !await serviceV309PdfBytes(item)) throw new Error('The complete eService batch must contain readable PDFs with original filenames. No billing entry was created and the email was not moved.')
     }
-    return { blob: file, filename }
-  }
-
-  async function askUserForExistingPdfBatch() {
-    servicePendingPdfBatch = []
-    servicePendingPdfBatchFirstBlob = null
-
-    let selectedFiles = []
-    if (typeof window.showOpenFilePicker === 'function') {
+    const savedFiles = []
+    for (const item of attachments) {
       try {
-        const handles = await window.showOpenFilePicker({
-          multiple: true,
-          types: [{ description: 'PDF documents', accept: { 'application/pdf': ['.pdf'] } }]
-        })
-        for (const handle of handles || []) selectedFiles.push(await handle.getFile())
+        const result = await saveDownloadedServicePdf(row, item, { ...options, serviceV309BatchItem: true, allowPick: false, tryDirectDownload: false })
+        if (!result || result.ok === false || result.verified === false) throw new Error('Save was not verified.')
+        savedFiles.push(result)
       } catch (error) {
-        if (error?.name === 'AbortError') return null
-        throw error
+        throw new Error('Batch stopped at ' + item.name + ': ' + (error.message || error) + ' ' + savedFiles.length + ' of ' + attachments.length + ' PDFs were saved. Already-saved files remain in the matter folder; retry to finish. No new billing entry was created and the email was not moved.')
       }
-    } else {
-      selectedFiles = await new Promise((resolve, reject) => {
-        const input = document.createElement('input')
-        input.type = 'file'
-        input.accept = '.pdf,application/pdf'
-        input.multiple = true
-        input.style.display = 'none'
-        let finished = false
-        const finish = (files) => {
-          if (finished) return
-          finished = true
-          window.removeEventListener('focus', focusFallback)
-          input.remove()
-          resolve(files)
-        }
-        const focusFallback = () => window.setTimeout(() => {
-          if (!finished && !(input.files && input.files.length)) finish([])
-        }, 350)
-        input.onchange = () => finish(Array.from(input.files || []))
-        input.oncancel = () => finish([])
-        input.onerror = () => {
-          if (finished) return
-          finished = true
-          window.removeEventListener('focus', focusFallback)
-          input.remove()
-          reject(new Error('Chrome could not open the PDF picker.'))
-        }
-        document.body.appendChild(input)
-        window.addEventListener('focus', focusFallback, { once: true })
-        input.click()
-      })
     }
-
-    const items = selectedFiles.map(servicePdfSelection).filter(Boolean)
-    if (!items.length) return null
-    servicePendingPdfBatchFirstBlob = items[0].blob
-    servicePendingPdfBatch = items.slice(1)
-    setServiceEmailScanNote(items.length > 1
-      ? \`Selected \${items.length} eService PDFs. Mio will save all of them to the chosen matter folder with their original filenames and create only one 6-minute billing entry for this email.\`
-      : \`Selected \${items[0].filename}. Mio will keep the original filename.\`)
-    return items[0]
+    return { ...savedFiles[0], ok: true, verified: true, savedFiles, files_saved_or_confirmed: savedFiles.map((item) => item.fileName) }
   }
 
-  function serviceBatchFailure(status, message) {
-    return {
-      ok: false,
-      status: Number(status || 400),
-      json: async () => ({ error: message })
-    }
-  }
-
-  async function saveEFilePDFBatchAware(serviceId, mailboxKey, folderPath, blob, filename) {
-    const usePendingBatch = Boolean(servicePendingPdfBatchFirstBlob && blob === servicePendingPdfBatchFirstBlob)
-    const queue = [{ blob, filename }, ...(usePendingBatch ? servicePendingPdfBatch : [])]
-    servicePendingPdfBatch = []
-    servicePendingPdfBatchFirstBlob = null
-
-    for (let index = 0; index < queue.length; index += 1) {
-      const item = queue[index]
-      const itemName = String(item.filename || '').trim()
-      const response = await saveEFilePDF(serviceId, mailboxKey, folderPath, item.blob, itemName)
-      if (response?.ok) continue
-
-      let body = null
-      try { body = await response?.json?.() } catch {}
-      const baseMessage = body?.error || \`Save failed for \${itemName || 'an eService PDF'}.\`
-      if (Number(response?.status) === 409) {
-        const keepExisting = window.confirm(
-          \`\${itemName || 'This PDF'} already exists in the selected eFile folder.\\n\\n\` +
-          'Click OK to keep the existing file and continue saving the rest of this eService batch, or Cancel to stop. No billing entry will be created and the email will not move to Read unless the whole batch completes.'
-        )
-        if (keepExisting) continue
-        return serviceBatchFailure(422, \`Batch stopped at \${itemName || 'duplicate PDF'}. No billing entry was created and the email was not moved to Read.\`)
-      }
-      return serviceBatchFailure(response?.status || 500, \`\${itemName ? itemName + ': ' : ''}\${baseMessage} No billing entry was created and the email was not moved to Read.\`)
-    }
-
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true, files_saved_or_confirmed: queue.map((item) => item.filename) })
-    }
-  }`
+`
 
 export default function mioV309ServiceEserviceBatch() {
   return {
@@ -265,17 +163,62 @@ export default function mioV309ServiceEserviceBatch() {
     transform(source, id) {
       const path = id.split('?')[0].replaceAll('\\', '/')
       if (!path.endsWith('/src/App.jsx')) return null
-      let code = source
+      if (source.includes('const serviceV309BatchesRef = useRef(new Map())')) return { code: source, map: null }
+      let code = replaceSection(source, '  async function pickLocalServicePdfAttachment(row) {', '  async function ensureServiceEmailDirectoryHandle(row) {', () => serviceV309Helpers, 'current PDF picker')
 
-      code = code.replace(/const MIO_APP_VERSION = 'Mio V\d+'/g, "const MIO_APP_VERSION = 'Mio V309'")
+      code = replaceSection(code, '  async function saveDownloadedServicePdf(row, providedAttachment = null, options = {}) {', '  async function openServiceRowPdf(row) {', (section) => {
+        section = replaceOnce(section, '    // Never manufacture a filename.', String.raw`    // Reject HTML/sign-in/document-list responses before saving or billing.
+    let serviceV309Blob = await serviceV309PdfBytes(attachment)
+    if (!serviceV309Blob && options.allowPick !== false) {
+      attachment = await pickLocalServicePdfAttachment(currentRow)
+      serviceV309Blob = await serviceV309PdfBytes(attachment)
+    }
+    if (!serviceV309Blob) throw new Error('No valid PDF was selected. Nothing was saved, billed, or moved. Download the actual documents from eService, then choose those PDFs.')
+    attachment = { ...attachment, blob: serviceV309Blob, content_type: 'application/pdf' }
 
-      const handlerMarker = 'async function handleServiceBillAndSave('
-      const firstHandler = code.indexOf(handlerMarker)
-      if (firstHandler >= 0 && !code.includes('async function askUserForExistingPdfBatch()')) {
-        code = code.slice(0, firstHandler) + batchHelpers + '\n\n' + code.slice(firstHandler)
+    // Never manufacture a filename.`, 'PDF bytes validation')
+        section = replaceOnce(section, '    const fileName = actualFile.name', String.raw`    const serviceV309Batch = serviceV309BatchesRef.current.get(String(currentRow.id))
+    if (!options.serviceV309BatchItem && serviceV309Batch?.some((item) => item.id === attachment.id)) {
+      return await saveServiceV309Batch(currentRow, serviceV309Batch, options)
+    }
+    const fileName = actualFile.name`, 'batch save boundary')
+        return section
+      }, 'current PDF save flow')
+
+      // Sequential batch records must build on the latest catalog, not the render's
+      // stale documents snapshot (which otherwise drops all but the last PDF).
+      code = replaceSection(code, '  async function createServiceEmailDocumentRecord(row, fileName, blob, savedInfo = {}) {', '  function classifyLiveServiceEmail(source, message) {', (section) => {
+        section = replaceOnce(section, 'documents.find((doc)', 'serviceV309DocumentsRef.current.find((doc)', 'existing document lookup')
+        section = replaceOnce(section, 'stripLargeFileData(documents)', 'stripLargeFileData(serviceV309DocumentsRef.current)', 'existing document catalog')
+        section = replaceOnce(section, '    const nextDocuments = [documentRecord, ...documents]\n    setDocuments(nextDocuments)', '    const nextDocuments = [documentRecord, ...serviceV309DocumentsRef.current]\n    serviceV309DocumentsRef.current = nextDocuments\n    setDocuments(nextDocuments)', 'batch document catalog')
+        return section
+      }, 'document catalog persistence')
+
+      code = replaceSection(code, '  async function processSingleFilingServiceEmail(row) {', '  async function sendSingleServiceEmailAndMove(row) {', (section) => {
+        section = replaceOnce(section, `    const hearingSafety = await ensureNotificationHearingSafetyBeforeMove(row)
+    if (!hearingSafety.ok) return false
+    row = hearingSafety.row || row`, `    row = serviceEmailRows.find((item) => item.id === row.id) || row
+    // Bill/save is independent of calendar review. Keep an unresolved alert in the
+    // inbox instead of clearing it or silently moving the email out of sight.
+    const serviceV309CalendarPending = serviceHearingNeedsAttention(row)`, 'nonblocking Bill and save')
+        section = replaceOnce(section, "      if (serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected) await moveLiveRowToRead(row)", "      if (!serviceV309CalendarPending && serviceGraphConfig.mode === 'live' && serviceGraphAuth.connected) await moveLiveRowToRead(row)", 'preserve pending calendar email')
+        section = replaceOnce(section, '        notes: `${label}. PDF saved${billingEntry ? \', billing added\' : \'\'}.`,', "        notes: serviceV309CalendarPending ? 'PDFs saved and billing recorded; calendar review remains pending and the email was not moved.' : `${label}. PDF saved${billingEntry ? ', billing added' : ''}.`,", 'calendar audit note')
+        section = replaceOnce(section, "        document_name: savedInfo.fileName || row.suggested_document_name || row.extracted_pdf_name || '',", "        document_name: savedInfo.files_saved_or_confirmed?.join('; ') || savedInfo.fileName || row.suggested_document_name || row.extracted_pdf_name || '',", 'batch audit filenames')
+        section = replaceOnce(section, '        billing_added: Boolean(billingEntry)', "        billing_added: Boolean(billingEntry),\n        saved_files: savedInfo.savedFiles || [savedInfo],\n        calendar_review_pending: serviceV309CalendarPending", 'saved batch metadata')
+        section = replaceOnce(section, `      setServiceEmailRows((current) => current.filter((item) => item.id !== row.id))
+      setServiceEmailScanNote(\x60\x24{label}. Removed from this review queue.\x60)
+      return true`, String.raw`      if (serviceV309CalendarPending) {
+        setServiceEmailRows((current) => current.map((item) => item.id === row.id ? { ...item, billing_added: Boolean(billingEntry), saved_files: savedInfo.savedFiles || [savedInfo], calendar_review_pending: true } : item))
+        setServiceEmailScanNote('Saved ' + (savedInfo.savedFiles?.length || 1) + ' PDF(s) and recorded billing. Calendar review is still pending; the email and its hearing alert remain in this queue.')
+        return false
       }
-
-      code = rewriteBillAndSaveHandlers(code).code
+      serviceV309BatchesRef.current.delete(String(row.id))
+      setServiceEmailRows((current) => current.filter((item) => item.id !== row.id))
+      setServiceEmailScanNote(label + '. Saved ' + (savedInfo.savedFiles?.length || 1) + ' PDF(s), billed this email once, and removed it from this review queue.')
+      return true`, 'completion and pending review')
+        return section
+      }, 'current save-and-bill handler')
+      code = code.replace(/const MIO_APP_VERSION = 'Mio V\d+'/g, "const MIO_APP_VERSION = 'Mio V309'")
       return { code, map: null }
     }
   }
