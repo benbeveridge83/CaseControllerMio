@@ -1,0 +1,28 @@
+name: PNC and daily trust verification
+on:
+  push:
+    branches: [feature/pnc-daily-trust-v313]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export source for isolated verification
+        run: git archive --format=tar HEAD > /tmp/mio-source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mio-source-verification
+          path: /tmp/mio-source.tar
+          retention-days: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: PNC and daily trust regression tests
+        run: if test -f tests/pnc-daily-trust.test.js; then node --test tests/pnc-daily-trust.test.js; fi
