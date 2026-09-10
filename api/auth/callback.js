@@ -1,6 +1,8 @@
+import pncHandler from '../../lib/pnc.js'
 import dropboxSignHandler from '../../lib/dropbox-sign.js'
 
 export default async function handler(req, res) {
+  if (['pnc','client_intake'].includes(req.query?.integration)) return pncHandler(req,res)
   if (String(req.query?.integration || '').trim().toLowerCase() === 'dropbox_sign') {
     return dropboxSignHandler(req, res)
   }

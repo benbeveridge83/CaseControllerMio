@@ -4,6 +4,14 @@
     {
       "source": "/api/dropbox-sign",
       "destination": "/api/auth/callback?integration=dropbox_sign"
+    },
+    {
+      "source": "/api/pnc",
+      "destination": "/api/auth/callback?integration=pnc"
+    },
+    {
+      "source": "/api/client-intake",
+      "destination": "/api/auth/callback?integration=client_intake"
     }
   ]
 }

@@ -1,0 +1,8 @@
+import React from 'react'
+const money=c=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100)
+export default function MioDailyTrust({summary:s,date}){return <section className="mio-pnc billing-coverage" aria-label="Daily billing breakdown">
+  <div className="pnc-hero"><span>Non-DFPS billed on {date}, covered by current trust</span><strong>{money(s.covered)}</strong><small>Estimated coverage, not a bank transfer authorization.</small></div>
+  <div className="pnc-metrics">{[['Total billed',s.total],['DFPS - monthly billing',s.dfps],['Non-DFPS total',s.nonDfps],['Not covered by trust',s.uncovered],['Already paid',s.paid],['Needs reconciliation / unknown',s.unknown]].map(([label,value])=><div key={label}><span>{label}</span><strong>{money(value)}</strong></div>)}</div>
+  <p>Uses each matter's current recorded trust separately, after reserving its other outstanding fees and WIP. Processing payments are excluded. Past dates use current balances, not a historical bank balance. Confirm cleared funds and invoices before transferring.</p>
+  <details><summary>Show calculation by matter</summary><div className="pnc-scroll"><table><thead><tr>{['Matter','Billed','Current trust','Other fees reserved','Covered','Not covered','Already paid','Unknown','Note'].map(v=><th key={v}>{v}</th>)}</tr></thead><tbody>{s.rows.map(r=><tr key={r.id}><td>{r.name}</td>{['total','trust','reserved','covered','uncovered','paid','unknown'].map(k=><td key={k}>{money(r[k])}</td>)}<td>{r.note}{r.pending>0?' / Processing excluded: '+money(r.pending):''}</td></tr>)}</tbody></table></div></details>
+</section>}
