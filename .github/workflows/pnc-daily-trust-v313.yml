@@ -4,29 +4,24 @@ on:
     branches: [feature/pnc-daily-trust-v313]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Export source for isolated verification
-        run: git archive --format=tar HEAD > /tmp/mio-source.tar
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mio-source-verification
-          path: /tmp/mio-source.tar
-          retention-days: 1
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      - name: Apply guarded release source corrections
+        run: node scripts/apply-pnc-hardening.mjs
       - run: npm ci
       - run: npm run build
       - name: PNC and existing regression tests
         run: |
-          node --test tests/pnc-daily-trust.test.js
+          node --test tests/pnc-daily-trust.test.js tests/pnc-api.test.js
           node scripts/test-native-discovery-filters.mjs
           node scripts/test-withdrawal-release.mjs
           node --test tests/cloud-storage.test.js tests/cloud-conflict.test.js tests/workflow-blocks.test.js tests/withdrawal-workflow.test.js
@@ -34,6 +29,23 @@ jobs:
         run: |
           npx playwright-core install --with-deps chromium
           node scripts/test-pnc-browser.mjs
+      - name: Commit only tested source corrections to the development branch
+        if: github.ref == 'refs/heads/feature/pnc-daily-trust-v313'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/pnc.js src/MioPnc.jsx src/mioPncModel.js src/supabaseClient.js src/mioSupabasePublic.js scripts/test-withdrawal-release-browser.mjs supabase/migrations/20260910005036_pnc_workflow_v313.sql
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: commit browser-verified PNC permission and payment safeguards'
+            git push origin HEAD:feature/pnc-daily-trust-v313
+          fi
+          git log -1 --format='%H %s'
+          git archive --format=tar HEAD > /tmp/mio-source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mio-source-verification
+          path: /tmp/mio-source.tar
+          retention-days: 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

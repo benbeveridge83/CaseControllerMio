@@ -1,3 +1,16 @@
+-- Explicit staff enrollment: client-portal accounts cannot create PNC records.
+create table if not exists public.mio_pnc_staff (
+ user_id uuid primary key references auth.users(id) on delete cascade,
+ created_at timestamptz not null default now()
+);
+alter table public.mio_pnc_staff enable row level security;
+revoke all on public.mio_pnc_staff from public,anon,authenticated;
+grant select on public.mio_pnc_staff to authenticated;
+create policy pnc_staff_read_self on public.mio_pnc_staff for select to authenticated using ((select auth.uid())=user_id);
+insert into public.mio_pnc_staff(user_id)
+ select id from auth.users where email_confirmed_at is not null and lower(email) like '%@beveridgelawfirm.com'
+ on conflict do nothing;
+
 -- PNC workflow: user-owned, separate from legacy matter and billing records.
 create table if not exists public.mio_pnc_workflows (
   matter_id uuid primary key references public.matters(id) on delete cascade,
@@ -13,16 +26,17 @@ create table if not exists public.mio_pnc_workflows (
 );
 alter table public.mio_pnc_workflows enable row level security;
 revoke all on public.mio_pnc_workflows from anon;
+revoke all on public.mio_pnc_workflows from public;
 grant select,insert,update on public.mio_pnc_workflows to authenticated;
-create policy pnc_select_own on public.mio_pnc_workflows for select to authenticated using ((select auth.uid())=user_id);
-create policy pnc_insert_own on public.mio_pnc_workflows for insert to authenticated with check ((select auth.uid())=user_id);
-create policy pnc_update_own on public.mio_pnc_workflows for update to authenticated using ((select auth.uid())=user_id) with check ((select auth.uid())=user_id);
+create policy pnc_select_own on public.mio_pnc_workflows for select to authenticated using ((select auth.uid())=user_id and exists(select 1 from public.mio_pnc_staff staff where staff.user_id=(select auth.uid())));
+create policy pnc_insert_own on public.mio_pnc_workflows for insert to authenticated with check ((select auth.uid())=user_id and exists(select 1 from public.mio_pnc_staff staff where staff.user_id=(select auth.uid())));
+create policy pnc_update_own on public.mio_pnc_workflows for update to authenticated using ((select auth.uid())=user_id) with check ((select auth.uid())=user_id and exists(select 1 from public.mio_pnc_staff staff where staff.user_id=(select auth.uid())));
 create index if not exists mio_pnc_owner_idx on public.mio_pnc_workflows(user_id,updated_at);
 create or replace function public.mio_create_pnc_v313(p_key uuid,p_first text,p_last text,p_email text,p_phone text,p_case_type text,p_existing_client uuid default null)
 returns jsonb language plpgsql security invoker set search_path='' as $$
 declare c public.clients; m public.matters; w public.mio_pnc_workflows;
 begin
- if auth.uid() is null or p_key is null then raise exception 'Sign in to create a PNC.'; end if;
+ if auth.uid() is null or p_key is null or not exists(select 1 from public.mio_pnc_staff where user_id=auth.uid()) then raise exception 'Sign in to create a PNC.'; end if;
  perform pg_advisory_xact_lock(hashtextextended(auth.uid()::text||p_key::text,0));
  select * into w from public.mio_pnc_workflows where user_id=auth.uid() and creation_key=p_key;
  if found then return jsonb_build_object('workflow',to_jsonb(w)); end if;
@@ -48,9 +62,8 @@ grant select,insert,update on public.mio_client_intake_requests to authenticated
 grant select on public.mio_client_intake_submissions to authenticated;
 revoke all on public.mio_client_intake_requests,public.mio_client_intake_submissions from anon;
 
--- An anonymous client proves access with a random 256-bit token. The only
--- elevated function lives outside the exposed schema and returns no answers,
--- contact data, or other matter records. Direct table access remains protected.
+-- Anonymous intake uses a random 256-bit bearer token. No answers or contact
+-- information are returned. The minimal elevated function is in a private schema.
 create schema if not exists mio_private;
 revoke all on schema mio_private from public;
 grant usage on schema mio_private to anon,authenticated;
