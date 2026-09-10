@@ -20,13 +20,14 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           s=Path('src/App.jsx').read_text().splitlines()
-          terms=['renderWorkflowPage','renderWithdrawalsPage','case "orders"',"page === 'orders'",'setPage("orders")',"setPage('orders')",'mioWdBlockAction','function postal','async function postal','mio_billing_entries','billingRateFor','function addBilling','function saveBilling','sendMail','function handleSendEmail','workflow_context','function graphFetch','function renderMioEfileAgentPage']
+          terms=['function canOpenPage','function billingEntryToRelationalRow','function billingEntryFrom','function defaultBilling','function currentTeamMember','function currentUserMember',"id: 'workflow'","key: 'workflow'",'href="#workflow"','function pageFrom','function setPage','function graphFetch']
           for term in terms:
-            hits=[i for i,l in enumerate(s) if term in l][:6]
+            hits=[i for i,l in enumerate(s) if term in l][:2]
             print('\nTERM',term,'HITS',hits)
-            for i in hits:
-              print('\n'.join(str(j+1)+': '+s[j][:1000] for j in range(max(0,i-3), min(len(s),i+12))))
-          print('\n=== ADAPTER ===\n'+Path('src/mioWithdrawalBlocksApp.inc').read_text())
+            for i in hits: print('\n'.join(str(j+1)+': '+s[j][:600] for j in range(max(0,i-2),min(len(s),i+40))))
+          print('\nDECLARATIONS')
+          print('\n'.join(str(i+1)+': '+l[:220] for i,l in enumerate(s) if ('function ' in l and any(w in l.lower() for w in ['billing','rate','member','page'])) or ('workflow' in l and any(w in l for w in ['pages','Pages','PAGES','label:',"'Workflow'"]))))
+          print('\nSAVE BILLING\n'+'\n'.join(str(j+1)+': '+s[j] for j in range(41422,41504)))
           PY
       - run: npm ci
       - run: npm run build
