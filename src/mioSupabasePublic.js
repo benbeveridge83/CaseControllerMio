@@ -1,0 +1,4 @@
+// Public project configuration only. Never put service-role or provider keys here.
+export const PUBLIC_SUPABASE_URL = 'https://vnnkxqpyndidnjbrbywz.supabase.co'
+export const PUBLIC_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZubmt4cXB5bmRpZG5qYnJieXd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1ODA5MjksImV4cCI6MjA5MzE1NjkyOX0.MHxhT_mLzMZv6r4mvOcNvtR_kGcsY1yuXhYWL2luntI'
+

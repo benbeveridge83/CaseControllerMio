@@ -26,7 +26,7 @@ create table if not exists public.mio_pnc_workflows (
 );
 alter table public.mio_pnc_workflows enable row level security;
 revoke all on public.mio_pnc_workflows from anon;
-revoke all on public.mio_pnc_workflows from public;
+revoke all on public.mio_pnc_workflows from public,authenticated;
 grant select,insert,update on public.mio_pnc_workflows to authenticated;
 create policy pnc_select_own on public.mio_pnc_workflows for select to authenticated using ((select auth.uid())=user_id and exists(select 1 from public.mio_pnc_staff staff where staff.user_id=(select auth.uid())));
 create policy pnc_insert_own on public.mio_pnc_workflows for insert to authenticated with check ((select auth.uid())=user_id and exists(select 1 from public.mio_pnc_staff staff where staff.user_id=(select auth.uid())));

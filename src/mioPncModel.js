@@ -25,7 +25,7 @@ export function paymentEvidence(transactions,request){
     if(!exact||accountFamily(t.account_key)==='unknown'||accountFamily(t.account_key)!==accountFamily(request.account_key)||String(t.currency||'USD')!=='USD')continue
     seen.add(key)
     const type=String(t.transaction_type||'').toLowerCase(),status=String(t.status||'').toLowerCase()
-    if(/refund|chargeback|reversal/.test(type)){reversed=true;continue}
+    if(/refund|chargeback|reversal|credit/.test(type)){reversed=true;continue}
     if(/void/.test(type)||/declin|fail|void|cancel|return|chargedback|refunded/.test(status))continue
     const amount=Math.max(0,Number(t.amount_cents||0)-Number(t.amount_refunded_cents||0))
     if(['completed','complete','paid','settled','captured','succeeded','success'].includes(status))result.paid_cents+=amount
