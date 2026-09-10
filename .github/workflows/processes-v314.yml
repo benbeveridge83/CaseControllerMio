@@ -1,0 +1,47 @@
+name: Processes V314 verification
+on:
+  push:
+    branches: [feature/process-builder-v314]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Inspect integration anchors
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('src/App.jsx').read_text().splitlines()
+          terms=['renderWorkflowPage','renderWithdrawalsPage','case "orders"',"page === 'orders'",'setPage("orders")',"setPage('orders')",'mioWdBlockAction','function postal','async function postal','mio_billing_entries','billingRateFor','function addBilling','function saveBilling','sendMail','function handleSendEmail','workflow_context','function graphFetch','function renderMioEfileAgentPage']
+          for term in terms:
+            hits=[i for i,l in enumerate(s) if term in l][:6]
+            print('\nTERM',term,'HITS',hits)
+            for i in hits:
+              print('\n'.join(str(j+1)+': '+s[j][:1000] for j in range(max(0,i-3), min(len(s),i+12))))
+          print('\n=== ADAPTER ===\n'+Path('src/mioWithdrawalBlocksApp.inc').read_text())
+          PY
+      - run: npm ci
+      - run: npm run build
+      - name: Existing regressions and process tests
+        run: |
+          node --test tests/workflow-blocks.test.js tests/withdrawal-workflow.test.js tests/cloud-storage.test.js tests/cloud-conflict.test.js tests/pnc-daily-trust.test.js
+          if [ -f tests/process-model.test.js ]; then node --test tests/process*.test.js; fi
+      - name: Browser verification
+        if: hashFiles('scripts/test-processes-browser.mjs') != ''
+        run: |
+          npx playwright-core install --with-deps chromium
+          node scripts/test-processes-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: processes-verification
+          path: process-test-results
+          retention-days: 2
