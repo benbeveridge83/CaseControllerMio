@@ -23,6 +23,33 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Generate migration with the Supabase CLI
+        run: |
+          npx supabase migration new --help
+          if ! find supabase/migrations -name '*pnc_workflow_v313.sql' | grep -q .; then
+            npx supabase migration new pnc_workflow_v313
+            if test -f docs/pnc-schema.sql; then cp docs/pnc-schema.sql "$(find supabase/migrations -name '*pnc_workflow_v313.sql' | head -n 1)"; fi
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pnc-migration
+          path: supabase/migrations/*pnc_workflow_v313.sql
+          retention-days: 2
       - run: npm run build
       - name: PNC and daily trust regression tests
-        run: if test -f tests/pnc-daily-trust.test.js; then node --test tests/pnc-daily-trust.test.js; fi
+        run: |
+          if test -f tests/pnc-daily-trust.test.js; then node --test tests/pnc-daily-trust.test.js; fi
+          node scripts/test-native-discovery-filters.mjs
+          node scripts/test-withdrawal-release.mjs
+      - name: Browser verification
+        run: |
+          if test -f scripts/test-pnc-browser.mjs; then
+            npx playwright-core install --with-deps chromium
+            node scripts/test-pnc-browser.mjs
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pnc-browser-verification
+          path: pnc-test-results
+          retention-days: 2
