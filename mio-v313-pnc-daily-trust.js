@@ -17,7 +17,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  const start=code.indexOf('  function renderDailyBillingModal() {'),end=code.indexOf('\n  function ',start+10);let part=code.slice(start,end)
  part=once(part,'    const totals = billingTotals(entries)','    const coverage = mioDailyCoverage()\n    const totals = {...billingTotals(entries),amount:coverage.total/100}','total same definition')
  part=part.replace('new Date(current || new Date().toISOString().slice(0, 10))',"new Date((current || firmDate())+'T12:00:00Z')").replace('d.setDate(d.getDate() + amount)','d.setUTCDate(d.getUTCDate() + amount)').replace('setDailyDateAndForm(new Date().toISOString().slice(0, 10))','setDailyDateAndForm(firmDate())')
- part=once(part,'        <section style={{ border:', '        <MioDailyTrust summary={coverage} date={dailyBillingDate} />\n        <section style={{ border:','coverage card')
+ part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} />\n        <section style={{ border:','coverage card')
  code=code.slice(0,start)+part+code.slice(end)
  code=once(code,'        {renderDailyBillingModal()}','        {renderDailyBillingModal()}\n        <MioPncModal control={mioPnc} caseTypes={options(\'matter_type\')} />','global modal')
  code=once(code,'            <h1>Matters</h1>',`            <h1>Matters</h1>
