@@ -103,3 +103,10 @@ export function auditLawPayRecords(transactions=[],invoices=[],events=[]) {
   }
   return {completed,matched,issues,unlinked}
 }
+
+export function bulkInvoiceActionEligibility(invoice={}) {
+  const status=String(invoice.status||'').toLowerCase()
+  const sent=!!(invoice.emailed_at||(invoice.email_history||[]).length)
+  const active=!['paid','void','deleted'].includes(status)
+  return {approve:active&&status==='draft',send:active&&!sent,resend:active&&sent&&status!=='draft'}
+}
