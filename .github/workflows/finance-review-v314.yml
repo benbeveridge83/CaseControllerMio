@@ -10,6 +10,24 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: fixture-only
+          POSTGRES_DB: finance_fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: fixture-only
+      PGDATABASE: finance_fixture
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,16 +35,30 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Package reproducible build inputs
-        run: tar --exclude=./.git --exclude=./dist -czf /tmp/mio-finance-inputs.tgz .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mio-finance-inputs
-          path: /tmp/mio-finance-inputs.tgz
-          retention-days: 2
-      - name: Verify existing finance behavior
-        run: timeout 120s node --test tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
-      - name: Finance regression tests
+      - name: Verify finance models and composed production callbacks
+        run: timeout 120s node --test tests/finance-v314.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
+      - name: Test atomic SQL on isolated synthetic PostgreSQL
         run: |
-          if [ -f tests/finance-v314.test.js ]; then timeout 120s node --test tests/finance-v314.test.js; fi
+          psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-schema.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260911210000_lawpay_atomic_reconciliation_v314.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-behavior.sql
+          psql -v ON_ERROR_STOP=1 -c "select mio_store_lawpay_transaction_v314(fixture_row('concurrent-a',2,10000));" &
+          first=$!
+          psql -v ON_ERROR_STOP=1 -c "select mio_store_lawpay_transaction_v314(fixture_row('concurrent-b',2,10000));" &
+          second=$!
+          psql -v ON_ERROR_STOP=1 -c "select mio_store_lawpay_transaction_v314(fixture_row('concurrent-a',2,10000));" &
+          third=$!
+          wait "$first"
+          wait "$second"
+          wait "$third"
+          psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-concurrency.sql
       - run: npm run build
+      - run: node node_modules/playwright-core/cli.js install chromium --with-deps
+      - name: Test real production bundle with intercepted synthetic services
+        run: timeout 180s node tests/finance-v314-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: finance-browser-verification
+          path: finance-test-results
+          retention-days: 5
