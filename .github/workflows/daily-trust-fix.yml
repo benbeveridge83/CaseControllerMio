@@ -12,4 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/daily-billing-finance-refresh.test.js
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
+      - run: npm run build
