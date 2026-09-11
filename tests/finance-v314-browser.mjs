@@ -20,7 +20,8 @@ const states=new Map(Object.entries({caseMioFinanceOpeningBalances:opening,caseM
 const errors=[],blocked=[],writes=[],checks=[]
 const root=path.resolve('dist'),server=http.createServer((req,res)=>{const p=path.resolve(root,'.'+new URL(req.url,'http://localhost').pathname);if(!p.startsWith(root+path.sep)&&p!==root){res.writeHead(403);return res.end()};const f=fs.existsSync(p)&&fs.statSync(p).isFile()?p:path.join(root,'index.html');res.setHeader('Content-Type',f.endsWith('.js')?'text/javascript':f.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(f))})
 await new Promise(r=>server.listen(4175,'127.0.0.1',r))
-const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{}),args:['--no-sandbox']}),context=await browser.newContext({viewport:{width:1500,height:1100}}),page=await context.newPage()
+const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{}),args:['--no-sandbox']}),context=await browser.newContext({viewport:{width:1500,height:1100}})
+let page=await context.newPage()
 page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.dismiss())
 await context.addInitScript(({session})=>localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session)),{session})
 await context.route('**/*',async route=>{
@@ -66,7 +67,14 @@ try{
  let all=await ids();assert.ok(all.indexOf('MIO-2026-000077')<all.indexOf('MIO-2026-000082'));assert.ok(all.indexOf('MIO-2026-000033')<all.indexOf('MIO-2026-000100'))
  await ledger.getByLabel('Invoice secondary order').selectOption('desc');all=await ids();assert.ok(all.indexOf('MIO-2026-000077')>all.indexOf('MIO-2026-000082'))
  await page.screenshot({path:'finance-test-results/invoice-sorting.png'})
- await page.goto(`http://127.0.0.1:4175/#matter_dashboard:${matters[0].id}?tab=finances`);await page.reload({waitUntil:'domcontentloaded'})
+ // Exercise the actual target=_blank matter link rather than dismissing an
+ // unrelated unsaved-state beforeunload prompt with a forced reload.
+ await ledger.getByRole('button',{name:'Close',exact:true}).click()
+ const opened=context.waitForEvent('page')
+ await page.getByRole('link',{name:'Alpha Synthetic',exact:true}).click()
+ page=await opened
+ page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.dismiss())
+ await page.waitForLoadState('domcontentloaded')
  await page.getByText('Finances settings',{exact:true}).waitFor({timeout:60000})
  const settings=page.locator('details').filter({has:page.locator('summary').filter({hasText:'Finances settings'})})
  assert.equal(await settings.getAttribute('open'),null);assert.equal(await settings.getByText('Retainer replenishment target',{exact:true}).isVisible(),false)

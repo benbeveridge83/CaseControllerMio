@@ -34,7 +34,7 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
    part=part.replace('Matter accounting \u2014 trust account','Matter accounting - trust and operating payments')
    part=once(part,"'Payer / payee','Funds out','Funds in','Trust balance'","'Payer / payee','Funds out','Funds in','Operating payment','Trust balance'",'operating column')
    const needle="{row.direction === 'in' || row.direction === 'opening' ? money(row.amount) : '\u2014'}</td>"
-   part=once(part,needle,needle+`<td style={{padding:9,textAlign:'right',fontWeight:800}}>{row.operating_payment!==undefined?money(row.operating_payment):'\u2014'}</td>`,'operating amount')
+   part=once(part,needle,needle+`<td style={{padding:9,textAlign:'right',fontWeight:800}}>{row.operating_payment!==undefined?new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(row.operating_payment):'\u2014'}</td>`,'operating amount')
    part=part.replaceAll('colSpan="9"','colSpan="10"').replaceAll('colSpan="7"','colSpan="8"')
    return once(part,'      <div style={{ overflowX:', '      {renderFinanceSyncStatus()}\n      <div style={{ overflowX:','ledger sync status')
  })
