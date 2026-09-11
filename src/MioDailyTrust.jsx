@@ -1,6 +1,9 @@
 import React from 'react'
 const money=c=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100)
-export default function MioDailyTrust({summary:s,date}){return <section className="mio-pnc billing-coverage" aria-label="Daily billing breakdown">
+export default function MioDailyTrust({summary:s,date,loading=false,error=''}){
+  if(loading)return <section className="mio-pnc billing-coverage" aria-label="Daily billing breakdown"><div className="pnc-hero"><span>Non-DFPS billed on {date}, covered by current trust</span><strong>Refreshing current trust balances…</strong><small>Mio is loading the saved opening balances, trust ledger, invoices, and current billing entries before calculating coverage.</small></div></section>
+  if(error)return <section className="mio-pnc billing-coverage" aria-label="Daily billing breakdown"><div className="pnc-hero"><span>Non-DFPS billed on {date}, covered by current trust</span><strong>Trust coverage unavailable</strong><small>Mio could not safely refresh the financial records, so it is not showing a possibly stale coverage amount. {error}</small></div></section>
+  return <section className="mio-pnc billing-coverage" aria-label="Daily billing breakdown">
   <div className="pnc-hero"><span>Non-DFPS billed on {date}, covered by current trust</span><strong>{money(s.covered)}</strong><small>Estimated coverage, not a bank transfer authorization.</small></div>
   <div className="pnc-metrics">{[['Total billed',s.total],['DFPS - monthly billing',s.dfps],['Non-DFPS total',s.nonDfps],['Not covered by trust',s.uncovered],['Already paid',s.paid],['Needs reconciliation / unknown',s.unknown]].map(([label,value])=><div key={label}><span>{label}</span><strong>{money(value)}</strong></div>)}</div>
   <p>Uses each matter's current recorded trust separately, after reserving its other outstanding fees and WIP. Processing payments are excluded. Past dates use current balances, not a historical bank balance. Confirm cleared funds and invoices before transferring.</p>
