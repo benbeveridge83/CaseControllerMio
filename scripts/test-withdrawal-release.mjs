@@ -10,7 +10,7 @@ const plugins=await Promise.all(specs.map(async([,,file])=>(await import('../'+f
 export async function transformed(file){let code=fs.readFileSync(file,'utf8');for(const p of plugins){const out=await p.transform?.(code,'/repo/'+file);code=typeof out==='string'?out:out?.code??code}return code}
 const app=await transformed('src/App.jsx'),ui=await transformed('src/MioWithdrawalBlocks.jsx'),repo=await transformed('src/mioWithdrawalRepository.js')
 const has=(code,text,label)=>assert.ok(code.includes(text),label)
-assert.match(app,/Mio V31[123] \(.*\)/,'Actual app release label')
+assert.match(app,/Mio V31[1234] \(.*\)/,'Actual app release label')
 has(app,"if(step.action==='mailform')",'Mailform action survives Dropbox Sign transform')
 has(app,'onMatterStatus={mioWdChangeMatterStatus}','Status callback is passed')
 has(ui,'onAction,onMatterStatus,getPeople,','Status callback is declared alongside post-V307 document-source props')
