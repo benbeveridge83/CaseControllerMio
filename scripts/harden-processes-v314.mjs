@@ -31,3 +31,13 @@ if(fs.existsSync(releaseFile)){
  const release=fs.readFileSync(releaseFile,'utf8');
  if(release.includes('Mio V31[123]'))fs.writeFileSync(releaseFile,once(release,'Mio V31[123]','Mio V31[1234]'));
 }
+// Keep component identity stable while an asynchronous approval changes status.
+// Previously a new status remounted Step and could discard a note typed during the save.
+const panelFile='src/processes/RunPanel.jsx';
+let panel=fs.readFileSync(panelFile,'utf8');
+if(!panel.includes('V314 stable step editor')){
+ panel=once(panel,"import React,{useState}","import React,{useEffect,useState}");
+ panel=once(panel,"key={run.id+':'+n.id+':'+run.steps[n.id].status}","key={run.id+':'+n.id}");
+ panel=once(panel," const canEdit=", " useEffect(()=>{if(!dirty)setConfig(copy(s.config));},[s.config,dirty]);\n const canEdit=");
+ fs.writeFileSync(panelFile,panel+'\n// V314 stable step editor\n');
+}
