@@ -2,6 +2,35 @@ function once(code,from,to,label){if(code.split(from).length!==2)throw Error('V3
 export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',enforce:'pre',transform(source,id){if(!id.split('?')[0].replaceAll('\\','/').endsWith('/src/App.jsx'))return null
  let code="import MioDailyTrust from './MioDailyTrust.jsx'\nimport {dailyTrustSummary,firmDate} from './mioDailyTrust.js'\nimport {useMioPnc,MioPncRow,MioPncModal,MioPncSettings} from './MioPnc.jsx'\nimport {pncStage} from './mioPncModel.js'\n"+source
  const hook=`  const mioPnc = useMioPnc({session,enabled:page==='matters'||page==='settings',matters,clients,refreshMatters:fetchMatters,refreshClients:fetchClients,graphFetch,supabase,onFinanceRefresh:()=>loadLawPayWorkspace({force:true}),onCalendarSaved:row=>setEvents(old=>[...old.filter(e=>e.id!==row.id),row]),intakeTemplates:draftingIntakeTemplates})
+  const [dailyCoverageFinanceReady,setDailyCoverageFinanceReady]=useState(false)
+  const [dailyCoverageFinanceError,setDailyCoverageFinanceError]=useState('')
+  async function refreshDailyCoverageFinanceState(){
+    const {data,error}=await supabase.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id',session.user.id).in('key',['caseMioFinanceOpeningBalances','caseMioTrustTransactions'])
+    if(error) throw error
+    for(const row of data||[]){
+      let value=row.json_value
+      if(value===null||value===undefined){try{value=JSON.parse(row.raw_value||'null')}catch{value=null}}
+      if(row.key==='caseMioFinanceOpeningBalances'&&value&&typeof value==='object'&&!Array.isArray(value)) setMioFinanceOpeningBalances(value)
+      if(row.key==='caseMioTrustTransactions'&&Array.isArray(value)) setMioTrustTransactions(value)
+    }
+    return true
+  }
+  useEffect(()=>{
+    if(!showDailyBillingWindow||!session?.user?.id){setDailyCoverageFinanceReady(false);setDailyCoverageFinanceError('');return}
+    let cancelled=false
+    setDailyCoverageFinanceReady(false);setDailyCoverageFinanceError('')
+    ;(async()=>{
+      await refreshDailyCoverageFinanceState()
+      const [lawPayReady]=await Promise.all([
+        loadLawPayWorkspace({force:true}),
+        loadMioInvoicesFromDatabase({force:true}),
+        loadBillingRelationalData(session.user.id,{force:true})
+      ])
+      if(lawPayReady===false) throw new Error('Mio could not refresh the recorded LawPay data.')
+      if(!cancelled)setDailyCoverageFinanceReady(true)
+    })().catch(error=>{if(!cancelled){setDailyCoverageFinanceReady(false);setDailyCoverageFinanceError(error?.message||String(error))}})
+    return()=>{cancelled=true}
+  },[showDailyBillingWindow,session?.user?.id])
   function mioDailyCoverage() { return dailyTrustSummary({date:dailyBillingDate,entries:billingEntries,matters,pendingFor:pendingLawPayAmountForMatter,financeFor: matter => {
     const f=clientFinanceNumbers(matter)
     const normalized=f.serviceInvoices.map(i=>({...i,balance:invoiceBalanceAmount(i),amount_paid:invoicePaidAmount(i)}))
@@ -17,7 +46,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  const start=code.indexOf('  function renderDailyBillingModal() {'),end=code.indexOf('\n  function ',start+10);let part=code.slice(start,end)
  part=once(part,'    const totals = billingTotals(entries)','    const coverage = mioDailyCoverage()\n    const totals = {...billingTotals(entries),amount:coverage.total/100}','total same definition')
  part=part.replace('new Date(current || new Date().toISOString().slice(0, 10))',"new Date((current || firmDate())+'T12:00:00Z')").replace('d.setDate(d.getDate() + amount)','d.setUTCDate(d.getUTCDate() + amount)').replace('setDailyDateAndForm(new Date().toISOString().slice(0, 10))','setDailyDateAndForm(firmDate())')
- part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} />\n        <section style={{ border:','coverage card')
+ part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} loading={!dailyCoverageFinanceReady&&!dailyCoverageFinanceError} error={dailyCoverageFinanceError} />\n        <section style={{ border:','coverage card')
  code=code.slice(0,start)+part+code.slice(end)
  code=once(code,'        {renderDailyBillingModal()}','        {renderDailyBillingModal()}\n        <MioPncModal control={mioPnc} caseTypes={options(\'matter_type\')} />','global modal')
  code=once(code,'            <h1>Matters</h1>',`            <h1>Matters</h1>
