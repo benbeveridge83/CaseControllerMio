@@ -1,0 +1,19 @@
+name: Finance source snapshot
+on:
+  push:
+    branches: [fix/finance-review-payments-20260911]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git archive --format=tar.gz -o /tmp/finance-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finance-source
+          path: /tmp/finance-source.tar.gz
+          retention-days: 2
