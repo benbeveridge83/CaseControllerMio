@@ -1,0 +1,34 @@
+name: Finance review and payment verification
+on:
+  push:
+    branches: [fix/finance-review-payments-20260911]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Verify existing finance behavior
+        run: node --test tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
+      - name: Finance regression tests
+        run: |
+          if [ -f tests/finance-v314.test.js ]; then node --test tests/finance-v314.test.js; fi
+      - run: npm run build
+      - name: Package reproducible build inputs
+        if: always()
+        run: tar --exclude=.git --exclude=dist -czf /tmp/mio-finance-inputs.tgz .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mio-finance-inputs
+          path: /tmp/mio-finance-inputs.tgz
+          retention-days: 2
