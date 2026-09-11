@@ -23,7 +23,7 @@ await new Promise(r=>server.listen(4175,'127.0.0.1',r))
 const browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{}),args:['--no-sandbox']}),context=await browser.newContext({viewport:{width:1500,height:1100}})
 let page=await context.newPage()
 page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.dismiss())
-await context.addInitScript(({session})=>localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session)),{session})
+await context.addInitScript(({session})=>{if(location.origin==='http://127.0.0.1:4175')localStorage.setItem('sb-vnnkxqpyndidnjbrbywz-auth-token',JSON.stringify(session))},{session})
 await context.route('**/*',async route=>{
  const req=route.request(),url=new URL(req.url()),reply=(data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)})
  if(url.hostname==='127.0.0.1'&&url.port==='4175'){if(url.pathname.startsWith('/api/'))return reply({connected:false,rows:[],data:[]});return route.continue()}
