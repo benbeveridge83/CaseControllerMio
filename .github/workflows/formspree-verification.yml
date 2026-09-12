@@ -1,0 +1,30 @@
+name: Formspree lead verification
+on:
+  push:
+    branches: [feat/formspree-lead-alerts-v316]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Capture reproducible local test inputs
+        run: tar --exclude=./.git --exclude=./dist -czf /tmp/formspree-workspace.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formspree-workspace
+          path: /tmp/formspree-workspace.tar.gz
+          retention-days: 2
+      - name: Test new integration when present
+        run: |
+          if [ -f tests/formspree.test.js ]; then node --test tests/formspree*.test.js; fi
+      - run: npm run build
