@@ -55,7 +55,16 @@ function statusCellForRow(tr, actionsIndex) {
 }
 
 function renderStatusCell(cell, status) {
+  const signature = JSON.stringify({
+    resolved: Boolean(status?.resolved),
+    kind: String(status?.kind || ''),
+    label: String(status?.label || ''),
+    detail: String(status?.detail || '')
+  })
+  if (cell.dataset.mioStatusSignature === signature) return
+  cell.dataset.mioStatusSignature = signature
   cell.replaceChildren()
+
   const badge = document.createElement('span')
   badge.textContent = status.resolved ? `✓ ${status.label}` : status.label
   badge.style.display = 'inline-block'
