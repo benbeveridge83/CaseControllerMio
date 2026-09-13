@@ -42,10 +42,10 @@ for(const [work,items] of groups(parsed.metrics)){
  fail(`delete metrics ${work}`,await supabase.from('research_metrics').delete().eq('publication_id',pub.id))
  if(items.length)fail(`insert metrics ${work}`,await supabase.from('research_metrics').insert(items.map(({inventory_work_id,notes,...x})=>({...x,publication_id:pub.id}))))
 }
-fail('clear imported review memberships',await supabase.from('research_review_memberships').delete().not('membership_note','is',null))
 for(const m of parsed.reviewMemberships){
  const review=byWork.get(m.review_inventory_work_id),included=byWork.get(m.included_inventory_work_id)
  if(!review||!included)throw new Error(`Review membership references missing Work ID ${m.review_inventory_work_id}/${m.included_inventory_work_id}`)
- fail(`membership ${m.review_inventory_work_id}/${m.included_inventory_work_id}`,await supabase.from('research_review_memberships').upsert({review_publication_id:review.id,included_publication_id:included.id,membership_status:m.membership_status,membership_note:m.membership_note},{onConflict:'review_publication_id,included_publication_id,included_study_id'}))
+ const inventory_key=`${m.review_inventory_work_id}::${m.included_inventory_work_id}`
+ fail(`membership ${m.review_inventory_work_id}/${m.included_inventory_work_id}`,await supabase.from('research_review_memberships').upsert({inventory_key,review_publication_id:review.id,included_publication_id:included.id,membership_status:m.membership_status,membership_note:m.membership_note},{onConflict:'inventory_key'}))
 }
 console.log(JSON.stringify({inserted,updated,publications:byWork.size,warnings:parsed.warnings.length},null,2))
