@@ -6,6 +6,14 @@ function words(value = '') {
   return clean(value).split(' ').filter(Boolean)
 }
 
+export function shouldRefreshGoogleAdsStatusAfterClick(label = '') {
+  const text = clean(label)
+  return text.includes('negative') ||
+    text.includes('exact keyword') ||
+    text.includes('authorize & apply') ||
+    text.includes('validating and applying')
+}
+
 export function negativeKeywordMatchesSearch(searchTerm = '', negative = {}) {
   const search = clean(searchTerm)
   const keyword = clean(negative?.keyword)
