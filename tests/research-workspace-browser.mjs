@@ -1,7 +1,7 @@
 import{build}from'vite'
 import{chromium}from'playwright-core'
 import assert from'node:assert/strict'
-const compiled=await build({configFile:false,root:process.cwd(),logLevel:'error',build:{write:false,minify:false,lib:{entry:'tests/research-workspace-browser-fixture.jsx',name:'ResearchBrowserTest',formats:['iife']}}})
+const compiled=await build({configFile:false,root:process.cwd(),logLevel:'error',define:{'process.env.NODE_ENV':'"production"'},build:{write:false,minify:false,lib:{entry:'tests/research-workspace-browser-fixture.jsx',name:'ResearchBrowserTest',formats:['iife']}}})
 const output=Array.isArray(compiled)?compiled[0].output:compiled.output,js=output.find(x=>x.type==='chunk').code,css=output.filter(x=>x.type==='asset'&&x.fileName.endsWith('.css')).map(x=>x.source).join('\n')
 const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']}),page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.stack||e.message));page.setDefaultTimeout(10000)
 try{
