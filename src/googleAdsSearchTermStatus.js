@@ -14,6 +14,16 @@ export function shouldRefreshGoogleAdsStatusAfterClick(label = '') {
     text.includes('validating and applying')
 }
 
+export function searchTermFilterMatches(row = {}, filters = {}) {
+  const intentFilter = clean(filters?.intent || 'all')
+  const statusFilter = clean(filters?.status || 'all').replaceAll(' ', '_')
+  const rowIntent = clean(row?.intent || '')
+  const rowStatus = clean(row?.statusKind || '').replaceAll(' ', '_')
+  if (intentFilter && intentFilter !== 'all' && rowIntent !== intentFilter) return false
+  if (statusFilter && statusFilter !== 'all' && rowStatus !== statusFilter) return false
+  return true
+}
+
 export function negativeKeywordMatchesSearch(searchTerm = '', negative = {}) {
   const search = clean(searchTerm)
   const keyword = clean(negative?.keyword)
