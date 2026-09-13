@@ -60,6 +60,16 @@ function keywordRow({ criterionId = '56', keyword = 'custody lawyer', matchType 
   }
 }
 
+function assertUnavailableQuality(result, totalSpend) {
+  for (const field of ['relevantClickRate', 'relevantSpendRate', 'wasteRate', 'classifiedSpendCoverage', 'classifiedClicks', 'classifiedSpend']) {
+    assert.equal(result.quality[field], null, `overall ${field} must be unavailable`)
+    assert.equal(result.keywords[0][field], null, `keyword ${field} must be unavailable`)
+  }
+  assert.equal(result.quality.totalSpend, totalSpend)
+  assert.equal(result.keywords[0].totalSpend, totalSpend)
+  assert.equal(result.searchTerms[0].cost, totalSpend)
+}
+
 test('classification create preserves the exact identity and immutable audit owner', async () => {
   const inserts = []
   const service = serviceFixture({
@@ -200,12 +210,13 @@ test('snapshot joins case-sensitive classifications across device rows and calcu
   assert.ok(statements.filter(statement => statement.includes('ad_group_criterion.negative = TRUE')).every(statement => statement.includes('campaign.id = 12') && statement.includes('ad_group.id = 34')))
 })
 
-test('snapshot marks negative and classification inventory failures incomplete and unsafe', async () => {
+test('snapshot keeps quality unavailable with nonzero spend when negative inventory fails', async () => {
   const service = serviceFixture({
-    db: { searchTermClassifications: async () => { throw new Error('Classifications unavailable') } },
+    db: { searchTermClassifications: async () => [{ account_id: '123', campaign_id: '12', ad_group_id: '34', search_term: 'known term', classification: 'relevant' }] },
     query: async statement => {
+      if (statement.includes('FROM search_term_view')) return [searchTermRow('known term', { cost: 25, clicks: 2 })]
       if (statement.includes('FROM ad_group_criterion') && !statement.includes('negative = TRUE')) return [keywordRow()]
-      if (statement.includes('metrics.search_impression_share') || statement.includes('FROM keyword_view') || statement.includes('FROM search_term_view')) return []
+      if (statement.includes('metrics.search_impression_share') || statement.includes('FROM keyword_view')) return []
       if (statement.includes('campaign_criterion.negative = TRUE')) throw new Error('Negatives unavailable')
       return []
     },
@@ -215,11 +226,48 @@ test('snapshot marks negative and classification inventory failures incomplete a
 
   assert.equal(result.inventoryComplete, true)
   assert.equal(result.negativeInventoryComplete, false)
-  assert.equal(result.classificationInventoryComplete, false)
+  assert.equal(result.classificationInventoryComplete, true)
   assert.equal(result.coverageComplete, false)
   assert.equal(result.liveActionsEnabled, false)
   assert.ok(result.warnings.some(warning => warning.section === 'negative inventory'))
+  assertUnavailableQuality(result, 25)
+})
+
+test('snapshot keeps quality unavailable with nonzero spend when classification reads fail', async () => {
+  const service = serviceFixture({
+    db: { searchTermClassifications: async () => { throw new Error('Classifications unavailable') } },
+    query: async statement => {
+      if (statement.includes('FROM search_term_view')) return [searchTermRow('known term', { cost: 30, clicks: 3 })]
+      if (statement.includes('FROM ad_group_criterion') && !statement.includes('negative = TRUE')) return [keywordRow()]
+      return []
+    },
+  })
+
+  const result = await service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07', campaignId: '12' })
+
+  assert.equal(result.classificationInventoryComplete, false)
+  assert.equal(result.negativeInventoryComplete, true)
   assert.ok(result.warnings.some(warning => warning.section === 'classifications'))
+  assertUnavailableQuality(result, 30)
+})
+
+test('snapshot keeps quality unavailable when the classification inventory is capped and partial', async () => {
+  const matching = { account_id: '123', campaign_id: '12', ad_group_id: '34', search_term: 'known term', classification: 'relevant' }
+  const service = serviceFixture({
+    db: { searchTermClassifications: async () => Array(10000).fill(matching) },
+    query: async statement => {
+      if (statement.includes('FROM search_term_view')) return [searchTermRow('known term', { cost: 35, clicks: 4 })]
+      if (statement.includes('FROM ad_group_criterion') && !statement.includes('negative = TRUE')) return [keywordRow()]
+      return []
+    },
+  })
+
+  const result = await service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07', campaignId: '12' })
+
+  assert.equal(result.classificationInventoryComplete, false)
+  assert.equal(result.negativeInventoryComplete, true)
+  assert.ok(result.warnings.some(warning => warning.section === 'classifications' && /10,000-row/.test(warning.message)))
+  assertUnavailableQuality(result, 35)
 })
 
 test('HTTP classification action uses separate insert and grant-safe update paths without Google calls', async () => {
