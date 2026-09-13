@@ -8,10 +8,13 @@ try{
  await page.setContent('<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>'+css+'</style></head><body><div id="root"></div></body></html>');await page.addScriptTag({content:js});await page.waitForTimeout(250)
  const heading=page.getByRole('heading',{name:'Equal Parenting Research'});if(!(await heading.count())){const body=await page.locator('body').innerText();throw new Error('RESEARCH_RENDER_DIAGNOSTIC errors='+JSON.stringify(errors)+' body='+JSON.stringify(body.slice(0,1200)))}
  await heading.waitFor();assert.equal(await page.locator('tbody tr[data-research-row]').count(),5)
+ for(const name of ['Cited By','Citations / Year','Major Reviews','Evidence','Impact','Study'])await page.getByRole('columnheader',{name}).waitFor()
+ assert.match(await page.locator('tbody').innerText(),/Unknown/)
+ assert.match(await page.locator('tbody').innerText(),/Read study/)
+ await page.getByRole('button',{name:'Sort by Cited By'}).click();assert.match(await page.locator('tbody tr[data-research-row]').first().innerText(),/321/)
  await page.getByLabel('Finding direction').selectOption('disfavors_shared');assert.equal(await page.locator('tbody tr[data-research-row]').count(),1)
  await page.getByLabel('Finding direction').selectOption('');await page.getByLabel('Exact or near 50/50').check();assert.equal(await page.locator('tbody tr[data-research-row]').count(),1)
  await page.getByLabel('Exact or near 50/50').uncheck();await page.getByRole('button',{name:'Sort by Impact'}).click();assert.match(await page.locator('tbody tr[data-research-row]').first().innerText(),/88/)
- assert.ok(await page.getByText('Not available',{exact:true}).count())
 
  await page.getByRole('button',{name:'Unfavorable study'}).click();await page.getByRole('heading',{name:'Edit research publication'}).waitFor()
  const impact=page.getByLabel('Impact');assert.equal(await impact.inputValue(),'77')
@@ -25,5 +28,5 @@ try{
  const saved=await page.evaluate(()=>window.__researchStore.publications.find(x=>x.id==='5'));assert.equal(saved.editorial_status,'published');assert.equal(saved.overall_findings_summary,'This study found an unfavorable association under its specified design.');assert.ok(saved.published_at)
 
  await page.getByRole('button',{name:'Back to research'}).click();await page.setViewportSize({width:390,height:844});assert.equal(await page.locator('body').evaluate(el=>el.scrollWidth<=390),true)
- assert.deepEqual(errors,[]);console.log('PASS: research filters, exact-50 rule, nullable metrics, editor persistence, publish gate, score independence, and mobile containment.')
+ assert.deepEqual(errors,[]);console.log('PASS: informative research table, tri-state 50/50, citation sorting, external study links, editor persistence, publish gate, score independence, and mobile containment.')
 }finally{await browser.close()}
