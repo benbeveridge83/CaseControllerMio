@@ -240,6 +240,34 @@ test('keyword and search-term row caps change completeness and keyword truncatio
   assert.match(terms.warnings.find(warning => warning.section === 'search terms').message, /10,000-row/)
 })
 
+test('a capped keyword metrics report leaves absent inventory identities unavailable instead of zero', async () => {
+  const absent = {
+    ...keywordRow,
+    adGroupCriterion: {
+      ...keywordRow.adGroupCriterion,
+      criterionId: '99',
+      resourceName: 'customers/123/adGroupCriteria/34~99',
+      keyword: { text: 'absent from capped metrics', matchType: 'EXACT' },
+    },
+  }
+  const { service } = serviceFixture({
+    query: statement => {
+      if (statement.includes('FROM ad_group_criterion')) return [keywordRow, absent]
+      if (statement.includes('metrics.search_impression_share')) return []
+      if (statement.includes('FROM keyword_view')) return Array(10000).fill(keywordRow)
+      return []
+    },
+  })
+
+  const result = await service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07' })
+
+  assert.equal(result.inventoryComplete, true)
+  assert.equal(result.coverageComplete, false)
+  assert.equal(result.keywords[0].impressions, 700000)
+  assert.equal(result.keywords[1].impressions, null)
+  assert.equal(result.keywords[1].impressionsPerDay, null)
+})
+
 test('keywordLabSnapshot validates and caps custom dates using inclusive calendar days', async () => {
   const { service } = serviceFixture()
   await assert.rejects(
