@@ -1,0 +1,23 @@
+name: Google Ads search term status
+on:
+  push:
+    branches: [feat/google-ads-search-term-status-v316]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Test search-term status logic
+        run: node --test tests/google-ads-search-term-status.test.js
+      - name: Build production bundle
+        run: npm run build
