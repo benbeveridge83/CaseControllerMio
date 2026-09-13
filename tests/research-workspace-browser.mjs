@@ -8,7 +8,7 @@ try{
  await page.setContent('<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>'+css+'</style></head><body><div id="root"></div></body></html>');await page.addScriptTag({content:js});await page.waitForTimeout(250)
  const heading=page.getByRole('heading',{name:'Equal Parenting Research'});if(!(await heading.count())){const body=await page.locator('body').innerText();throw new Error('RESEARCH_RENDER_DIAGNOSTIC errors='+JSON.stringify(errors)+' body='+JSON.stringify(body.slice(0,1200)))}
  await heading.waitFor();assert.equal(await page.locator('tbody tr[data-research-row]').count(),5)
- for(const name of ['Cited By','Citations / Year','Major Reviews','Evidence','Impact','Study'])await page.getByRole('columnheader',{name}).waitFor()
+ for(const name of ['Cited By','Citations / Year','Major Reviews','Evidence','Impact','Study Link'])await page.getByRole('columnheader',{name,exact:true}).waitFor()
  assert.match(await page.locator('tbody').innerText(),/Unknown/)
  assert.match(await page.locator('tbody').innerText(),/Read study/)
  await page.getByRole('button',{name:'Sort by Cited By'}).click();assert.match(await page.locator('tbody tr[data-research-row]').first().innerText(),/321/)
