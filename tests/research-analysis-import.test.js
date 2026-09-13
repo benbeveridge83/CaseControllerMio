@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {normalizeAnalysisDocument,analysisInventoryKey,proposedScores} from '../lib/research/analysisImport.js'
+import fs from 'node:fs'
+import {normalizeAnalysisDocument,normalizeAnalysisDataset,analysisInventoryKey,proposedScores} from '../lib/research/analysisImport.js'
 
 const doc={
  inventory_work_id:'WTEST',
@@ -44,4 +45,12 @@ test('analysis inventory key is deterministic and safe',()=>{
 test('review relevance can use a source-backed review-level shared-time definition',()=>{
  const r=proposedScores({source_type:'systematic_review',topics:['mental_health']},[],{relevance:{shared_time_min_percent:30,parenting_time_definition:'shared physical custody 30-70%'}})
  assert.ok(r.equal_parenting_relevance_score>=70)
+})
+
+test('anchor dataset contains the approved 18 source-backed Work IDs',()=>{
+ const raw=JSON.parse(fs.readFileSync(new URL('../data/research/anchor-analysis-v1.json',import.meta.url),'utf8'))
+ const records=normalizeAnalysisDataset(raw)
+ const expected=['W0001','W0002','W0003','W0004','W0005','W0006','W0007','W0008','W0011','W0012','W0025','W0060','W0069','W0080','W0081','W0092','W0093','W0101']
+ assert.deepEqual(records.map(x=>x.inventory_work_id).sort(),expected.sort())
+ for(const record of records)assert.ok(record.sources.some(x=>x.verified&&x.url),`${record.inventory_work_id} needs a verified source`)
 })
