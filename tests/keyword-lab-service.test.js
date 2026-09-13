@@ -67,6 +67,7 @@ test('keywordLabSnapshot returns date-scoped metrics and Google-supplied search-
   const { service, calls } = serviceFixture({
     query: statement => {
       if (statement.includes('FROM search_term_view')) return [termRow]
+      if (statement.includes('FROM ad_group_criterion')) return [keywordRow]
       if (statement.includes('metrics.search_impression_share')) return [optionalRow]
       if (statement.includes('FROM keyword_view')) return [keywordRow]
       return []
@@ -119,13 +120,17 @@ test('keywordLabSnapshot returns date-scoped metrics and Google-supplied search-
   assert.equal(result.searchTerms[0].triggeringKeyword, 'custody lawyer')
   assert.equal(result.termGroups.groups[0].criterionId, 'customers/123/adGroupCriteria/34~56')
   assert.equal(result.liveActionsEnabled, true)
-  assert.ok(calls.every(statement => statement.includes("segments.date BETWEEN '2026-09-01' AND '2026-09-07'")))
+  const inventoryQuery = calls.find(statement => statement.includes('FROM ad_group_criterion'))
+  assert.ok(inventoryQuery)
+  assert.doesNotMatch(inventoryQuery, /segments\.date/)
+  assert.ok(calls.filter(statement => !statement.includes('FROM ad_group_criterion')).every(statement => statement.includes("segments.date BETWEEN '2026-09-01' AND '2026-09-07'")))
   assert.ok(calls.every(statement => statement.includes('campaign.id = 12') && statement.includes('ad_group.id = 34')))
 })
 
 test('keywordLabSnapshot keeps core rows when optional metrics fail and disables live actions when inventory fails', async () => {
   const optionalFailure = serviceFixture({
     query: statement => {
+      if (statement.includes('FROM ad_group_criterion')) return [keywordRow]
       if (statement.includes('metrics.search_impression_share')) throw new Error('Optional field unsupported')
       if (statement.includes('FROM keyword_view')) return [keywordRow]
       return []
@@ -139,7 +144,7 @@ test('keywordLabSnapshot keeps core rows when optional metrics fail and disables
 
   const inventoryFailure = serviceFixture({
     query: statement => {
-      if (statement.includes('FROM keyword_view') && !statement.includes('metrics.search_impression_share')) throw new Error('Inventory unavailable')
+      if (statement.includes('FROM ad_group_criterion')) throw new Error('Inventory unavailable')
       return []
     },
   })
@@ -147,6 +152,92 @@ test('keywordLabSnapshot keeps core rows when optional metrics fail and disables
   assert.equal(unavailable.inventoryComplete, false)
   assert.equal(unavailable.liveActionsEnabled, false)
   assert.deepEqual(unavailable.keywords, [])
+})
+
+test('keywordLabSnapshot retains active and paused inventory rows with supported zero reporting totals', async () => {
+  const paused = {
+    ...keywordRow,
+    adGroupCriterion: {
+      ...keywordRow.adGroupCriterion,
+      criterionId: '57',
+      resourceName: 'customers/123/adGroupCriteria/34~57',
+      status: 'PAUSED',
+      keyword: { text: 'custody attorney', matchType: 'EXACT' },
+    },
+  }
+  const { service } = serviceFixture({
+    query: statement => {
+      if (statement.includes('FROM ad_group_criterion')) return [keywordRow, paused]
+      if (statement.includes('metrics.search_impression_share')) return []
+      if (statement.includes('FROM keyword_view')) return [keywordRow]
+      return []
+    },
+  })
+
+  const result = await service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07' })
+
+  assert.equal(result.keywords.length, 2)
+  assert.deepEqual(result.keywords[1], {
+    campaignId: '12',
+    campaignName: 'Custody',
+    adGroupId: '34',
+    adGroupName: 'Custody lawyers',
+    criterionId: '57',
+    criterionResourceName: 'customers/123/adGroupCriteria/34~57',
+    keyword: 'custody attorney',
+    matchType: 'EXACT',
+    status: 'PAUSED',
+    impressions: 0,
+    clicks: 0,
+    cost: 0,
+    conversions: 0,
+    ctr: 0,
+    averageCpc: 0,
+    conversionRate: 0,
+    costPerConversion: 0,
+    searchImpressionShare: null,
+    searchRankLostImpressionShare: null,
+    searchBudgetLostImpressionShare: null,
+    topImpressionRate: null,
+    absoluteTopImpressionRate: null,
+    impressionsPerDay: 0,
+    clicksPerDay: 0,
+    costPerDay: 0,
+    searchTermCount: 0,
+  })
+})
+
+test('keyword and search-term row caps change completeness and keyword truncation disables live actions', async () => {
+  const keywordCap = serviceFixture({
+    query: statement => statement.includes('FROM ad_group_criterion') ? Array(10000).fill(keywordRow) : [],
+  })
+  const keywords = await keywordCap.service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07' })
+  assert.equal(keywords.inventoryComplete, false)
+  assert.equal(keywords.coverageComplete, false)
+  assert.equal(keywords.liveActionsEnabled, false)
+  assert.match(keywords.warnings[0].message, /10,000-row/)
+
+  const termRow = {
+    campaign: keywordRow.campaign,
+    adGroup: keywordRow.adGroup,
+    searchTermView: { searchTerm: 'custody help' },
+    segments: { keyword: { adGroupCriterion: 'customers/123/adGroupCriteria/34~56', info: {} } },
+    metrics: { impressions: 1, clicks: 0, costMicros: 0, conversions: 0 },
+  }
+  const termCap = serviceFixture({
+    query: statement => {
+      if (statement.includes('FROM ad_group_criterion')) return [keywordRow]
+      if (statement.includes('FROM search_term_view')) return Array(10000).fill(termRow)
+      if (statement.includes('metrics.search_impression_share')) return []
+      if (statement.includes('FROM keyword_view')) return [keywordRow]
+      return []
+    },
+  })
+  const terms = await termCap.service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07' })
+  assert.equal(terms.inventoryComplete, true)
+  assert.equal(terms.coverageComplete, false)
+  assert.equal(terms.liveActionsEnabled, true)
+  assert.match(terms.warnings.find(warning => warning.section === 'search terms').message, /10,000-row/)
 })
 
 test('keywordLabSnapshot validates and caps custom dates using inclusive calendar days', async () => {
@@ -250,6 +341,30 @@ test('keywordExperiments reports active metrics only from the effective experime
   assert.equal(result.experiments[1].impressionsPerDay, null)
   assert.match(calls[0], /segments\.date/)
   assert.match(calls[0], /campaign\.id = 12/)
+})
+
+test('keywordExperiments distinguishes a complete zero-row report from pending or failed metrics', async () => {
+  const active = {
+    id: 'experiment-active', account_id: '123', campaign_id: '12', campaign_name: 'Custody',
+    ad_group_id: '34', ad_group_name: 'Custody lawyers', criterion_id: '56',
+    criterion_resource_name: 'customers/123/adGroupCriteria/34~56', keyword: 'custody lawyer',
+    match_type: 'PHRASE', source: 'manual', hypothesis: null,
+    experiment_started_at: '2026-09-01T05:00:00.000Z', approved_by: 'approver-1', state: 'active',
+  }
+  const pending = {
+    ...active, id: 'experiment-pending', criterion_id: null, criterion_resource_name: null,
+    experiment_started_at: null, approved_by: null, state: 'proposed',
+  }
+  const complete = serviceFixture({ experiments: [active, pending], query: () => [] })
+  const result = await complete.service.keywordExperiments({ startDate: '2026-09-01', endDate: '2026-09-07' })
+  assert.equal(result.experiments[0].impressions, 0)
+  assert.equal(result.experiments[0].impressionsPerDay, 0)
+  assert.equal(result.experiments[1].impressions, null)
+
+  const failed = serviceFixture({ experiments: [active], query: () => { throw new Error('Report unavailable') } })
+  const unavailable = await failed.service.keywordExperiments({ startDate: '2026-09-01', endDate: '2026-09-07' })
+  assert.equal(unavailable.inventoryComplete, false)
+  assert.equal(unavailable.experiments[0].impressions, null)
 })
 
 test('HTTP exposes both Keyword Lab reporting actions and reads experiments from the cloud adapter', async () => {
