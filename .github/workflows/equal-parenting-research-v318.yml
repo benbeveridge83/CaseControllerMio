@@ -1,0 +1,32 @@
+name: Equal parenting research V318
+on:
+  push:
+    branches: [feature/equal-parenting-research-phase1]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Research unit and integration tests
+        run: node --test tests/research-*.test.js
+      - name: Research browser workflow
+        if: hashFiles('tests/research-workspace-browser.mjs') != ''
+        run: |
+          export CHROMIUM_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROMIUM_PATH"
+          node tests/research-workspace-browser.mjs
+      - name: Production build
+        if: success()
+        run: npm run build
