@@ -1,17 +1,17 @@
 import test from'node:test'
 import assert from'node:assert/strict'
 import fs from'node:fs'
+import{applyEqualParentingResearch}from'../mio-v318-equal-parenting-research.js'
 const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
-test('locate current Mio navigation and page anchors',()=>{
- const patterns=[
-  "setPage('marketing')","setPage(\"marketing\")","page === 'marketing'","page==='marketing'",
-  "setPage('google_ads')","setPage(\"google_ads\")","page === 'google_ads'","page==='google_ads'",
-  "setPage('settings')","setPage(\"settings\")","page === 'settings'","page==='settings'",
-  "setPage('mail_center')","setPage(\"mail_center\")","page === 'mail_center'","page==='mail_center'",
-  "setPage('withdrawals')","setPage(\"withdrawals\")","page === 'withdrawals'","page==='withdrawals'",
-  "setPage('matters')","setPage(\"matters\")","page === 'matters'","page==='matters'"
- ]
- const snippets=[]
- for(const pattern of patterns){const at=source.indexOf(pattern);if(at>=0)snippets.push(pattern+': '+source.slice(Math.max(0,at-260),Math.min(source.length,at+420)).replace(/\s+/g,' '))}
- assert.fail('ANCHOR_DIAGNOSTIC\n'+snippets.join('\n---\n'))
+
+test('research integration adds exactly one import, nav entry, and workspace',()=>{
+ const r=applyEqualParentingResearch(source)
+ assert.equal((r.match(/MioResearchWorkspace/g)||[]).length,2)
+ assert.equal((r.match(/>Equal Parenting Research<\/a>/g)||[]).length,1)
+ assert.equal((r.match(/page === 'equal_parenting_research'/g)||[]).length,2)
+ assert.equal(applyEqualParentingResearch(r),r)
+})
+
+test('missing navigation or render anchors refuse a partial installation',()=>{
+ assert.throws(()=>applyEqualParentingResearch('missing'),/research integration anchors/i)
 })
