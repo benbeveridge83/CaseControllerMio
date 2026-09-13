@@ -6,7 +6,8 @@ const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
 
 test('research integration adds exactly one import, nav entry, and workspace',()=>{
  const r=applyEqualParentingResearch(source)
- assert.equal((r.match(/MioResearchWorkspace/g)||[]).length,2)
+ assert.equal((r.match(/import MioResearchWorkspace from '\.\/MioResearchWorkspace\.jsx'/g)||[]).length,1)
+ assert.equal((r.match(/<MioResearchWorkspace session=/g)||[]).length,1)
  assert.equal((r.match(/>Equal Parenting Research<\/a>/g)||[]).length,1)
  assert.equal((r.match(/page === 'equal_parenting_research'/g)||[]).length,2)
  assert.equal(applyEqualParentingResearch(r),r)
