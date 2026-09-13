@@ -34,6 +34,32 @@ test('migration enforces stable identities, timestamps, and documented values',(
  assert.equal((sql.match(/updated_at timestamptz not null default now\(\)/g)||[]).length,3)
 })
 
+test('pending experiments have no invented Google identity or approval audit',()=>{
+ const experiments=tableDefinition('mio_ads_keyword_experiments')
+ assert.match(experiments,/criterion_id text,/)
+ assert.match(experiments,/criterion_resource_name text,/)
+ assert.match(experiments,/experiment_started_at timestamptz,/)
+ assert.doesNotMatch(experiments,/(criterion_id|criterion_resource_name|experiment_started_at) (text|timestamptz) not null/)
+ assert.match(experiments,/state='proposed' and approved_by is null and criterion_id is null and criterion_resource_name is null and experiment_started_at is null/)
+ assert.match(experiments,/state='approved' and approved_by is not null and criterion_id is null and criterion_resource_name is null and experiment_started_at is null/)
+ assert.match(experiments,/state in \('active','paused','promoted_to_core','ended'\) and approved_by is not null and criterion_id is not null and criterion_resource_name is not null and experiment_started_at is not null/)
+})
+
+test('experiment guard permits only documented transitions and assigns immutable audit once',()=>{
+ const guard=sql.match(/create function public\.mio_ads_keyword_experiment_guard\(\).*?as \$\$(.*?)\$\$;/)?.[1]
+ assert.ok(guard,'missing experiment transition guard')
+ const transitions=new Set([...guard.matchAll(/\('([^']+)','([^']+)'\)/g)].map(([,from,to])=>`${from}->${to}`))
+ const allowed=['proposed->approved','proposed->active','approved->active','active->paused','active->promoted_to_core','active->ended','paused->active','paused->promoted_to_core','paused->ended']
+ assert.deepEqual([...transitions].sort(),allowed.sort())
+ for(const pair of ['proposed->approved','proposed->active','approved->active','active->paused','paused->active','active->ended'])assert.ok(transitions.has(pair),`${pair} must be valid`)
+ for(const pair of ['proposed->paused','approved->proposed','active->approved','ended->active','promoted_to_core->active'])assert.ok(!transitions.has(pair),`${pair} must be invalid`)
+ assert.match(guard,/if tg_op='insert' and new.state<>'proposed'/)
+ assert.match(guard,/old.state='proposed' and new.state in \('approved','active'\).*?new.approved_by=\(select auth.uid\(\)\)/)
+ assert.match(guard,/old.approved_by is not null and new.approved_by is distinct from old.approved_by/)
+ assert.match(guard,/old.criterion_id is not null.*?new.criterion_id is distinct from old.criterion_id.*?new.criterion_resource_name is distinct from old.criterion_resource_name.*?new.experiment_started_at is distinct from old.experiment_started_at/)
+ assert.match(sql,/before insert or update on public\.mio_ads_keyword_experiments for each row execute function public\.mio_ads_keyword_experiment_guard\(\)/)
+})
+
 test('all Keyword Lab tables use firm-only RLS with least grants and no anonymous access',()=>{
  for(const name of ['mio_ads_keyword_experiments','mio_ads_keyword_market_cache','mio_ads_search_term_classifications']){
   assert.match(sql,new RegExp(`alter table public\\.${name} enable row level security`))
@@ -42,6 +68,8 @@ test('all Keyword Lab tables use firm-only RLS with least grants and no anonymou
  }
  assert.doesNotMatch(sql,/grant delete on public\.mio_ads_keyword_/)
  assert.doesNotMatch(sql,/grant delete on public\.mio_ads_search_term_classifications/)
+ assert.doesNotMatch(sql,/grant [^;]+ to anon/)
+ assert.doesNotMatch(sql,/create policy [^;]+ to anon/)
  for(const operation of ['select','insert','update']){
   const policies=sql.match(new RegExp(`create policy [^;]+ for ${operation} to authenticated [^;]+;`,'g'))||[]
   assert.equal(policies.length,3,`expected one ${operation} policy per table`)
@@ -53,16 +81,19 @@ test('all Keyword Lab tables use firm-only RLS with least grants and no anonymou
   }
  }
  assert.equal((sql.match(/for insert to authenticated with check\(created_by=\(select auth\.uid\(\)\)/g)||[]).length,3)
- assert.match(sql,/approved_by is null or approved_by=\(select auth\.uid\(\)\)/)
  assert.doesNotMatch(sql,/user_metadata|raw_user_meta_data/)
 })
 
-test('update grants keep identity and creation audit columns immutable',()=>{
- assert.match(sql,/grant update\(state,hypothesis\) on public\.mio_ads_keyword_experiments to authenticated/)
+test('update grants expose only lifecycle fields and keep creation audit columns immutable',()=>{
+ assert.match(sql,/grant update\(state,hypothesis,criterion_id,criterion_resource_name,experiment_started_at\) on public\.mio_ads_keyword_experiments to authenticated/)
  assert.match(sql,/grant update\(results,retrieved_at,expires_at\) on public\.mio_ads_keyword_market_cache to authenticated/)
  assert.match(sql,/grant update\(classification,note\) on public\.mio_ads_search_term_classifications to authenticated/)
- assert.doesNotMatch(sql,/grant update\([^)]*(created_by|created_at|approved_by|criterion_resource_name|account_id)[^)]*\)/)
+ assert.doesNotMatch(sql,/grant update\([^)]*(created_by|created_at|approved_by|account_id)[^)]*\)/)
  assert.equal((sql.match(/execute function public\.mio_ads_keyword_lab_touch_updated_at\(\)/g)||[]).length,3)
+})
+
+test('actor foreign keys have supporting indexes',()=>{
+ for(const index of ['mio_ads_keyword_experiments_created_by','mio_ads_keyword_experiments_approved_by','mio_ads_keyword_market_cache_created_by','mio_ads_search_term_classifications_created_by'])assert.match(sql,new RegExp(`create index ${index} on public\\.`))
 })
 
 test('Keyword Lab extends change history without changing its existing write surface',()=>{
