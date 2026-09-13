@@ -1,7 +1,7 @@
 name: Formspree lead verification
 on:
   push:
-    branches: [feat/formspree-lead-alerts-v316]
+    branches: [main, feat/formspree-lead-alerts-v316]
 permissions:
   contents: read
 jobs:
