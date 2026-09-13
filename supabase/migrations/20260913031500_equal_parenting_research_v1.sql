@@ -54,6 +54,7 @@ create index if not exists research_publications_topics_gin
 
 create table if not exists public.research_studies (
   id uuid primary key default gen_random_uuid(),
+  inventory_key text unique,
   publication_id uuid not null references public.research_publications(id) on delete cascade,
   study_label text not null,
   extraction_status text not null default 'unverified' check(extraction_status in ('unverified','verified','needs_review')),
@@ -88,6 +89,7 @@ create index if not exists research_studies_exact_50 on public.research_studies(
 
 create table if not exists public.research_access_links (
   id uuid primary key default gen_random_uuid(),
+  inventory_key text unique,
   publication_id uuid not null references public.research_publications(id) on delete cascade,
   link_type text not null,
   url text not null,
@@ -103,6 +105,7 @@ create index if not exists research_access_links_publication on public.research_
 
 create table if not exists public.research_metrics (
   id uuid primary key default gen_random_uuid(),
+  inventory_key text unique,
   publication_id uuid not null references public.research_publications(id) on delete cascade,
   provider text not null,
   metric_type text not null,
