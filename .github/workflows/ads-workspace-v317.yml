@@ -1,0 +1,36 @@
+name: Ads workspace V317
+on:
+  push:
+    branches: [feat/ads-workspace-v317, main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Model, service, authorization, integration and regression tests
+        run: node --test tests/ads-workspace*.test.js tests/google-ads*.test.js tests/formspree.test.js
+      - name: Browser approval, filtering and editor tests
+        run: |
+          export CHROMIUM_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          test -n "$CHROMIUM_PATH"
+          node tests/ads-workspace-browser.mjs
+      - name: Production build
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ads-workspace-screenshots
+          path: ads-test-results
+          retention-days: 7
