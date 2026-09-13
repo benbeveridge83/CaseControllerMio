@@ -14,6 +14,13 @@ test('phase 1.5 adds sortable bibliometric and completion summaries',()=>{
   ]) assert.match(s,new RegExp(`add column if not exists ${c}`,'i'))
 })
 
+test('phase 1.5 adds source provenance to study analyses',()=>{
+  const s=sql()
+  assert.match(s,/alter table public\.research_studies/i)
+  assert.match(s,/add column if not exists extraction_source_url text/i)
+  assert.match(s,/add column if not exists verified_at timestamptz/i)
+})
+
 test('public catalog remains sanitized and gains safe importance fields',()=>{
   const s=sql()
   assert.match(s,/citation_count_current/i)
