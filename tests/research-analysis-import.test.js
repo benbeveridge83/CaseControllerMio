@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {normalizeAnalysisDocument,analysisInventoryKey} from '../lib/research/analysisImport.js'
+import {normalizeAnalysisDocument,analysisInventoryKey,proposedScores} from '../lib/research/analysisImport.js'
 
 const doc={
  inventory_work_id:'WTEST',
@@ -39,4 +39,9 @@ test('analysis import never permits published status in curated JSON',()=>{
 
 test('analysis inventory key is deterministic and safe',()=>{
  assert.equal(analysisInventoryKey('W0025','Main Swedish school-age sample'),'analysis::W0025::main-swedish-school-age-sample')
+})
+
+test('review relevance can use a source-backed review-level shared-time definition',()=>{
+ const r=proposedScores({source_type:'systematic_review',topics:['mental_health']},[],{relevance:{shared_time_min_percent:30,parenting_time_definition:'shared physical custody 30-70%'}})
+ assert.ok(r.equal_parenting_relevance_score>=70)
 })
