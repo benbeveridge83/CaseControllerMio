@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { supabase } from './supabaseClient.js'
-import { deriveSearchTermStatus } from './googleAdsSearchTermStatus.js'
+import {
+  deriveSearchTermStatus,
+  searchTermFilterMatches,
+  shouldRefreshGoogleAdsStatusAfterClick
+} from './googleAdsSearchTermStatus.js'
 
 const ENHANCER_ID = 'mio-google-ads-search-term-status-toolbar'
 
@@ -14,7 +18,7 @@ function norm(value = '') {
 
 function findSearchTermsTable() {
   return [...document.querySelectorAll('table')].find((table) => {
-    const headers = [...table.querySelectorAll('thead th')].map((th) => norm(th.textContent))
+    const headers = [...table.querySelectorAll('thead th')].map((th) => norm(th.childNodes?.[0]?.textContent || th.textContent))
     return headers.includes('search term') && headers.some((value) => value.includes('actions'))
   }) || null
 }
@@ -35,7 +39,8 @@ function ensureStatusHeader(table, actionsIndex) {
   if (!headRow || headRow.querySelector('[data-mio-search-status-header]')) return
   const th = document.createElement('th')
   th.dataset.mioSearchStatusHeader = 'true'
-  th.textContent = 'Status'
+  th.dataset.mioBaseLabel = 'Status'
+  th.appendChild(document.createTextNode('Status'))
   th.style.minWidth = '160px'
   th.style.textAlign = 'left'
   const actionHeader = headRow.children[actionsIndex]
@@ -86,6 +91,41 @@ function renderStatusCell(cell, status) {
     detail.style.color = '#64748b'
     cell.appendChild(detail)
   }
+}
+
+function ensureHeaderSelect(th, key, options, onChange) {
+  if (!th) return null
+  let select = th.querySelector(`[data-mio-header-filter="${key}"]`)
+  if (!select) {
+    select = document.createElement('select')
+    select.dataset.mioHeaderFilter = key
+    select.style.display = 'block'
+    select.style.marginTop = '5px'
+    select.style.maxWidth = '150px'
+    select.style.fontSize = '10px'
+    select.style.fontWeight = '500'
+    select.style.padding = '2px 4px'
+    select.style.border = '1px solid #cbd5e1'
+    select.style.borderRadius = '5px'
+    select.style.background = '#fff'
+    select.addEventListener('change', onChange)
+    th.appendChild(select)
+  }
+
+  const current = select.value || 'all'
+  const normalizedOptions = [{ value: 'all', label: 'All' }, ...options]
+  const signature = JSON.stringify(normalizedOptions)
+  if (select.dataset.mioOptionsSignature !== signature) {
+    select.dataset.mioOptionsSignature = signature
+    select.replaceChildren(...normalizedOptions.map((option) => {
+      const node = document.createElement('option')
+      node.value = option.value
+      node.textContent = option.label
+      return node
+    }))
+    if ([...select.options].some((option) => option.value === current)) select.value = current
+  }
+  return select
 }
 
 function makeToolbar(onChange) {
@@ -145,17 +185,39 @@ export default function MioGoogleAdsSearchTermStatus() {
       const table = findSearchTermsTable()
       if (!table) return
 
-      const headerCells = [...table.querySelectorAll('thead th')]
-      const headerText = headerCells.map((th) => norm(th.textContent))
+      let headerCells = [...table.querySelectorAll('thead th')]
+      let headerText = headerCells.map((th) => norm(th.dataset.mioBaseLabel || th.childNodes?.[0]?.textContent || th.textContent))
       const searchIndex = headerText.indexOf('search term')
       const actionsIndexBeforeStatus = headerText.findIndex((value) => value.includes('actions'))
       const scopeIndex = headerText.findIndex((value) => value.includes('campaign') && value.includes('ad group'))
       if (searchIndex < 0 || actionsIndexBeforeStatus < 0) return
 
       ensureStatusHeader(table, actionsIndexBeforeStatus)
+      headerCells = [...table.querySelectorAll('thead th')]
+      headerText = headerCells.map((th) => norm(th.dataset.mioBaseLabel || th.childNodes?.[0]?.textContent || th.textContent))
+      const intentIndex = headerText.indexOf('intent')
+      const statusIndex = headerText.indexOf('status')
+
       const toolbar = makeToolbar(apply)
       if (!toolbar.isConnected) table.parentElement?.insertBefore(toolbar, table)
       const unresolvedOnly = Boolean(toolbar.querySelector('[data-mio-unresolved-only]')?.checked)
+
+      const intentValues = [...new Set([...table.querySelectorAll('tbody tr')]
+        .map((tr) => norm(tr.children[intentIndex]?.textContent || ''))
+        .filter(Boolean))]
+        .sort()
+        .map((value) => ({ value, label: value.replace(/\b\w/g, (char) => char.toUpperCase()) }))
+      const intentSelect = intentIndex >= 0 ? ensureHeaderSelect(headerCells[intentIndex], 'intent', intentValues, apply) : null
+      const statusSelect = statusIndex >= 0 ? ensureHeaderSelect(headerCells[statusIndex], 'status', [
+        { value: 'unresolved', label: 'Needs review' },
+        { value: 'campaign_negative', label: 'Campaign negative' },
+        { value: 'ad_group_negative', label: 'Ad-group negative' },
+        { value: 'exact_keyword', label: 'Exact keyword added' }
+      ], apply) : null
+      const filters = {
+        intent: intentSelect?.value || 'all',
+        status: statusSelect?.value || 'all'
+      }
 
       const reportRows = Array.isArray(reportRef.current?.searchTerms) ? reportRef.current.searchTerms : []
       for (const tr of table.querySelectorAll('tbody tr')) {
@@ -167,9 +229,12 @@ export default function MioGoogleAdsSearchTermStatus() {
         const status = deriveSearchTermStatus(reportRow, reportRef.current)
         const cell = statusCellForRow(tr, actionsIndexBeforeStatus)
         renderStatusCell(cell, status)
+        const intent = norm(cells[intentIndex]?.textContent || '')
+        const matchesFilters = searchTermFilterMatches({ intent, statusKind: status.kind }, filters)
+        const hiddenByUnresolved = status.resolved && unresolvedOnly
         tr.dataset.mioSearchResolved = status.resolved ? 'true' : 'false'
         tr.style.opacity = status.resolved && !unresolvedOnly ? '0.62' : ''
-        tr.style.display = status.resolved && unresolvedOnly ? 'none' : ''
+        tr.style.display = hiddenByUnresolved || !matchesFilters ? 'none' : ''
       }
     }
 
@@ -192,8 +257,7 @@ export default function MioGoogleAdsSearchTermStatus() {
       if (!isGoogleAdsPage()) return
       const button = event.target?.closest?.('button')
       if (!button) return
-      const text = norm(button.textContent)
-      if (!text.includes('negative') && !text.includes('exact keyword')) return
+      if (!shouldRefreshGoogleAdsStatusAfterClick(button.textContent || '')) return
       clearTimeout(refreshTimerRef.current)
       refreshTimerRef.current = setTimeout(load, 1800)
       setTimeout(load, 4500)
