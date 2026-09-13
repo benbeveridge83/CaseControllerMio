@@ -1,13 +1,14 @@
 import React,{useEffect,useMemo,useState}from'react'
 import{listResearchPublications}from'../lib/research/repository.js'
 import{FINDING_DIRECTIONS,SOURCE_TYPES,RESEARCH_TOPICS,matchesResearchFilters,sortResearchRows}from'../lib/research/model.js'
+import MioResearchEditor from'./MioResearchEditor.jsx'
 import'./mioResearch.css'
 
 const directionLabel=v=>({favors_shared:'Favors shared',neutral:'Neutral',mixed:'Mixed',conditional_concern:'Conditional concern',disfavors_shared:'Disfavors shared',methodology_only:'Methodology only'}[v]||v||'—')
 const sourceLabel=v=>String(v||'').replaceAll('_',' ')
 const metric=v=>v===null||v===undefined||v===''?'Not available':String(v)
 
-export default function MioResearchWorkspace({session,supabase,enabled=true,EditorComponent=null}){
+export default function MioResearchWorkspace({session,supabase,enabled=true,EditorComponent=MioResearchEditor}){
  const[rows,setRows]=useState([]),[loading,setLoading]=useState(false),[error,setError]=useState(''),[selectedId,setSelectedId]=useState(null)
  const[filters,setFilters]=useState({search:'',finding_direction:'',source_type:'',editorial_status:'',topic:'',access_status:'',exact50:false})
  const[sort,setSort]=useState({key:'publication_year',direction:'desc'})
