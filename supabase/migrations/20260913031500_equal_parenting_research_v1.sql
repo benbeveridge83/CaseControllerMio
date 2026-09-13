@@ -115,6 +115,7 @@ create index if not exists research_metrics_publication on public.research_metri
 
 create table if not exists public.research_review_memberships (
   id uuid primary key default gen_random_uuid(),
+  inventory_key text unique,
   review_publication_id uuid not null references public.research_publications(id) on delete cascade,
   included_publication_id uuid not null references public.research_publications(id) on delete cascade,
   included_study_id uuid references public.research_studies(id) on delete set null,
