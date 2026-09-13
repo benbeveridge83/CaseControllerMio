@@ -21,6 +21,13 @@ test('save strips nested UI fields before upsert',async()=>{
   assert.equal('studies' in payload,false);assert.equal('accessLinks' in payload,false);assert.equal('metrics' in payload,false)
 })
 
+test('new publications receive a stable slug before upsert',async()=>{
+  const {client,calls}=fakeClient({data:{id:'p1'},error:null})
+  await saveResearchPublication(client,{title:'Bergström 2015 — Fifty moves a year',source_type:'original_empirical'})
+  const payload=calls[0].ops.find(x=>x[0]==='upsert')[1]
+  assert.equal(payload.slug,'bergstrom-2015-fifty-moves-a-year')
+})
+
 test('replace children always binds the requested publication id',async()=>{
   const {client,calls}=fakeClient({data:[],error:null})
   await replaceResearchStudies(client,'safe',[{study_label:'One',publication_id:'evil'}])
