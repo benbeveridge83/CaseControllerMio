@@ -26,26 +26,24 @@ for(const p of parsed.publications){
  found?updated++:inserted++
 }
 const groups=(items,key='inventory_work_id')=>{const m=new Map();for(const x of items){if(!m.has(x[key]))m.set(x[key],[]);m.get(x[key]).push(x)}return m}
-for(const [work,items] of groups(parsed.studies)){
- const pub=byWork.get(work);if(!pub)throw new Error(`Missing publication for study Work ID ${work}`)
- fail(`delete studies ${work}`,await supabase.from('research_studies').delete().eq('publication_id',pub.id))
- if(items.length)fail(`insert studies ${work}`,await supabase.from('research_studies').insert(items.map(({inventory_work_id,inventory_study_id,...x})=>({...x,publication_id:pub.id}))))
+const studyGroups=groups(parsed.studies),accessGroups=groups(parsed.accessLinks),metricGroups=groups(parsed.metrics)
+for(const p of parsed.publications){
+ const work=p.inventory_work_id,pub=byWork.get(work);if(!pub)throw new Error(`Missing publication for Work ID ${work}`)
+ const studies=studyGroups.get(work)||[]
+ fail(`delete imported studies ${work}`,await supabase.from('research_studies').delete().like('inventory_key',`inventory:${work}:%`))
+ if(studies.length){const rows=studies.map(({inventory_work_id,inventory_study_id,...x},i)=>({...x,inventory_key:`inventory:${work}:study:${inventory_study_id||i+1}`,publication_id:pub.id}));fail(`insert studies ${work}`,await supabase.from('research_studies').insert(rows))}
+ const links=(accessGroups.get(work)||[]).filter(x=>x.url)
+ fail(`delete imported access ${work}`,await supabase.from('research_access_links').delete().like('inventory_key',`inventory:${work}:%`))
+ if(links.length){const rows=links.map(({inventory_work_id,...x},i)=>({...x,inventory_key:`inventory:${work}:access:${x.link_type}:${i+1}`,publication_id:pub.id}));fail(`insert access ${work}`,await supabase.from('research_access_links').insert(rows))}
+ const metrics=metricGroups.get(work)||[]
+ fail(`delete imported metrics ${work}`,await supabase.from('research_metrics').delete().like('inventory_key',`inventory:${work}:%`))
+ if(metrics.length){const rows=metrics.map(({inventory_work_id,notes,...x},i)=>({...x,inventory_key:`inventory:${work}:metric:${x.metric_type}:${i+1}`,publication_id:pub.id}));fail(`insert metrics ${work}`,await supabase.from('research_metrics').insert(rows))}
 }
-for(const [work,items] of groups(parsed.accessLinks)){
- const pub=byWork.get(work);if(!pub)throw new Error(`Missing publication for access Work ID ${work}`)
- fail(`delete access ${work}`,await supabase.from('research_access_links').delete().eq('publication_id',pub.id))
- const rows=items.filter(x=>x.url).map(({inventory_work_id,...x})=>({...x,publication_id:pub.id}))
- if(rows.length)fail(`insert access ${work}`,await supabase.from('research_access_links').insert(rows))
-}
-for(const [work,items] of groups(parsed.metrics)){
- const pub=byWork.get(work);if(!pub)throw new Error(`Missing publication for metric Work ID ${work}`)
- fail(`delete metrics ${work}`,await supabase.from('research_metrics').delete().eq('publication_id',pub.id))
- if(items.length)fail(`insert metrics ${work}`,await supabase.from('research_metrics').insert(items.map(({inventory_work_id,notes,...x})=>({...x,publication_id:pub.id}))))
-}
+fail('delete stale imported memberships',await supabase.from('research_review_memberships').delete().like('inventory_key','inventory:membership:%'))
 for(const m of parsed.reviewMemberships){
  const review=byWork.get(m.review_inventory_work_id),included=byWork.get(m.included_inventory_work_id)
  if(!review||!included)throw new Error(`Review membership references missing Work ID ${m.review_inventory_work_id}/${m.included_inventory_work_id}`)
- const inventory_key=`${m.review_inventory_work_id}::${m.included_inventory_work_id}`
+ const inventory_key=`inventory:membership:${m.review_inventory_work_id}::${m.included_inventory_work_id}`
  fail(`membership ${m.review_inventory_work_id}/${m.included_inventory_work_id}`,await supabase.from('research_review_memberships').upsert({inventory_key,review_publication_id:review.id,included_publication_id:included.id,membership_status:m.membership_status,membership_note:m.membership_note},{onConflict:'inventory_key'}))
 }
 console.log(JSON.stringify({inserted,updated,publications:byWork.size,warnings:parsed.warnings.length},null,2))
