@@ -121,7 +121,7 @@ try{
  await page.getByRole('button',{name:'Return to withdrawal row',exact:true}).click()
  await detail().waitFor()
  console.log('PASS actual connected DOCX template generation; no implicit completion')
- async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.getByLabel('Saved matter document',{exact:true}).innerText(),/Beta-private/);await modal.getByLabel('Saved matter document',{exact:true}).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
+ async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.getByLabel(/^Saved matter document/).innerText(),/Beta-private/);await modal.getByLabel(/^Saved matter document/).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
  await attach('Draft motion to withdraw','pdf-a')
  await attach('Draft withdrawal order','order-a')
  await detail().getByRole('button',{name:'Approve & complete step',exact:true}).click()
