@@ -1,7 +1,7 @@
 name: Equal parenting research V318
 on:
   push:
-    branches: [feature/equal-parenting-research-phase1]
+    branches: [feature/equal-parenting-research-phase1, feature/equal-parenting-research-phase15]
   pull_request:
     branches: [main]
 concurrency:

@@ -1,0 +1,432 @@
+{
+  "records": [
+    {
+      "inventory_work_id": "W0001",
+      "sources": [{"url": "https://doi.org/10.1080/10502556.2014.965578", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/10502556.2014.965578",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "physical_health", "father_child", "conflict"],
+        "overall_findings_summary": "Narrative review of 40 studies comparing shared physical custody with primarily single-parent residence. The review reports that children in shared physical custody generally had better emotional, behavioral, psychological, physical-health, and parent-relationship outcomes than children in sole physical custody, while emphasizing that the underlying studies vary in design and quality.",
+        "limitations_summary": "This is a narrative review rather than a preregistered systematic review or meta-analysis. The underlying studies use varying definitions of shared physical custody and are predominantly observational, so the review does not by itself establish a causal effect of shared parenting.",
+        "what_it_supports": "It supports the proposition that a broad body of observational research has often found shared physical custody, commonly defined as at least roughly 35% of time with each parent, associated with outcomes as good as or better than sole physical custody.",
+        "what_it_does_not_establish": "It does not establish that exact 50/50 parenting is universally optimal, that shared parenting causes better outcomes in every family, or that safety and persistent-conflict concerns are irrelevant."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 35, "parenting_time_definition": "shared physical custody at least about 35% with each parent", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0002",
+      "sources": [{"url": "https://doi.org/10.1080/10502556.2018.1454204", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/10502556.2018.1454204",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "physical_health", "father_child", "conflict", "methodology"],
+        "overall_findings_summary": "Narrative review of 60 study-analyses examining joint physical custody versus sole physical custody. Nielsen reports that most analyses found equal or better outcomes for children in joint physical custody, including after considering income, parental conflict, and parent-child relationship quality in studies that measured those factors.",
+        "limitations_summary": "The paper is a narrative synthesis, not a meta-analysis, and the 60 study-analyses are not 60 equivalent independent experiments. Definitions of joint physical custody, controls, samples, and outcomes differ across the underlying literature, which remains largely observational.",
+        "what_it_supports": "It supports the proposition that favorable or non-inferior associations for joint physical custody appear across many studies and are not confined solely to unadjusted income or conflict comparisons.",
+        "what_it_does_not_establish": "It does not prove a universal causal benefit from exact 50/50 parenting or eliminate selection effects, measurement differences, or family-specific safety concerns."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 33, "parenting_time_definition": "joint physical custody roughly one-third or more with each parent", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0003",
+      "sources": [{"url": "https://doi.org/10.1037/law0000005", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1037/law0000005",
+        "finding_direction": "mixed",
+        "topics": ["attachment", "young_children", "policy"],
+        "overall_findings_summary": "Consensus report addressing parenting plans for young children, including the amount of time with each parent and overnight care. It argues that, under normal circumstances, the available social-science evidence does not justify blanket restrictions on young children's overnights with either parent and supports maintaining meaningful relationships with both parents.",
+        "limitations_summary": "This is a consensus report and literature synthesis, not an original child-outcome experiment. Endorsement by a large group of researchers and practitioners reflects a professional consensus position, not a randomized test of a single custody schedule.",
+        "what_it_supports": "It supports rejecting categorical rules that young children should never have regular overnights with a parent solely because of age, absent family-specific contraindications.",
+        "what_it_does_not_establish": "It does not establish that exact 50/50 schedules are best for every infant or toddler, nor does it override evidence concerning abuse, neglect, violence, or other child-specific risks."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"parenting_time_definition": "young-child shared residential arrangements and regular overnights", "direct_child_outcome": false}}
+    },
+    {
+      "inventory_work_id": "W0004",
+      "sources": [{"url": "https://doi.org/10.1080/10502556.2016.1185203", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/10502556.2016.1185203",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "methodology"],
+        "overall_findings_summary": "Meta-analysis of 19 studies comparing joint physical custody and sole custody. The pooled association favored joint physical custody by a small amount, and the amount of time children spent with both parents moderated the association.",
+        "limitations_summary": "The pooled effect is small and combines observational studies with differing custody definitions, samples, and adjustment measures. Meta-analysis improves synthesis but does not convert non-randomized source studies into causal evidence.",
+        "what_it_supports": "It supports a small average adjustment advantage for children in shared physical custody across the included literature, with more equal parenting time associated with the size of the observed difference.",
+        "what_it_does_not_establish": "It does not show that every child benefits from exact 50/50 parenting or that the observed average difference is wholly causal."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 30, "parenting_time_definition": "joint physical custody ranging approximately 30/70 to 50/50", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0005",
+      "sources": [{"url": "https://doi.org/10.1037/0893-3200.16.1.91", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1037/0893-3200.16.1.91",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "methodology"],
+        "overall_findings_summary": "Early meta-analytic review reporting that children in joint-custody arrangements were better adjusted on several outcome domains than children in sole-custody arrangements and were not significantly different from children in continuously married families on overall adjustment.",
+        "limitations_summary": "The older literature mixes joint physical and joint legal custody and uses definitions substantially broader and less standardized than modern near-equal residence studies. Most included evidence was observational and predates current measurement standards.",
+        "what_it_supports": "It supports the historical finding that joint-custody arrangements were not generally associated with worse adjustment and often showed better average adjustment than sole custody in the studies available at the time.",
+        "what_it_does_not_establish": "It does not directly establish the effect of modern exact 50/50 physical custody because joint legal and physical arrangements and differing parenting-time thresholds were combined in the older evidence base."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"parenting_time_definition": "joint physical and joint legal custody; older studies used broad thresholds", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0006",
+      "sources": [{"url": "https://doi.org/10.1111/famp.12372", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1111/famp.12372",
+        "finding_direction": "mixed",
+        "topics": ["mental_health", "father_child", "conflict", "methodology"],
+        "overall_findings_summary": "Literature review of joint physical custody research published primarily from 2007 through 2018. The reviewed literature generally reports positive child and parent well-being associations for joint physical custody while also emphasizing selection into shared arrangements and substantial heterogeneity in definitions and family circumstances.",
+        "limitations_summary": "The review synthesizes predominantly observational studies. Families choosing joint physical custody often differ from sole-custody families in resources, conflict, and relationships, and studies operationalize joint physical custody with different thresholds.",
+        "what_it_supports": "It supports the conclusion that the modern literature generally does not show a broad child-well-being disadvantage from joint physical custody and often reports favorable associations.",
+        "what_it_does_not_establish": "It does not establish that all favorable differences are causal or that studies using 25%, 30%, 40%, and 50% thresholds answer the same question."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"parenting_time_definition": "joint physical custody commonly ranging about 25% to 50% with each parent", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0007",
+      "sources": [{"url": "https://doi.org/10.1371/journal.pone.0288112", "kind": "open-access publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1371/journal.pone.0288112",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "physical_health", "education", "father_child", "methodology"],
+        "overall_findings_summary": "PRISMA systematic review of 39 peer-reviewed studies published from 2010 through 2022. Across emotional, behavioral, relational, physical, and educational outcomes, shared physical custody generally performed better than lone physical custody, while intact/nuclear-family children often had the most favorable outcomes. The authors emphasize resource and selection explanations and limits on causal inference.",
+        "limitations_summary": "The included studies are heterogeneous in country, outcome, design, and definition of shared physical custody, and most are observational. A systematic search reduces selection of studies by the reviewers but does not eliminate confounding within the underlying evidence.",
+        "what_it_supports": "It supports the conclusion that recent peer-reviewed evidence generally finds shared physical custody at least non-inferior, and often favorable, compared with lone physical custody across multiple child-outcome domains.",
+        "what_it_does_not_establish": "It does not prove that exact 50/50 parenting causes better outcomes or that family resources, parent relationships, safety, and selection into arrangements do not matter."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 30, "parenting_time_definition": "shared physical custody approximately 30-70% of time with each parent", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0008",
+      "sources": [{"url": "https://pubmed.ncbi.nlm.nih.gov/33762801/", "kind": "PubMed / free PMC article", "verified": true}, {"url": "https://doi.org/10.1080/10502556.2018.1454200", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/10502556.2018.1454200",
+        "finding_direction": "conditional_concern",
+        "topics": ["conflict", "mental_health", "coparenting"],
+        "overall_findings_summary": "Focused review of 11 studies on shared parenting in high-conflict divorced families. The review finds that greater parenting-time sharing was associated with poorer child adjustment in some studies where high conflict persisted for many years, but this pattern was not generally found when conflict was measured near divorce or two to three years later. Parenting quality was an important correlate of adjustment.",
+        "limitations_summary": "The small literature uses different definitions of high conflict, timing of conflict measurement, parenting-time arrangements, and child outcomes. The review is not evidence that any single parenting-time rule applies to all high-conflict families.",
+        "what_it_supports": "It supports treating persistent, chronic interparental conflict and parenting quality as potential moderators rather than assuming shared parenting has identical effects in all high-conflict families.",
+        "what_it_does_not_establish": "It does not establish that parental conflict automatically makes shared parenting harmful or that every family with conflict should use sole physical custody."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"parenting_time_definition": "joint physical custody / shared residence in high-conflict families", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0011",
+      "sources": [{"url": "https://doi.org/10.1080/10502556.2011.619913", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/10502556.2011.619913",
+        "finding_direction": "favors_shared",
+        "topics": ["mental_health", "father_child", "stability"],
+        "overall_findings_summary": "Narrative review of shared residential parenting research examining child and parent outcomes and the stability of shared-residence arrangements. The review generally reports favorable or comparable child outcomes in shared residence relative to sole residence.",
+        "limitations_summary": "The paper is a narrative review of observational research, and the underlying studies vary in methods and shared-residence definitions.",
+        "what_it_supports": "It supports the historical literature showing that substantial shared residence was commonly associated with child outcomes at least as favorable as sole residence.",
+        "what_it_does_not_establish": "It does not establish a universal causal advantage for exact 50/50 arrangements or remove the need to consider family-specific risks."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 35, "parenting_time_definition": "shared residential parenting at least about 35% with each parent", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0012",
+      "sources": [{"url": "https://doi.org/10.1037/law0000109", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1037/law0000109",
+        "finding_direction": "mixed",
+        "topics": ["conflict", "coparenting", "methodology"],
+        "overall_findings_summary": "Review and critique of research on parental conflict, coparenting, and physical-custody arrangements. It argues that the more recent literature does not support treating parental conflict or legal conflict, by itself, as a categorical reason to exclude joint physical custody.",
+        "limitations_summary": "This is a review/critique rather than an experimental study, and the underlying studies use different conflict measures, custody definitions, and time frames.",
+        "what_it_supports": "It supports evaluating the nature, persistence, and consequences of conflict rather than applying a simple conflict-equals-no-shared-parenting rule.",
+        "what_it_does_not_establish": "It does not establish that shared parenting is appropriate where conflict involves coercive control, violence, abuse, or other child-safety risks."
+      },
+      "studies": [],
+      "score_inputs": {"relevance": {"shared_time_min_percent": 35, "parenting_time_definition": "joint physical custody commonly at least about 35%", "direct_child_outcome": true}}
+    },
+    {
+      "inventory_work_id": "W0025",
+      "sources": [{"url": "https://doi.org/10.1136/jech-2014-205058", "kind": "open-access publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1136/jech-2014-205058",
+        "finding_direction": "favors_shared",
+        "topics": ["physical_health", "mental_health", "adolescents"],
+        "overall_findings_summary": "Large Swedish school survey of 147,839 children aged 12 and 15. Children living equally with both parents reported fewer psychosomatic problems than children living mostly or only with one parent, while children in intact nuclear families reported the fewest problems.",
+        "limitations_summary": "The design is cross-sectional and observational, so it cannot establish that equal residence caused the differences. Selection into living arrangements and unmeasured family characteristics may contribute to the associations.",
+        "what_it_supports": "It supports an association between equal-time joint physical custody and fewer psychosomatic complaints than primarily single-parent residence in a very large adolescent sample.",
+        "what_it_does_not_establish": "It does not establish causation or show that equal residence produces better outcomes than intact-family residence or is optimal for every child."
+      },
+      "studies": [{
+        "study_label": "Swedish national school-age sample",
+        "sample_size": 147839,
+        "child_age_text": "12 and 15 years",
+        "country_text": "Sweden",
+        "parenting_time_definition": "living equally much with both parents",
+        "shared_time_min_percent": 50,
+        "shared_time_max_percent": 50,
+        "exact_or_near_50_50": true,
+        "comparator": "mostly or only one parent; intact nuclear family",
+        "study_design": "cross-sectional adjusted national school survey",
+        "outcomes_measured": "psychosomatic problems",
+        "controls_summary": "Adjusted analyses reported in the article; full covariate coding should be reviewed before final verification.",
+        "result_direction": "favors_shared",
+        "result_summary": "Equal-time joint physical custody was associated with fewer psychosomatic problems than mostly/sole-parent residence; intact-family children had the fewest problems.",
+        "key_limitation": "Cross-sectional observational design cannot establish causation.",
+        "causal_claim_strength": "low",
+        "extraction_status": "needs_review",
+        "source_url": "https://doi.org/10.1136/jech-2014-205058",
+        "score_inputs": {"evidence": {"design": "cross_sectional_adjusted", "sample_size": 147839, "measurement_quality": "good"}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0060",
+      "sources": [{"url": "https://flosse.dss.gov.au/entities/publication/d7eaf84e-36f4-41fd-a468-e2c33946b90e", "kind": "Australian Government report record", "verified": true}, {"url": "https://flosse.dss.gov.au/entities/publication/15365aaf-90df-4f5b-a191-deec31de6344", "kind": "Australian Government synopsis", "verified": true}],
+      "publication": {
+        "finding_direction": "conditional_concern",
+        "topics": ["young_children", "conflict", "attachment", "policy"],
+        "overall_findings_summary": "Australian government-commissioned research integrating two longitudinal datasets: a high-conflict post-separation panel and national Longitudinal Study of Australian Children samples focused on infants and preschool children in different post-separation care arrangements. Findings raised age- and context-specific concerns about some frequent-overnight arrangements while also emphasizing family and relationship factors.",
+        "limitations_summary": "This is a collected government research report containing multiple datasets and analyses rather than one simple equal-parenting comparison. Parenting-time categories, ages, and family-conflict contexts differ, so results should not be generalized as a single effect of 50/50 custody.",
+        "what_it_supports": "It supports close examination of age, overnight frequency, parental conflict, and family context when designing parenting arrangements for infants and young children.",
+        "what_it_does_not_establish": "It does not establish that exact equal parenting is harmful generally, and its young-child overnight findings should not be treated as equivalent to studies of stable 50/50 residence among older children."
+      },
+      "studies": [
+        {
+          "study_label": "Children in Focus high-conflict panel",
+          "sample_size": 131,
+          "child_age_text": "school-age children in high-conflict post-separation families",
+          "country_text": "Australia",
+          "parenting_time_definition": "post-separation shared-care arrangements in a high-conflict sample",
+          "exact_or_near_50_50": null,
+          "study_design": "longitudinal panel",
+          "outcomes_measured": "child developmental and adjustment outcomes across parenting arrangements",
+          "controls_summary": "Full covariate coding requires review of the collected report; government synopsis confirms repeated family data over time.",
+          "result_direction": "conditional_concern",
+          "result_summary": "Results are context-specific to a high-conflict sample and should be interpreted separately from population studies of voluntary shared residence.",
+          "key_limitation": "Selected high-conflict families are not representative of all separated families.",
+          "causal_claim_strength": "low",
+          "extraction_status": "needs_review",
+          "source_url": "https://flosse.dss.gov.au/entities/publication/d7eaf84e-36f4-41fd-a468-e2c33946b90e",
+          "score_inputs": {"evidence": {"design": "longitudinal", "sample_size": 131}}
+        },
+        {
+          "study_label": "LSAC infant and preschool analyses",
+          "sample_size": 10000,
+          "child_age_text": "approximately 5,000 infants and 5,000 children aged 4-5 in national source samples",
+          "country_text": "Australia",
+          "parenting_time_definition": "post-separation care and overnight arrangements for infants and preschool children",
+          "exact_or_near_50_50": null,
+          "study_design": "longitudinal national cohort analyses",
+          "outcomes_measured": "developmental outcomes in infancy and preschool years",
+          "controls_summary": "Full covariate coding requires full-report review; national longitudinal source samples are documented in the government synopsis.",
+          "result_direction": "conditional_concern",
+          "result_summary": "The report examines developmental outcomes across care arrangements and identifies age/context qualifications relevant to frequent overnight care.",
+          "key_limitation": "Broad care categories and developmental age groups do not isolate an exact 50/50 causal effect.",
+          "causal_claim_strength": "low",
+          "extraction_status": "needs_review",
+          "source_url": "https://flosse.dss.gov.au/entities/publication/15365aaf-90df-4f5b-a191-deec31de6344",
+          "score_inputs": {"evidence": {"design": "longitudinal", "sample_size": 10000}}
+        }
+      ]
+    },
+    {
+      "inventory_work_id": "W0069",
+      "sources": [{"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4307616/", "kind": "free PMC author manuscript", "verified": true}, {"url": "https://doi.org/10.1111/jomf.12045", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1111/jomf.12045",
+        "finding_direction": "conditional_concern",
+        "topics": ["attachment", "young_children", "mental_health"],
+        "overall_findings_summary": "Fragile Families study of very young children. Frequent overnights were associated with attachment insecurity among infants; results were less clear for toddlers. Attachment insecurity predicted later adjustment, while frequent overnights themselves were not directly associated with the later age-3 and age-5 adjustment measures examined.",
+        "limitations_summary": "The sample oversampled nonmarital births and was predominantly low-income and racially/ethnically diverse; overnight arrangements were not randomized. The study concerns frequent overnights in infancy/toddlerhood, not a clean test of exact 50/50 shared physical custody.",
+        "what_it_supports": "It supports caution and developmental specificity in interpreting frequent overnight arrangements for infants, and it demonstrates that young-child overnight studies should be analyzed separately from older-child equal-residence studies.",
+        "what_it_does_not_establish": "It does not establish that equal parenting generally harms children or that the reported infant attachment association was caused by overnights rather than correlated family factors."
+      },
+      "studies": [{
+        "study_label": "Fragile Families infant/toddler overnight analyses",
+        "sample_size": 1023,
+        "child_age_text": "infants birth-1 year and toddlers 1-3 years, with later adjustment at ages 3 and 5",
+        "country_text": "United States",
+        "parenting_time_definition": "frequent overnight contact with a nonresidential parent; some toddler analyses included substantial overnight shares",
+        "exact_or_near_50_50": null,
+        "comparator": "less frequent or no overnight arrangements",
+        "study_design": "longitudinal cohort analysis",
+        "outcomes_measured": "attachment security and later child adjustment",
+        "controls_summary": "Adjusted observational analyses using Fragile Families data; detailed covariate coding requires final full-text verification.",
+        "result_direction": "conditional_concern",
+        "result_summary": "Frequent overnights were associated with attachment insecurity among infants; toddler results were less clear and frequent overnights did not directly predict later adjustment outcomes examined.",
+        "key_limitation": "Nonrandom assignment and a demographically selected urban sample limit causal and population-wide inference.",
+        "causal_claim_strength": "low",
+        "extraction_status": "needs_review",
+        "source_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4307616/",
+        "score_inputs": {"evidence": {"design": "longitudinal", "sample_size": 1023}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0080",
+      "sources": [{"url": "https://doi.org/10.1080/14616739900134011", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1080/14616739900134011",
+        "finding_direction": "conditional_concern",
+        "topics": ["attachment", "young_children"],
+        "overall_findings_summary": "Study of 145 infants aged approximately 12-20 months in separated/divorced and married-family comparison groups, examining overnight visitation, attachment, and parent/couple variables. Attachment patterns in the regular-overnight group raised concerns relative to the married-family comparison, while family relationship variables were also associated with outcomes.",
+        "limitations_summary": "The study is observational, relatively small, and concerns infant overnight visitation rather than modern equal shared residence. Family conflict, communication, and other parent/couple variables complicate simple causal attribution to overnights.",
+        "what_it_supports": "It supports treating infant attachment and family relationship quality as relevant considerations in overnight parenting-plan research.",
+        "what_it_does_not_establish": "It does not establish that exact 50/50 custody causes attachment harm or that findings from infant overnight visitation generalize to older children or all separated families."
+      },
+      "studies": [{
+        "study_label": "Infant overnight visitation and attachment sample",
+        "sample_size": 145,
+        "child_age_text": "approximately 12-20 months",
+        "country_text": "United States",
+        "parenting_time_definition": "regular overnight visitation in separated/divorced families, not equal residence",
+        "exact_or_near_50_50": false,
+        "comparator": "separated families without regular overnights and married-family comparison",
+        "study_design": "cross-sectional observational comparison",
+        "outcomes_measured": "infant attachment classifications and parent/couple variables",
+        "controls_summary": "Parent and couple variables, including relationship/conflict factors, were examined; final coding requires full-text verification.",
+        "result_direction": "conditional_concern",
+        "result_summary": "Regular overnight visitation was associated with concerning attachment patterns relative to the married-family comparison, with parent/couple variables also relevant.",
+        "key_limitation": "Observational infant sample and overnight-visitation design do not identify a causal effect of equal physical custody.",
+        "causal_claim_strength": "very_low",
+        "extraction_status": "needs_review",
+        "source_url": "https://doi.org/10.1080/14616739900134011",
+        "score_inputs": {"evidence": {"design": "descriptive", "sample_size": 145}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0081",
+      "sources": [{"url": "https://doi.org/10.1111/j.174-1617.2004.tb00632.x", "kind": "Wiley publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1111/j.174-1617.2004.tb00632.x",
+        "finding_direction": "mixed",
+        "topics": ["young_children", "mental_health", "father_child"],
+        "overall_findings_summary": "Prospective study of 161 families with children age six or younger at filing, with 132 families followed 15-18 months later. Parenting-plan variables were related to child adjustment, but number of caregivers and schedule consistency were more salient than overnights. Overnight associations varied by child sex and age.",
+        "limitations_summary": "The sample was observational and modest in size, and overnights were embedded in a broader constellation of parenting-plan and family variables. Results therefore do not support a simple overnight-good or overnight-bad rule.",
+        "what_it_supports": "It supports evaluating schedule consistency, caregiving context, child age, and child-specific factors rather than treating overnight frequency alone as the parenting-plan variable that determines adjustment.",
+        "what_it_does_not_establish": "It does not establish a universal benefit or harm from exact 50/50 parenting and does not isolate a randomized causal overnight effect."
+      },
+      "studies": [{
+        "study_label": "Collaborative Divorce Project young-child follow-up",
+        "sample_size": 132,
+        "child_age_text": "age 6 or younger at filing; follow-up 15-18 months later",
+        "country_text": "United States",
+        "parenting_time_definition": "overnight schedules and other parenting-plan characteristics, not exact equal residence",
+        "exact_or_near_50_50": false,
+        "comparator": "children with differing overnight, caregiver, and schedule patterns",
+        "study_design": "longitudinal observational follow-up",
+        "outcomes_measured": "social, cognitive, and emotional behavior",
+        "controls_summary": "Analyses included parental conflict and parent-child relationship variables along with parenting-plan characteristics.",
+        "result_direction": "mixed",
+        "result_summary": "Caregiver number and schedule consistency were more salient than overnights; overnight associations varied by sex and age, with older preschool children showing fewer later problems in some comparisons.",
+        "key_limitation": "Observational parenting-plan constellation makes it difficult to isolate a causal overnight or equal-time effect.",
+        "causal_claim_strength": "low",
+        "extraction_status": "needs_review",
+        "source_url": "https://doi.org/10.1111/j.174-1617.2004.tb00632.x",
+        "score_inputs": {"evidence": {"design": "longitudinal", "sample_size": 132, "conflict_controls": true}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0092",
+      "sources": [{"url": "https://pubmed.ncbi.nlm.nih.gov/34060891/", "kind": "PubMed abstract", "verified": true}, {"url": "https://doi.org/10.1037/fam0000875", "kind": "publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1037/fam0000875",
+        "finding_direction": "neutral",
+        "topics": ["mental_health", "physical_health", "education", "father_child", "coparenting"],
+        "overall_findings_summary": "German FAMOD study of children aged 2-14 in joint and sole physical custody families, with analytic samples up to 1,161. Joint physical custody children had better bivariate well-being on psychological, physical, social, and cognitive/educational dimensions, but those differences disappeared after controls for child, parent, separation, and family-relationship characteristics. Parent-child relationships fully mediated the observed association.",
+        "limitations_summary": "The study is cross-sectional and observational, so mediation and adjusted associations do not demonstrate temporal causation. Families in joint physical custody may differ in measured and unmeasured ways from sole-custody families.",
+        "what_it_supports": "It supports the importance of parent-child relationship quality as a mechanism associated with the apparent joint-custody well-being advantage and shows that raw custody-group differences can disappear after controls.",
+        "what_it_does_not_establish": "It does not show that joint physical custody itself causes better well-being after selection and relationship quality are accounted for."
+      },
+      "studies": [{
+        "study_label": "FAMOD child well-being comparison",
+        "sample_size": 1161,
+        "child_age_text": "2-14 years",
+        "country_text": "Germany",
+        "parenting_time_definition": "children live with each parent about equally in joint physical custody",
+        "exact_or_near_50_50": true,
+        "comparator": "sole physical custody",
+        "study_design": "cross-sectional adjusted regression analysis",
+        "outcomes_measured": "psychological, physical, social, and cognitive/educational well-being",
+        "controls_summary": "Child, parent, separation characteristics and quality of family relationships; parent-child relationship mediation analyses.",
+        "result_direction": "neutral",
+        "result_summary": "Bivariate JPC advantages on all four dimensions disappeared after controls; parent-child relationship quality fully mediated the association.",
+        "key_limitation": "Cross-sectional data cannot establish causal mediation or temporal ordering.",
+        "causal_claim_strength": "low",
+        "extraction_status": "needs_review",
+        "source_url": "https://pubmed.ncbi.nlm.nih.gov/34060891/",
+        "score_inputs": {"evidence": {"design": "cross_sectional_adjusted", "sample_size": 1161, "ses_controls": true, "measurement_quality": "good"}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0093",
+      "sources": [{"url": "https://doi.org/10.1111/famp.12844", "kind": "Wiley full text / publisher DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1111/famp.12844",
+        "finding_direction": "mixed",
+        "topics": ["mental_health", "coparenting", "conflict"],
+        "overall_findings_summary": "FAMOD structural-equation analysis of 1,117 post-separation families (465 joint physical custody and 652 sole physical custody), with children aged 2-14. Joint physical custody children showed fewer internalizing and externalizing problems initially, but the differences were fully mediated by coparenting support; no custody-group difference was found for prosocial behavior.",
+        "limitations_summary": "The analysis is cross-sectional, so statistical mediation does not establish causal sequence. Joint and sole custody families differ on multiple family characteristics, and the observed effects were small and age-sensitive.",
+        "what_it_supports": "It supports coparenting support as an important explanatory correlate of mental-health differences between joint and sole physical custody families.",
+        "what_it_does_not_establish": "It does not establish that custody arrangement itself causes mental-health improvement independent of coparenting or that a 50/50 schedule will improve outcomes in every family."
+      },
+      "studies": [{
+        "study_label": "FAMOD coparenting mediation analysis",
+        "sample_size": 1117,
+        "child_age_text": "2-14 years",
+        "country_text": "Germany",
+        "parenting_time_definition": "joint physical custody as classified in FAMOD; exact threshold requires final coding review",
+        "exact_or_near_50_50": null,
+        "comparator": "sole physical custody",
+        "study_design": "cross-sectional structural equation modeling",
+        "outcomes_measured": "internalizing, externalizing, and prosocial behavior using SDQ measures",
+        "controls_summary": "Child age and gender, siblings, stepparents, parents' ages and education, time since separation, relationship quality, and parental conflict were included as controls.",
+        "result_direction": "mixed",
+        "result_summary": "Initial JPC advantages in internalizing and externalizing behavior were fully mediated by coparenting support; no JPC-SPC difference was found for prosocial behavior.",
+        "key_limitation": "Cross-sectional mediation cannot establish temporal or causal mediation.",
+        "causal_claim_strength": "low",
+        "extraction_status": "needs_review",
+        "source_url": "https://doi.org/10.1111/famp.12844",
+        "score_inputs": {"evidence": {"design": "cross_sectional_adjusted", "sample_size": 1117, "conflict_controls": true, "ses_controls": true, "measurement_quality": "good"}}
+      }]
+    },
+    {
+      "inventory_work_id": "W0101",
+      "sources": [{"url": "https://doi.org/10.1007/s11205-026-03856-2", "kind": "open-access Springer DOI", "verified": true}],
+      "publication": {
+        "doi": "10.1007/s11205-026-03856-2",
+        "finding_direction": "methodology_only",
+        "topics": ["methodology", "mental_health"],
+        "overall_findings_summary": "Open-access FAMOD methodology study of 1,104 post-separation families examining residential calendars, overnight counts, self-assessment, and joint-physical-custody thresholds from 25% to 50%. Different measurement approaches changed how many families were classified as joint versus sole physical custody, but did not materially change the example mental-health result using the Strengths and Difficulties Questionnaire.",
+        "limitations_summary": "The robustness test concerns one German dataset and an example mental-health outcome. Stable results in this analysis do not mean all JPC definitions are conceptually interchangeable or will be equivalent for every outcome and dataset.",
+        "what_it_supports": "It supports explicitly coding the measurement method and parenting-time threshold because different definitions materially change who is classified as joint physical custody, even when one outcome result remains robust.",
+        "what_it_does_not_establish": "It does not establish a child-outcome advantage for any particular threshold or show that 25%, 30%, 40%, and 50% residence definitions represent the same family arrangement."
+      },
+      "studies": [{
+        "study_label": "FAMOD custody-measurement robustness analysis",
+        "sample_size": 1104,
+        "child_age_text": "post-separation families in FAMOD; child-age distribution requires final coding review",
+        "country_text": "Germany",
+        "parenting_time_definition": "multiple measures and JPC thresholds ranging from 25% to 50%",
+        "shared_time_min_percent": 25,
+        "shared_time_max_percent": 50,
+        "exact_or_near_50_50": null,
+        "comparator": "classification under alternative measures and thresholds",
+        "study_design": "cross-sectional measurement/robustness analysis",
+        "outcomes_measured": "classification as JPC/SPC and an example child mental-health result using SDQ",
+        "controls_summary": "Study compares operationalizations within the same FAMOD dataset; detailed model controls require final coding review.",
+        "result_direction": "neutral",
+        "result_summary": "Measures and thresholds changed custody classification counts but did not materially change the example child mental-health association in this dataset.",
+        "key_limitation": "Methodological robustness for one dataset/outcome does not imply conceptual equivalence of all shared-time definitions.",
+        "causal_claim_strength": "not_applicable",
+        "extraction_status": "needs_review",
+        "source_url": "https://doi.org/10.1007/s11205-026-03856-2"
+      }],
+      "score_inputs": {"relevance": {"parenting_time_definition": "joint physical custody definitions and thresholds from 25% to 50%", "direct_child_outcome": false}}
+    }
+  ]
+}
