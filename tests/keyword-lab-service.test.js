@@ -87,7 +87,9 @@ test('keywordLabSnapshot returns date-scoped metrics and Google-supplied search-
     days: 7,
     timeZone: 'America/Chicago',
   })
-  assert.deepEqual(result.keywords[0], {
+  const { revision, ...keyword } = result.keywords[0]
+  assert.match(revision, /^[a-f0-9]{64}$/)
+  assert.deepEqual(keyword, {
     campaignId: '12',
     campaignName: 'Custody',
     adGroupId: '34',
@@ -177,7 +179,9 @@ test('keywordLabSnapshot retains active and paused inventory rows with supported
   const result = await service.keywordLabSnapshot({ startDate: '2026-09-01', endDate: '2026-09-07' })
 
   assert.equal(result.keywords.length, 2)
-  assert.deepEqual(result.keywords[1], {
+  const { revision, ...keyword } = result.keywords[1]
+  assert.match(revision, /^[a-f0-9]{64}$/)
+  assert.deepEqual(keyword, {
     campaignId: '12',
     campaignName: 'Custody',
     adGroupId: '34',
@@ -348,6 +352,7 @@ test('keywordExperiments reports active metrics only from the effective experime
     hypothesis: 'More relevant custody clicks',
     experimentStartedAt: '2026-09-08T05:00:00.000Z',
     approvedBy: 'approver-1',
+    updatedAt: null,
     state: 'active',
     effectiveStartDate: '2026-09-08',
     days: 3,
