@@ -56,7 +56,7 @@ const settle=async fn=>{for(let i=0;i<100;i++){if(fn())return;await page.waitFor
 try{
  await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
- assert.match(await page.locator('body').innerText(),/Mio V305/)
+ assert.equal(await page.getByText('Mio V317 (ad workspace + bulk review)',{exact:true}).count(),1,'Current app identity appears exactly once')
  for(const text of ['Matter status (All of 8)','Case status (All of 3)','Case type (All of 4)'])assert.equal(await page.getByText(text,{exact:true}).count(),1)
  await page.getByText('Case type (All of 4)',{exact:true}).click()
  const filter=page.locator('.mio-block-filter').filter({hasText:'Case type'})
