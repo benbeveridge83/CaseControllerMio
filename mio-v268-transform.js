@@ -17,7 +17,7 @@ export default function mioV268Transform() {
     enforce: 'pre',
     transform(source, id) {
       if (!id.includes('/src/App.jsx')) return null
-      let code = source
+      let code = source.replaceAll("\r\n", "\n")
 
       code = replaceRequired(code, "const MIO_APP_VERSION = 'Mio V267'", "const MIO_APP_VERSION = 'Mio V268'", 'V267 version constant')
 

@@ -1,0 +1,11 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import {applyAdsWorkspace} from '../mio-v317-ads-workspace.js'
+import {applyKeywordLab} from '../mio-v318-keyword-lab.js'
+import v268 from '../mio-v268-transform.js'
+import {isLinked} from '../src/ads/keyword-ui.js'
+test('console contains one Keyword Lab replacing both legacy panes and remains idempotent',()=>{const source=fs.readFileSync('src/App.jsx','utf8'),result=applyKeywordLab(applyAdsWorkspace(source));assert.equal((result.match(/\['keyword_lab', 'Keyword Lab'\]/g)||[]).length,1);assert.ok(!result.includes("['search_terms', 'Search Terms']"));assert.ok(!result.includes("['keywords', 'Keywords']"));assert.ok(result.includes("['negatives', 'Negative Keywords']"));assert.ok(result.includes('<MioAdsWorkspace mode="ads"'));assert.equal(applyKeywordLab(result),result);assert.throws(()=>applyKeywordLab('changed anchors'),/refusing partial/)} )
+test('keyword attribution uses supplied identity and scopes bare criterion IDs',()=>{const keyword={criterionResourceName:'customers/1/adGroupCriteria/4~7',criterionId:'7',adGroupId:'4',campaignId:'12'};assert.equal(isLinked({triggeringKeywordResourceName:keyword.criterionResourceName},keyword),true);assert.equal(isLinked({triggeringCriterionId:'7',adGroupId:'5',campaignId:'12'},keyword),false);assert.equal(isLinked({triggeringKeyword:'same text'},keyword),false)})
+test('V268 strict transform handles Windows and Unix line endings identically',()=>{const source=fs.readFileSync('src/App.jsx','utf8').replaceAll('\r\n','\n');assert.equal(v268().transform(source,'/src/App.jsx').code,v268().transform(source.replaceAll('\n','\r\n'),'/src/App.jsx').code)})
+test('Keyword Lab preferences use a separate Supabase column under existing RLS',()=>{const sql=fs.readFileSync('supabase/migrations/20260913200000_keyword_lab_preferences.sql','utf8');assert.match(sql,/alter table public.mio_ads_preferences/);assert.match(sql,/keyword_lab jsonb/);const client=fs.readFileSync('src/ads/client.js','utf8');assert.match(client,/select\('keyword_lab'\)/);for(const file of ['KeywordLab.jsx','FindKeywords.jsx','Experiments.jsx','ReviewBasket.jsx'])assert.doesNotMatch(fs.readFileSync(`src/ads/${file}`,'utf8'),/localStorage/)})

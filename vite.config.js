@@ -1,3 +1,4 @@
+import keywordLab from './mio-v318-keyword-lab.js'
 import adsWorkspace from './mio-v317-ads-workspace.js'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -45,6 +46,16 @@ import financeReview from './mio-v314-finance-review.js'
 import mioV315GoogleAdsRemovedConversions from './mio-v315-google-ads-removed-conversions.js'
 import mioBrowserSyntaxCheck from './mio-browser-syntax-check.js'
 
+// Generated snippets may use CRLF on Windows; keep strict multiline anchors portable.
+function normalizeTransformInput(plugin) {
+  if (plugin.name?.startsWith('mio-') && typeof plugin.transform === 'function') {
+    const transform = plugin.transform
+    plugin.transform = function(source, ...args) {
+      return transform.call(this, source.replaceAll('\r\n', '\n'), ...args)
+    }
+  }
+  return plugin
+}
 export default defineConfig({
-  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), mioV301StartupSettings(), mioV302PartyPronouns(), mioV303WithdrawalNextAction(), mioV304WithdrawalInline(), mioV3042WithdrawalSimpleComplete(), mioV3043WithdrawalGlance(), mioV3044WithdrawalFlow(), mioV305WorkflowBlocks(), mioV306WithdrawalGraphTable(), mioV307Compat(), mioV307DropboxDraftSources(), mioV308ServiceInboxFixes(), mioV309ServiceEserviceBatch(), mioV309ReleaseLabel(), mioV310MailformSnailMail(), mioV311WithdrawalRowControls(), nativeMatters(), stickyFilters(), discoveryCompact(), pncDailyTrust(), financeReview(), mioV315GoogleAdsRemovedConversions(), adsWorkspace(), react(), mioBrowserSyntaxCheck()],
+  plugins: [mioV268Transform(), mioV268Hotfix(), mioV272DraftingFormatting(), mioV274DraftingLayout(), mioV275DraftingEditor(), mioV276AutofillPicker(), mioV277CloudPersistence(), mioV278DraftingComponents(), mioV279WithdrawalDashboard(), mioV280DraftingDocumentSetup(), mioV281DraftingBlocks(), mioV283WithdrawalClarity(), mioV284DraftingStructuralDelete(), mioV287DraftingReadiness(), mioV291DraftingCleanUi(), mioV292DraftingNonblocking(), mioV293TemplateMatterTest(), mioV294TemplateOpenDownloadFix(), mioV295BindingReanchor(), mioV300TemplateRepair(), mioV301StartupSettings(), mioV302PartyPronouns(), mioV303WithdrawalNextAction(), mioV304WithdrawalInline(), mioV3042WithdrawalSimpleComplete(), mioV3043WithdrawalGlance(), mioV3044WithdrawalFlow(), mioV305WorkflowBlocks(), mioV306WithdrawalGraphTable(), mioV307Compat(), mioV307DropboxDraftSources(), mioV308ServiceInboxFixes(), mioV309ServiceEserviceBatch(), mioV309ReleaseLabel(), mioV310MailformSnailMail(), mioV311WithdrawalRowControls(), nativeMatters(), stickyFilters(), discoveryCompact(), pncDailyTrust(), financeReview(), mioV315GoogleAdsRemovedConversions(), adsWorkspace(), keywordLab(), react(), mioBrowserSyntaxCheck()].map(normalizeTransformInput),
 })
