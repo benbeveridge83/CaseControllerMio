@@ -1,7 +1,7 @@
-name: Ads workspace V317
+name: Ads workspace and Keyword Lab
 on:
   push:
-    branches: [feat/ads-workspace-v317, main]
+    branches: [feat/ads-workspace-v317, feat/keyword-lab-v318, main]
   pull_request:
     branches: [main]
 permissions:
@@ -20,12 +20,13 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Model, service, authorization, integration and regression tests
-        run: node --test tests/ads-workspace*.test.js tests/google-ads*.test.js tests/formspree.test.js
+        run: node --test tests/*.test.js
       - name: Browser approval, filtering and editor tests
         run: |
           export CHROMIUM_PATH="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           test -n "$CHROMIUM_PATH"
           node tests/ads-workspace-browser.mjs
+          node tests/keyword-lab-browser.mjs
       - name: Production build
         run: npm run build
       - uses: actions/upload-artifact@v4
