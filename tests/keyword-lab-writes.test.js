@@ -90,3 +90,42 @@ test('uncertain replacement reports both freshly observed criterion states',asyn
 test('unreadable Google response retains its request ID for uncertain write reconciliation',async()=>{await assert.rejects(googleAdsPost('offline','customers/123/adGroupCriteria:mutate',{},async()=>({headers:{get:()=> 'unreadable-request-id'},text:async()=>'{broken'})),error=>error.requestId==='unreadable-request-id'&&!error.googlePayload)})
 test('a cloud checkpoint failure preserves confirmed create and prevents replacement pause',async()=>{const f=fixture(),save=f.deps.db.update;let rejected=false;f.deps.db.update=async(id,patch)=>{if(!rejected&&patch.result?.results[0]?.create?.state==='verified'){rejected=true;throw new Error('Cloud checkpoint failed')}return save(id,patch)};const r=await f.apply([await f.change()]);assert.equal(r.results[0].create.state,'verified');assert.equal(r.results[0].create.requestId,'create');assert.equal(f.live().length,1);assert.equal(f.keywords[0].status,'ENABLED');assert.match(r.historyWarning,/Cloud history/);assert.equal(r.status,'unverified')})
 test('reconciliation cannot overwrite an approval that may still be executing',async()=>{const f=fixture(),r=await f.apply([add]),event=[...f.entries.values()].find(e=>e.id===r.eventId);delete event.result.appliedAt;await assert.rejects(f.service.keywordVerify({eventId:r.eventId}),/processing|executing/i)})
+test('lost activation response reconciliation preserves newer experiment lifecycle states',async()=>{
+ for(const laterState of ['paused','promoted_to_core','ended']){
+  const f=fixture(),save=f.deps.db.updateKeywordExperiment;let lost=false,activationWrites=0
+  f.deps.db.updateKeywordExperiment=async(...args)=>{const saved=await save(...args);if(args[1].state==='active'){activationWrites++;if(!lost){lost=true;throw new Error('Activation committed but response was lost')}}return saved}
+  const applied=await f.apply([{...add,kind:'add_experimental_keyword'}]),experiment=[...f.experiments.values()][0]
+  assert.equal(applied.results[0].experiment.state,'unverified');assert.equal(experiment.state,'active')
+  experiment.state=laterState
+  const verified=await f.service.keywordVerify({eventId:applied.eventId})
+  assert.equal(experiment.state,laterState);assert.equal(activationWrites,1);assert.equal(verified.results[0].experiment.state,'persisted');assert.equal(verified.status,'verified');assert.equal(f.live().length,1)
+ }
+})
+test('activation recovery uses a conditional pending-state update and respects a newer concurrent state',async()=>{
+ const f=fixture({metadataFail:true}),applied=await f.apply([{...add,kind:'add_experimental_keyword'}]),experiment=[...f.experiments.values()][0]
+ f.options.metadataFail=false;experiment.updated_at='2026-09-13T12:00:01Z'
+ const save=f.deps.db.updateKeywordExperiment
+ f.deps.db.updateKeywordExperiment=async(id,patch,expected)=>{
+  if(patch.state==='active'){
+   assert.deepEqual(expected,{state:'approved',updatedAt:'2026-09-13T12:00:01Z'})
+   Object.assign(experiment,{...patch,state:'paused',updated_at:'2026-09-13T12:00:02Z'})
+   return null // the guarded UPDATE lost to the other activation + pause
+  }
+  return save(id,patch,expected)
+ }
+ const verified=await f.service.keywordVerify({eventId:applied.eventId})
+ assert.equal(experiment.state,'paused');assert.equal(verified.results[0].experiment.state,'persisted');assert.equal(verified.status,'verified')
+})
+test('a failed required pre-send checkpoint halts all later items even when cloud writes recover',async()=>{
+ const f=fixture(),save=f.deps.db.update;let rejected=false
+ f.deps.db.update=async(id,patch)=>{if(!rejected&&patch.result.results[0].create.attemptedAt&&!patch.result.results[0].create.requestId){rejected=true;throw new Error('Required pre-send checkpoint unavailable')}return save(id,patch)}
+ const result=await f.apply([add,{...add,id:'two',keyword:'second keyword'}])
+ assert.equal(rejected,true);assert.equal(f.live().length,0);assert.equal(result.results[0].create.state,'failed');assert.equal(result.results[1].create.state,'pending');assert.match(result.historyWarning,/Cloud history/)
+})
+test('change-match on a paused original creates and verifies a paused replacement without enabling either criterion',async()=>{
+ const f=fixture();f.keywords[0].status='PAUSED'
+ const result=await f.apply([await f.change()]),posts=f.calls.filter(c=>c.type==='post')
+ assert.equal(result.status,'verified');assert.deepEqual(posts.map(c=>c.body.validateOnly),[true,true,false,false]);assert.equal(posts[0].body.operations[0].create.status,'PAUSED');assert.equal(posts[2].body.operations[0].create.status,'PAUSED')
+ assert.equal(result.results[0].create.observed.status,'PAUSED');assert.equal(result.results[0].pause.observed.status,'PAUSED');assert.deepEqual(f.keywords.map(k=>k.status),['PAUSED','PAUSED'])
+ const createAt=f.calls.indexOf(posts[2]),pauseAt=f.calls.indexOf(posts[3]);assert.ok(f.calls.slice(createAt+1,pauseAt).some(c=>c.q?.includes("resource_name = 'customers/123/adGroupCriteria/4~8'")))
+})
