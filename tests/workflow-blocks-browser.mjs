@@ -56,8 +56,8 @@ const settle=async fn=>{for(let i=0;i<100;i++){if(fn())return;await page.waitFor
 try{
  await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
- assert.match(await page.locator('body').innerText(),/Mio V305/)
- for(const text of ['Matter status (All of 8)','Case status (All of 3)','Case type (All of 4)'])assert.equal(await page.getByText(text,{exact:true}).count(),1)
+ assert.equal(await page.getByText('Mio V317 (ad workspace + bulk review)',{exact:true}).count(),1,'Current app identity appears exactly once')
+ for(const text of ['Matter status (All of 8)','Case status (2 of 3)','Case type (All of 4)'])assert.equal(await page.getByText(text,{exact:true}).count(),1)
  await page.getByText('Case type (All of 4)',{exact:true}).click()
  const filter=page.locator('.mio-block-filter').filter({hasText:'Case type'})
  await filter.getByRole('button',{name:'Clear all',exact:true}).click()
@@ -121,7 +121,7 @@ try{
  await page.getByRole('button',{name:'Return to withdrawal row',exact:true}).click()
  await detail().waitFor()
  console.log('PASS actual connected DOCX template generation; no implicit completion')
- async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.getByLabel('Saved matter document',{exact:true}).innerText(),/Beta-private/);await modal.getByLabel('Saved matter document',{exact:true}).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
+ async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.getByLabel(/^Saved matter document/).innerText(),/Beta-private/);await modal.getByLabel(/^Saved matter document/).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
  await attach('Draft motion to withdraw','pdf-a')
  await attach('Draft withdrawal order','order-a')
  await detail().getByRole('button',{name:'Approve & complete step',exact:true}).click()
