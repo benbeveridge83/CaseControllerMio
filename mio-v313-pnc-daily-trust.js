@@ -1,6 +1,6 @@
 function once(code,from,to,label){if(code.split(from).length!==2)throw Error('V313 anchor changed: '+label);return code.replace(from,()=>to)}
 export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',enforce:'pre',transform(source,id){if(!id.split('?')[0].replaceAll('\\','/').endsWith('/src/App.jsx'))return null
- let code="import MioDailyTrust from './MioDailyTrust.jsx'\nimport {dailyTrustSummary,firmDate} from './mioDailyTrust.js'\nimport {useMioPnc,MioPncRow,MioPncModal,MioPncSettings} from './MioPnc.jsx'\nimport {pncStage} from './mioPncModel.js'\n"+source
+ let code="import MioFormspree from './MioFormspree.jsx'\nimport MioDailyTrust from './MioDailyTrust.jsx'\nimport {dailyTrustSummary,firmDate} from './mioDailyTrust.js'\nimport {useMioPnc,MioPncRow,MioPncModal,MioPncSettings} from './MioPnc.jsx'\nimport {pncStage} from './mioPncModel.js'\n"+source
  const hook=`  const mioPnc = useMioPnc({session,enabled:page==='matters'||page==='settings',matters,clients,refreshMatters:fetchMatters,refreshClients:fetchClients,graphFetch,supabase,onFinanceRefresh:()=>loadLawPayWorkspace({force:true}),onCalendarSaved:row=>setEvents(old=>[...old.filter(e=>e.id!==row.id),row]),intakeTemplates:draftingIntakeTemplates})
   const [dailyCoverageFinanceReady,setDailyCoverageFinanceReady]=useState(false)
   const [dailyCoverageFinanceError,setDailyCoverageFinanceError]=useState('')
@@ -55,9 +55,13 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  code=once(code,`                          <tr>
                             <MatterPageCells matter={matter} />
                           </tr>
-                          {renderMatterStepsRow(matter)}`,`                          {pncStage(matter) ? <MioPncRow matter={matter} workflow={mioPnc.rows[matter.id]} control={mioPnc} colSpan={shownMatterColumns().length+2} /> : <><tr><MatterPageCells matter={matter} /></tr>{renderMatterStepsRow(matter)}</>}`,'special rows')
+                          {renderMatterStepsRow(matter)}`,`                          {pncStage(matter) ? <MioPncRow matter={matter} workflow={mioPnc.rows[matter.id]} control={mioPnc} onEdit={editMatter} colSpan={shownMatterColumns().length+2} /> : <><tr><MatterPageCells matter={matter} /></tr>{renderMatterStepsRow(matter)}</>}`,'special rows')
  code=once(code,"              <button onClick={() => setSettingsTab('drafting')}","              <button onClick={() => setSettingsTab('pnc')} style={{marginRight:10,fontWeight:settingsTab==='pnc'?'bold':'normal'}}>PNC workflow</button>\n              <button onClick={() => setSettingsTab('drafting')}",'settings tab')
  code=once(code,"            {settingsTab === 'drafting' && renderDraftingSettings()}","            {settingsTab === 'pnc' && <MioPncSettings control={mioPnc} />}\n            {settingsTab === 'drafting' && renderDraftingSettings()}",'settings panel')
  code=once(code,'Mio V312 (native matters + saved filters)','Mio V313 (daily trust + PNC workflow)','release')
+ code=once(code,"  { value: 'service_inbox', label: 'Service Inbox' },","  { value: 'formspree', label: 'Formspree' },\n  { value: 'service_inbox', label: 'Service Inbox' },","Formspree navigation")
+ code=once(code,"        {canOpenPage('service_inbox') && (","        {canOpenPage('formspree') && <a href=\"#formspree\" onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;e.preventDefault();setPage('formspree')}} style={{display:'block',marginBottom:10}}>Formspree</a>}\n        {canOpenPage('service_inbox') && (","Formspree navigation")
+ code=once(code,"        {page === 'service_inbox' &&","        {page === 'formspree' && canOpenPage('formspree') && <MioFormspree />}\n        {page === 'service_inbox' &&","Formspree navigation")
+ code=once(code,"  function editMatter(matter) {","  useEffect(()=>{\n    const inbox=()=>setPage('formspree')\n    const matter=async e=>{const {data,error}=await supabase.from('matters').select('*,clients(*)').eq('id',e.detail).single();if(error){window.alert(error.message);return}setPage('matters');editMatter(data)}\n    window.addEventListener('mio-open-formspree',inbox)\n    window.addEventListener('mio-open-matter',matter)\n    return()=>{window.removeEventListener('mio-open-formspree',inbox);window.removeEventListener('mio-open-matter',matter)}\n  },[session?.user?.id])\n\n  function editMatter(matter) {","Formspree navigation")
  return {code,map:null}
 }}}

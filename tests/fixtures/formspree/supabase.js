@@ -1,0 +1,5 @@
+export const lead={id:'lead-test',status:'new',submitted_at:'2026-09-16T16:19:00Z',raw_submission:{form:'example',submission:{name:'Example Person',email:'example@example.invalid',phone:'22577314442','family-type':'Protective Order',county:'Harris',deadline:'09/29/2026','opposing-party':'Other Person',message:'Synthetic inquiry for browser verification.'}}}
+export const types=[{name:'Other'},{name:'Divorce'},{name:'SAPCR/Modification'}]
+export const calls=[]
+class Query{constructor(table){this.table=table}select(){return this}eq(){return this}ilike(){return this}in(){return this}order(){return this}range(){return this}limit(){return this}update(p){Object.assign(lead,p);return this}then(fn){return Promise.resolve({data:this.table==='mio_formspree_leads'?[lead]:this.table==='setting_options'?types:[],error:null}).then(fn)}}
+export const supabase={from:t=>new Query(t),rpc:async(name,args)=>{calls.push({name,args});lead.matter_id='matter-test';lead.status='converted';return {data:{matter:{id:'matter-test'}},error:null}}}
