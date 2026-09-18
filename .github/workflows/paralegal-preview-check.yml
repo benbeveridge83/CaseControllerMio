@@ -2,6 +2,14 @@ name: Paralegal preview checks
 on:
   push:
     branches: [feature/paralegal-need-to-set-foundation-20260917]
+    paths:
+      - 'src/paralegal/**'
+      - 'tests/paralegal*'
+      - 'src/main.jsx'
+      - 'api/paralegal.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/paralegal-preview-check.yml'
   pull_request:
     paths:
       - 'src/paralegal/**'
@@ -23,23 +31,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Inspect Need to Set integration points (source code only)
-        run: |
-          node --input-type=module <<'NODE'
-          import {readFileSync} from 'node:fs';
-          const text=readFileSync('src/App.jsx','utf8');
-          for(const token of ['caseMioNeedToSetStepData','needToSetRows','needToSetSteps','needToSetActivities','caseMioSettingWorkspaces']){
-            const at=text.indexOf(token);
-            console.log('\nSOURCE EXCERPT: '+token+'\n'+(at<0?'Not found':text.slice(Math.max(0,at-600),at+1800)));
-          }
-          NODE
-      - name: Run focused tests when present
-        run: |
-          node --input-type=module <<'NODE'
-          import {readdirSync} from 'node:fs';
-          import {spawnSync} from 'node:child_process';
-          const tests=readdirSync('tests').filter(f=>/^paralegal.*\.test\.mjs$/.test(f)).map(f=>'tests/'+f);
-          if(!tests.length){console.log('Foundation tests not committed yet.');process.exit(0)}
-          const result=spawnSync(process.execPath,['--test',...tests],{stdio:'inherit'});
-          process.exit(result.status??1);
-          NODE
+      - name: Check controller syntax
+        run: node --check src/paralegal/need-to-set-controller.mjs
+      - name: Require all Paralegal behavior tests
+        run: node --test tests/paralegal*.test.mjs
+      - name: Install locked application dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify the application still builds
+        run: npm run build
