@@ -19,3 +19,10 @@ test('Paralegal panel presents a read-only Need to Set conversation surface', ()
   assert.match(source,/Ask about Need to Set/i)
   assert.match(source,/askParalegal/)
 })
+
+test('Paralegal import preserves the existing Vite checklist repair import anchor', () => {
+  const source = readFileSync(new URL('../src/App.jsx', import.meta.url),'utf8')
+  const anchor = "import { createPortal } from 'react-dom'\nimport { supabase } from './supabaseClient'\nimport * as XLSX from 'xlsx'\n\nconst MIO_APP_VERSION = 'Mio V267'"
+  assert.match(source, /import React[^\n]+\nimport ParalegalPanel from '.\/paralegal\/ParalegalPanel\.jsx'\nimport \{ createPortal \} from 'react-dom'/)
+  assert.equal(source.includes(anchor), true)
+})
