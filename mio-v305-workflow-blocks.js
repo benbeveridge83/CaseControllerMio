@@ -35,7 +35,7 @@ export default function mioV305WorkflowBlocks(){return{name:'mio-v305-workflow-b
  code=once(code,"const matter=matters.find(item=>String(item.id)===String(matterId)),step=WITHDRAWAL_STEPS.find(item=>item.id===stepId)","const matter=matters.find(item=>String(item.id)===String(matterId)),step=mioWithdrawalStore.getSnapshot().rows[String(matterId)]?.state?.definition?.steps.find(item=>item.id===stepId)||WITHDRAWAL_STEPS.find(item=>item.id===stepId)",'custom email contexts')
  code=once(code,'  function renderWithdrawalsPage() {',bridge+'\n  function renderWithdrawalsPage() {','action adapters')
  code=once(code,'return <WithdrawalDashboard rows={rows}','return <WithdrawalBlocksDashboard rows={rows}','live dashboard')
- code=once(code,'settings={renderMioDraftingDefaults()} legacy={null}','onSaveDrafting={mioSaveDraftingDefaults} optionLists={{matter_status:options("matter_status"),case_status:options("case_status"),case_type:options("matter_type")}} onAction={mioWdBlockAction} getPeople={mioWdBlockPeople}','withdrawal-only settings')
+ code=once(code,'settings={renderMioDraftingDefaults()} legacy={null}',`onSaveDrafting={mioSaveDraftingDefaults} optionLists={{matter_status:options("matter_status"),case_status:options("case_status"),case_type:options("matter_type")}} onAction={mioWdBlockAction} onEditMatter={matterId=>{const matter=matters.find(item=>String(item.id)===String(matterId));if(matter)editMatter(matter)}} getPeople={mioWdBlockPeople}`,'withdrawal-only settings')
  code=once(code,'financeRows={mioWdFinanceRows()}','getFinanceRows={mioWdFinanceRows}','selected metric data')
  return{code,map:null}
 }}}
