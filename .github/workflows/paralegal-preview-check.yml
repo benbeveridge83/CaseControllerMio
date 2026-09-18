@@ -28,6 +28,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Archive source for Paralegal integration inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: paralegal-source
+          retention-days: 1
+          include-hidden-files: false
+          path: |
+            src/
+            api/
+            lib/
+            tests/
+            package.json
+            package-lock.json
+            vite.config.js
+            vercel.json
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
