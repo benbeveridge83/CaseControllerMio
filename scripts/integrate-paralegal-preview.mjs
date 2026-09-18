@@ -6,7 +6,7 @@ if (source.includes("import ParalegalPanel from './paralegal/ParalegalPanel.jsx'
   console.log('Paralegal panel is already integrated in App.jsx')
   process.exit(0)
 }
-const importNeedle="import * as XLSX from 'xlsx'\n"
+const importNeedle="import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'\n"
 const functionNeedle="  function checklistWorkspaceContextForEvent(event = {}) {\n"
 const renderNeedle="            <div style={{ display:'flex', gap:6, marginBottom:12, borderBottom:'1px solid #cbd5e1' }}><button type=\"button\" onClick={()=>setNeedToSetPageTab('current')}"
 for (const needle of [importNeedle,functionNeedle,renderNeedle]) {
