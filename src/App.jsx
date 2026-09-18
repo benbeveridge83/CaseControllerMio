@@ -1,4 +1,5 @@
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import ParalegalPanel from './paralegal/ParalegalPanel.jsx'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
@@ -11516,6 +11517,28 @@ function App() {
     const timing = step ? needToSetStepTiming({ type: 'checklist', event, eventId }, step, stepIndex, steps) : { days: null, color: '#e5e7eb' }
     const timeStatus = needToSetLastTimeEntryStatus(event)
     return { ...timing, rowDays, rowColor, stepDays: timing.days, stepColor: timing.color, stepName: step?.name || 'No step selected', timeDays: timeStatus.days, timeColor: timeStatus.color, lastTimeEntryAt: timeStatus.lastAt }
+  }
+
+  function needToSetParalegalSnapshot() {
+    return filteredChecklistEvents('need_date').map((event) => {
+      const matter = checklistMatterForEvent(event) || {}
+      const status = currentNeedToSetStatus(event)
+      const record = settingCenterRecord(event)
+      return {
+        id: checklistNeedToSetRowId(event),
+        matterId: matter.id || event.matter_id || '',
+        matterName: checklistMatterLabel(event),
+        clientName: matterClientName(matter),
+        category: checklistEventCategoryLabel(event),
+        stage: settingCenterStageLabel(record.stage),
+        waitingOn: record.waiting_on || 'You',
+        currentStep: status.stepName,
+        latestUpdate: record.latest_update || '',
+        nextAction: settingCenterStageLabel(record.stage),
+        ageDays: status.rowDays,
+        hasNewEmail: needToSetEventHasNewEmail(event)
+      }
+    })
   }
 
   function checklistWorkspaceContextForEvent(event = {}) {
@@ -59754,6 +59777,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed. Connected Outlook threads refresh automatically when this page opens.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
             <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-start',margin:'10px 0 14px'}}><ChecklistCheckboxFilter kind="case" title="Case Status"/><ChecklistCheckboxFilter kind="matter" title="Matter Status"/><ChecklistCheckboxFilter kind="category" title="Case Type / Event Category"/></div>
+            <ParalegalPanel getSnapshot={needToSetParalegalSnapshot} />
             <div style={{ display:'flex', gap:6, marginBottom:12, borderBottom:'1px solid #cbd5e1' }}><button type="button" onClick={()=>setNeedToSetPageTab('current')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='current'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='current'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='current'?900:700}}>Current View</button><button type="button" onClick={()=>setNeedToSetPageTab('activities')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='activities'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='activities'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='activities'?900:700}}>Activities (Trial)</button></div>
             {needToSetPageTab==='activities' ? renderNeedToSetActivitiesPage() : renderNeedToSetCardDashboard()}
           </>
