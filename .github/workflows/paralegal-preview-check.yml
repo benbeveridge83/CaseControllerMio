@@ -4,19 +4,24 @@ on:
     branches: [feature/paralegal-need-to-set-foundation-20260917]
     paths:
       - 'src/paralegal/**'
+      - 'lib/paralegal/**'
       - 'tests/paralegal*'
+      - 'src/App.jsx'
       - 'src/main.jsx'
       - 'api/paralegal.js'
+      - 'scripts/integrate-paralegal-preview.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/paralegal-preview-check.yml'
   pull_request:
     paths:
       - 'src/paralegal/**'
+      - 'lib/paralegal/**'
       - 'tests/paralegal*'
-      - '.github/workflows/paralegal-preview-check.yml'
+      - 'src/App.jsx'
+      - 'api/paralegal.js'
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: paralegal-preview-${{ github.ref }}
   cancel-in-progress: true
@@ -27,30 +32,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
-      - name: Archive source for Paralegal integration inspection
-        uses: actions/upload-artifact@v4
-        with:
-          name: paralegal-source
-          retention-days: 1
-          include-hidden-files: false
-          path: |
-            src/
-            api/
-            lib/
-            tests/
-            package.json
-            package-lock.json
-            vite.config.js
-            vercel.json
+          persist-credentials: true
+      - name: Integrate panel into Need to Set on the isolated feature branch
+        if: github.event_name == 'push'
+        run: node scripts/integrate-paralegal-preview.mjs
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Check controller syntax
-        run: node --check src/paralegal/need-to-set-controller.mjs
+      - name: Check Paralegal server modules
+        run: |
+          node --check src/paralegal/need-to-set-controller.mjs
+          node --check src/paralegal/need-to-set-snapshot.js
+          node --check src/paralegal/paralegal-client.js
+          node --check lib/paralegal/auth.js
+          node --check lib/paralegal/claude.js
+          node --check api/paralegal.js
       - name: Require all Paralegal behavior tests
         run: node --test tests/paralegal*.test.mjs
       - name: Install locked application dependencies
         run: npm ci --ignore-scripts
       - name: Verify the application still builds
         run: npm run build
+      - name: Commit verified App integration to the feature branch
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet -- src/App.jsx; then
+            echo "App.jsx already contains the Paralegal integration."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.jsx
+          git commit -m "Integrate Claude Paralegal panel into Need to Set"
+          git push
