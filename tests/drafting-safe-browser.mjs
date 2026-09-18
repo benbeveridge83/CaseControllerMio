@@ -58,10 +58,10 @@ async function open(hash='settings'){
   return respond(single?null:[])
  })
  await page.goto('http://127.0.0.1:4173/?safe-test='+Date.now()+'#'+hash,{waitUntil:'domcontentloaded'})
- await page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:60000})
+ await page.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:60000})
 }
 async function builder(){
- await page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:60000})
+ await page.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:60000})
  if(!await page.getByRole('heading',{name:'Mio Drafting Studio',exact:true}).count()){
   const drafting=page.getByRole('button',{name:/Drafting/,exact:false});if(!await drafting.count())throw new Error('Drafting navigation not found: '+(await page.getByRole('button').allTextContents()).join('|'));await drafting.first().click()
  }

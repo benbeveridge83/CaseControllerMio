@@ -1,17 +1,39 @@
-import {readMioCloudRows} from './mioCloudRead.js'
+import {readMioCloudRows,cloudReadRequest} from './mioCloudRead.js'
+import {rebaseFilterValue} from './mioStickyFilterValues.js'
+// Explicit allowlist: never infer that a business record is safe to overwrite.
+const displayKeys=new Set(['caseMioWithdrawalViewV305','caseMioChecklistStepsExpandedByRow','caseMioMatterStepsExpandedByRow','caseMioNeedToSetTocCollapsed','caseMioNeedToSetTocDock','caseMioNeedToSetPageTab','caseMioChecklistNeedToSetSortMode','caseMioChecklistViewMode','caseMioChecklistTimelineMonths','caseMioChecklistTimelineGroupBy','caseMioChecklistTimelineSettingsOpen','caseMioChecklistTimelineDetailsOpen','caseMioChecklistTimelineVisibleSettings','caseMioChecklistDayGridShowEmptyDays','caseMioChecklistDayGridRowHeight','caseMioOrderExpandedIds','visibleMatterColumns','matterColumnWidths'])
+const isDisplayKey=key=>key.startsWith('caseMioStickyFilter:')||displayKeys.has(key)
+const preferenceJson=value=>{try{return JSON.stringify(JSON.parse(value))}catch{return JSON.stringify(value)}}
 // Supabase is durable storage; values awaiting acknowledgement exist only in RAM.
 const otherKeys = new Set(['matterColumnWidths','matterExternalEfileUrl','matterPageFilterCaseStatus','matterPageFilterCaseType','matterPageFilterMatterStatus','matterPageSearch','serviceInboxFilter','serviceInboxFolderFilter','serviceInboxMailboxFilter','serviceInboxPhase','serviceInboxPreviewMode','serviceInboxRowDensity','serviceInboxSortMode','serviceInboxViewMode','showMatterStepsOnMatterPage','showUnpopulatedMatterStatuses','taskSubpartCompletions','visibleMatterColumns'])
 export const isNativeKey = key => /^(sb-|msal\.|murski-auth-token$|caseMioSupabaseSessionV1$|caseMioBackgroundLeaseV258:)/i.test(key) || /supabase\.auth\.token|login\.windows\.net|microsoftonline|msal/i.test(key)
 export const isAppKey = key => typeof key === 'string' && !isNativeKey(key) && (/^(caseMio|caseController)/.test(key) || otherKeys.has(key) || /^(taskTemplateSubparts|taskMarkReviewWhen|taskPriority):/.test(key))
 const raw = row => row.raw_value != null ? String(row.raw_value) : typeof row.json_value === 'string' ? row.json_value : JSON.stringify(row.json_value ?? null)
 export function createMioCloudStore({client, nativeStorage, origin='', delay=350, getCachedRows=async()=>[]}) {
-  const listeners=new Set(), accounts=new Map()
+  const listeners=new Set(), savedListeners=new Set(), accounts=new Map()
   let current=null, generation=0, version=0, notifying=false, loadController=null
   const notify=()=>{version++;if(!notifying){notifying=true;queueMicrotask(()=>{notifying=false;listeners.forEach(fn=>fn())})}}
   const nativeKeys=()=>{const out=[];for(let i=0;i<nativeStorage.length;i++){const key=nativeStorage.key(i);if(key)out.push(key)}return out}
   const check=s=>{if(current!==s)throw new Error('Account changed; this operation was stopped.')}
   const ready=()=>{if(current?.phase!=='ready')throw new Error('Cloud data is not ready. This change has not been saved.');return current}
-  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',loadProgress:current?.loadProgress||null,pending:current?.pending.size||0,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
+  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',loadProgress:current?.loadProgress||null,pending:current?.pending.size||0,pendingKeys:[...(current?.pending.keys()||[])],conflictKeys:[...(current?.conflicts||[])],remoteChanged:!!current?.remoteChanged,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
+  async function checkRemoteChanges(){
+    if(current?.phase!=='ready')return false
+    const s=current,revision=s.savedRevision||0,remote=new Map()
+    for(let offset=0;;offset+=100){
+      const rows=await cloudReadRequest(()=>client.from('case_mio_user_state').select('key,updated_at').eq('user_id',s.id).order('key').range(offset,offset+99))
+      check(s)
+      for(const row of rows)if(isAppKey(row.key))remote.set(row.key,row.updated_at)
+      if(rows.length<100)break
+    }
+    if(s.phase!=='ready'||revision!==(s.savedRevision||0))return false
+    s.remoteChanged=!!s.resolvedKeys?.size||remote.size!==s.baseline.size||[...remote].some(([key,at])=>s.baseline.get(key)?.updated_at!==at)
+    notify();return s.remoteChanged
+  }
+  async function readKey(s,key){
+    const rows=await readMioCloudRows(client,s.id,{isAppKey:k=>k===key})
+    check(s);return rows[0]
+  }
   async function read(id, options = {}) {
     const rows=await readMioCloudRows(client,id,{isAppKey,...options})
     return rows.map(row=>({...row,raw_value:raw(row)}))
@@ -46,6 +68,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     const s=current
     if(!s || !['ready','preserving'].includes(s.phase))throw new Error('Cloud data is not ready.')
     key=String(key)
+    if(s.resolvedKeys?.has(key))throw new Error('Reload the workspace before editing an item resolved to its cloud version.')
     if(!isAppKey(key))throw new Error('Unregistered application storage key.')
     const text=deleting?null:String(value??'')
     if(deleting)s.values.delete(key);else s.values.set(key,text)
@@ -54,7 +77,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     if(!previous&&(deleting?!s.baseline.has(key):s.baseline.get(key)?.raw_value===text))return null
     const change={raw:text,deleting};s.pending.set(key,change);notify();schedule(s);return change
   }
-  async function write(s,key) {
+  async function write(s,key,retry=0) {
     check(s)
     if(s.phase!=='ready')throw new Error('Cloud saving is paused.')
     const change=s.pending.get(key)
@@ -62,8 +85,21 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     if(s.conflicts.has(key))throw new Error('Another tab changed this record. Preserve the pending edit before reloading.')
     const old=s.baseline.get(key)
     const {data,error}=await client.rpc('mio_cloud_state_write_v277',{p_user_id:s.id,p_key:key,p_raw:change.raw,p_expected_at:old?.updated_at??null,p_expected_exists:!!old,p_delete:change.deleting,p_origin:origin})
+    check(s)
     // PT409 is a permanent application-version conflict, not a retryable SQL serialization failure.
     // Keep legacy 40001 recognition while older servers/tabs finish rolling over.
+    if(error&&['PT409','40001'].includes(error.code)&&isDisplayKey(key)&&!change.deleting&&retry<2){
+      const remote=await readKey(s,key),pending=s.pending.get(key)
+      if(pending&&!pending.deleting){
+        const merged=rebaseFilterValue(old?preferenceJson(old.raw_value):null,preferenceJson(pending.raw),remote?preferenceJson(remote.raw_value):null)
+        // JSON-backed preferences remain JSON; plain strings remain plain strings.
+        let value=merged
+        try{JSON.parse(pending.raw)}catch{value=JSON.parse(merged)}
+        if(remote)s.baseline.set(key,remote);else s.baseline.delete(key)
+        s.pending.set(key,{...pending,raw:value});s.values.set(key,value);notify()
+        return write(s,key,retry+1)
+      }
+    }
     if(error){s.error=error.message||String(error);if(['PT409','40001'].includes(error.code))s.conflicts.add(key);notify();throw error}
     if(!data||(change.deleting?!data.deleted:data.raw_value!==change.raw)){
       s.error='Supabase did not acknowledge this value. Keep this tab open.';notify();throw new Error(s.error)
@@ -71,21 +107,23 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     if(change.deleting)s.baseline.delete(key);else s.baseline.set(key,{...data,json_value:null})
     if(s.pending.get(key)===change)s.pending.delete(key)
     if(!s.pending.size)s.error=''
+    s.savedRevision=(s.savedRevision||0)+1
+    for(const fn of savedListeners){try{fn({owner:s.id,key})}catch{}}
     notify()
   }
   async function flushAll() {
     if(current?.phase!=='ready')return false
     const s=current;clearTimeout(s.timer)
-    await enqueue(s,async()=>{for(const key of [...s.pending.keys()]){if(current!==s||s.phase!=='ready')break;try{await write(s,key)}catch{}}})
+    await enqueue(s,async()=>{for(const key of [...s.pending.keys()]){if(current!==s||s.phase!=='ready')break;try{await write(s,key)}catch(error){if(current===s){s.error=error.message||String(error);notify()}}}})
     return s.pending.size===0
   }
   async function saveNow(key,value,{throwOnError=false}={}) {
     try {
       const s=ready();const text=String(value??'');stage(key,text)
       await enqueue(s,()=>write(s,key))
-      if(s.baseline.get(key)?.raw_value!==text)throw new Error('A newer edit superseded this save. Review the current value before continuing.')
+      if(s.pending.has(key)||(!isDisplayKey(key)&&s.baseline.get(key)?.raw_value!==text))throw new Error('A newer edit superseded this save. Review the current value before continuing.')
       return true
-    }catch(error){if(throwOnError)throw error;return false}
+    }catch(error){if(current?.phase==='ready'&&current.pending.has(key)){current.error=error.message||String(error);notify()}if(throwOnError)throw error;return false}
   }
   const legacyEntries=()=>nativeKeys().filter(isAppKey).map(key=>({key,raw_value:nativeStorage.getItem(key)})).filter(r=>r.raw_value!=null)
   async function archive(rows,reason='legacy-browser') {
@@ -126,6 +164,20 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
       notify();return !s.pending.size
     }finally{if(current===s){s.phase='ready';notify();if(s.pending.size)schedule(s)}}
   }
+  async function useCloudVersion(key){
+    const s=ready()
+    return enqueue(s,async()=>{
+      check(s);const change=s.pending.get(key)
+      if(!change)return
+      await archive([{key,raw_value:change.deleting?JSON.stringify({mio_recovery_operation:'delete'}):change.raw}],'use-cloud-version')
+      const remote=await readKey(s,key)
+      if(s.pending.get(key)!==change)throw new Error('You edited this item during recovery. The newer edit was kept; review it before continuing.')
+      if(remote){s.values.set(key,remote.raw_value);s.baseline.set(key,remote)}else{s.values.delete(key);s.baseline.delete(key)}
+      s.pending.delete(key);s.conflicts.delete(key);if(!s.pending.size)s.error=''
+      s.resolvedKeys??=new Set();s.resolvedKeys.add(key)
+      s.remoteChanged=true;notify()
+    })
+  }
   const storage={
     getItem(key){key=String(key);return isAppKey(key)?current?.values.get(key)??null:nativeStorage.getItem(key)},
     setItem(key,value){key=String(key);if(isAppKey(key)){if(['ready','preserving'].includes(current?.phase))stage(key,value);return}if(!isNativeKey(key))throw new Error('Application data cannot be written to browser storage.');nativeStorage.setItem(key,String(value))},
@@ -136,7 +188,8 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   }
   return {storage:new Proxy(storage,{ownKeys:()=>Array.from({length:storage.length},(_,i)=>storage.key(i)),getOwnPropertyDescriptor(target,key){if(storage.getItem(key)!=null)return{enumerable:true,configurable:true,value:storage.getItem(key)};return Object.getOwnPropertyDescriptor(target,key)}}),
     prepare,activate(){if(current?.phase==='prepared'){current.phase='ready';notify();if(current.pending.size)schedule(current)}},
-    stage,saveNow,flushAll,archive,migrateLegacy,legacyEntries,preservePending,status,
+    stage,saveNow,flushAll,archive,migrateLegacy,legacyEntries,preservePending,status,checkRemoteChanges,useCloudVersion,
+    subscribeSaved(fn){savedListeners.add(fn);return()=>savedListeners.delete(fn)},
     // Deliberately excludes pending edits and credentials. Do not use records()
     // for tab handoff: that method includes unsaved working values.
     confirmedRecords:()=>['ready','prepared'].includes(current?.phase)?[...current.baseline.values()].filter(r=>isAppKey(r.key)&&typeof r.raw_value==='string').map(r=>({key:r.key,raw_value:r.raw_value,updated_at:r.updated_at})):[],

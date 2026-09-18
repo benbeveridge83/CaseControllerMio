@@ -2,22 +2,8 @@ function once(code,from,to,label){if(code.split(from).length!==2)throw new Error
 export default function stickyFilters(){return{name:'mio-v312-sticky-filters',enforce:'pre',transform(source,id){
  const path=id.split('?')[0].replaceAll('\\','/');let code=source
  if(path.endsWith('/src/mioCloudStore.js')){
-  code="import {STICKY_FILTER_PREFIX,rebaseFilterValue} from './mioStickyFilterValues.js'\n"+code
-  code=once(code,'  async function write(s,key) {','  async function write(s,key,retry=0) {','bounded preference retry')
-  const anchor="    if(error){s.error=error.message||String(error);if(['PT409','40001'].includes(error.code))s.conflicts.add(key);notify();throw error}"
-  code=once(code,anchor,`    if(error && ['PT409','40001'].includes(error.code) && (key.startsWith(STICKY_FILTER_PREFIX)||key==='caseMioWithdrawalViewV305') && !change.deleting && retry<2){
-      const {data:remote,error:readError}=await client.from('case_mio_user_state').select('key,raw_value,json_value,updated_at').eq('user_id',s.id).eq('key',key).maybeSingle()
-      check(s);if(readError)throw readError
-      const pending=s.pending.get(key)
-      if(pending&&!pending.deleting){
-        const remoteRaw=remote?raw(remote):null,merged=rebaseFilterValue(old?.raw_value,pending.raw,remoteRaw)
-        if(remote)s.baseline.set(key,{...remote,raw_value:remoteRaw});else s.baseline.delete(key)
-        s.pending.set(key,{...pending,raw:merged});s.values.set(key,merged);s.conflicts.delete(key);notify()
-        return write(s,key,retry+1)
-      }
-    }
-`+anchor,'rebase only view preferences')
-  return{code,map:null}
+  // Conflict reconciliation now lives in the tested store, not a build-only patch.
+  return null
  }
  if(path.endsWith('/src/mioWorkflowBlocks.js')){
   code="import {isClosedCaseStatus} from './mioStickyFilterValues.js'\n"+code

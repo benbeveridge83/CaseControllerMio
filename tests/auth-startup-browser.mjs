@@ -55,7 +55,7 @@ async function setup({seconds=3600,mode='ok',poisonLock=false}={}){
 async function ready(test){
  try{
   await test.page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:25000})
-  await test.page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:15000})
+  await test.page.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:15000})
   assert.deepEqual(test.errors,[])
   assert.equal(await test.page.evaluate(()=>window.__authLockRequests),0)
   assert.equal(await test.page.evaluate(()=>localStorage.getItem('unrelated-preserved')),'do-not-delete')

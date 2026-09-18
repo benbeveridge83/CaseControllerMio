@@ -95,3 +95,58 @@ test('transform disables legacy persistence, dangerous clearing, and snapshot ov
  assert.equal(out.includes("from('case_mio_user_state').upsert"),false)
  assert.throws(()=>transformMioCloudPersistence('different app'))
 })
+test('remote change detection never replaces pending work and detects deletions',async()=>{
+ const f=fixture({},[row('caseMioTest','original')]);await f.store.prepare('a');f.store.activate()
+ assert.equal(await f.store.checkRemoteChanges(),false)
+ f.rows.set('a|caseMioTest',{...row('caseMioTest','remote'),updated_at:'new'})
+ f.store.stage('caseMioTest','local')
+ assert.equal(await f.store.checkRemoteChanges(),true)
+ assert.equal(f.store.storage.getItem('caseMioTest'),'local')
+ assert.deepEqual(f.store.status().pendingKeys,['caseMioTest'])
+ assert.equal(f.store.status().remoteChanged,true)
+ f.rows.delete('a|caseMioTest');assert.equal(await f.store.checkRemoteChanges(),true)
+})
+test('conflict can be resolved to cloud only after the local edit is archived',async()=>{
+ const f=fixture({},[row('caseMioTest','original')]);await f.store.prepare('a');f.store.activate()
+ f.rows.set('a|caseMioTest',{...row('caseMioTest','remote'),updated_at:'new'})
+ await f.store.saveNow('caseMioTest','local')
+ f.faults.archive=true
+ await assert.rejects(f.store.useCloudVersion('caseMioTest'))
+ assert.equal(f.store.storage.getItem('caseMioTest'),'local');assert.equal(f.store.status().pending,1)
+ f.faults.archive=false
+ await f.store.useCloudVersion('caseMioTest')
+ assert.equal(f.store.storage.getItem('caseMioTest'),'remote');assert.equal(f.store.status().pending,0)
+ assert.equal(f.recoveries[0].raw_value,'local');assert.equal(f.rows.get('a|caseMioTest').raw_value,'remote')
+ assert.throws(()=>f.store.stage('caseMioTest','stale React value'),/reload/i)
+ assert.equal(await f.store.checkRemoteChanges(),true,'polling must retain the reload-required notice after cloud resolution')
+ assert.equal(await f.store.saveNow('caseMioOther','independent edit'),true)
+ assert.equal(f.store.status().remoteChanged,true)
+})
+test('rejected network promise appears as a save error and remains retryable',async()=>{
+ const f=fixture();await f.store.prepare('a');f.store.activate()
+ const rpc=f.client.rpc;f.client.rpc=async()=>{throw new Error('Network failed')}
+ f.store.stage('caseMioTest','edit');assert.equal(await f.store.flushAll(),false)
+ assert.match(f.store.status().error,/Network failed/)
+ f.client.rpc=rpc;assert.equal(await f.store.flushAll(),true)
+})
+test('display preferences rebase but case data never silently overwrites another tab',async()=>{
+ const key='caseMioChecklistStepsExpandedByRow'
+ const f=fixture({},[row(key,'{"a":false,"b":false}')]);await f.store.prepare('a');f.store.activate()
+ f.rows.set('a|'+key,{...row(key,'{"a":false,"b":true}'),updated_at:'new'})
+ assert.equal(await f.store.saveNow(key,'{"a":true,"b":false}'),true)
+ assert.deepEqual(JSON.parse(f.rows.get('a|'+key).raw_value),{a:true,b:true})
+ assert.equal(f.store.status().pending,0)
+})
+test('two tabs merge independent display changes while concurrent business edits stay pending',async()=>{
+ const key='caseMioChecklistStepsExpandedByRow',business='caseMioBillingEntries'
+ const f=fixture({},[row(key,'{"a":false,"b":false}'),row(business,'[]')])
+ const second=createMioCloudStore({client:f.client,nativeStorage:{length:0,key:()=>null,getItem:()=>null},delay:60000})
+ await f.store.prepare('a');f.store.activate();await second.prepare('a');second.activate()
+ assert.equal(await f.store.saveNow(key,'{"a":true,"b":false}'),true)
+ assert.equal(await second.saveNow(key,'{"a":false,"b":true}'),true)
+ assert.deepEqual(JSON.parse(f.rows.get('a|'+key).raw_value),{a:true,b:true})
+ assert.equal(await f.store.saveNow(business,'[{"id":"first"}]'),true)
+ assert.equal(await second.saveNow(business,'[{"id":"second"}]'),false)
+ assert.equal(second.status().pending,1);assert.equal(f.rows.get('a|'+business).raw_value,'[{"id":"first"}]')
+ assert.equal(second.storage.getItem(business),'[{"id":"second"}]')
+})

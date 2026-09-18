@@ -78,7 +78,7 @@ async function open({loggedIn=false,legacy=false,failRead=false,large=false}={})
 }
 try{
  const started=Date.now(),f=await open({loggedIn:true,large:true})
- await f.page.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:90000})
+ await f.page.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:90000})
  await f.page.waitForTimeout(600)
  const coldMs=Date.now()-started,coldReads=f.reads.length
  // Add/change/delete on the server after the first tab loaded. Its RAM is stale.
@@ -87,7 +87,7 @@ try{
  f.states.delete('caseMioFixture1')
  const before=f.reads.length,warmStart=Date.now(),second=await f.context.newPage()
  await second.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
- await second.getByRole('button',{name:'Mio state: saved to Supabase',exact:true}).waitFor({timeout:45000})
+ await second.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:45000})
  const warmMs=Date.now()-warmStart,reads=f.reads.slice(before)
  assert.ok(reads.length<=4,`Warm tab reloaded too many groups: ${reads.length}`)
  assert.ok(!reads.some(p=>p.p_keys.includes('caseMioFixture0')),'Large unchanged record was downloaded again')
@@ -101,5 +101,22 @@ try{
  assert.deepEqual(await second.evaluate(()=>window.__nativeAppWrites),[])
  await second.screenshot({path:'test-results/cloud-warm-tab.png'})
  console.log(JSON.stringify({test:'cold and warm new-window startup',coldMs,warmMs,coldReadRequests:coldReads,warmReadRequests:reads.length,largeRecordReused:true,serverChangesValidated:true,caseDataDiskWrites:0}))
+ // Verify the real bundled runtime, not an imported substitute.
+ await second.bringToFront()
+ assert.equal(await second.getByLabel('Cloud save status').count(),0,'saved state must not obscure the page')
+ f.states.set('caseMioFixtureNew',{key:'caseMioFixtureNew',raw_value:'"cross-tab update"',updated_at:'2026-09-07T12:00:00Z'})
+ const reloaded=second.waitForEvent('load',{timeout:45000})
+ await f.page.evaluate(owner=>{const c=new BroadcastChannel('mio-cloud-saved-v320');c.postMessage({type:'saved',owner});c.close()},id)
+ await reloaded
+ await second.locator('[data-mio-cloud-phase="ready"][data-mio-cloud-pending="0"]').waitFor({timeout:45000})
+ await second.evaluate(()=>{const field=document.createElement('textarea');field.id='draft-regression';document.body.append(field)})
+ await second.locator('#draft-regression').fill('Important unsaved draft')
+ await second.locator('#draft-regression').blur()
+ f.states.set('caseMioFixtureNew',{key:'caseMioFixtureNew',raw_value:'"another update"',updated_at:'2026-09-08T12:00:00Z'})
+ await f.page.evaluate(owner=>{const c=new BroadcastChannel('mio-cloud-saved-v320');c.postMessage({type:'saved',owner});c.close()},id)
+ await second.getByRole('button',{name:'Refresh saved data',exact:true}).waitFor({timeout:10000})
+ assert.equal(await second.locator('#draft-regression').inputValue(),'Important unsaved draft')
+ assert.deepEqual(f.errors,[])
+ console.log('PASS: clean-tab refresh, no saved banner, and typed-draft protection in the bundled app')
  await f.context.close()
 }finally{await browser.close()}
