@@ -126,3 +126,43 @@ test('server route verifies the Mio user before sending any snapshot to Claude',
     }
   }
 })
+
+
+test('Vercel preview uses its OIDC token to reach Claude through AI Gateway before direct Anthropic billing', async () => {
+  const routeModule = await import('../api/paralegal.js')
+  const priorFetch = globalThis.fetch
+  const priorValues = {
+    SUPABASE_URL:process.env.SUPABASE_URL,
+    SUPABASE_ANON_KEY:process.env.SUPABASE_ANON_KEY,
+    ANTHROPIC_API_KEY:process.env.ANTHROPIC_API_KEY,
+    AI_GATEWAY_API_KEY:process.env.AI_GATEWAY_API_KEY
+  }
+  const calls=[]
+  globalThis.fetch = async (url, options={}) => {
+    calls.push({url:String(url),options,body:options.body ? JSON.parse(options.body) : null})
+    if (String(url).includes('/auth/v1/user')) return {ok:true,json:async()=>({id:'u1',email:'ben@beveridgelawfirm.com'})}
+    if (String(url).includes('ai-gateway.vercel.sh')) return {ok:true,json:async()=>({model:'anthropic/claude-sonnet-5',content:[{type:'text',text:'Gateway ready.'}],usage:{input_tokens:9,output_tokens:2}})}
+    throw new Error('unexpected url '+url)
+  }
+  process.env.SUPABASE_URL='https://example.supabase.co'
+  process.env.SUPABASE_ANON_KEY='anon-test'
+  process.env.ANTHROPIC_API_KEY='anthropic-without-credits'
+  delete process.env.AI_GATEWAY_API_KEY
+  const req={method:'POST',headers:{authorization:'Bearer user-token','x-vercel-oidc-token':'vercel-oidc-test'},body:{message:'Where are we?',history:[],snapshot:[]}}
+  const response={statusCode:0,headers:{},body:'',setHeader(k,v){this.headers[k]=v},status(n){this.statusCode=n;return this},json(v){this.body=JSON.stringify(v);return this},end(v=''){this.body=String(v);return this}}
+  try {
+    await routeModule.default(req,response)
+    assert.equal(response.statusCode,200)
+    assert.equal(JSON.parse(response.body).text,'Gateway ready.')
+    assert.equal(calls.length,2)
+    assert.equal(calls[1].url,'https://ai-gateway.vercel.sh/v1/messages')
+    assert.equal(calls[1].options.headers.Authorization,'Bearer vercel-oidc-test')
+    assert.equal(calls[1].body.model,'anthropic/claude-sonnet-5')
+  } finally {
+    globalThis.fetch=priorFetch
+    for (const [key,value] of Object.entries(priorValues)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key]=value
+    }
+  }
+})
