@@ -2,6 +2,13 @@ import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
+import {
+  checklistTimelineDateState,
+  checklistTimelineHourLabel,
+  compareChecklistTimelineEventsByTime,
+  formatChecklistTimelineTime,
+  resolveChecklistTimelineClientName
+} from './mioChecklistTimeline'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -11385,7 +11392,7 @@ function App() {
         const ad = checklistEventDateValue(a) || '9999-12-31'
         const bd = checklistEventDateValue(b) || '9999-12-31'
         if (ad !== bd) return ad.localeCompare(bd)
-        return String(a.start_time || '').localeCompare(String(b.start_time || ''))
+        return compareChecklistTimelineEventsByTime(a, b)
       })
   }
 
@@ -12039,11 +12046,12 @@ function App() {
 
   function renderChecklistTimelineIconStack(event, compact = false) {
     const items = checklistTimelineTemplateForEvent(event)
+    const isPastEvent = checklistTimelineDateState(checklistDateObj(event)) === 'past'
     const typeColor = checklistTimelineEventColor(event)
     const matter = checklistMatterForEvent(event)
-    const client = clients.find((item) => String(item.id) === String(matter?.client_id || ''))
-    const clientName = client ? [client.first_name, client.last_name].filter(Boolean).join(' ') : (matter?.client_name || matter?.client || '')
-    const hoverText = [`Matter: ${matter?.name || 'No matter'}`, `Client: ${clientName || 'No client'}`, `Event: ${event.checklist_title || event.title || checklistTimelineEventType(event)}`].join('\n')
+    const clientName = resolveChecklistTimelineClientName(matter, clients) || ''
+    const fullTime = formatChecklistTimelineTime(event.start_time)
+    const hoverText = [`Matter: ${matter?.name || 'No matter'}`, `Client: ${clientName || 'No client'}`, `Event: ${event.checklist_title || event.title || checklistTimelineEventType(event)}`, ...(fullTime ? [`Time: ${fullTime}`] : [])].join('\n')
     return (
       <button
         type="button"
@@ -12062,7 +12070,7 @@ function App() {
                   title={`${hoverText}\nChecklist item: ${item.name}${completion?.completed ? ` - completed ${new Date(completion.completed_at).toLocaleDateString()}` : ' - click to complete'}`}
                   style={{ width: compact ? 23 : 27, height: compact ? 23 : 27, borderRadius: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: completion?.completed ? item.color : '#fff', border: `2px solid ${item.color}`, boxShadow: '0 1px 2px rgba(15,23,42,.12)', position: 'relative' }}
                 >
-                  <ChecklistTimelineIcon name={item.icon} size={compact ? 13 : 15} color={completion?.completed ? '#fff' : item.color} />
+                  <ChecklistTimelineIcon name={item.icon} size={compact ? 13 : 15} color={completion?.completed ? '#fff' : (isPastEvent ? '#94a3b8' : item.color)} />
                   {completion?.completed && <span style={{ position: 'absolute', right: -5, top: -6, width: 13, height: 13, borderRadius: 999, background: '#16a34a', color: '#fff', fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fff', fontWeight: 900 }}>✓</span>}
                 </span>
               </Fragment>
@@ -12070,7 +12078,7 @@ function App() {
           })}
         </div>
         <span style={{ width: 2, height: compact ? 8 : 12, background: typeColor }} />
-        <span style={{ width: compact ? 15 : 18, height: compact ? 15 : 18, borderRadius: 999, background: typeColor, border: '3px solid #fff', boxShadow: `0 0 0 2px ${typeColor}` }} />
+        <span title={formatChecklistTimelineTime(event.start_time)} style={{ width: compact ? 15 : 18, height: compact ? 15 : 18, borderRadius: 999, background: typeColor, border: '3px solid #fff', boxShadow: `0 0 0 2px ${typeColor}`, color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: compact ? 9 : 10, fontWeight: 900, lineHeight: 1 }}>{checklistTimelineHourLabel(event.start_time)}</span>
       </button>
     )
   }
@@ -12107,13 +12115,15 @@ function App() {
         <section key={`${y}-${m}`} style={{ border: '1px solid #dbe3ec', borderRadius: 10, overflow: 'hidden', background: '#fff', marginBottom: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: monthLabelWidth + dayWidths.reduce((a, b) => a + b, 0), background: '#f8fafc', borderBottom: '1px solid #dbe3ec' }}>
             <div style={{ padding: '10px 12px', fontWeight: 900, fontSize: 16, position: 'sticky', left: 0, zIndex: 3, background: '#f8fafc' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}</div>
-            {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (maxEventsByDayNumber[index + 1] || 0) > 1; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
+            {Array.from({ length: days }, (_, index) => { const date = new Date(y, m, index + 1); const stretched = (maxEventsByDayNumber[index + 1] || 0) > 1; const isToday = checklistTimelineDateState(date) === 'today'; return <div key={index} style={{ textAlign: 'center', padding: '6px 2px', borderLeft: '1px solid #edf2f7', background: stretched ? '#eff6ff' : undefined, border: isToday ? '2px solid #1d4ed8' : undefined, boxSizing: isToday ? 'border-box' : undefined }}><div style={{ fontSize: 10, color: '#64748b', fontWeight: 700 }}>{date.toLocaleDateString('default', { weekday: 'short' }).slice(0, 2).toUpperCase()}</div><div style={{ fontWeight: stretched ? 900 : 700, color: stretched ? '#1d4ed8' : '#334155' }}>{index + 1}</div>{stretched && <div style={{ fontSize: 9, color: '#2563eb' }}>{eventsByDay[index + 1]} settings</div>}</div> })}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: gridColumns, minWidth: monthLabelWidth + dayWidths.reduce((a, b) => a + b, 0), minHeight: 142, borderBottom: '1px solid #edf2f7' }}>
             <div style={{ padding: '10px 12px', borderRight: '1px solid #dbe3ec', position: 'sticky', left: 0, zIndex: 2, background: '#fff', fontWeight: 800, color: '#1e293b' }}>{monthDate.toLocaleDateString('default', { month: 'long', year: 'numeric' })}<div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{monthEvents.length} event{monthEvents.length === 1 ? '' : 's'}</div></div>
             {Array.from({ length: days }, (_, index) => {
+              const date = new Date(y, m, index + 1)
+              const isToday = checklistTimelineDateState(date) === 'today'
               const dayEvents = monthEvents.filter((event) => checklistDateObj(event).getDate() === index + 1)
-              return <div key={index} style={{ borderLeft: '1px solid #f1f5f9', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 8, padding: '8px 4px 12px', background: dayEvents.length > 1 ? '#f8fbff' : undefined }}>{dayEvents.map((event) => <div key={event.id || event.checklist_source_id || event.checklist_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, minWidth: 38 }}><div style={{ maxWidth: 78, fontSize: 10, fontWeight: 700, color: '#475569', textAlign: 'center', lineHeight: 1.15 }}>{event.checklist_title || event.title || checklistTimelineEventType(event)}</div>{renderChecklistTimelineIconStack(event, true)}</div>)}</div>
+              return <div key={index} style={{ borderLeft: '1px solid #f1f5f9', position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 8, padding: '8px 4px 12px', background: dayEvents.length > 1 ? '#f8fbff' : undefined, border: isToday ? '2px solid #1d4ed8' : undefined, boxSizing: isToday ? 'border-box' : undefined }}>{dayEvents.map((event) => <div key={event.id || event.checklist_source_id || event.checklist_id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, minWidth: 38 }}><div style={{ maxWidth: 78, fontSize: 10, fontWeight: 700, color: '#475569', textAlign: 'center', lineHeight: 1.15 }}>{event.checklist_title || event.title || checklistTimelineEventType(event)}</div>{renderChecklistTimelineIconStack(event, true)}</div>)}</div>
             })}
           </div>
           {!monthEvents.length && <div style={{ padding: 22, color: '#64748b', fontStyle: 'italic' }}>No events in this month match the selected filters.</div>}
