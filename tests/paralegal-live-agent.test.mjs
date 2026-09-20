@@ -135,7 +135,8 @@ test('Vercel preview uses its OIDC token to reach Claude through AI Gateway befo
     SUPABASE_URL:process.env.SUPABASE_URL,
     SUPABASE_ANON_KEY:process.env.SUPABASE_ANON_KEY,
     ANTHROPIC_API_KEY:process.env.ANTHROPIC_API_KEY,
-    AI_GATEWAY_API_KEY:process.env.AI_GATEWAY_API_KEY
+    AI_GATEWAY_API_KEY:process.env.AI_GATEWAY_API_KEY,
+    VERCEL_OIDC_TOKEN:process.env.VERCEL_OIDC_TOKEN
   }
   const calls=[]
   globalThis.fetch = async (url, options={}) => {
@@ -148,7 +149,8 @@ test('Vercel preview uses its OIDC token to reach Claude through AI Gateway befo
   process.env.SUPABASE_ANON_KEY='anon-test'
   process.env.ANTHROPIC_API_KEY='anthropic-without-credits'
   delete process.env.AI_GATEWAY_API_KEY
-  const req={method:'POST',headers:{authorization:'Bearer user-token','x-vercel-oidc-token':'vercel-oidc-test'},body:{message:'Where are we?',history:[],snapshot:[]}}
+  process.env.VERCEL_OIDC_TOKEN='vercel-oidc-test'
+  const req={method:'POST',headers:{authorization:'Bearer user-token'},body:{message:'Where are we?',history:[],snapshot:[]}}
   const response={statusCode:0,headers:{},body:'',setHeader(k,v){this.headers[k]=v},status(n){this.statusCode=n;return this},json(v){this.body=JSON.stringify(v);return this},end(v=''){this.body=String(v);return this}}
   try {
     await routeModule.default(req,response)
