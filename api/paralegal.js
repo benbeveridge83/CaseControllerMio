@@ -9,6 +9,7 @@ export default async function handler(req,res) {
     await requireParalegalUser(req)
     const body = req.body && typeof req.body === 'object' ? req.body : {}
     const result = await askClaudeParalegal({
+      gatewayKey:process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN,
       apiKey:process.env.ANTHROPIC_API_KEY,
       model:process.env.ANTHROPIC_MODEL || 'claude-sonnet-5',
       message:body.message,
