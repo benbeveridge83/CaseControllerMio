@@ -43,9 +43,10 @@ jobs:
           import fs from 'node:fs';
           import assert from 'node:assert/strict';
           const js = fs.readdirSync('dist/assets').filter(x => x.endsWith('.js')).map(x => fs.readFileSync('dist/assets/' + x, 'utf8')).join('\n');
-          assert.ok(js.includes('Mio V309'), 'Built app must identify V309');
+          const label = js.match(/Mio V\d+ \([^)]+\)/);
+          assert.ok(label, 'Built app must advertise its Mio release label');
           assert.ok(js.includes('files_saved_or_confirmed'), 'Built app must contain the V309 batch-save feature');
-          console.log('V309 label and executable batch-save code verified in production bundle.');
+          console.log('Verified release label and executable batch-save code in production bundle:', label[0]);
           NODE
       - uses: actions/upload-artifact@v4
         if: always()

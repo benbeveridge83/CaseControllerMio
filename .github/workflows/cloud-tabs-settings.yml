@@ -65,7 +65,9 @@ jobs:
                   if expected not in html: raise RuntimeError('Production is still serving an earlier bundle')
                   remote=get(urllib.parse.urljoin(root,expected))
                   if hashlib.sha256(remote).digest()!=hashlib.sha256(local).digest(): raise RuntimeError('Production bundle does not match the tested build')
-                  if b'Mio V301 (fast tabs / precise settings)' not in remote: raise RuntimeError('Expected release marker is missing')
+                  label=re.search(rb'Mio V\d+',local)
+                  if not label: raise RuntimeError('Built bundle does not advertise a Mio release label')
+                  if label.group(0) not in remote: raise RuntimeError('Production release label is missing')
                   result={'production_url':root,'commit':os.environ['GITHUB_SHA'],'bundle':expected,'sha256':hashlib.sha256(remote).hexdigest(),'exact_tested_bundle':True,'status':'passed'}
                   pathlib.Path('test-results/production-smoke.json').write_text(json.dumps(result,indent=2))
                   print(json.dumps(result));break

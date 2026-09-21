@@ -25,6 +25,7 @@ jobs:
       - run: npm install --no-save jszip@3.10.1
       - name: Browser checks
         run: |
+          set -o pipefail
           mkdir -p test-results
           npx playwright-core install --with-deps chromium
           npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &

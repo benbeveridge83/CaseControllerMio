@@ -37,15 +37,19 @@ jobs:
       - name: Unit and integration tests
         shell: bash
         run: |
+          set -o pipefail
           mkdir -p test-results
           node --test tests/*.test.js | tee test-results/unit-tests.log
       - name: Production build
         shell: bash
-        run: npm run build | tee test-results/build.log
+        run: |
+          set -o pipefail
+          npm run build | tee test-results/build.log
       - run: npm install --no-save --package-lock=false jszip@3.10.1
       - name: Browser verification with synthetic accounts
         shell: bash
         run: |
+          set -o pipefail
           npx playwright-core install --with-deps chromium > test-results/browser-install.log 2>&1
           npm run preview -- --host 127.0.0.1 > test-results/preview.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
