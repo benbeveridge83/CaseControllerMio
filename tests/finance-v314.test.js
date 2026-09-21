@@ -26,6 +26,25 @@ test('gateway page traversal cannot claim completion after page one or a failed 
 test('audit distinguishes unmatched consults, unapplied invoice payments, and amount discrepancies', async () => {
   const {auditLawPayRecords}=await load(); const tx={id:'local',gateway_transaction_id:'gateway',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:101250,reference:'Case | MIO-2026-123456'}; const invoice={id:'i',invoice_number:'MIO-2026-123456',amount_paid:2562.5,invoice_type:'services'}; const event={invoice_id:'i',event_type:'lawpay_payment_recorded',provider_event_id:'gateway',amount:1012.5}; assert.equal(auditLawPayRecords([tx],[invoice],[event]).issues.length,0); assert.equal(auditLawPayRecords([tx],[invoice],[]).issues[0].kind,'unapplied')
 })
+test('every reviewed transaction reports its LawPay deposit account without guessing', async () => {
+  const {auditLawPayRecords,lawPayAccountLabel,transactionAccountKey}=await load()
+  const rows=[{id:'a',gateway_transaction_id:'a',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:500000,account_key:'trust'},
+    {id:'b',gateway_transaction_id:'b',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:100000,account_key:'operating',payer_name:'Unlinked payer'},
+    {id:'c',gateway_transaction_id:'c',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:12500,account_id:'acct-1137',raw:{mio_account_key_source:'unresolved'}}]
+  const audit=auditLawPayRecords(rows,[],[])
+  assert.equal(audit.unlinked.length,3)
+  assert.deepEqual(audit.unlinked.map(row=>row.account),['trust','operating',''])
+  assert.deepEqual(audit.unlinked.map(row=>row.account_label),['Trust','Operating','Account not reported'])
+  assert.deepEqual(audit.issues.map(row=>row.account_label),[])
+  assert.equal(transactionAccountKey({account_key:'OPERATING'}),'operating')
+  assert.equal(transactionAccountKey({raw:{account_key:'trust'}}),'trust')
+  assert.equal(lawPayAccountLabel({account_key:'echeck_trust'}),'Trust (e-check)')
+  assert.equal(lawPayAccountLabel({account_key:'clientcredit_trust'}),'Trust (client credit)')
+  assert.equal(lawPayAccountLabel({account_key:'echeck_operating'}),'Operating (e-check)')
+  assert.equal(lawPayAccountLabel('trust'),'Trust')
+  assert.equal(lawPayAccountLabel({account_key:'ach_something'}),'Account ach_something')
+  assert.equal(lawPayAccountLabel({}),'Account not reported')
+})
 test('baseline reproduction: trust-only accounting omits a posted operating payment marker', () => {
   const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8'); const start=source.indexOf('  function accountingLedgerRows('),end=source.indexOf('\n  function ',start+10); const ctx={accountingOutstandingEvents:()=>[],financeNumber:Number,accountingDateTime:String,financeDateOnly:String,activeMioBillingCutoverDate:'2026-08-09',clioHistoricalFinancialArchive:[]}; vm.createContext(ctx); vm.runInContext(source.slice(start,end)+'\nthis.run=accountingLedgerRows',ctx); assert.equal(ctx.run({id:'m'},{currentLedgerRows:[],invoices:[{id:'i',amount_paid:1012.5}],outstanding:0}).length,0)
 })

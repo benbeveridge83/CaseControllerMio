@@ -36,7 +36,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Verify finance models and composed production callbacks
-        run: timeout 120s node --test tests/finance-v314.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
+        run: timeout 120s node --test tests/finance-v314.test.js tests/lawpay-attribution.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
       - name: Test atomic SQL on isolated synthetic PostgreSQL
         run: |
           psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-schema.sql

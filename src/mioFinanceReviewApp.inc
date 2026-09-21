@@ -104,7 +104,7 @@
       <summary style={{cursor:'pointer',fontWeight:700}}>LawPay reconciliation - {financeSyncReport.state==='checking'?'checking...':financeSyncReport.state==='error'?'check incomplete':`${audit.issues.length} invoice issue(s), ${audit.unlinked.length} unlinked transaction(s)`}</summary>
       <p role="status">{financeSyncReport.message}</p>
       <button type="button" onClick={()=>refreshLawPayFinancialData({silent:false})} disabled={lawPayBusy||financeSyncReport.state==='checking'}>Check all LawPay payments since Mio opening</button>
-      <p>{audit.matched} matched completed transaction(s) in the loaded records. Unlinked consultations and refunds require attribution, not automatic posting to a matter.</p>
-      {[...audit.issues,...audit.unlinked].map(issue=><p key={issue.id}><strong>{issue.invoiceNumber||issue.payer||'Unlinked transaction'}: {money(issue.amount)}</strong> - {issue.reason}</p>)}
+      <p>{audit.matched} matched completed transaction(s) in the loaded records. Unlinked consultations and refunds require attribution, not automatic posting to a matter. The LawPay deposit account recorded for each charge is shown below.</p>
+      {[...audit.issues,...audit.unlinked].map(issue=><p key={issue.id}><strong>{issue.invoiceNumber||issue.payer||'Unlinked transaction'}: {money(issue.amount)}</strong> - <strong>{issue.account_label||lawPayAccountLabel(issue.account)}</strong> - {issue.reason}</p>)}
     </details>
   }
