@@ -56,6 +56,8 @@ jobs:
       - run: node node_modules/playwright-core/cli.js install chromium --with-deps
       - name: Test real production bundle with intercepted synthetic services
         run: timeout 180s node tests/finance-v314-browser.mjs
+      - name: Withdrawal rows must agree with Bulk billing trust and graph every matter
+        run: timeout 180s node tests/withdrawal-finance-parity-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

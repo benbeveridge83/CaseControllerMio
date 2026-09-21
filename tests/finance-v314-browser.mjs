@@ -15,7 +15,7 @@ const invoice=(id,mi,type,total,paid,date,sent='')=>({id,invoice_number:'MIO-202
 const invoices=[invoice('33',0,'services',2562.5,2562.5,'2026-08-11'),invoice('77',0,'services',225,0,'2026-08-21'),invoice('82',0,'services',375,0,'2026-08-28'),invoice('100',1,'services',100,100,'2026-09-10'),invoice('102',1,'trust_request',3500,0,'2026-09-11'),invoice('103',2,'trust_request',2000,0,'2026-09-11','2026-09-11T13:00:00Z')]
 const trust=[{id:'trust-a',matter_id:matters[0].id,invoice_id:'33',direction:'out',amount:1550,date:'2026-08-11',created_at:'2026-08-11T15:00:00Z',memo:'Synthetic trust application'}]
 const events=[{id:'event-a',invoice_id:'33',user_id:owner,event_type:'lawpay_payment_recorded',amount:1012.5,provider_event_id:'provider-a',occurred_at:'2026-09-09T15:13:36Z'}]
-const transactions=[{id:'tx-a',gateway_transaction_id:'provider-a',occurred_at:'2026-09-09T15:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'operating',amount_cents:101250,amount_refunded_cents:0,reference:'MIO-2026-000033',payer_name:'Alpha Synthetic',raw:{mio_matter_id:matters[0].id,mio_invoice_number:'MIO-2026-000033'}},{id:'tx-b',gateway_transaction_id:'provider-b',occurred_at:'2026-09-12T15:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'trust',amount_cents:500000,amount_refunded_cents:0,reference:'',payer_name:'Bravo Synthetic',raw:{}},{id:'tx-c',gateway_transaction_id:'provider-c',occurred_at:'2026-09-12T16:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'operating',amount_cents:100000,amount_refunded_cents:0,reference:'',payer_name:'Charlie Synthetic',raw:{}},{id:'tx-d',gateway_transaction_id:'provider-d',occurred_at:'2026-09-12T17:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'',account_id:'acct-1137',amount_cents:12500,amount_refunded_cents:0,reference:'',payer_name:'Yasmine Said',raw:{mio_account_key_source:'unresolved'}}]
+const transactions=[{id:'tx-a',gateway_transaction_id:'provider-a',occurred_at:'2026-09-09T15:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'operating',amount_cents:101250,amount_refunded_cents:0,reference:'MIO-2026-000033',payer_name:'Alpha Synthetic',raw:{mio_matter_id:matters[0].id,mio_invoice_number:'MIO-2026-000033'}},{id:'tx-b',gateway_transaction_id:'provider-b',occurred_at:'2026-09-12T15:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'trust',amount_cents:500000,amount_refunded_cents:0,reference:'',payer_name:'Bravo Synthetic',raw:{}},{id:'tx-c',gateway_transaction_id:'provider-c',occurred_at:'2026-09-12T16:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'operating',amount_cents:100000,amount_refunded_cents:0,reference:'',payer_name:'Charlie Synthetic',raw:{}},{id:'tx-d',gateway_transaction_id:'provider-d',occurred_at:'2026-09-12T17:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'',account_id:'acct-1137',amount_cents:12500,amount_refunded_cents:0,reference:'',payer_name:'Yasmine Said',raw:{mio_account_key_source:'unresolved'}},{id:'tx-e',gateway_transaction_id:'provider-e',occurred_at:'2026-09-12T18:13:36Z',transaction_type:'CHARGE',status:'COMPLETED',account_key:'trust',amount_cents:25000,amount_refunded_cents:0,reference:'',payer_name:'Delta Synthetic',raw:{}}]
 const states=new Map(Object.entries({caseMioFinanceOpeningBalances:opening,caseMioTrustTransactions:trust,caseMioInvoices:invoices,caseMioBillingCutoverDate:'2026-08-09',caseMioBulkBillingFilters:{case_status:'all',matter_status:'all',search:''}}).map(([key,v])=>[key,{key,raw_value:typeof v==='string'?v:JSON.stringify(v),json_value:v,updated_at:now}]))
 const errors=[],blocked=[],writes=[],checks=[]
 const root=path.resolve('dist'),server=http.createServer((req,res)=>{const p=path.resolve(root,'.'+new URL(req.url,'http://localhost').pathname);if(!p.startsWith(root+path.sep)&&p!==root){res.writeHead(403);return res.end()};const f=fs.existsSync(p)&&fs.statSync(p).isFile()?p:path.join(root,'index.html');res.setHeader('Content-Type',f.endsWith('.js')?'text/javascript':f.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(f))})
@@ -85,18 +85,61 @@ try{
  const reconciliation=page.locator('details').filter({has:page.locator('summary').filter({hasText:'LawPay reconciliation'})}).first()
  await reconciliation.locator('summary').click()
  await reconciliation.getByRole('button',{name:'Check all LawPay payments since Mio opening',exact:true}).click()
- await reconciliation.locator('summary').filter({hasText:'3 unlinked transaction(s)'}).waitFor()
+ await reconciliation.locator('summary').filter({hasText:'4 unlinked transaction(s)'}).waitFor()
  const reconciliationLine=async text=>{const line=reconciliation.locator('p').filter({hasText:text}).first();await line.waitFor();return await line.innerText()}
  assert.match(await reconciliationLine('Bravo Synthetic'),/5,000.*- Trust - /)
  assert.match(await reconciliationLine('Charlie Synthetic'),/1,000.*- Operating - /)
  assert.match(await reconciliationLine('Yasmine Said'),/125.*- Account not reported - /)
+ assert.match(await reconciliationLine('Delta Synthetic'),/250.*- Trust - /)
  await page.screenshot({path:'finance-test-results/lawpay-reconciliation-accounts.png'})
+ // Every unlinked charge can now be attributed from this screen, and the picker states the
+ // deposit account LawPay recorded instead of guessing one.
+ const openPicker=async payer=>{
+  const button=reconciliation.getByRole('button',{name:new RegExp(`^Categorize the .*${payer}$`)}).first()
+  await button.waitFor();await button.click()
+  const editor=reconciliation.locator('div').filter({has:page.getByLabel('Attribution decision')}).last()
+  await editor.waitFor();return editor
+ }
+ const decisions=()=>states.get('caseMioLawPayAttribution')?JSON.parse(states.get('caseMioLawPayAttribution').raw_value):[]
+ const trustLedger=()=>JSON.parse(states.get('caseMioTrustTransactions').raw_value)
+ const bravoEditor=await openPicker('Bravo Synthetic')
+ assert.match(await bravoEditor.innerText(),/deposit account as Trust/)
+ await bravoEditor.getByLabel('Search matters for this payment',{exact:true}).fill('Bravo')
+ await bravoEditor.getByLabel('Matter for this payment',{exact:true}).selectOption({label:'Bravo Synthetic - Bravo Matter'})
+ await bravoEditor.getByRole('button',{name:'Save attribution',exact:true}).click()
+ await reconciliation.getByText(/- Trust - trust deposit - Bravo Matter/).waitFor()
+ assert.equal(decisions()[0].decision,'matter');assert.equal(decisions()[0].account,'trust');assert.equal(decisions()[0].entry_kind,'trust_deposit')
+ assert.ok(trustLedger().some(row=>String(row.lawpay_transaction_id)==='provider-b'&&row.direction==='in'&&Number(row.amount)===5000),'A trust charge must post one verified trust deposit')
+ const charlieEditor=await openPicker('Charlie Synthetic')
+ await charlieEditor.getByLabel('Matter for this payment',{exact:true}).selectOption({index:1})
+ await charlieEditor.getByRole('button',{name:'Save attribution',exact:true}).click()
+ await reconciliation.getByText(/- Operating - operating record - /).waitFor()
+ assert.equal(decisions()[0].entry_kind,'operating_association')
+ assert.ok(!trustLedger().some(row=>String(row.lawpay_transaction_id)==='provider-c'),'An operating charge may never move a trust balance')
+ const deltaEditor=await openPicker('Delta Synthetic')
+ await deltaEditor.getByLabel('Attribution decision').selectOption('neither')
+ const saveNeither=deltaEditor.getByRole('button',{name:'Save attribution',exact:true})
+ assert.equal(await saveNeither.isDisabled(),true,'A neither decision needs a reason first')
+ await deltaEditor.getByLabel('Why this payment belongs to neither',{exact:true}).fill('Not a client payment; recorded for the firm operating account.')
+ await saveNeither.click()
+ await reconciliation.getByText(/decided: neither \(Not a client payment/).waitFor()
+ assert.equal(decisions()[0].decision,'neither')
+ assert.ok(!trustLedger().some(row=>String(row.lawpay_transaction_id)==='provider-e'),'A neither decision posts no money')
+ const yasmineEditor=await openPicker('Yasmine Said')
+ await yasmineEditor.getByLabel('Matter for this payment',{exact:true}).selectOption({index:1})
+ await yasmineEditor.getByRole('button',{name:'Save attribution',exact:true}).click()
+ const refusal=yasmineEditor.getByRole('alert')
+ await refusal.waitFor()
+ assert.match(await refusal.innerText(),/Account not reported/)
+ assert.equal(decisions().some(record=>record.gateway_transaction_id==='provider-d'),false,'An unresolved deposit account must not be attributed')
+ await page.screenshot({path:'finance-test-results/lawpay-attribution-picker.png'})
  await page.getByRole('button',{name:'Accounting',exact:true}).last().click()
  await page.getByRole('columnheader',{name:'Operating payment',exact:true}).waitFor()
  const op=page.locator('tr').filter({hasText:'Payment received into Operating; no trust movement'});await op.waitFor();assert.match(await op.innerText(),/1,012/)
  const cells=await op.locator('td').allTextContents();assert.match(cells[8],/\$0/);assert.match(cells[9],/600/)
  await page.screenshot({path:'finance-test-results/operating-ledger.png'})
  assert.ok(checks.length>0);assert.equal(writes.length,0);assert.deepEqual(errors,[])
- console.log(JSON.stringify({ok:true,checks:checks.length,financialWrites:writes.length,externalCalls:blocked.length,tests:['minimum trust boundary','review opens without send','existing draft reuse','sent-request duplicate prevention','status plus date sorting','paid oldest-first preset','collapsed finance settings','reconciliation shows the deposit account','operating ledger no trust movement']},null,2))
+ console.log(JSON.stringify({ok:true,checks:checks.length,financialWrites:writes.length,externalCalls:blocked.length,tests:['minimum trust boundary','review opens without send','existing draft reuse','sent-request duplicate prevention','status plus date sorting','paid oldest-first preset','collapsed finance settings','reconciliation shows the deposit account','categorize an unlinked charge as a matter trust deposit','an operating charge never moves trust','neither decision requires a reason','an unresolved deposit account is refused','operating ledger no trust movement']},null,2))
 }catch(error){await page.screenshot({path:'finance-test-results/failure.png'});fs.writeFileSync('finance-test-results/failure.txt',await page.locator('body').innerText());console.error({errors,writes,blocked});throw error}
 finally{await browser.close();await new Promise(r=>server.close(r))}
+

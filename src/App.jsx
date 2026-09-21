@@ -5902,6 +5902,13 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioFinanceOpeningBalances') || '{}') }
     catch { return {} }
   })
+  // Attribution decisions for provider charges that arrived without a Mio invoice reference.
+  // The record is the audit trail; a trust deposit is only ever posted by the tested rules
+  // in src/mioLawPayAttribution.js after a person chose the matter.
+  const [lawPayAttribution, setLawPayAttribution] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioLawPayAttribution') || '[]') }
+    catch { return [] }
+  })
   const [clioHistoricalFinancialArchive, setClioHistoricalFinancialArchive] = useState([])
   const [clioMigrationPreview, setClioMigrationPreview] = useState(null)
   const [clioMigrationBusy, setClioMigrationBusy] = useState(false)
@@ -7218,6 +7225,7 @@ function App() {
         return mergeMioInvoiceState(current, cloudOnlyRows)
       }), kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
+      caseMioLawPayAttribution: { setter: (value) => setLawPayAttribution(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioFinanceOpeningBalances: { setter: (value) => setMioFinanceOpeningBalances(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
@@ -8566,6 +8574,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
   }, [mioTrustTransactions])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioLawPayAttribution', JSON.stringify(lawPayAttribution || [])) } catch {}
+  }, [lawPayAttribution])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioFinanceOpeningBalances', JSON.stringify(mioFinanceOpeningBalances || {})) } catch {}
@@ -55128,7 +55140,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const tasks = [
         loadMioInvoicesFromDatabase({ force: true }),
         loadMioInvoiceEventsFromDatabase({ force: true }),
-        loadLawPayWorkspace({ force: true }),
+        // loadLawPayWorkspace reports a failed background read by returning false instead of
+        // throwing. Silence here would let an older trust balance look current, so treat it
+        // as a failure the caller can report.
+        (async () => { const loaded = await loadLawPayWorkspace({ force: true }); if (loaded === false) throw new Error('The recorded LawPay receipts could not be reloaded (another tab is syncing, or Supabase is temporarily unavailable).') })(),
         loadClioFinancialSnapshots({ ignoreDateFilters: true }),
         loadClioHistoricalFinancialArchive()
       ]
@@ -55136,8 +55151,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const results = await Promise.allSettled(tasks)
       const failures = results.filter((result) => result.status === 'rejected')
       if (failures.length === results.length) throw failures[0].reason || new Error('Mio graph data could not be refreshed.')
+      // Callers that show these balances must be able to say whether the reload actually
+      // happened instead of presenting an older balance as the current one.
+      return { ok: true, failures: failures.length }
     } catch (error) {
       setClioSnapshotError(error?.message || String(error))
+      return { ok: false, error: error?.message || String(error) }
     } finally {
       setClioSnapshotLoading(false)
     }
