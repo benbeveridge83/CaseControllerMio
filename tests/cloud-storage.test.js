@@ -151,16 +151,25 @@ test('display preferences rebase but case data never silently overwrites another
  assert.deepEqual(JSON.parse(f.rows.get('a|'+key).raw_value),{a:true,b:true})
  assert.equal(f.store.status().pending,0)
 })
-test('two tabs merge independent display changes while concurrent business edits stay pending',async()=>{
- const key='caseMioChecklistStepsExpandedByRow',business='caseMioBillingEntries'
- const f=fixture({},[row(key,'{"a":false,"b":false}'),row(business,'[]')])
+test('two tabs merge independent display changes and independent record rows',async()=>{
+ const key='caseMioChecklistStepsExpandedByRow',business='caseMioBillingEntries',shared='caseMioLitigationPlacements'
+ const f=fixture({},[row(key,'{"a":false,"b":false}'),row(business,'[]'),row(shared,'[{"id":"p1","v":1}]')])
  const second=createMioCloudStore({client:f.client,nativeStorage:{length:0,key:()=>null,getItem:()=>null},delay:60000})
  await f.store.prepare('a');f.store.activate();await second.prepare('a');second.activate()
  assert.equal(await f.store.saveNow(key,'{"a":true,"b":false}'),true)
  assert.equal(await second.saveNow(key,'{"a":false,"b":true}'),true)
  assert.deepEqual(JSON.parse(f.rows.get('a|'+key).raw_value),{a:true,b:true})
+ // Rows that only one tab added are merged, so neither tab is asked about the other's work.
  assert.equal(await f.store.saveNow(business,'[{"id":"first"}]'),true)
- assert.equal(await second.saveNow(business,'[{"id":"second"}]'),false)
- assert.equal(second.status().pending,1);assert.equal(f.rows.get('a|'+business).raw_value,'[{"id":"first"}]')
- assert.equal(second.storage.getItem(business),'[{"id":"second"}]')
+ assert.equal(await second.saveNow(business,'[{"id":"second"}]'),true)
+ assert.deepEqual(JSON.parse(f.rows.get('a|'+business).raw_value).map(r=>r.id),['first','second'])
+ assert.equal(second.status().pending,0)
+ assert.equal(second.status().reloadRequired,true,'the merged record must be re-read before this window writes it again')
+ assert.throws(()=>second.stage(business,'[{"id":"second"}]'),/reload/i)
+ // The same row changing in both tabs is still a real conflict that must be answered.
+ assert.equal(await f.store.saveNow(shared,'[{"id":"p1","v":2}]'),true)
+ assert.equal(await second.saveNow(shared,'[{"id":"p1","v":3}]'),false)
+ assert.equal(second.status().pending,1);assert.equal(second.status().conflicts,1)
+ assert.equal(f.rows.get('a|'+shared).raw_value,'[{"id":"p1","v":2}]','the winning edit is untouched')
+ assert.equal(second.storage.getItem(shared),'[{"id":"p1","v":3}]')
 })
