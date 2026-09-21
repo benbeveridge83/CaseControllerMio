@@ -34,7 +34,10 @@ export function createMioCloudSync({store,win=window,Channel=globalThis.Broadcas
     try{
       const changed=await store.checkRemoteChanges()
       if(!changed||owner!==store.status().owner||!clean()||!needsReload(store.status()))return
-      const now=Date.now(),notBefore=Math.max(readySince()+Math.max(0,quietAfterReadyMs),readGuard()+Math.max(0,minAutoReloadGapMs))
+      // Measure readiness before "now": the first check that discovers readiness must
+      // not treat its own timestamp as a future change.
+      const readyAtMs=readySince()
+      const now=Date.now(),notBefore=Math.max(readyAtMs+Math.max(0,quietAfterReadyMs),readGuard()+Math.max(0,minAutoReloadGapMs))
       if(notBefore>now){scheduleAfter(notBefore-now);return}
       reloading=true;writeGuard(now);win.location.reload()
     }catch{/* Offline/read failures never cause a reload or change local state. */}

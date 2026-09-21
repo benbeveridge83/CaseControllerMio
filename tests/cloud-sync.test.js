@@ -54,18 +54,32 @@ test('a resolved cloud version always needs a reload even for a preference key',
  }finally{f.sync.close()}
 })
 test('a tab that just became ready waits out the quiet window before refreshing',async()=>{
- const f=fixture({quietAfterReadyMs:40});try{
+ const f=fixture({quietAfterReadyMs:30});try{
   await f.sync.check();assert.equal(f.reloads,0,'opening a window must not refresh it immediately')
-  await wait(100)
+  await wait(300)
   assert.equal(f.reloads,1,'the newer records are applied once the window is settled')
  }finally{f.sync.close()}
 })
+test('the first check after becoming ready is never deferred by its own timestamp',async()=>{
+ const f=fixture();try{
+  // A slow millisecond boundary made the old implementation treat its own
+  // readiness timestamp as a future change and postpone the reload forever.
+  const realNow=Date.now
+  let ticks=0
+  Date.now=()=>realNow.call(Date)+ticks++
+  f.setChanged(true)
+  await f.sync.check()
+  Date.now=realNow
+  assert.equal(f.reloads,1)
+ }finally{f.sync.close()}
+})
+
 test('the per-tab reload guard stops a refresh chain and still applies the change later',async()=>{
- const disk=new Map(),f=fixture({minAutoReloadGapMs:40});try{
+ const disk=new Map(),f=fixture({minAutoReloadGapMs:30});try{
   f.win.sessionStorage={getItem:key=>disk.get(key)??null,setItem:(key,value)=>disk.set(key,value)}
   disk.set('mioAutoReloadAtV321',String(Date.now()))
   await f.sync.check();assert.equal(f.reloads,0,'repeated automatic reloads every few seconds are refused')
-  await wait(100)
+  await wait(300)
   assert.equal(f.reloads,1,'the change is still applied after the guard window')
  }finally{f.sync.close()}
 })
