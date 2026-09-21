@@ -10,6 +10,7 @@ import {
   mergeChecklistTimelineMatter,
   resolveChecklistTimelineClientName
 } from './mioChecklistTimeline'
+import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -61128,6 +61129,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <h1>Settings</h1>
 
             <div style={{ marginBottom: 20 }}>
+              <button onClick={() => setSettingsTab('process_builder')} style={{ marginRight: 10, fontWeight: settingsTab === 'process_builder' ? 'bold' : 'normal' }}>Process Builder</button>
               <button
                 onClick={() => {
                   setSettingsTab('options')
@@ -61271,6 +61273,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             </div>
 
             {settingsTab === 'timeline' && renderTimelineSettings()}
+            {settingsTab === 'process_builder' && <ProcessBuilderSettings ownerId={session?.user?.id} templates={draftingTemplates} />}
             {settingsTab === 'matter_timeline_options' && renderMatterTimelineOptionsSettings()}
             {settingsTab === 'matter_timelines' && renderMatterTimelineSettingsTable()}
             {settingsTab === 'litigation_parties' && renderLitigationPartySettingsTable()}
