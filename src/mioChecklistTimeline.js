@@ -42,6 +42,20 @@ export function compareChecklistTimelineEventsByTime(left = {}, right = {}) {
   return leftTime - rightTime
 }
 
+export function mergeChecklistTimelineMatter(embeddedMatter, loadedMatter) {
+  // Calendar events embed a trimmed matter (no client_id), so prefer the fully
+  // loaded matter row for client fields while keeping the embedded court data.
+  if (!embeddedMatter) return loadedMatter || null
+  if (!loadedMatter) return embeddedMatter
+  return {
+    ...loadedMatter,
+    ...embeddedMatter,
+    clients: embeddedMatter.clients || loadedMatter.clients,
+    client_id: embeddedMatter.client_id || loadedMatter.client_id,
+    client_name: embeddedMatter.client_name || loadedMatter.client_name
+  }
+}
+
 export function resolveChecklistTimelineClientName(matter = {}, clients = []) {
   const nestedClient = Array.isArray(matter?.clients) ? matter.clients[0] : matter?.clients
   const nestedName = clientDisplayName(nestedClient)

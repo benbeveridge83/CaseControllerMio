@@ -5,6 +5,7 @@ import {
   checklistTimelineHourLabel,
   compareChecklistTimelineEventsByTime,
   formatChecklistTimelineTime,
+  mergeChecklistTimelineMatter,
   resolveChecklistTimelineClientName
 } from '../src/mioChecklistTimeline.js'
 
@@ -61,4 +62,33 @@ test('falls back to the client collection and legacy matter client fields', () =
     'Matt Murski'
   )
   assert.equal(resolveChecklistTimelineClientName({ client_name: 'Legacy Client' }, []), 'Legacy Client')
+})
+
+test('fills client fields from the loaded matter while keeping embedded event matter data', () => {
+  const merged = mergeChecklistTimelineMatter(
+    { id: 'matter-1', name: 'Gordon - Divorce', clients: null, courts: { court_name: 'Bexar County' } },
+    {
+      id: 'matter-1',
+      client_id: 'client-1',
+      clients: { first_name: 'Briana', last_name: 'Gordon' }
+    }
+  )
+
+  assert.equal(merged.name, 'Gordon - Divorce')
+  assert.equal(merged.courts.court_name, 'Bexar County')
+  assert.equal(merged.client_id, 'client-1')
+  assert.equal(resolveChecklistTimelineClientName(merged, []), 'Briana Gordon')
+})
+
+test('prefers embedded client data and tolerates a missing matter on either side', () => {
+  const merged = mergeChecklistTimelineMatter(
+    { id: 'matter-2', clients: { first_name: 'Matt', last_name: 'Murski' } },
+    { id: 'matter-2', client_id: 'client-9', clients: { first_name: 'Wrong', last_name: 'Client' } }
+  )
+
+  assert.equal(merged.client_id, 'client-9')
+  assert.equal(resolveChecklistTimelineClientName(merged, []), 'Matt Murski')
+  assert.equal(mergeChecklistTimelineMatter(null, { id: 'matter-3' }).id, 'matter-3')
+  assert.equal(mergeChecklistTimelineMatter({ id: 'matter-4' }, null).id, 'matter-4')
+  assert.equal(mergeChecklistTimelineMatter(null, null), null)
 })
