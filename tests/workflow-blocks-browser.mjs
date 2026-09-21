@@ -8,6 +8,13 @@ import {newWithdrawal} from '../src/mioWithdrawalWorkspaceState.js'
 import {chunkRows} from './cloud-chunk-fixture.js'
 const require=createRequire(import.meta.url),browser=await chromium.launch({headless:true,...(process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{}),args:['--no-sandbox']})
 fs.mkdirSync('test-results',{recursive:true})
+// The running app must advertise the release label of the bundle under test. Read that label from the
+// bundle itself instead of pinning a version string, so a release-label bump cannot break this check.
+if(!fs.existsSync('dist/assets'))throw new Error('The app must be built before this check; run npm run build first.')
+const builtBundles=fs.readdirSync('dist/assets').filter(f=>f.endsWith('.js'))
+if(!builtBundles.length)throw new Error('dist/assets contains no built JavaScript bundle; run npm run build first.')
+const releaseLabel=(builtBundles.map(f=>fs.readFileSync('dist/assets/'+f,'utf8')).join('\n').match(/Mio V\d+/)||[])[0]
+if(!releaseLabel)throw new Error('The built bundle does not advertise a Mio release label; run npm run build first.')
 const owner='00000000-0000-4000-8000-000000000279',email='workflow-test@example.invalid',now=new Date().toISOString()
 const ago=days=>new Date(Date.now()-days*86400000).toISOString(),future=days=>new Date(Date.now()+days*86400000).toISOString()
 const user={id:owner,email,aud:'authenticated',role:'authenticated',app_metadata:{provider:'email'},user_metadata:{},identities:[],created_at:now}
@@ -56,8 +63,11 @@ const settle=async fn=>{for(let i=0;i<100;i++){if(fn())return;await page.waitFor
 try{
  await page.goto('http://127.0.0.1:4173/#withdrawals',{waitUntil:'domcontentloaded'})
  await page.getByRole('heading',{name:'Withdrawal dashboard',exact:true}).waitFor({timeout:60000})
- assert.match(await page.locator('body').innerText(),/Mio V305/)
- for(const text of ['Matter status (All of 8)','Case status (All of 3)','Case type (All of 4)'])assert.equal(await page.getByText(text,{exact:true}).count(),1)
+ assert.match(await page.locator('body').innerText(),new RegExp(releaseLabel),'The running app must advertise the release label of the bundle under test')
+ for(const text of ['Matter status (All of 8)','Case type (All of 4)'])assert.equal(await page.getByText(text,{exact:true}).count(),1)
+ // V312 sticky filters intentionally hide the closed case status until it is chosen explicitly, so the
+ // case status chip starts on the two open statuses out of the three configured options.
+ assert.equal(await page.getByText('Case status (2 of 3)',{exact:true}).count(),1)
  await page.getByText('Case type (All of 4)',{exact:true}).click()
  const filter=page.locator('.mio-block-filter').filter({hasText:'Case type'})
  await filter.getByRole('button',{name:'Clear all',exact:true}).click()
@@ -121,7 +131,7 @@ try{
  await page.getByRole('button',{name:'Return to withdrawal row',exact:true}).click()
  await detail().waitFor()
  console.log('PASS actual connected DOCX template generation; no implicit completion')
- async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.getByLabel('Saved matter document',{exact:true}).innerText(),/Beta-private/);await modal.getByLabel('Saved matter document',{exact:true}).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
+ async function attach(slotName,docId){await detail().getByRole('button',{name:new RegExp('^'+slotName)}).click();const modal=page.locator('dialog[open]');assert.doesNotMatch(await modal.innerText(),/Beta-private/);await modal.getByLabel(/Saved matter document/).selectOption(docId);await modal.getByRole('button',{name:'Attach reviewed document to this slot',exact:true}).click();await modal.waitFor({state:'hidden'})}
  await attach('Draft motion to withdraw','pdf-a')
  await attach('Draft withdrawal order','order-a')
  await detail().getByRole('button',{name:'Approve & complete step',exact:true}).click()

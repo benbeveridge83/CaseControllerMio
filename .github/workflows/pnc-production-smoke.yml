@@ -33,12 +33,13 @@ jobs:
               const html=await fetch(root+'/?pnc_smoke='+Date.now(),{signal:AbortSignal.timeout(15000)}).then(r=>{assert.equal(r.status,200);return r.text()});
               const script=html.match(/src="([^"]+\.js)"/);assert.ok(script,'Production JavaScript asset missing');
               const asset=await fetch(new URL(script[1],root),{signal:AbortSignal.timeout(15000)}).then(r=>r.text());
-              assert.ok(asset.includes('Mio V313 (daily trust + PNC workflow)'),'Production has not updated to V313 yet');
+              const label=asset.match(/Mio V(\d+)/);assert.ok(label,'Production is not advertising a Mio release label');
+              assert.ok(Number(label[1])>=313,`Production has not updated past the V313 PNC release (serving ${label[0]})`);
               assert.ok(asset.includes('Add PNC'),'PNC UI absent');
               const auth=await fetch(root+'/api/pnc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list'}),signal:AbortSignal.timeout(15000)});assert.equal(auth.status,401);const authJson=await auth.json();assert.match(authJson.error,/sign in/i);
               const intake=await fetch(root+'/api/client-intake',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'load',token:'invalid-smoke-token'}),signal:AbortSignal.timeout(15000)});const intakeJson=await intake.json();assert.match(intakeJson.error,/Invalid or expired intake link/);assert.ok(!intakeJson.request,'Invalid token exposed request data');
               const edge=await fetch('https://vnnkxqpyndidnjbrbywz.supabase.co/functions/v1/pnc-payment-status',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(15000)});assert.equal(edge.status,401);
-              result={version:'V313',root_status:200,pnc_unauthenticated_status:auth.status,intake_invalid_token_rejected:true,payment_edge_unauthenticated_status:edge.status,checked_at:new Date().toISOString(),live_client_actions:0};break;
+              result={version:label[0],root_status:200,pnc_unauthenticated_status:auth.status,intake_invalid_token_rejected:true,payment_edge_unauthenticated_status:edge.status,checked_at:new Date().toISOString(),live_client_actions:0};break;
             }catch(e){last=e;console.log('Waiting for production release:',e.message);await new Promise(r=>setTimeout(r,15000));}
           }
           if(!result)throw last;
