@@ -3,6 +3,9 @@ import {rebaseFilterValue} from './mioStickyFilterValues.js'
 // Explicit allowlist: never infer that a business record is safe to overwrite.
 const displayKeys=new Set(['caseMioWithdrawalViewV305','caseMioChecklistStepsExpandedByRow','caseMioMatterStepsExpandedByRow','caseMioNeedToSetTocCollapsed','caseMioNeedToSetTocDock','caseMioNeedToSetPageTab','caseMioChecklistNeedToSetSortMode','caseMioChecklistViewMode','caseMioChecklistTimelineMonths','caseMioChecklistTimelineGroupBy','caseMioChecklistTimelineSettingsOpen','caseMioChecklistTimelineDetailsOpen','caseMioChecklistTimelineVisibleSettings','caseMioChecklistDayGridShowEmptyDays','caseMioChecklistDayGridRowHeight','caseMioOrderExpandedIds','visibleMatterColumns','matterColumnWidths'])
 const isDisplayKey=key=>key.startsWith('caseMioStickyFilter:')||displayKeys.has(key)
+// Display preferences rebase safely between tabs; case records require a reload.
+// mioCloudSync uses this to avoid refreshing a window for a filter click elsewhere.
+export const isDisplayPreferenceKey=key=>isDisplayKey(key)
 const preferenceJson=value=>{try{return JSON.stringify(JSON.parse(value))}catch{return JSON.stringify(value)}}
 // Supabase is durable storage; values awaiting acknowledgement exist only in RAM.
 const otherKeys = new Set(['matterColumnWidths','matterExternalEfileUrl','matterPageFilterCaseStatus','matterPageFilterCaseType','matterPageFilterMatterStatus','matterPageSearch','serviceInboxFilter','serviceInboxFolderFilter','serviceInboxMailboxFilter','serviceInboxPhase','serviceInboxPreviewMode','serviceInboxRowDensity','serviceInboxSortMode','serviceInboxViewMode','showMatterStepsOnMatterPage','showUnpopulatedMatterStatuses','taskSubpartCompletions','visibleMatterColumns'])
@@ -16,7 +19,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
   const nativeKeys=()=>{const out=[];for(let i=0;i<nativeStorage.length;i++){const key=nativeStorage.key(i);if(key)out.push(key)}return out}
   const check=s=>{if(current!==s)throw new Error('Account changed; this operation was stopped.')}
   const ready=()=>{if(current?.phase!=='ready')throw new Error('Cloud data is not ready. This change has not been saved.');return current}
-  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',loadProgress:current?.loadProgress||null,pending:current?.pending.size||0,pendingKeys:[...(current?.pending.keys()||[])],conflictKeys:[...(current?.conflicts||[])],remoteChanged:!!current?.remoteChanged,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
+  const status=()=>({owner:current?.id||'',phase:current?.phase||'signed-out',loadProgress:current?.loadProgress||null,pending:current?.pending.size||0,pendingKeys:[...(current?.pending.keys()||[])],conflictKeys:[...(current?.conflicts||[])],remoteChanged:!!current?.remoteChanged,changedKeys:[...(current?.changedKeys||[])],reloadRequired:!!current?.resolvedKeys?.size,error:current?.error||'',conflicts:current?.conflicts.size||0,pausedPending:[...accounts.values()].filter(s=>s!==current).reduce((n,s)=>n+s.pending.size,0)})
   async function checkRemoteChanges(){
     if(current?.phase!=='ready')return false
     const s=current,revision=s.savedRevision||0,remote=new Map()
@@ -27,7 +30,12 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
       if(rows.length<100)break
     }
     if(s.phase!=='ready'||revision!==(s.savedRevision||0))return false
-    s.remoteChanged=!!s.resolvedKeys?.size||remote.size!==s.baseline.size||[...remote].some(([key,at])=>s.baseline.get(key)?.updated_at!==at)
+    const changed=[]
+    for(const [key,at] of remote)if(s.baseline.get(key)?.updated_at!==at)changed.push(key)
+    for(const key of s.baseline.keys())if(!remote.has(key))changed.push(key)
+    // Names only: another tab decides whether these records need a reload.
+    s.changedKeys=[...new Set([...changed,...(s.resolvedKeys||[])])]
+    s.remoteChanged=!!s.resolvedKeys?.size||remote.size!==s.baseline.size||changed.length>0
     notify();return s.remoteChanged
   }
   async function readKey(s,key){

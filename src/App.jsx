@@ -10,6 +10,8 @@ import {
   mergeChecklistTimelineMatter,
   resolveChecklistTimelineClientName
 } from './mioChecklistTimeline'
+import { CALENDAR_SHOW_ALL, calendarEventMatchesStatusFilters, calendarStatusHiddenEventCount } from './mioCalendarEventFilters.js'
+import { mioCalendarEventChannel } from './mioCalendarEventChannel.js'
 import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
 
 const MIO_APP_VERSION = 'Mio V267'
@@ -7985,6 +7987,48 @@ function App() {
 
   useEffect(() => { saveMioStateKey('caseMioCalendarCaseStatusFilter', JSON.stringify(calendarCaseStatusFilter)) }, [calendarCaseStatusFilter])
   useEffect(() => { saveMioStateKey('caseMioCalendarMatterStatusFilter', JSON.stringify(calendarMatterStatusFilter)) }, [calendarMatterStatusFilter])
+
+  const mioCalendarEventsRefreshedAtRef = useRef(0)
+  const mioCalendarEventsRefreshTimerRef = useRef(0)
+  useEffect(() => {
+    if (!session?.user?.id) return undefined
+    // Two Mio windows can show the same calendar. A saved change in either window
+    // re-reads the events so a month can never quietly miss an event, and a window
+    // that regains focus picks up events created while it was in the background.
+    const refreshCalendarEvents = (savedElsewhere = false) => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+      if (document.querySelector('[role="dialog"],dialog[open]')) return
+      const now = Date.now()
+      // A confirmed save elsewhere is applied at once; focus and visibility checks
+      // are throttled so switching windows does not re-read the calendar constantly.
+      const waitMs = savedElsewhere ? 2000 : 20000
+      const idleFor = now - Number(mioCalendarEventsRefreshedAtRef.current || 0)
+      if (idleFor < waitMs) {
+        // Coalesce bursts, then apply the newest save once the short window passes.
+        if (!mioCalendarEventsRefreshTimerRef.current) {
+          mioCalendarEventsRefreshTimerRef.current = window.setTimeout(() => {
+            mioCalendarEventsRefreshTimerRef.current = 0
+            refreshCalendarEvents(savedElsewhere)
+          }, waitMs - idleFor + 50)
+        }
+        return
+      }
+      mioCalendarEventsRefreshedAtRef.current = now
+      Promise.resolve(fetchEvents()).catch(() => {})
+    }
+    const stop = mioCalendarEventChannel.subscribe(() => refreshCalendarEvents(true))
+    const onFocus = () => refreshCalendarEvents()
+    const onVisibility = () => { if (document.visibilityState === 'visible') refreshCalendarEvents() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      window.clearTimeout(mioCalendarEventsRefreshTimerRef.current)
+      mioCalendarEventsRefreshTimerRef.current = 0
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [session?.user?.id])
   useEffect(() => { saveMioStateKey('caseMioClioGraphCaseStatusFiltersV120', JSON.stringify(clioGraphCaseStatusFilters || [])) }, [clioGraphCaseStatusFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphMatterStatusFiltersV120', JSON.stringify(clioGraphMatterStatusFilters || [])) }, [clioGraphMatterStatusFilters])
   useEffect(() => { saveMioStateKey('caseMioClioGraphCaseTypeFilters', JSON.stringify(clioGraphCaseTypeFilters || [])) }, [clioGraphCaseTypeFilters])
@@ -11032,14 +11076,58 @@ function App() {
     return [...new Set(matters.map((matter) => String(matter?.[field] || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
   }
 
-  function calendarEventMatchesMatterFilters(event) {
-    const matter = matters.find((item) => String(item.id) === String(event.matter_id)) || null
-    const caseSelected = Array.isArray(calendarCaseStatusFilter) ? calendarCaseStatusFilter : null
-    const matterSelected = Array.isArray(calendarMatterStatusFilter) ? calendarMatterStatusFilter : null
-    if (caseSelected && !caseSelected.includes(String(matter?.case_status || ''))) return false
-    if (matterSelected && !matterSelected.includes(String(matter?.matter_status || ''))) return false
-    return true
+  function matterForCalendarEvent(event) {
+    return matters.find((item) => String(item.id) === String(event?.matter_id)) || null
   }
+
+  function calendarEventMatchesMatterFilters(event) {
+    // Status filters never hide an event whose matter is unknown or whose status
+    // value is blank: those rows are incomplete records, not filtered-out events.
+    return calendarEventMatchesStatusFilters({
+      matter: matterForCalendarEvent(event),
+      caseFilter: calendarCaseStatusFilter,
+      matterFilter: calendarMatterStatusFilter,
+      caseOptions: calendarStatusOptions('case_status'),
+      matterOptions: calendarStatusOptions('matter_status')
+    })
+  }
+
+  function calendarHiddenStatusEventCount() {
+    const days = calendarMonthDays()
+    const firstDay = dateToInputValue(days[0])
+    const lastDay = dateToInputValue(days[days.length - 1])
+    return calendarStatusHiddenEventCount({
+      events,
+      matterFor: matterForCalendarEvent,
+      caseFilter: calendarCaseStatusFilter,
+      matterFilter: calendarMatterStatusFilter,
+      caseOptions: calendarStatusOptions('case_status'),
+      matterOptions: calendarStatusOptions('matter_status'),
+      includes: (event) => {
+        const start = event.start_date
+        if (isUndatedEventDate(start)) return false
+        const end = isUndatedEventDate(event.end_date) ? start : (event.end_date || start)
+        if (start > lastDay || end < firstDay) return false
+        if (calendarUserFilter !== 'all' && event.assigned_to !== calendarUserFilter) return false
+        return true
+      }
+    })
+  }
+
+  function showEveryCalendarStatusEvent() {
+    setCalendarCaseStatusFilter([CALENDAR_SHOW_ALL])
+    setCalendarMatterStatusFilter([CALENDAR_SHOW_ALL])
+  }
+
+  function notifyCalendarEventsChanged() {
+    // Other Mio tabs re-read calendar_events from Supabase instead of showing a
+    // calendar that is missing an event created in another window.
+    mioCalendarEventChannel.notify()
+  }
+
+  // Events this month that the Case/Matter status filters hide. Mio states the
+  // number instead of letting a filtered calendar look like a lost event.
+  const calendarHiddenStatusCount = page === 'calendar' ? calendarHiddenStatusEventCount() : 0
 
   function eventsForDate(date) {
     const dateValue = dateToInputValue(date)
@@ -11707,6 +11795,7 @@ function App() {
     else {
       resetChecklistCompletionForm()
       fetchEvents()
+      notifyCalendarEventsChanged()
       if (options.showMessage) alert('Moved to Completed.')
     }
   }
@@ -11820,6 +11909,7 @@ function App() {
       setNeedToSetSetRows((current) => ({ ...current, [String(eventId)]: { set_at: new Date().toISOString(), set_date: dateValue } }))
       setChecklistTab('set')
       fetchEvents()
+      notifyCalendarEventsChanged()
     }
   }
 
@@ -11883,6 +11973,7 @@ function App() {
     setNeedToSetSetRows((current) => { const next = { ...current }; delete next[String(rowId)]; return next })
     setChecklistTab('need_date')
     fetchEvents()
+    notifyCalendarEventsChanged()
   }
 
   function formatChecklistBlankDay(date) {
@@ -24016,7 +24107,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const patch = { [field]: value }
     const { error } = await supabase.from('calendar_events').update(patch).eq('id', eventId)
     if (error) alert(error.message)
-    else fetchEvents()
+    else {
+      fetchEvents()
+      notifyCalendarEventsChanged()
+    }
   }
 
   async function addEventTableRow() {
@@ -24030,7 +24124,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       is_active: true
     }])
     if (error) alert(error.message)
-    else fetchEvents()
+    else {
+      fetchEvents()
+      notifyCalendarEventsChanged()
+    }
   }
 
   function updateDiscoveryRequestCell(requestId, field, value) {
@@ -25095,6 +25192,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     resetChecklistCompletionForm()
     closeEventWindow()
     await fetchEvents()
+    notifyCalendarEventsChanged()
   }
 
   function openAddEventWindow(date = new Date()) {
@@ -25309,6 +25407,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       } else {
         setEvents(refreshList)
       }
+      if (savedEvent) notifyCalendarEventsChanged()
     } finally {
       setIsEventSaving(false)
     }
@@ -25327,6 +25426,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     else {
       setEventForm({ ...eventForm, is_active: !shouldPass })
       fetchEvents()
+      notifyCalendarEventsChanged()
     }
   }
 
@@ -25937,6 +26037,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     if (error) alert(error.message)
     else {
       await fetchEvents()
+      notifyCalendarEventsChanged()
       alert(`Imported ${payload.length} events.`)
     }
   }
@@ -30509,7 +30610,11 @@ async function updateTeamCell(memberId, field, value) {
     const { error } = await supabase.from(table).delete().eq('id', id)
 
     if (error) alert(error.message)
-    else refreshFn()
+    else {
+      refreshFn()
+      // Deleting an event from any window must clear it from every open calendar.
+      if (table === 'calendar_events') notifyCalendarEventsChanged()
+    }
   }
 
   const filteredSettings = settingsFilter === 'all'
@@ -59109,6 +59214,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 ))}
               </div>
             </div>
+
+            {calendarHiddenStatusCount > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10, padding: '7px 10px', border: '1px solid #fcd34d', background: '#fffbeb', borderRadius: 8, fontSize: 13, color: '#713f12' }}>
+                <strong>{calendarHiddenStatusCount} event{calendarHiddenStatusCount === 1 ? '' : 's'} in this month {calendarHiddenStatusCount === 1 ? 'is' : 'are'} hidden by the Case status / Matter status filters.</strong>
+                <span>An event created from Notification of Service appears here as soon as the filters include its matter.</span>
+                <button type="button" onClick={showEveryCalendarStatusEvent}>Show all events</button>
+              </div>
+            )}
 
             {calendarView !== 'eventLists' ? (
               <table border="1" cellPadding="6" style={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}>
