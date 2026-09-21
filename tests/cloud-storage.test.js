@@ -2,7 +2,7 @@ import {chunkRows} from './cloud-chunk-fixture.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import {createMioCloudStore,isAppKey,isNativeKey} from '../src/mioCloudStore.js'
+import {createMioCloudStore,isAppKey,isDisplayPreferenceKey,isNativeKey} from '../src/mioCloudStore.js'
 import {transformMioCloudPersistence} from '../mio-v277-cloud-persistence.js'
 function fixture(local={},initial=[]) {
  const disk=new Map(Object.entries(local)),rows=new Map(initial.map(r=>[r.user_id+'|'+r.key,{...r}])),recoveries=[]
@@ -104,7 +104,21 @@ test('remote change detection never replaces pending work and detects deletions'
  assert.equal(f.store.storage.getItem('caseMioTest'),'local')
  assert.deepEqual(f.store.status().pendingKeys,['caseMioTest'])
  assert.equal(f.store.status().remoteChanged,true)
+ assert.deepEqual(f.store.status().changedKeys,['caseMioTest'],'the changed record is named, never its value')
  f.rows.delete('a|caseMioTest');assert.equal(await f.store.checkRemoteChanges(),true)
+ assert.deepEqual(f.store.status().changedKeys,['caseMioTest'],'a record deleted in another tab is also reported')
+})
+test('changed record names separate display preferences from case data',async()=>{
+ const display='caseMioStickyFilter:serviceInboxFilter',business='caseMioServiceEmailRows'
+ const f=fixture({},[row(display,'{"schema":1,"value":"all"}'),row(business,'[]')]);await f.store.prepare('a');f.store.activate()
+ assert.equal(isDisplayPreferenceKey(display),true);assert.equal(isDisplayPreferenceKey(business),false)
+ f.rows.set('a|'+display,{...row(display,'{"schema":1,"value":"mine"}'),updated_at:'new'})
+ assert.equal(await f.store.checkRemoteChanges(),true)
+ assert.deepEqual(f.store.status().changedKeys,[display])
+ assert.equal(f.store.status().reloadRequired,false)
+ f.rows.set('a|'+business,{...row(business,'[{"id":"new"}]'),updated_at:'newer'})
+ assert.equal(await f.store.checkRemoteChanges(),true)
+ assert.ok(f.store.status().changedKeys.includes(business))
 })
 test('conflict can be resolved to cloud only after the local edit is archived',async()=>{
  const f=fixture({},[row('caseMioTest','original')]);await f.store.prepare('a');f.store.activate()
