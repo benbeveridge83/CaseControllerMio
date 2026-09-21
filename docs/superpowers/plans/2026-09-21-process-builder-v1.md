@@ -1,0 +1,293 @@
+# Process Builder V1 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build functional, reusable process blocks in Settings, with configurable custom pages, durable row execution, clear waiting statuses, and a Need to Set starter process.
+
+**Architecture:** Separate immutable published definitions from mutable per-row instances. Share pure graph, field-resolution, transition, and status code between React and a server-side worker; put external actions behind capability-reporting adapters. Preserve existing pages and integrate through narrow App boundaries.
+
+**Tech Stack:** Existing React 19/Vite 8 JavaScript application; existing Supabase JS 2.108.2, Postgres and Edge Functions; Node test runner and Playwright. SVG connections and pointer/keyboard controls use React without a new graph dependency. Verify current official provider documentation before implementing provider APIs.
+
+**Spec:** `docs/superpowers/specs/2026-09-21-process-builder-v1-design.md`
+
+## Global Constraints
+
+- This is not a checklist editor or a visual-only mockup.
+- Existing pages and running workflows remain unchanged until explicitly connected to the new engine.
+- Background execution must continue with the browser closed.
+- Missing required values block execution with a named-field message; unresolved tokens are never sent.
+- Reply receipt is not completion.
+- Filing submissions require explicit final approval in version one.
+- Each instance pins its process version.
+- Cancellation is not successful completion and does not silently activate successors.
+- Do not automatically charge for elapsed waiting or provider execution.
+- Unsupported or disconnected actions must remain visibly blocked, never simulate success.
+- Test-run mode cannot send real mail, file documents, alter actual calendars, or create real bills.
+- No client case data in new localStorage/sessionStorage keys. No secret credentials in process JSON.
+- This plan does not authorize sending test messages, filing, purchasing services, granting mailbox permissions, or deploying production schema changes without the appropriate release authorization.
+
+## Review Focus
+
+1. Two Need to Set tasks for the same matter must not share progress or replies: instance identity is task-specific (Tasks 2, 3, 5).
+2. A reply received before a send result is reconciled must be retained without completing the wrong block (Tasks 2, 5).
+3. Editing a document or recipient after approval must invalidate the approval, including after a reload (Tasks 2, 5, 7).
+4. Date-only court options, DST ambiguity, and missing calendar pages must not become falsely available hearing slots (Task 6).
+5. Switching signed-in users during a pending request must discard the previous user's results, including unsaved template previews (Tasks 3, 8).
+
+## Source findings and prerequisite decisions
+
+The inspected source uses `settingsTab` in `src/App.jsx`, with Settings buttons around line 61111. `getMicrosoftGraphToken` and `graphFetch` around lines 34018–34070 acquire browser MSAL tokens. They are not a server-side background credential source. `src/mioWithdrawalRepository.js` demonstrates revision-aware storage but keys instances by matter, which cannot serve the new task-per-row requirement. `src/mioWorkflowBlocks.js` requires a withdrawal-specific signed-order slot. Do not extend that validator for new processes.
+
+`src/mioWithdrawalBlocksApp.inc` prepares email and filing workspaces, and connects existing drafting templates; preparation is not confirmed submission. `generateDocxFromTemplateFile` and `generateWordAssemblyDrafts` in App are candidate extraction boundaries. No complete background Microsoft refresh-token service was found during this inspection. Task 5 must expose connection-required rather than borrow browser tokens for background work.
+
+Implement one coherent feature in the ordered tasks below. Billing redesign and wholesale migration of existing pages are separate future projects. If the existing server credential facilities cannot meet Task 5, stop its live enablement for the required Microsoft setup while continuing pure engine/UI/testing tasks; do not claim full live completion.
+
+## File map and shared interfaces
+
+All new pure modules live under `lib/process/` so Node, React, and Deno can import them. No browser imports in that directory. React components live under `src/process/`; Edge wrappers live under `supabase/functions/`.
+
+```js
+// lib/process/model.js — JSON contracts (document as JSDoc typedefs)
+// Definition: {id, schemaVersion:1, name, fields, blocks, edges}
+// Block: {id,type,name,stepNumber,position,activation,join,inputs,outputs,
+//         config,messages,completion,billing}
+// activation: 'row_created' | 'predecessors'; join: 'all' | 'any'
+// Edge: {id,source,target}; inputs: {name: Binding}
+// Binding: {source:'literal',value} | {source:'matter'|'row',field}
+//        | {source:'block',blockId,field}
+// Field: {key,label,type,required}; type includes 'date_windows', 'documents'
+// Window: {start:ISO8601,end:ISO8601,timeZone:IANA}
+// Instance: {id,ownerId,matterId,pageId,versionId,sourceKey,revision,
+//            definition,fields,blocks,paused,status,seenEventIds}
+// Event: {id,type,blockId,at,payload}
+// Transition: {instance,commands}; Command: {key,instanceId,blockId,type,payload}
+// AdapterResult: {status:'succeeded'|'blocked'|'unknown',outputs,reference,reason}
+export const BLOCK_TYPES = ['email','calendar','draft','efile','save'];
+```
+
+Use one canonical field/key spelling throughout. Database columns use snake_case; `repository.js` alone maps them to the JSON interfaces. Commands contain document references, not file bytes or tokens. Field writes and provider events must pass server validation, not just browser validation.
+
+### Task 1: Definition validation and token resolution
+
+**Files:** Create `lib/process/model.js`, `lib/process/fields.js`; test `tests/process-model.test.js`.
+**Interfaces:** `validateDefinition(def) → def` throws named errors; `resolveBinding(binding,context) → value`; `renderTokens(text,context) → {text,missing}`; `context={matter,row,outputs}`.
+
+- [ ] Write failing tests for unique IDs, allowed block types, acyclic edges, all/any joins, unknown inputs, incompatible field types, document ownership metadata, required output definitions, and upstream-only mappings. Pin the important missing-token behavior:
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {renderTokens} from '../lib/process/fields.js';
+test('missing tokens prevent an apparently complete email', () => {
+  assert.deepEqual(renderTokens('Hello {{matter.client_name}}',
+    {matter:{},row:{},outputs:{}}),
+    {text:'Hello {{matter.client_name}}',missing:['matter.client_name']});
+});
+```
+
+- [ ] Run `node --test tests/process-model.test.js`; confirm failure from missing exports.
+- [ ] Implement graph traversal with a recursion stack; validate each mapping's producer is an ancestor. Implement token lookup by allowlisted path segments, never eval or dynamic property traversal through prototype keys. Reject unknown tokens at publish; report known but empty values at runtime. Use this lookup boundary:
+
+```js
+const forbidden = new Set(['__proto__','prototype','constructor']);
+export function safePath(root, segments) {
+  if (segments.some(s => forbidden.has(s))) throw Error('Unsafe field path');
+  return segments.reduce((v,k) => v != null && Object.hasOwn(v,k) ? v[k] : undefined, root);
+}
+```
+
+- [ ] Run model tests and `git diff --check`; commit only Task 1 files as `feat: define reusable process graph and fields`.
+
+### Task 2: Execution reducer and row status
+
+**Files:** Create `lib/process/engine.js`, `lib/process/status.js`, `tests/process-engine.test.js`, `tests/fixtures/process.js`.
+**Interfaces:** `createInstance({id,ownerId,matterId,pageId,versionId,sourceKey,definition,fields})`; `reduceEvent(instance,event) → Transition`; `rowStatus(instance) → {category,message,blockId,pendingCount,unread,completed,total}`. Fixture exports `emailDefinition()` with email block `court`, completion field `court_dates`, and review enabled.
+
+- [ ] Write the failing lifecycle test plus duplicate-event, prefilled-output, paused, cancelled, parallel-priority, approval-fingerprint, and wrong-block-event tests:
+
+```js
+test('a reply is not completion', () => {
+  let s = createInstance({id:'i1',ownerId:'u1',matterId:'m1',pageId:'p1',
+    versionId:'v1',sourceKey:'task:1',definition:emailDefinition(),fields:{}});
+  for (const [id,type,payload] of [
+    ['a','row_created',{}],
+    ['b','action_prepared',{fingerprint:'f1',resolvedInputs:{}}],
+    ['c','approve',{fingerprint:'f1'}],
+    ['d','action_succeeded',{reference:'message:1'}],
+    ['e','reply_received',{reference:'reply:1'}]
+  ]) s=reduceEvent(s,{id,type,blockId:'court',at:'2026-09-21T12:00:00Z',payload}).instance;
+  assert.equal(s.blocks.court.status,'reply_received');
+  assert.equal(rowStatus(s).category,'me');
+});
+```
+
+- [ ] Run `node --test tests/process-engine.test.js` and verify failure.
+- [ ] Implement explicit transition guards. Only server-prepared actions establish fingerprints; only trusted worker events establish provider success. User approvals must match current fingerprints. Keep unmatched replies as audit events pending correlation. Use command keys `${instance.id}:${block.id}:${actionKind}:${attempt}` with attempt advanced only by a reviewed retry. A render/load event never produces commands.
+- [ ] Implement reducer output as new immutable state plus commands; compute row status with needs-me first, oldest first, then running, then external waiting. Include all active actions in expanded state. Test two instances for the same matter remain independent.
+- [ ] Run Tasks 1–2 tests; commit `feat: add process transitions and row attention status`.
+
+### Task 3: Durable storage, access control, and repository
+
+**Files:** Create migration via Supabase CLI named `process_builder_v1`; create `lib/process/repository.js`, `tests/process-repository.test.js`, `tests/sql/process-builder.sql`. Do not invent a migration timestamp.
+**Interfaces:** `createProcessRepository(client) → {listPages,saveDraft,publish,createRow,loadRow,applyEvent,history}`. Every write receives an expected revision; derive identity from verified authentication, not request owner IDs.
+
+- [ ] Before schema implementation, read current Supabase changelog/docs and inspect actual matter/team access rules. Use the Supabase skill's local-development and advisor workflow. Create isolated local/preview tests; no production migration here.
+- [ ] Write SQL assertions for owner isolation, inaccessible secrets/jobs, immutable published versions, revision conflicts, same-matter checks, and duplicate source creation. Plan these constraints:
+
+```sql
+-- Apply to the relevant tables during schema creation:
+-- mio_process_instances:
+unique (owner_id, page_id, source_key)
+-- mio_process_events:
+unique (instance_id, event_id)
+-- mio_process_jobs:
+unique (action_key)
+-- mio_process_versions: no authenticated UPDATE or DELETE grant
+```
+
+- [ ] Run failing repository tests and SQL suite against the isolated database; capture missing relation/function failures.
+- [ ] Implement tables `mio_process_pages`, `mio_process_drafts`, `mio_process_versions`, `mio_process_instances`, `mio_process_events`, `mio_process_jobs`, `mio_process_billing_links`. RLS protects exposed tables; jobs and OAuth secrets are server-only. Use atomic revision-checked event+state+job persistence and atomic publish. Security-definer helpers, if unavoidable, use fixed search_path, explicit authorization, revoked public execution, and narrowly granted callers.
+- [ ] Implement repository account-generation guards. Test a user switch while a deferred read completes: the old result must not enter the new snapshot. Return conflict errors with reload/review guidance, without automatic overwrite.
+- [ ] Run Node tests, SQL assertions, concurrent source-event/claim tests and advisors; inspect migration diff; commit `feat: persist versioned process instances securely`.
+
+### Task 4: Server worker and safe test mode
+
+**Files:** Create `lib/process/runner.js`, `lib/process/providers.js`, `supabase/functions/process-worker/index.ts`, `supabase/functions/process-api/index.ts`, `tests/process-runner.test.js`.
+**Interfaces:** `runJob(job,{repository,adapters,clock}) → AdapterResult`; `adapter.execute(command,context)` and `adapter.reconcile(command,context)`; `capabilities(context) → [{type,available,reason}]`.
+
+- [ ] Write failure-first tests for duplicate job delivery, atomic claiming, expired worker leases, disabled process, paused instances, revoked credentials, unknown outcomes, and isolated test mode:
+
+```js
+test('test mode never calls live adapters', async () => {
+  let calls=0;
+  const result=await runJob({mode:'test',command:{type:'email',key:'k'}}, {
+    repository:fakeRepository(),clock:()=>0,
+    adapters:{email:{execute:async()=>{calls++;throw Error('live call');}}}
+  });
+  assert.equal(calls,0);
+  assert.equal(result.status,'succeeded');
+});
+```
+
+- [ ] Define `fakeRepository()` in the test with atomic claim and finalize behavior; run the test to see the initial failure.
+- [ ] Implement bounded job batches and server-authenticated worker requests, with expired claims reconciled before possible re-execution. A timeout after send is `unknown`, not automatic resend. Use a distinct hard-coded mock adapter registry for test mode. Worker request bodies cannot select arbitrary owners or URLs.
+- [ ] Add authenticated API actions for draft save/publish, row creation, field updates, approval, pause, retry, and event history. Validate supported user-event types; reject browser-submitted `action_succeeded`. Transactions recheck paused/enabled state immediately before dispatch.
+- [ ] Document worker schedule setup in `docs/process-builder-operations.md`: protected scheduled invocation, bounded execution, and last-run health. Verify scheduled runs in a preview environment before live enablement; scheduler setup requiring new credentials/authority stops for user action.
+- [ ] Run runner and database tests; commit `feat: run durable process jobs with isolated simulation`.
+
+### Task 5: Background Microsoft connection, email, and replies
+
+**Files:** Create `lib/process/microsoft.js`, `lib/process/email.js`, `supabase/functions/process-microsoft/index.ts`, `tests/process-email.test.js`; extend the Task 3 migration through a new CLI-generated `process_microsoft_connection` migration if required.
+**Interfaces:** `getMailboxToken(ownerId,mailbox,{secretStore,fetch})`; `emailAdapter({fetch,getToken}) → adapter`; `correlateReply(message,instance) → blockId|null`.
+
+- [ ] Verify official Microsoft documentation for delegated server authorization, scopes, shared-mailbox send permission, refresh rotation, draft creation/sending, immutable message IDs, reply headers, and paginated mailbox/calendar reads. Add exact documentation links to operations notes. Do not assume browser consent grants server authorization.
+- [ ] Write failing mocked-HTTP tests for missing send permission, wrong sender, unresolved addresses, stale approval fingerprints, changed attachment versions, draft creation/send timeout, early reply, duplicate reply, and two concurrent tasks for one matter:
+
+```js
+test('subject alone cannot correlate a reply',()=>{
+  assert.equal(correlateReply({subject:'Hearing dates',id:'r1'},
+    {blocks:{court:{messageId:'m1',conversationId:'c1'}}}),null);
+});
+```
+
+- [ ] Run `node --test tests/process-email.test.js`; implement a new server OAuth flow with one-use expiring state bound to the authenticated user, fixed redirect destination, and encrypted server-only refresh-token storage. Use dedicated configuration names `MIO_PROCESS_MS_CLIENT_ID`, `MIO_PROCESS_MS_CLIENT_SECRET`, `MIO_PROCESS_MS_REDIRECT_URI`, and `MIO_PROCESS_TOKEN_KEY`. Never expose or log values. Missing configuration returns `blocked` with setup instructions; do not extract MSAL browser credentials.
+- [ ] Implement preparation as a rendered message snapshot/fingerprint, then authorized send using a persisted draft/message reference. Respect To/CC and From exactly. Record provider acceptance separately from delivery. Reconcile sent status after ambiguous sends before allowing retry. Poll linked conversations from the worker with pagination and a persisted cursor; correlate message IDs/reply references plus matter/thread context, not subject matching. Unmatched replies require manual linking.
+- [ ] Add Settings connection health and authorized-mailbox selection. No review sends automatically only when explicitly published/enabled; review-required sends consume a current approval. Live testing uses read-only mailbox capability checks unless Ben authorizes a real test recipient.
+- [ ] Run mocks and ownership tests; commit `feat: add authorized email blocks and reply tracking`. Record whether Microsoft setup is connected or still blocked.
+
+### Task 6: Calendar availability block
+
+**Files:** Create `lib/process/calendar.js`, `tests/process-calendar.test.js`.
+**Interfaces:** `availableWindows({candidates,busy,durationMinutes,beforeMinutes,afterMinutes}) → Window[]`; `calendarAdapter({fetch,getToken}) → adapter`.
+
+- [ ] Write failing tests for overlapping/adjacent events, buffers, tentative/all-day handling, zero availability, paginated responses, missing calendars, date-only candidates, and DST repeated/nonexistent local times. Require offset-bearing instants and an IANA timezone for execution; date-only entries require user time-window input.
+
+```js
+test('missing calendar data is not an empty calendar',()=>{
+  assert.throws(()=>availableWindows({candidates:[],busy:null,
+    durationMinutes:30,beforeMinutes:0,afterMinutes:0}),/calendar/i);
+});
+```
+
+- [ ] Run `node --test tests/process-calendar.test.js`; implement interval subtraction using absolute instants, after candidate normalization/validation. Intersect selected calendars by unioning busy intervals. Never drop a failed/pending response from the computation.
+- [ ] Return queried-at and input fingerprint with availability. Empty results become needs-me. This adapter reads calendars only and never creates a booking. If timezone conversion needs a dependency, pin a maintained library after verifying its current documentation rather than hand-coding DST offsets.
+- [ ] Run calendar and worker tests; commit `feat: compare hearing windows with calendar availability`.
+
+### Task 7: Draft, save, and filing/service adapters
+
+**Files:** Create `lib/process/documents.js`, `lib/process/filing.js`, `src/process/legacyAdapters.js`, `tests/process-documents.test.js`, `tests/process-filing.test.js`; narrowly modify `src/App.jsx` drafting callback boundaries if necessary.
+**Interfaces:** `documentAdapter({generate,load,save}) → adapter`; `filingAdapter({prepare,submit,reconcile}) → adapter`; `createLegacyProcessAdapters(callbacks)` exposes existing interactive preparation tools without mislabeling them as background providers.
+
+- [ ] Write failing tests proving selected template/version and field mappings reach generation; missing fields prevent generation; save failures prevent completion; changed files invalidate approval; same-matter access is enforced. Filing tests cover each mode and provider result:
+
+```js
+test('both mode requires filing and service evidence',()=>{
+  assert.equal(filingComplete('both',{filing:'accepted',service:'pending'}),false);
+  assert.equal(filingComplete('both',{filing:'accepted',service:'confirmed'}),true);
+});
+```
+
+- [ ] Define/export `filingComplete(mode,result)` from `filing.js`; run tests to verify failure before implementation.
+- [ ] Extract or wrap existing deterministic Word generation with characterization tests against the same template fixture. Pin the template/document version; save generated files through actual matter-document services. Where browser-specific generation is unavoidable, label the required interactive action as needs-me; do not invent background capability. Expose PDF output only when actual conversion succeeds.
+- [ ] Implement safe filename normalization, permitted destination selection, create-version conflict policy, and saved reference verification. OneDrive uses authorized server tokens and allowlisted Graph destinations; user-provided arbitrary fetch URLs are rejected.
+- [ ] Implement filing preparation and mode-specific inputs; require explicit final approval. Use the existing filing provider only after capability checks. If it only stages a package, return `blocked`/needs-me with the preparation link; never emit acceptance. Reconcile real references and show rejected/unknown states. Preserve legacy workspace data rather than silently replace an unsent package.
+- [ ] Run characterization and adapter tests; commit `feat: connect document and filing process blocks`.
+
+### Task 8: Visual builder and Settings integration
+
+**Files:** Create `src/process/ProcessBuilder.jsx`, `ProcessCanvas.jsx`, `BlockProperties.jsx`, `BlockTypeFields.jsx`, `TokenPicker.jsx`, `process.css` in that directory; modify `src/App.jsx`; create `tests/process-builder-browser.mjs`.
+**Interfaces:** `ProcessBuilder({repository,templates,mailboxes,fieldCatalog,capabilities,onPublish})`; `ProcessCanvas({definition,selectedId,onSelect,onChange})`; `BlockProperties({block,definition,catalogs,onChange})`.
+
+- [ ] Write Playwright assertions before implementation for Settings → Process Builder, Create process/page, all five block types, pointer placement, port connections, keyboard connection, deleting referenced blocks, token insertion, every type-specific field, draft save/reload, publish validation, and user-switch cleanup:
+
+```js
+await page.getByRole('button',{name:'Process Builder',exact:true}).click();
+await page.getByRole('button',{name:'Create process/page',exact:true}).click();
+await page.getByLabel('Page name',{exact:true}).fill('Hearing setup');
+await page.getByRole('button',{name:'Add Email block',exact:true}).click();
+await page.getByLabel('Review before sending',{exact:true}).selectOption('yes');
+await page.getByLabel('Waiting for reply message',{exact:true}).fill('Waiting for court dates');
+```
+
+- [ ] Run the failing browser script with synthetic authenticated fixtures modeled on `tests/workflow-blocks-browser.mjs`; prohibit outbound writes except the fixture API.
+- [ ] Build controlled components for shared fields and type-specific panels. SVG connectors follow block coordinates; pointer drag changes positions, connection controls modify edges and call `validateDefinition`. TokenPicker shows matter, row, and upstream fields with type labels. Display missing provider capability separately from graph validity.
+- [ ] Add `settingsTab='process_builder'` and lazy page component import at the existing Settings render boundary. No wholesale App refactor and no another string-replacement Vite plugin. Guard dirty navigation; save errors retain edits; provider tokens never enter component state.
+- [ ] Run browser tests, `npm run build`, and changed-file lint; commit `feat: add visual process builder in Settings`.
+
+### Task 9: Custom pages, starter flow, and billing links
+
+**Files:** Create `lib/process/starter.js`, `src/process/ProcessPage.jsx`, `src/process/ProcessRow.jsx`, `src/process/ProcessBilling.jsx`, `tests/process-page-browser.mjs`, `tests/process-starter.test.js`; modify narrow navigation and billing hooks in `src/App.jsx`.
+**Interfaces:** `needToSetStarter() → Definition`; `ProcessPage({pageId,repository,billingAdapter})`; `billingAdapter.open({matterId,instanceId,blockId,description,suggestedDuration})` opens existing reviewed time entry; saved entry returns a stable billing ID.
+
+- [ ] Test starter graph validation and exact sequence `court → calendar → client → counsel → draft → save → efile`. Set drafting-required fields for confirmed hearing start/end and location/method; shared availability does not imply a confirmed setting.
+
+```js
+test('starter is valid and never enables unattended sends by default',()=>{
+  const d=needToSetStarter(); validateDefinition(d);
+  assert.ok(d.blocks.filter(b=>b.type==='email').every(b=>b.config.reviewBeforeSend));
+  assert.equal(d.blocks.find(b=>b.type==='efile').config.requireFinalApproval,true);
+});
+```
+
+- [ ] Run failing starter and browser tests. Implement draft starter with empty real template/mailbox choices, not fabricated IDs.
+- [ ] Add generic published-page navigation using stable `process/<pageId>` routes, sanitized visible names, access checks, and direct-link reload support. Paginate rows; show category color plus text, current step, unread icon, pending count, progress, and expanded inputs/actions/history. Manual Create row records one unique source key and event; source-event registration is opt-in, never a mass import of existing rows.
+- [ ] Add billing icons opening the existing time-entry UI with linked metadata, user-reviewed duration/amount, and a unique submission key. Test double clicks, cancellation, multiple intentional entries on one block, and no bills from waiting duration. Do not modify existing billing calculations.
+- [ ] Run starter/page/browser regression tests; commit `feat: run custom process pages with linked billing`.
+
+### Task 10: End-to-end verification and release handoff
+
+**Files:** Create `tests/process-e2e-browser.mjs`, `docs/process-builder-release.md`; finish `docs/process-builder-operations.md`.
+**Interfaces:** Uses published page, worker, and adapter contracts from Tasks 1–9; introduces no new runtime API.
+
+- [ ] Write and run a synthetic end-to-end sequence with a saved/published process, new row, reviewed email, reply event, dates, calendar filtering, client and counsel replies, confirmed setting, template output, review, durable save, and accepted filing/service fixtures. Assert each expected row status and next-block activation, including after browser close and reopen.
+- [ ] Run `node --test tests/*.test.js`, `npm run build`, existing withdrawal/formspree/PNC browser suites, and the new process suites. Run SQL access/concurrency assertions and advisors in the isolated database. Record failures rather than suppressing them; separate baseline failures with reproducible evidence.
+- [ ] Verify no real external sends/submissions occurred in fixture runs. Inspect the preview UI at desktop and narrow widths for clipped fields, readable connectors, keyboard access, and all status colors/text. Exercise another signed-in account against page and row IDs; expect access denial.
+- [ ] Document exact setup dependencies and capabilities in a matrix: feature, implemented adapter, mocked test result, live read-only check, remaining user setup. Include Microsoft consent, authorized mailboxes, worker schedule/health, template selection, PDF conversion, and filing provider/certification limitations where relevant.
+- [ ] Commit tests/docs as `test: verify process builder lifecycle and release safeguards`. Request branch review using the applicable review skill. Fix findings and rerun affected tests before any completion claim.
+- [ ] Present preview and test evidence. Obtain release authorization as required by the repository workflow. Apply reviewed migrations and deploy only within that authorization; keep pages disabled until integration checks pass. Rollback disables worker dispatch and page activation, retains audit data, and never deletes in-flight jobs or documents.
+
+## Plan self-review and execution order
+
+Coverage: spec sections 1–3 → Tasks 1, 8, 9; sections 4–5 → Tasks 1–5; section 6 → Tasks 6–7; section 7 → Tasks 2, 9; section 8 → Task 9; section 9 → Tasks 3–5; section 10 → Task 9; section 11 → Task 10. All five Review Focus cases are assigned above.
+
+Execute 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10, with per-task tests and commits. The final release requires the integrated result; intermediate commits are not claims of a complete functional feature. Use an isolated worktree at execution time, preserving the existing documentation branch and unrelated work. No implementation starts until Ben reviews this plan and selects an execution method.
