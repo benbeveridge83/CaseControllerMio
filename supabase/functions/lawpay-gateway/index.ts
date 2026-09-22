@@ -1,5 +1,6 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.112.2'
 import {syncProviderPage} from '../_shared/lawpay-v314.js'
+import {accountRegistry,buildAccountDiagnostics,financeAdminAllowed} from '../_shared/lawpay-accounts-v323.js'
 const cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, x-client-info, apikey, content-type','Access-Control-Allow-Methods':'POST, OPTIONS'}
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{...cors,'Content-Type':'application/json'}})
 const env=(name:string,fallback='')=>Deno.env.get(name)||fallback
@@ -22,6 +23,20 @@ Deno.serve(async(req:Request)=>{
   try {
     const user=await requireUser(req),body=await req.json().catch(()=>({})),action=String(body.action||'health'),db=service()
     if(action==='health'){const map=accounts(),events=await gatewayGet('/v1/events?page=1&page_size=1'),configured=Object.entries(map).filter(([,id])=>id);return reply({ok:true,version:314,account_count:configured.length,accounts:configured.map(([key,id])=>({key,id_last4:String(id).slice(-4)})),latest_event_at:events.results?.[0]?.created||null})}
+    // Read-only, administrator-only diagnostics for the deposit-account mapping. Returns counts
+    // and last-four identifiers only: never a payer, an amount, an email, a reference or a full
+    // account identifier, and never a raw provider payload.
+    if(action==='diagnostics'){
+      if(!financeAdminAllowed(user?.email,env('MIO_FINANCE_ADMIN_EMAILS')))return reply({ok:false,error:'A firm finance administrator must be signed in to run LawPay diagnostics.'},403)
+      const limit=Math.min(Math.max(Number(body.limit)||200,1),500)
+      const columns='gateway_transaction_id,account_id,account_key,amount_refunded_cents,transaction_type,status,synced_at,raw'
+      const {data:transactions,error:txError}=await db.from('lawpay_transactions').select(columns).order('occurred_at',{ascending:false}).limit(limit)
+      if(txError)throw txError
+      const mapping=await db.from('mio_lawpay_accounts').select('provider_account_id,account_key,bank_account_id,bank_role,label,is_active')
+      const registry=accountRegistry({rows:mapping.error?[]:(mapping.data||[]),environment:accounts()})
+      return reply({ok:true,version:323,redacted:true,mapping_table_available:!mapping.error,
+        diagnostics:buildAccountDiagnostics({transactions:transactions||[],registry})})
+    }
     if(action==='create_link'){
       const key=String(body.account_key||''),map=accounts();if(!map[key])throw new Error('The selected LawPay account is not configured in Supabase secrets.')
       const built=paymentUrl(body),payload={created_by:user.id,matter_id:body.matter_id?String(body.matter_id):null,matter_name:String(body.matter_name||''),client_id:body.client_id?String(body.client_id):null,client_name:String(body.client_name||''),payer_name:String(body.payer_name||''),payer_email:String(body.payer_email||''),payer_phone:String(body.payer_phone||''),account_key:key,amount_cents:built.amountCents,invoice_number:String(body.invoice_number||''),reference:built.reference,payment_url:built.url,status:'created',raw:{source:'mio',account_id_last4:map[key].slice(-4)}}

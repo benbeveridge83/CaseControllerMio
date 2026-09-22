@@ -52,14 +52,17 @@ export function registryRowProblem(row = {}) {
 
 // `rows` are mio_lawpay_accounts records; `environment` seeds the same keys from the
 // gateway's LAWPAY_ACCOUNT_* secrets so an installation keeps working while the mapping is
-// being filled in. Registry rows always win over the environment seed.
+// being filled in. Registry rows always win over the environment seed, and an explicit mapping
+// shadows the environment for that provider account even when it is inactive, so deactivating a
+// mapping is never undone silently by the seed.
 export function accountRegistry({ rows = [], environment = {} } = {}) {
   const active = [], problems = [], duplicates = []
-  const seen = new Map()
+  const seen = new Map(), mapped = new Set()
   for (const row of rows || []) {
+    const id = accountIdValue(row.provider_account_id)
+    if (id) mapped.add(id)
     const problem = registryRowProblem(row)
     if (problem) { problems.push({ provider_account_id: maskAccountId(row.provider_account_id), problem }); continue }
-    const id = accountIdValue(row.provider_account_id)
     if (seen.has(id)) {
       duplicates.push({ provider_account_id: maskAccountId(id), account_keys: [seen.get(id).account_key, row.account_key].map(accountIdValue).filter(Boolean) })
       continue
@@ -73,7 +76,7 @@ export function accountRegistry({ rows = [], environment = {} } = {}) {
   const environmentOnly = ACCOUNT_KEYS
     .filter((key) => accountIdValue(environment?.[key]))
     .map((key) => ({ provider_account_id: accountIdValue(environment[key]), account_key: key, bank_account_id: '', bank_role: accountFamily(key), label: '', last4: maskAccountId(environment[key]).replace(/^•+/, ''), is_active: true, source: 'environment' }))
-    .filter((row) => !byProviderId.has(accountIdValue(row.provider_account_id)))
+    .filter((row) => !mapped.has(accountIdValue(row.provider_account_id)))
   return {
     rows: active,
     problems,

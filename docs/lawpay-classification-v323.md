@@ -58,17 +58,46 @@ transaction did, once, and keeps an audit trail of corrections.
   told it is already accounted for, and exactly one posting and one ledger entry remain.
   Reproduced locally against PostgreSQL 18 and repeated in CI (`finance-review-v314.yml`).
 
+## Diagnostics (implemented, administrator only)
+
+`lawpay-gateway` now supports a read-only `diagnostics` action using
+`supabase/functions/_shared/lawpay-accounts-v323.js`:
+
+- It requires an authenticated session **and** a recognised firm finance administrator
+  (`MIO_FINANCE_ADMIN_EMAILS`, defaulting to `ben@beveridgelawfirm.com`). Anyone else receives
+  403 and no diagnostics.
+- It reads the stored provider records and the `mio_lawpay_accounts` mapping and returns counts
+  plus last-four identifiers only: provenance counts, whether the provider reported `account_id`
+  as a string, a number or not at all, how many rows carry a refunded total, the distinct
+  masked provider accounts with how many rows each, which of them are **unmapped**, the
+  configured accounts, mapping problems and duplicates, and the provider payload **field names**
+  seen. It never returns a payer, an amount, an email, a reference, a raw payload or a full
+  account identifier.
+- It works before the migration is applied too: without the mapping table it falls back to the
+  environment keys and reports `mapping_table_available: false`.
+- Tested in `tests/lawpay-accounts-v323-shared.test.js` (authorization, exact-ID resolution,
+  inactive mappings shadowing the environment seed, and redaction).
+
+Deploying it is the only step that needs the Supabase CLI, and it must be deployed **alone** —
+no other gateway change is part of this authorization:
+
+```
+supabase functions deploy lawpay-gateway --project-ref vnnkxqpyndidnjbrbywz
+```
+
+Then, signed in as a finance administrator, `lawpay-gateway` action `diagnostics` answers why a
+transaction says "Account not reported". Until it is deployed, the account-mapping cause cannot
+be confirmed from inside Mio, and every other statement here is limited to synthetic data.
+
 ## Not implemented yet — the application is unchanged
 
-The gateway actions (`diagnostics`, `map_account`, `save`, `post`, `correct`, `match`) and the
-review interface that calls them are **not written**. Consequences:
+The gateway actions that record money (`save`, `post`, `correct`, `match`, `map_account`) and
+the review interface that calls them are **not written**. Consequences:
 
 - No user-visible screen has changed, and the preview deployment behaves exactly as before.
-- The account-mapping failure cannot yet be confirmed from inside Mio. The redacted
-  `diagnostics` action is still a design, not a shipped endpoint.
 - Until the interface exists, no transaction can be classified or recorded from the browser.
 
-Next steps, in order: (1) add the gateway actions with authenticated-administrator
+Next steps, in order: (1) add those gateway actions with authenticated-administrator
 authorization at the endpoint (a service-role RPC does not authorize its caller); (2) wire the
 review panel and merge posted trust entries into the matter dashboard, accounting ledger,
 withdrawal page and PNC views so the four surfaces agree and derived rows are suppressed once
