@@ -190,9 +190,10 @@ when the deployed revision differs from production by nothing else.
 
 - Not applied to production and not deployed: the migration and both functions are ready for review
   only. No live accounting record was touched.
-- The panel exposes save, record, match and map. Correction is implemented and tested in the rules,
-  the database functions and the gateway (`correct`), but has no button yet; a recorded
-  classification is corrected from the gateway until that control is added.
+- Correction of a recorded classification is available in the panel: change the decisions, state a
+  reason, read the reversal and replacement effects, and confirm. The previous posting, its ledger
+  entry and its reversal stay linked in the audit history. A correction that cannot post leaves the
+  original posting unchanged.
 - The deposit-account mapping table is filled by an administrator. No provider account-listing
   endpoint could be verified from this environment, so none is assumed.
 - Bulk billing and the withdrawal page round their trust column to whole dollars; the recorded
