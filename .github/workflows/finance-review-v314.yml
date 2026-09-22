@@ -36,7 +36,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Verify finance models and composed production callbacks
-        run: timeout 120s node --test tests/finance-v314.test.js tests/lawpay-attribution.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js
+        run: timeout 120s node --test tests/finance-v314.test.js tests/lawpay-attribution.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js tests/lawpay-classification-v323.test.js tests/lawpay-accounts-v323-shared.test.js
       - name: Test atomic SQL on isolated synthetic PostgreSQL
         run: |
           psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-schema.sql
@@ -77,6 +77,8 @@ jobs:
         run: timeout 180s node tests/finance-v314-browser.mjs
       - name: Withdrawal rows must agree with Bulk billing trust and graph every matter
         run: timeout 180s node tests/withdrawal-finance-parity-browser.mjs
+      - name: The matter Finances page must classify, record and match LawPay payments in the real bundle
+        run: timeout 240s node tests/lawpay-classification-v323-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

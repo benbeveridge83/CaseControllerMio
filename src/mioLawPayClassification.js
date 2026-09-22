@@ -289,6 +289,49 @@ export function duplicateClassification({ existing = [], identity = '', category
   }
   return { duplicate: true, requires_correction: true, reason: 'This transaction is already recorded under a different classification. Use a linked correction instead of recording it again.' }
 }
+// A charge may expose a refunded total while separate refund records exist for the same money.
+// Balance arithmetic must count that refund once. The rule here is deliberately conservative:
+// a separate refund row is treated as already included in a charge's refunded total only when
+// the two can be tied together — a verified original-payment link, or an amount that exactly
+// matches that charge's refunded total in the same account — and any such suppression is
+// reported for review rather than hidden.
+export function singleCountProviderPayments(transactions = [], { accountKeyOf = (row) => String(row?.account_key || '') } = {}) {
+  const charges = [], moneyOut = []
+  for (const transaction of transactions || []) {
+    if (providerMoneyOut(transaction)) moneyOut.push(transaction)
+    else charges.push(transaction)
+  }
+  const chargeTotal = charges.reduce((sum, charge) => sum + Math.max(0, amountCents(charge) - Math.round(Math.abs(Number(charge.amount_refunded_cents || 0)))), 0)
+  const summarised = [] , suppressed = []
+  let refundTotal = 0
+  for (const refund of moneyOut) {
+    if (NON_POSTING_STATUS.test(String(refund.status || '').toLowerCase())) continue
+    const amount = amountCents(refund)
+    const linkedId = String(refund.original_transaction_id || refund.raw?.mio_original_transaction_id || '')
+    const linked = linkedId ? charges.find((charge) => String(charge.gateway_transaction_id || charge.id || '') === linkedId) : null
+    const matched = charges.find((charge) => Math.round(Math.abs(Number(charge.amount_refunded_cents || 0))) === amount
+      && (!linkedId || String(charge.gateway_transaction_id || charge.id || '') === linkedId)
+      && accountKeyOf(charge) === accountKeyOf(refund))
+    const alreadyIncluded = !!matched
+    if (alreadyIncluded) {
+      summarised.push({ gateway_transaction_id: String(refund.gateway_transaction_id || refund.id || ''), amount_cents: amount, counts_as: 'included_in_refunded_total', original_transaction_id: String(matched.gateway_transaction_id || matched.id || '') })
+      suppressed.push(String(refund.gateway_transaction_id || refund.id || ''))
+    } else {
+      summarised.push({ gateway_transaction_id: String(refund.gateway_transaction_id || refund.id || ''), amount_cents: amount, counts_as: linked ? 'linked_refund' : 'separate_refund', original_transaction_id: linked ? String(linked.gateway_transaction_id || linked.id || '') : '' })
+      refundTotal += amount
+    }
+  }
+  return {
+    charge_total_cents: chargeTotal,
+    separate_refund_total_cents: refundTotal,
+    total_cents: chargeTotal - refundTotal,
+    refunds: summarised,
+    suppressed_refunds: suppressed,
+    requires_review: suppressed.length > 0,
+    reason: suppressed.length ? 'A charge reports a refunded total and separate refund records appear to describe the same money. The refund is counted once; confirm the relationship.' : '',
+  }
+}
+
 // A correction is a new, linked record that reverses the previous posting and states why; the
 // original record and its ledger rows are preserved for the audit trail.
 export function correctionRecord({ previous = {}, actor = '', at = '', reason = '' } = {}) {

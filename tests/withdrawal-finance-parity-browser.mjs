@@ -35,7 +35,8 @@ await context.route('**/*',async route=>{
  if(url.port===String(port)){if(url.pathname.startsWith('/api/'))return reply({connected:false,rows:[],data:[]});return route.continue()}
  if(!url.hostname.endsWith('.supabase.co')){blocked.push(req.method()+' '+url.origin+url.pathname);return reply({})}
  if(url.pathname.includes('/auth/v1/'))return reply(url.pathname.endsWith('/user')?user:session)
- if(url.pathname.endsWith('/lawpay-gateway'))return reply({ok:true,page:1,processed:2,total_entries:2,has_more:false,next_page:null,warnings:[]})
+ if(url.pathname.endsWith('/lawpay-account-diagnostics'))return reply({ok:true,version:323,redacted:true,diagnostics:{transactions_reviewed:0,missing_provider_account_id:0,unmapped_provider_accounts:[]}})
+ if(url.pathname.endsWith('/lawpay-gateway')){const b=req.postDataJSON();if(b.action==='review')return reply({ok:true,version:323,transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_table_available:true});return reply({ok:true,page:1,processed:2,total_entries:2,has_more:false,next_page:null,warnings:[]})}
  const table=url.pathname.split('/').pop(),single=req.headers().accept?.includes('vnd.pgrst.object')
  if(table==='mio_cloud_state_read_chunks_v297')return reply(chunkRows([...states.values()].map(x=>({...x,user_id:owner})),req.postDataJSON()))
  if(table==='mio_cloud_state_write_v277'){const b=req.postDataJSON(),old=states.get(b.p_key);if(!!old!==b.p_expected_exists||old&&old.updated_at!==b.p_expected_at)return reply({code:'PT409',message:'Stale state'},409);const r={key:b.p_key,raw_value:b.p_raw,json_value:null,updated_at:new Date().toISOString()};states.set(b.p_key,r);return reply(r)}

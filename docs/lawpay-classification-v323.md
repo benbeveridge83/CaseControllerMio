@@ -127,3 +127,74 @@ posted; (3) add the browser flow test (categorize, save, reload, balances) and a
 4. Verify afterwards that `mio_lawpay_classifications` and `mio_lawpay_ledger_entries` exist,
    that their grants exclude `anon` and `authenticated`, and that `mio_lawpay_accounts` holds
    the firm's provider-account mapping.
+
+## Reviewing and recording from the matter Finances page (increment 4)
+
+The Matter Dashboard → Finances page carries the workflow: **LawPay payment classification**.
+Each stored charge shows whether LawPay reported its deposit account, or says *Account not
+reported* plainly, and asks for the three decisions separately — ownership (this matter, a PNC
+consultation, or neither with a reason), the actual deposit account, and the transaction type —
+then shows a preview of exactly what would be written, including the trust balance change, before
+anything is written. Four actions are offered per payment: **Save for later**, **Confirm and
+record**, **Match the existing entry** (links an entry Mio already has, posting nothing) and
+**Leave for now**. An account nobody has established cannot be recorded: the preview says so, the
+record button is unavailable, and the payment can still be saved for later. A provider account can
+be mapped once for all of its transactions from the same row.
+
+Everything the panel does goes through the `lawpay-gateway` function, which authorizes the caller
+at the endpoint (`MIO_FINANCE_ADMIN_EMAILS`) and then calls a service-role function. A service-role
+function does not authorize anybody by itself, and the browser never sends an amount: the gateway
+and the database take the amount from the stored `lawpay_transactions` row.
+
+### Money reaching the balances
+
+A recorded (posted) entry is added to the trust ledger that the matter dashboard, the accounting
+view, the withdrawal page, Bulk billing and the PNC trust view all read, and the derived LawPay row
+for the same provider transaction is suppressed so the money appears exactly once. Suppression does
+not assume one identifier form: it resolves every recorded provider transaction against the stored
+transactions themselves. Reversals contribute nothing.
+
+`singleCountProviderPayments` also fixed a real pre-existing defect in the invoice reconciliation
+arithmetic: a charge that reported a refunded total *and* had its own refund record was being
+reduced twice, which understated what the client had paid. The refund is now counted once and any
+overlap is reported for review.
+
+### Diagnostics are their own function
+
+`supabase functions deploy lawpay-gateway` deploys the **whole** gateway function, not one action.
+Now that the gateway also carries the actions that record money, a "diagnostics only" release can
+no longer be a gateway release. The read-only, redacted diagnostics therefore live in
+`lawpay-account-diagnostics`, a function that contains no action which records, corrects, matches
+or maps anything. Only that function may be described as a diagnostics-only deployment, and only
+when the deployed revision differs from production by nothing else.
+
+### What was verified
+
+- `tests/lawpay-classification-v323.test.js` (17 tests) and `tests/lawpay-accounts-v323-shared.test.js`
+  (3 tests): the rules, the refund counting, the account registry.
+- `tests/sql/lawpay-classification-v323-behavior.sql` on isolated PostgreSQL: post once, retry and
+  webhook replay no-ops, unestablished account refused, correction reverses and links, refund
+  reduces trust once, and the two-session posting race that must produce exactly one posting and
+  one ledger entry.
+- `tests/lawpay-classification-v323-browser.mjs` against the real production bundle with synthetic
+  data and an intercepting synthetic service: the Finances page lists the payments, names a
+  reported account, states an unreported one, refuses an unverified account and accepts a verified
+  one, shows the preview, saves without writing, remembers the saved decision after a reload,
+  records it, moves the matter trust balance by exactly the recorded amount, shows the payment once
+  in the accounting view with a matching running trust balance, refuses a second recording, and
+  agrees with the Bulk billing trust figure the withdrawal rows are built from.
+- The existing suites were re-run unchanged: `finance-v314-browser.mjs`,
+  `withdrawal-finance-parity-browser.mjs`, and the finance/pnc unit tests.
+
+### Remaining limitations
+
+- Not applied to production and not deployed: the migration and both functions are ready for review
+  only. No live accounting record was touched.
+- The panel exposes save, record, match and map. Correction is implemented and tested in the rules,
+  the database functions and the gateway (`correct`), but has no button yet; a recorded
+  classification is corrected from the gateway until that control is added.
+- The deposit-account mapping table is filled by an administrator. No provider account-listing
+  endpoint could be verified from this environment, so none is assumed.
+- Bulk billing and the withdrawal page round their trust column to whole dollars; the recorded
+  amount is compared after that rounding.
+

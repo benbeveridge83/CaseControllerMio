@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { accountRegistry, resolveTransactionAccount, accountDiagnostics, maskAccountId, sameProviderAccountId, accountDiscrepancy } from '../src/mioLawPayAccounts.js'
-import { amountBreakdown, classificationIdentity, correctionRecord, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, validateClassification } from '../src/mioLawPayClassification.js'
+import { amountBreakdown, classificationIdentity, correctionRecord, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
 
 const trustAccount = { provider_account_id: 'acct-91075', account_key: 'trust', bank_account_id: 'plaid-trust', bank_role: 'trust', label: 'Trust / IOLTA ••••1075', is_active: true }
 const operatingAccount = { provider_account_id: 'acct-91077', account_key: 'operating', bank_account_id: 'plaid-operating', bank_role: 'operating', label: 'Operating ••••1077', is_active: true }
@@ -185,6 +185,36 @@ test('the matter dashboard and the firm-wide queue split the same records consis
   assert.equal(split.totals.matter_cents, 500000)
   assert.equal(split.totals.firm_wide_cents, 13500)
   assert.equal(split.totals.matter_cents + split.totals.firm_wide_cents, split.totals.all_cents)
+})
+
+test('balance arithmetic counts a refund once when a refunded total and a separate refund row describe the same money', () => {
+  const charge = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 112000, account_key: 'trust' }
+  const refund = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
+  const both = singleCountProviderPayments([charge, refund])
+  assert.equal(both.charge_total_cents, 388000, 'the charge is counted net of its refunded total')
+  assert.equal(both.separate_refund_total_cents, 0, 'the refund must not be subtracted a second time')
+  assert.equal(both.total_cents, 388000)
+  assert.equal(both.requires_review, true, 'the relationship is reported, not silently assumed')
+  assert.deepEqual(both.suppressed_refunds, ['refund-1'])
+  assert.equal(both.refunds[0].counts_as, 'included_in_refunded_total')
+  const verified = singleCountProviderPayments([charge, { ...refund, original_transaction_id: 'charge-1' }])
+  assert.equal(verified.total_cents, 388000)
+  assert.equal(verified.refunds[0].counts_as, 'included_in_refunded_total')
+  assert.equal(verified.refunds[0].original_transaction_id, 'charge-1')
+  const separate = singleCountProviderPayments([{ ...charge, amount_refunded_cents: 0 }, refund])
+  assert.equal(separate.charge_total_cents, 500000)
+  assert.equal(separate.separate_refund_total_cents, 112000)
+  assert.equal(separate.total_cents, 388000, 'a refund with no refunded total on the charge is a separate movement')
+  assert.equal(separate.requires_review, false)
+  const partial = singleCountProviderPayments([{ ...charge, amount_refunded_cents: 112000 }, { ...refund, gateway_transaction_id: 'refund-2', amount_cents: 50000 }])
+  assert.equal(partial.separate_refund_total_cents, 50000, 'a smaller, unrelated refund is a separate movement')
+  assert.equal(partial.total_cents, 338000)
+  const otherAccount = singleCountProviderPayments([charge, { ...refund, account_key: 'operating' }])
+  assert.equal(otherAccount.separate_refund_total_cents, 112000, 'a refund in another account is never folded into a charge elsewhere')
+  assert.equal(otherAccount.total_cents, 276000)
+  const reversed = singleCountProviderPayments([charge, { ...refund, status: 'FAILED' }])
+  assert.equal(reversed.separate_refund_total_cents, 0, 'a failed refund moves nothing')
+  assert.equal(singleCountProviderPayments([]).total_cents, 0)
 })
 
 test('review statuses keep recorded in Mio separate from bank reconciled', () => {

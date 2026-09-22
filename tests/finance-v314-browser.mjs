@@ -30,7 +30,8 @@ await context.route('**/*',async route=>{
  if(!url.hostname.endsWith('.supabase.co')){blocked.push(req.method()+' '+url.origin+url.pathname);return reply({})}
  if(url.pathname.includes('/auth/v1/'))return reply(url.pathname.endsWith('/user')?user:session)
  const table=url.pathname.split('/').pop(),single=req.headers().accept?.includes('vnd.pgrst.object')
- if(table==='lawpay-gateway'){const b=req.postDataJSON();assert.equal(b.action,'sync_transactions');checks.push(b);return reply({ok:true,page:b.page,processed:1,total_entries:1,has_more:false,next_page:null,warnings:[]})}
+ if(table==='lawpay-gateway'){const b=req.postDataJSON();if(b.action==='review')return reply({ok:true,version:323,transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_table_available:true});assert.equal(b.action,'sync_transactions');checks.push(b);return reply({ok:true,page:b.page,processed:1,total_entries:1,has_more:false,next_page:null,warnings:[]})}
+ if(table==='lawpay-account-diagnostics')return reply({ok:true,version:323,redacted:true,diagnostics:{transactions_reviewed:0,missing_provider_account_id:0,unmapped_provider_accounts:[]}})
  if(table==='mio_cloud_state_read_chunks_v297')return reply(chunkRows([...states.values()].map(x=>({...x,user_id:owner})),req.postDataJSON()))
  if(table==='mio_cloud_state_write_v277'){const b=req.postDataJSON(),old=states.get(b.p_key);if(!!old!==b.p_expected_exists||old&&old.updated_at!==b.p_expected_at)return reply({code:'PT409',message:'Stale state'},409);const r={key:b.p_key,raw_value:b.p_raw,json_value:null,updated_at:new Date().toISOString()};states.set(b.p_key,r);return reply(r)}
  if(table==='case_mio_user_state'){let rows=[...states.values()];const key=url.searchParams.get('key');if(key?.startsWith('eq.'))rows=rows.filter(r=>r.key===key.slice(3));return reply(single?rows[0]||null:rows)}
