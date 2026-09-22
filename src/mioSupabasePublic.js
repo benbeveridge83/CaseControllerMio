@@ -1,4 +1,8 @@
-// Public project configuration only. Never put service-role or provider keys here.
-export const PUBLIC_SUPABASE_URL = 'https://vnnkxqpyndidnjbrbywz.supabase.co'
-export const PUBLIC_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZubmt4cXB5bmRpZG5qYnJieXd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1ODA5MjksImV4cCI6MjA5MzE1NjkyOX0.MHxhT_mLzMZv6r4mvOcNvtR_kGcsY1yuXhYWL2luntI'
+// SYNTHETIC PREVIEW ONLY — this file exists only on the preview branch
+// (preview/lawpay-classification-v323-synthetic). It replaces the firm's public project
+// configuration with a host that cannot resolve, so this build has no route to the production
+// project, no production URL and no production key. The preview's own service worker of data
+// (src/mioSyntheticPreview.js) answers every request from memory.
+export const PUBLIC_SUPABASE_URL = 'https://synthetic-preview.invalid'
+export const PUBLIC_SUPABASE_KEY = 'synthetic-preview-anon-key-not-a-credential'
 
