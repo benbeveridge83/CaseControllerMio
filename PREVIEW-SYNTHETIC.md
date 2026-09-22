@@ -40,5 +40,18 @@ answered with 403 by the adapter, while the configured host cannot resolve at al
 9. Correct it back to trust to see the balance restored, and the accounting view agree with the
    matter balance.
 
+## Repeating the same manual test
+
+The preview carries a strip at the bottom of every page: **Reset synthetic data**. It clears every
+synthetic classification, ledger effect, account mapping, refund decision and local state key, and
+reloads straight back into the seeded state, so the click-through above can be repeated as many
+times as you like. Nothing outside this preview is touched.
+
+Bulk Billing uses the same shared classification gateway as the matter Finances panel: categorizing
+a charge there posts (or saves) through `lawpay-gateway`, exactly once per immutable provider
+transaction, and writes **no** client trust row of its own. `tests/preview-synthetic-smoke.mjs`
+proves both facts against the built preview (`bulk_billing_through_shared_gateway`,
+`client_trust_rows_written_by_bulk_billing: 0`, `reset_returns_seeded_state`).
+
 Corrections change only this browser tab's in-memory records: reloading the preview returns it to
 its seeded state.

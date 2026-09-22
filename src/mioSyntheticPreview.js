@@ -43,6 +43,7 @@ const user = { id: owner, email: adminEmail, aud: 'authenticated', role: 'authen
 const b64url = (value) => btoa(JSON.stringify(value)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 const session = () => ({ access_token: `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url({ sub: owner, email: adminEmail, role: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600, aud: 'authenticated' })}.synthetic`, refresh_token: 'synthetic', expires_at: Math.floor(Date.now() / 1000) + 3600, expires_in: 3600, token_type: 'bearer', user })
 const store = { classifications: [], ledger: [], mapping: [], seq: 0 }
+const initialStates = new Map()
 const states = new Map(Object.entries({ caseMioFinanceOpeningBalances: opening, caseMioTrustTransactions: trustRows, caseMioInvoices: invoices, caseMioBillingCutoverDate: '2026-08-09', caseMioBulkBillingFilters: { case_status: 'all', matter_status: 'all', search: '' } }).map(([key, value]) => [key, { key, raw_value: typeof value === 'string' ? value : JSON.stringify(value), json_value: value, updated_at: now() }]))
 // The synthetic service keeps the promises the database makes.
 const resolvedFor = (transaction) => {
@@ -89,6 +90,7 @@ function gateway(body) {
   if (!['save', 'post', 'match', 'correct'].includes(body.action)) return { ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }
   const record = body.classification || {}
   const transaction = transactions.find((row) => row.gateway_transaction_id === record.gateway_transaction_id)
+  if (window.__mioSyntheticPreviewGateway) window.__mioSyntheticPreviewGateway.actions.push({ action: body.action, id: String(record.gateway_transaction_id || ''), account_key: String(record.actual_account_key || ''), account_source: String(record.account_source || '') })
   if (!transaction) return { ok: false, error: 'The gateway only records a stored provider transaction.' }
   const identity = identityOf(record)
   const recorded = store.classifications.find((existing) => existing.identity === identity && existing.posting_status === 'posted')
@@ -155,7 +157,7 @@ async function handle(url, request) {
       return { key: row.key, raw_value: fragment, updated_at: row.updated_at, chunk_offset: offset, next_offset: next, total_chars: chars.length, complete: next === chars.length }
     }))
   }
-  if (name === 'mio_cloud_state_write_v277') { const body = await request.json().catch(() => ({})); const record = { key: body.p_key, raw_value: body.p_raw, json_value: null, updated_at: now() }; states.set(body.p_key, record); return json(record) }
+  if (name === 'mio_cloud_state_write_v277') { const body = await request.json().catch(() => ({})); if (body.p_key === 'caseMioTrustTransactions' && window.__mioSyntheticPreviewGateway) window.__mioSyntheticPreviewGateway.clientTrustWrites = (window.__mioSyntheticPreviewGateway.clientTrustWrites || 0) + 1; const record = { key: body.p_key, raw_value: body.p_raw, json_value: null, updated_at: now() }; states.set(body.p_key, record); return json(record) }
   if (name === 'case_mio_user_state') { let rows = [...states.values()]; const key = url.searchParams.get('key'); if (key?.startsWith('eq.')) rows = rows.filter((row) => row.key === key.slice(3)); return json(single ? (rows[0] || null) : rows) }
   if (name === 'team_members') { const member = { id: 'synthetic-member', email: adminEmail, first_name: 'Preview', last_name: 'Administrator', is_active: true, page_access: [] }; return json(single ? member : [member]) }
   if (name === 'setting_options') return json(Object.entries({ matter_status: ['Active Client', 'Closed'], case_status: ['Open', 'Closed'], matter_type: ['Modification', 'Divorce'] }).flatMap(([category, list]) => list.map((value, index) => ({ id: category + index, category, name: value, is_active: true, sort_order: index }))))
@@ -172,6 +174,23 @@ export function installSyntheticPreview() {
   if (!syntheticPreviewEnabled || typeof window === 'undefined') return
   if (window.__mioSyntheticPreviewInstalled) return
   window.__mioSyntheticPreviewInstalled = true
+  // The preview is reset to exactly these seeded records, so the same manual test can be repeated.
+  initialStates.clear()
+  for (const [key, value] of states) initialStates.set(key, value)
+  window.__mioSyntheticPreviewGateway = { actions: [], clientTrustWrites: 0 }
+  const banner = document.createElement('div')
+  banner.setAttribute('data-testid', 'synthetic-preview-banner')
+  banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;display:flex;gap:12px;align-items:center;justify-content:center;background:#0f172a;color:#f8fafc;font:12px/1.6 system-ui;padding:6px 12px;pointer-events:none'
+  const label = document.createElement('span')
+  label.textContent = 'SYNTHETIC PREVIEW: every client, invoice and LawPay payment here is invented. Nothing reads or writes a live record.'
+  const reset = document.createElement('button')
+  reset.type = 'button'
+  reset.setAttribute('data-testid', 'synthetic-preview-reset')
+  reset.textContent = 'Reset synthetic data'
+  reset.style.cssText = 'pointer-events:auto;cursor:pointer;border:1px solid #94a3b8;border-radius:6px;background:#1e293b;color:#f8fafc;padding:2px 10px'
+  reset.onclick = () => resetSyntheticPreview()
+  banner.append(label, reset)
+  document.body.appendChild(banner)
   const realFetch = window.fetch.bind(window)
   window.fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input.url, location.origin)
@@ -185,6 +204,22 @@ export function installSyntheticPreview() {
     if (!window.localStorage.getItem(key)) window.localStorage.setItem(key, JSON.stringify(session()))
   } catch { /* storage unavailable */ }
   console.info('[synthetic preview] Every LawPay and finance figure on this page is invented. No live record is read or written.')
+}
+
+// A repeatable clean state for the same manual test: every synthetic classification, ledger effect,
+// account mapping, refund decision and local state key returns to what this build was seeded with,
+// and the page reloads into that state. Nothing outside the preview is touched.
+export function resetSyntheticPreview() {
+  store.classifications = []
+  store.ledger = []
+  store.mapping = []
+  store.resolutions = []
+  store.seq = 0
+  states.clear()
+  for (const [key, value] of initialStates) states.set(key, value)
+  if (typeof window === 'undefined') return
+  window.__mioSyntheticPreviewGateway = { actions: [], clientTrustWrites: 0 }
+  window.location.reload()
 }
 
 

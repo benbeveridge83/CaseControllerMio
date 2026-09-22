@@ -45,8 +45,40 @@ try {
   assert.match(summary, /5 payment\(s\) need a decision/)
   assert.match(await dashboard.getByTestId('lawpay-account-provider-d').innerText(), /Account not reported/)
   await dashboard.screenshot({ path: 'finance-test-results/preview-synthetic.png' })
+  // The Bulk Billing control records through the same shared gateway as the matter Finances panel,
+  // and it keeps no trust ledger of its own.
+  await page.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
+  const details = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'LawPay reconciliation' }) }).first()
+  await details.waitFor({ timeout: 60000 })
+  await details.locator('summary').click()
+  const scan = details.getByRole('button', { name: 'Check all LawPay payments since Mio opening', exact: true })
+  if (await scan.count()) await scan.first().click()
+  const picker = details.getByRole('button', { name: /^Categorize the .*Alpha Synthetic$/ }).first()
+  await picker.waitFor({ timeout: 60000 })
+  await picker.click()
+  await page.getByLabel('Matter for this payment', { exact: true }).selectOption({ index: 1 })
+  await page.getByRole('button', { name: 'Save attribution', exact: true }).click()
+  const seen = async (id) => {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const state = await page.evaluate(() => window.__mioSyntheticPreviewGateway)
+      if (state.actions.some((entry) => entry.id === id)) return state
+      await page.waitForTimeout(250)
+    }
+    return await page.evaluate(() => window.__mioSyntheticPreviewGateway)
+  }
+  const afterBulk = await seen('provider-a')
+  assert.ok(afterBulk.actions.some((entry) => entry.action === 'post' && entry.id === 'provider-a'), `Bulk Billing must post through the shared gateway: ${JSON.stringify(afterBulk.actions)}`)
+  assert.equal(afterBulk.clientTrustWrites, 0, 'Bulk Billing must not write a client trust row of its own')
+  await page.screenshot({ path: 'finance-test-results/preview-bulk-billing-gateway.png' })
+  // Resetting returns the preview to its seeded state, so the same manual test can be repeated.
+  await page.getByTestId('synthetic-preview-reset').click()
+  await page.waitForLoadState('domcontentloaded')
+  await page.getByRole('button', { name: 'Bulk Billing', exact: true }).waitFor({ timeout: 60000 })
+  const afterReset = await page.evaluate(async () => (await fetch('https://synthetic-preview.invalid/functions/v1/lawpay-gateway', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'review' }) })).json())
+  assert.equal(afterReset.classifications.length, 0, 'a reset must clear every synthetic decision')
+  assert.equal(await page.evaluate(() => window.__mioSyntheticPreviewGateway.actions.length), 0, 'a reset must clear the recorded gateway activity')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ ok: true, synthetic_service: true, transactions: review.transactions.length, live_project_refused: live, summary }, null, 2))
+  console.log(JSON.stringify({ ok: true, synthetic_service: true, transactions: review.transactions.length, live_project_refused: live, summary, bulk_billing_through_shared_gateway: afterBulk.actions.some((entry) => entry.action === 'post' && entry.id === 'provider-a'), client_trust_rows_written_by_bulk_billing: afterBulk.clientTrustWrites, reset_returns_seeded_state: afterReset.classifications.length === 0 }, null, 2))
 } catch (error) {
   try { fs.writeFileSync('finance-test-results/preview-failure.txt', await page.locator('body').innerText()) } catch { /* page gone */ }
   console.error({ errors, text: (await page.locator('body').innerText().catch(() => '')).slice(0, 1200) })
