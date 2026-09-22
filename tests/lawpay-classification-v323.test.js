@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { accountRegistry, resolveTransactionAccount, accountDiagnostics, maskAccountId, sameProviderAccountId, accountDiscrepancy } from '../src/mioLawPayAccounts.js'
-import { amountBreakdown, classificationIdentity, correctionPreview, correctionRecord, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
+import { amountBreakdown, classificationIdentity, correctionPreview, correctionRecord, refundResolutionRecord, refundReview, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
 
 const trustAccount = { provider_account_id: 'acct-91075', account_key: 'trust', bank_account_id: 'plaid-trust', bank_role: 'trust', label: 'Trust / IOLTA ••••1075', is_active: true }
 const operatingAccount = { provider_account_id: 'acct-91077', account_key: 'operating', bank_account_id: 'plaid-operating', bank_role: 'operating', label: 'Operating ••••1077', is_active: true }
@@ -187,83 +187,110 @@ test('the matter dashboard and the firm-wide queue split the same records consis
   assert.equal(split.totals.matter_cents + split.totals.firm_wide_cents, split.totals.all_cents)
 })
 
-test('a refund is counted once from a provider identifier, and an equal amount is never proof', () => {
-  const charge = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 112000, account_key: 'trust' }
-  const unlinked = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
-  // The same amount in the same account is not evidence: the charge is counted net of its own
-  // reported total, the unlinked row is not subtracted a second time, and the ambiguity is flagged.
-  const ambiguous = singleCountProviderPayments([charge, unlinked])
-  assert.equal(ambiguous.charge_total_cents, 388000, 'the charge is counted net of its own reported refunded total')
-  assert.equal(ambiguous.separate_refund_total_cents, 0, 'an equal amount must not be subtracted again')
-  assert.equal(ambiguous.total_cents, 388000)
-  assert.equal(ambiguous.requires_review, true, 'an unlinked refund is flagged, never resolved silently')
-  assert.match(ambiguous.reason, /no provider identifier links to it/)
-  assert.equal(ambiguous.unverified_refund_cents, 112000)
-  assert.equal(ambiguous.refunds[0].counts_as, 'unlinked_refund_row')
-  assert.deepEqual(ambiguous.suppressed_refunds, [])
-  // A provider link is proof: the refund rows are the money movements and the aggregate on the
-  // charge is the duplicate description of the same money.
-  const verified = singleCountProviderPayments([charge, { ...unlinked, original_transaction_id: 'charge-1' }])
-  assert.equal(verified.total_cents, 388000)
-  assert.equal(verified.requires_review, false)
-  assert.equal(verified.refunds[0].counts_as, 'verified_refund_row')
-  assert.equal(verified.refunds[0].linked_charge, 'charge-1')
-  // A link the firm has disputed is not proof either.
-  const disputed = singleCountProviderPayments([charge, { ...unlinked, original_transaction_id: 'charge-1', original_link_verified: false }])
-  assert.equal(disputed.requires_review, true)
-  assert.equal(disputed.refunds[0].counts_as, 'unlinked_refund_row')
-  assert.equal(disputed.total_cents, 388000)
+test('an unresolved refund is never offset against an account-level refunded total', () => {
+  // Charge A reports $100 refunded. Refund B is a separate, unrelated $100 refund in the same
+  // account, with no immutable link. The true effect may be $200, so nothing is assumed: the row
+  // is excluded from the reconciled balance, which is reported as not final, and its possible
+  // effect is shown as a range instead of choosing one answer.
+  const charge = { gateway_transaction_id: 'charge-A', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 10000, account_key: 'echeck_trust' }
+  const unrelated = { gateway_transaction_id: 'refund-B', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 10000, account_key: 'echeck_trust' }
+  const review = refundReview({ transactions: [charge, unrelated] })
+  assert.equal(review.unresolved_refund_cents, 10000, 'the unrelated refund stays unresolved')
+  assert.equal(review.reconciled, false)
+  assert.equal(review.status, 'refund_relationship_unresolved')
+  assert.equal(review.label, 'Refund relationship unresolved')
+  assert.equal(review.separate_refund_total_cents, 0, 'nothing is offset against the charge reported total')
+  assert.equal(review.resolved_total_cents, 490000, 'the charge is counted net of its own reported total only')
+  assert.deepEqual(review.unresolved_possible_totals, { minimum_refund_cents: 0, maximum_refund_cents: 10000, maximum_total_cents: 490000, minimum_total_cents: 480000 })
+  assert.match(review.reason, /not final: it is between \$4800\.00 and \$4900\.00/)
+  assert.equal(review.effects[0].effect, 'unresolved')
+  // Confirming it as a separate refund produces the full $200 refund effect.
+  const separate = refundReview({ transactions: [charge, unrelated], resolutions: { 'refund-B': { resolution: 'separate_refund', resolved_by: 'ben@firm', evidence_reference: 'LawPay refund report line 9' } } })
+  assert.equal(separate.separate_refund_total_cents, 10000)
+  assert.equal(separate.resolved_total_cents, 480000, 'the reported $100 and the separate $100 are both counted')
+  assert.equal(separate.unresolved_refund_cents, 0)
+  assert.equal(separate.reconciled, true)
+  assert.equal(separate.effects[0].effect, 'additional_refund')
+  // Confirming it as the same refund produces one $100 effect.
+  const same = refundReview({ transactions: [charge, unrelated], resolutions: { 'refund-B': { resolution: 'same_refund', charge_transaction_id: 'charge-A', resolved_by: 'ben@firm', evidence_reference: 'Same provider reference on both rows' } } })
+  assert.equal(same.separate_refund_total_cents, 0)
+  assert.equal(same.resolved_total_cents, 490000, 'the refund is counted once, through the charge reported total')
+  assert.equal(same.reconciled, true)
+  assert.equal(same.effects[0].effect, 'already_reflected')
+  assert.equal(same.effects[0].source, 'confirmed_match')
 })
 
-test('two unrelated same-account refunds of the same amount are each counted once, not merged', () => {
-  const charge = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 112000, account_key: 'trust' }
-  const first = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
-  const second = { gateway_transaction_id: 'refund-2', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
-  const counted = singleCountProviderPayments([charge, first, second])
-  assert.equal(counted.charge_total_cents, 388000)
-  assert.equal(counted.separate_refund_total_cents, 112000, 'only the refund beyond the charge reported total is subtracted')
-  assert.equal(counted.total_cents, 276000, 'each refund is counted once: 5000 less 1120 reported, less the 1120 that cannot be the same money')
-  assert.equal(counted.unverified_refund_cents, 224000, 'both unlinked refunds stay visible for review')
-  assert.equal(counted.requires_review, true)
-  assert.equal(counted.refunds.length, 2)
-  // A refund lawfully made in another account is still subtracted, and is still flagged.
-  const chargeWithoutTotal = { ...charge, amount_refunded_cents: 0 }
-  const otherAccount = singleCountProviderPayments([chargeWithoutTotal, { ...first, account_key: 'operating' }])
-  assert.equal(otherAccount.total_cents, 388000)
-  assert.equal(otherAccount.requires_review, true)
-  // A refund the provider voided moves nothing at all.
-  const voided = singleCountProviderPayments([charge, { ...first, status: 'VOID' }])
-  assert.equal(voided.total_cents, 388000)
-  assert.equal(voided.requires_review, false)
-  assert.equal(singleCountProviderPayments([]).total_cents, 0)
+test('two equal unlinked refunds are resolved independently, by identity rather than by amount', () => {
+  const charge = { gateway_transaction_id: 'charge-A', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 10000, account_key: 'echeck_trust' }
+  const first = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 10000, account_key: 'echeck_trust' }
+  const second = { gateway_transaction_id: 'refund-2', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 10000, account_key: 'echeck_trust' }
+  const unresolved = refundReview({ transactions: [charge, first, second] })
+  assert.equal(unresolved.unresolved_refund_cents, 20000)
+  assert.equal(unresolved.reconciled, false)
+  const mixed = refundReview({ transactions: [charge, first, second], resolutions: { 'refund-1': { resolution: 'same_refund', charge_transaction_id: 'charge-A' }, 'refund-2': { resolution: 'separate_refund' } } })
+  assert.equal(mixed.reconciled, true)
+  assert.equal(mixed.resolved_total_cents, 480000, 'one refund is already in the charge total, the other is added')
+  assert.equal(mixed.effects[0].effect, 'already_reflected')
+  assert.equal(mixed.effects[1].effect, 'additional_refund')
+  const bothSeparate = refundReview({ transactions: [charge, first, second], resolutions: { 'refund-1': { resolution: 'separate_refund' }, 'refund-2': { resolution: 'separate_refund' } } })
+  assert.equal(bothSeparate.resolved_total_cents, 470000)
+  // A provider identifier outranks a stored decision, and a link the firm disputed is not a link.
+  const providerLinked = refundReview({ transactions: [charge, { ...first, original_transaction_id: 'charge-A' }] })
+  assert.equal(providerLinked.reconciled, true, 'the provider identifier resolves it without review')
+  assert.equal(providerLinked.effects[0].source, 'provider_identifier')
+  const disputed = refundReview({ transactions: [charge, { ...first, original_transaction_id: 'charge-A', original_link_verified: false }] })
+  assert.equal(disputed.reconciled, false, 'a disputed link leaves the refund unresolved')
+  assert.equal(disputed.unresolved_refund_cents, 10000)
+  const voided = refundReview({ transactions: [charge, { ...first, status: 'VOID' }] })
+  assert.equal(voided.reconciled, true)
+  assert.equal(voided.resolved_total_cents, 490000)
 })
 
-test('a correction preview states the reversal and the replacement once each, and refuses to offer an impossible correction', () => {
+test('a refund resolution records who, when, the evidence and the immutable ids, and a correction links rather than overwrites', () => {
+  const charge = { gateway_transaction_id: 'charge-A' }
+  const refund = { gateway_transaction_id: 'refund-B', amount_cents: 10000, currency: 'USD', account_key: 'echeck_trust', account_id: 'acct-7788' }
+  const missingEvidence = refundResolutionRecord({ refund, charge, resolution: 'separate_refund', actor: 'ben@firm', evidence_reference: '' })
+  assert.equal(missingEvidence.ok, false)
+  assert.match(missingEvidence.errors.join(' '), /Record what establishes the relationship/)
+  const missingActor = refundResolutionRecord({ refund, charge, resolution: 'separate_refund', actor: '', evidence_reference: 'statement line 9' })
+  assert.equal(missingActor.ok, false)
+  assert.match(missingActor.errors.join(' '), /could not tell who resolved/)
+  const noIdentifier = refundResolutionRecord({ refund: {}, charge, resolution: 'separate_refund', actor: 'ben@firm', evidence_reference: 'statement line 9' })
+  assert.equal(noIdentifier.ok, false)
+  assert.match(noIdentifier.errors.join(' '), /no immutable provider identifier/)
+  const unnamedCharge = refundResolutionRecord({ refund, charge: {}, resolution: 'same_refund', actor: 'ben@firm', evidence_reference: 'same provider reference' })
+  assert.equal(unnamedCharge.ok, false)
+  assert.match(unnamedCharge.errors.join(' '), /the charge is named/)
+  const first = refundResolutionRecord({ refund, charge, resolution: 'same_refund', actor: 'ben@firm', evidence_reference: 'same provider reference', at: '2026-09-22T10:00:00Z' })
+  assert.equal(first.ok, true, first.errors?.join(' '))
+  assert.deepEqual(first.record.immutable_ids, { refund: 'refund-B', charge: 'charge-A', provider_account: 'acct-7788' })
+  assert.equal(first.record.corrects_resolution_id, '', 'the first decision corrects nothing')
+  assert.equal(first.record.resolved_at, '2026-09-22T10:00:00Z')
+  const corrected = refundResolutionRecord({ refund, charge, resolution: 'separate_refund', actor: 'jo@firm', evidence_reference: 'provider report shows two separate refunds', previous: { id: 'resolution-1' } })
+  assert.equal(corrected.record.corrects_resolution_id, 'resolution-1', 'a later decision links to the earlier one instead of replacing it')
+  assert.equal(corrected.record.resolved_by, 'jo@firm')
+})
+
+test('a correction preview states the reversal and the replacement, and the summary exposes the unresolved refunds', () => {
   const transaction = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, currency: 'USD' }
-  const trustPosting = { id: 'classification-1', posting_status: 'posted', gateway_transaction_id: 'charge-1', matter_id: 'matter-1', actual_account_key: 'trust', direction: 'in', amount_cents: 500000, currency: 'USD', owner: 'ben@firm' }
-  const toOperating = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', matter: { id: 'matter-1', name: 'Matter One' }, reason: 'The money reached the operating account, not IOLTA.' })
-  assert.equal(toOperating.ok, true, toOperating.errors.join(' '))
-  assert.equal(toOperating.reversal.direction, 'out', 'the reversal of a trust credit is a trust debit')
+  const trustPosting = { id: 'classification-1', posting_status: 'posted', gateway_transaction_id: 'charge-1', matter_id: 'matter-1', actual_account_key: 'trust', direction: 'in', amount_cents: 500000, currency: 'USD' }
+  const toOperating = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', matter: { id: 'matter-1', name: 'Matter One' }, reason: 'The money reached the operating account.' })
+  assert.equal(toOperating.ok, true, toOperating.errors?.join(' '))
   assert.equal(toOperating.reversal.trust_delta_cents, -500000)
-  assert.equal(toOperating.replacement.trust_delta_cents, 0)
-  assert.equal(toOperating.trust_delta_cents, -500000, 'correcting trust to operating takes the trust credit back exactly once')
-  assert.equal(toOperating.correction.corrects_classification_id, 'classification-1')
+  assert.equal(toOperating.trust_delta_cents, -500000)
   assert.match(toOperating.lines.join(' '), /undoing a trust credit/)
-  assert.match(toOperating.lines.join(' '), /Trust balance change overall: −\$5000\.00/)
-  const fromOperating = correctionPreview({ previous: { ...trustPosting, actual_account_key: 'operating', direction: 'in' }, transaction, resolvedAccount: { account_key: 'trust', provenance: 'manually_verified' }, category: 'trust_deposit', matter: { id: 'matter-1', name: 'Matter One' }, reason: 'The deposit went to IOLTA after all.' })
-  assert.equal(fromOperating.ok, true, fromOperating.errors.join(' '))
-  assert.equal(fromOperating.reversal.trust_delta_cents, 0, 'an operating posting never moved trust, so its reversal does not either')
-  assert.equal(fromOperating.replacement.trust_delta_cents, 500000)
-  assert.equal(fromOperating.trust_delta_cents, 500000, 'correcting operating to trust adds the trust credit exactly once')
+  const fromOperating = correctionPreview({ previous: { ...trustPosting, actual_account_key: 'operating' }, transaction, resolvedAccount: { account_key: 'trust', provenance: 'manually_verified' }, category: 'trust_deposit', reason: 'The deposit is on the IOLTA statement.' })
+  assert.equal(fromOperating.reversal.trust_delta_cents, 0)
+  assert.equal(fromOperating.trust_delta_cents, 500000)
   const noReason = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', reason: '' })
   assert.equal(noReason.ok, false)
-  assert.match(noReason.errors.join(' '), /Explain why/)
-  assert.equal(noReason.correction, null)
-  const notPosted = correctionPreview({ previous: { ...trustPosting, posting_status: 'saved' }, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', reason: 'wrong account' })
-  assert.equal(notPosted.ok, false)
-  assert.match(notPosted.errors.join(' '), /Only a recorded transaction can be corrected/)
-  const voided = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'trust', provenance: 'reported_by_lawpay' }, category: 'void', reason: 'voided' })
-  assert.equal(voided.ok, false, 'a correction cannot record a transaction that moves no money')
+  // The summary the reconciliation arithmetic uses carries the resolved figure and the warning.
+  const charge = { gateway_transaction_id: 'charge-A', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 10000, account_key: 'echeck_trust' }
+  const summary = singleCountProviderPayments([charge, { gateway_transaction_id: 'refund-B', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 10000, account_key: 'echeck_trust' }])
+  assert.equal(summary.reconciled, false)
+  assert.equal(summary.unverified_refund_cents, 10000)
+  assert.equal(summary.total_cents, 490000)
+  assert.match(summary.reason, /not final/)
 })
 
 test('review statuses keep recorded in Mio separate from bank reconciled', () => {

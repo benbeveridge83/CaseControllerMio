@@ -10,7 +10,7 @@ import { ACCOUNT_KEYS } from './mioLawPayAccounts.js'
 import {
   CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, amountBreakdown, categoryById, categoryDirection, correctionPreview,
   duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility,
-  postingPreview, providerMoneyOut, reviewStatus, suggestions, validateClassification,
+  postingPreview, providerMoneyOut, refundResolutionRecord, refundReview, reviewStatus, suggestions, validateClassification,
 } from './mioLawPayClassification.js'
 
 const ACCOUNT_LABELS = {
@@ -51,13 +51,16 @@ async function callGateway(action, body = {}) {
   return data
 }
 export default function MioLawPayClassificationPanel({
-  matter = null, matters = [], transactions = [], classifications = [], invoices = [], existingEntries = [], accounts = [],
+  matter = null, matters = [], transactions = [], classifications = [], invoices = [], existingEntries = [], accounts = [], refundResolutions = [],
   mappingAvailable = true, diagnostics = null, busy = false, error = '', notice = '', onRefresh, onActed,
 }) {
   const [openId, setOpenId] = useState('')
   const [drafts, setDrafts] = useState({})
   const [messages, setMessages] = useState({})
   const [working, setWorking] = useState('')
+  const [refundBusy, setRefundBusy] = useState('')
+  const [refundMessage, setRefundMessage] = useState('')
+  const [refundEvidence, setRefundEvidence] = useState({})
   // Guards a decision that is already in flight for a payment, so a double click cannot record it twice.
   const inFlightRef = useRef('')
   const [expanded, setExpanded] = useState(false)
@@ -67,6 +70,33 @@ export default function MioLawPayClassificationPanel({
   const decisionsFor = (id) => drafts[id] || { ownership: 'matter', category: '', matter_id: String(matter?.id || ''), pnc_workflow_id: '', other_reason: '', invoice_id: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
   const patch = (id, change) => setDrafts((current) => ({ ...current, [id]: { ...decisionsFor(id), ...change } }))
   const outstanding = scoped.filter((transaction) => reviewStatus({ record: anyFor(transaction) }) !== 'recorded_in_mio')
+  // Refunds whose relationship to a charge is not established by a provider identifier are shown
+  // as unresolved, never netted against a charge's reported total just because they share an
+  // account. The reconciled total is explicitly not final while any remain.
+  const recordedIds = new Set((classifications || []).filter((record) => String(record.matter_id || '') === String(matter?.id || '')).map((record) => String(record.gateway_transaction_id || '')))
+  const recordedAccounts = new Set((transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || ''))).map((transaction) => String(transaction.account_id || '')))
+  const refundScope = (transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || '')) || (providerMoneyOut(transaction) && recordedAccounts.has(String(transaction.account_id || ''))))
+  const resolutionsByRefund = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
+  const refunds = refundReview({ transactions: refundScope, resolutions: resolutionsByRefund })
+  const openRefunds = refunds.effects.filter((effect) => effect.effect !== 'already_reflected')
+  async function resolveRefund(refundId, resolution, evidence) {
+    const refund = (transactions || []).find((transaction) => String(transaction.gateway_transaction_id || '') === refundId) || {}
+    const chargeId = resolution === 'same_refund' ? String((classifications || []).find((record) => String(record.matter_id || '') === String(matter?.id || '') && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '') : ''
+    const decision = refundResolutionRecord({
+      refund, charge: { gateway_transaction_id: chargeId }, resolution, evidence_reference: evidence,
+      actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',
+      previous: resolutionsByRefund[refundId] || null,
+    })
+    if (!decision.ok) { setRefundMessage(decision.errors.join(' ')); return }
+    setRefundBusy(refundId)
+    try {
+      await callGateway('resolve_refund', { resolution: decision.record })
+      setRefundMessage(resolution === 'same_refund'
+        ? 'Recorded as the same refund: it is counted once, through the charge’s own reported total.'
+        : 'Recorded as a separate refund: its own refund effect is now included.')
+      if (onActed) await onActed()
+    } catch (failure) { setRefundMessage(failure.message) } finally { setRefundBusy('') }
+  }
   // The panel loads its own records when it appears on a matter's Finances view, so the gateway
   // is only asked for financial data while somebody is actually looking at it. `onRefresh` is
   // deliberately not a dependency: the parent recreates it each render.
@@ -193,6 +223,25 @@ export default function MioLawPayClassificationPanel({
         <p style={{ color: '#475569', margin: 0 }} data-testid="lawpay-diagnostics-summary">
           {`Diagnostics: ${diagnostics.transactions_reviewed || 0} transaction(s) reviewed · ${diagnostics.missing_provider_account_id || 0} with no reported deposit account · ${(diagnostics.unmapped_provider_accounts || []).length} provider account(s) not mapped in Mio.`}
         </p>
+      ) : null}
+      {openRefunds.length ? (
+        <section aria-label="Refund relationship review" data-testid="refund-review" style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: 10 }}>
+          <strong>{refunds.label || 'Refund review'}</strong>
+          <p style={{ margin: '4px 0' }} data-testid="refund-unresolved-summary">{refunds.reason || `${(refunds.separate_refund_total_cents / 100).toFixed(2)} of refunds are resolved: each is counted once.`}</p>
+          {openRefunds.map((effect) => (
+            <div key={effect.refund_id} style={{ borderTop: '1px solid #fcd34d', paddingTop: 6, marginTop: 6 }}>
+              <div>{`Refund ${effect.refund_id} · ${money(effect.amount_cents)} · ${effect.effect === 'unresolved' ? 'Refund relationship unresolved' : 'recorded as a separate refund'}`}</div>
+              <label>{`What establishes this refund’s relationship (${effect.refund_id})?`}
+                <input aria-label={`Refund evidence for ${effect.refund_id}`} value={refundEvidence[effect.refund_id] || ''} onChange={(event) => setRefundEvidence((current) => ({ ...current, [effect.refund_id]: event.target.value }))} placeholder="Provider reference or report that shows whether this is the same refund" />
+              </label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                <button type="button" aria-label={`Same refund as the charge ${effect.refund_id}`} disabled={refundBusy === effect.refund_id} onClick={() => resolveRefund(effect.refund_id, 'same_refund', refundEvidence[effect.refund_id] || '')}>Same refund already reflected on this charge</button>
+                <button type="button" aria-label={`Separate refund ${effect.refund_id}`} disabled={refundBusy === effect.refund_id} onClick={() => resolveRefund(effect.refund_id, 'separate_refund', refundEvidence[effect.refund_id] || '')}>Separate refund</button>
+              </div>
+            </div>
+          ))}
+          {refundMessage ? <p role="status" data-testid="refund-message" style={{ margin: '6px 0 0' }}>{refundMessage}</p> : null}
+        </section>
       ) : null}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 10 }}>
         {rows.map((transaction) => {

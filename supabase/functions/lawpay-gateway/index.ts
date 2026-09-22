@@ -30,17 +30,26 @@ Deno.serve(async(req:Request)=>{
       const classes=await db.from('mio_lawpay_classifications').select('*').order('created_at',{ascending:false}).limit(300)
       const entries=await db.from('mio_lawpay_ledger_entries').select('*').order('created_at',{ascending:false}).limit(300)
       const mapping=await db.from('mio_lawpay_accounts').select('provider_account_id,account_key,bank_account_id,bank_role,label,last4,is_active')
+      const resolutions=await db.from('mio_lawpay_refund_resolutions').select('id,refund_transaction_id,charge_transaction_id,resolution,amount_cents,evidence_reference,resolved_by,resolved_at,superseded_at,corrects_resolution_id').is('superseded_at',null)
       const registry=accountRegistry({rows:mapping.error?[]:(mapping.data||[]),environment:accounts()})
       const resolved=(txs.data||[]).map((row:any)=>{const matched=registry.matchProviderId(row.account_id);return {...row,resolved_account_key:matched?matched.account_key:'',resolved_account_source:matched?(matched.source==='environment'?'environment':'registry'):'',resolved_account_label:matched?(matched.label||matched.account_key):'',provider_account_last4:String(row.account_id||'').slice(-4)}})
-      return reply({ok:true,version:323,mapping_table_available:!mapping.error,transactions:resolved,
+      return reply({ok:true,version:323,mapping_table_available:!mapping.error,refund_resolutions_available:!resolutions.error,transactions:resolved,
         classifications:classes.error?[]:(classes.data||[]),ledger_entries:entries.error?[]:(entries.data||[]),
+        refund_resolutions:resolutions.error?[]:(resolutions.data||[]),
         accounts:(mapping.error?[]:(mapping.data||[])).map((row:any)=>({provider_account_id:row.provider_account_id,account_key:row.account_key,bank_account_id:row.bank_account_id,bank_role:row.bank_role,label:row.label,last4:row.last4,is_active:row.is_active}))})
     }
     // Recording money. Every one of these requires a recognised firm finance administrator as
     // well as a valid Mio session: a service-role RPC does not authorize its caller.
-    if(['map_account','save','post','correct','match'].includes(action)){
+    if(['map_account','save','post','correct','match','resolve_refund'].includes(action)){
       if(!financeAdminAllowed(user?.email,env('MIO_FINANCE_ADMIN_EMAILS')))return reply({ok:false,error:'A firm finance administrator must be signed in to record LawPay transactions.'},403)
       const actor=String(user?.email||'')
+      // Resolving a refund's relationship to a charge is a financial decision: it is stored with
+      // its author, its evidence and the immutable transaction ids, and it is never overwritten.
+      if(action==='resolve_refund'){
+        const result=await db.rpc('mio_resolve_lawpay_refund_v323',{p_resolution:body.resolution||{},p_actor:actor})
+        if(result.error)throw result.error
+        return reply({ok:true,result:result.data})
+      }
       if(action==='map_account'){
         const result=await db.rpc('mio_map_lawpay_account_v323',{p_mapping:body.mapping||{},p_actor:actor})
         if(result.error)throw result.error

@@ -289,74 +289,106 @@ export function duplicateClassification({ existing = [], identity = '', category
   }
   return { duplicate: true, requires_correction: true, reason: 'This transaction is already recorded under a different classification. Use a linked correction instead of recording it again.' }
 }
-// A refund can be described twice: as a refunded total on the charge, and as its own refund row.
-// It must be counted once — but only an immutable provider identifier may decide that a refund row
-// is the same money as a charge's refunded total. An identical amount in the same account is not
-// proof: two unrelated refunds can share an amount, so a row is never suppressed on that basis.
-//
-// The rule that keeps this honest in both directions:
-//   * a charge linked by the provider's own identifier uses its refund rows, and its aggregate is
-//     treated as the duplicate description;
-//   * any other charge uses its own reported refunded total, which is an immutable field of that
-//     transaction;
-//   * unlinked refund rows are never assumed to belong to a charge, so they are not subtracted
-//     again on top of an aggregate: only the amount by which they *exceed* the refunded totals
-//     already recorded in the same account is subtracted, because that excess cannot be the same
-//     money;
-//   * every unlinked refund is reported for review instead of being resolved silently.
-export function singleCountProviderPayments(transactions = [], { accountKeyOf = (row) => String(row?.account_key || '') } = {}) {
-  const charges = [], moneyOut = []
+export const REFUND_RESOLUTIONS = ['same_refund', 'separate_refund']
+
+// A refund decision is persisted with who, when, the evidence and the immutable identifiers
+// involved. A later decision never overwrites an earlier one: it is a new, linked record.
+export function refundResolutionRecord({ refund = {}, charge = {}, resolution = '', evidence_reference = '', actor = '', at = '', previous = null } = {}) {
+  const errors = []
+  const refundId = String(refund.gateway_transaction_id || refund.id || '')
+  const chargeId = String(charge.gateway_transaction_id || charge.id || '')
+  if (!refundId) errors.push('This refund has no immutable provider identifier, so it cannot be resolved.')
+  if (!REFUND_RESOLUTIONS.includes(String(resolution))) errors.push('Choose whether this refund is already reflected on the charge or is a separate refund.')
+  if (String(resolution) === 'same_refund' && !chargeId) errors.push('A refund can only be recorded as already reflected if the charge is named.')
+  if (!String(evidence_reference).trim()) errors.push('Record what establishes the relationship: the provider reference, or the report that shows it.')
+  if (!String(actor).trim()) errors.push('Mio could not tell who resolved this refund.')
+  if (errors.length) return { ok: false, errors }
+  return {
+    ok: true,
+    record: {
+      refund_transaction_id: refundId,
+      charge_transaction_id: chargeId,
+      resolution: String(resolution),
+      amount_cents: amountCents(refund),
+      currency: String(refund.currency || 'USD'),
+      provider_account_id: String(refund.account_id || ''),
+      account_key: String(refund.account_key || charge.account_key || ''),
+      evidence_reference: String(evidence_reference).trim(),
+      resolved_by: String(actor).trim(),
+      resolved_at: at || new Date().toISOString(),
+      corrects_resolution_id: previous?.id ? String(previous.id) : '',
+      immutable_ids: { refund: refundId, charge: chargeId, provider_account: String(refund.account_id || '') },
+    },
+  }
+}
+
+// The refund review. Nothing is netted across transactions merely because they share a LawPay
+// account: a refund row is deduplicated against a charge's reported refunded total only when an
+// immutable provider identifier, or a match a person expressly confirmed, says the two describe
+// the same refund. While that is unknown the refund is neither counted nor offset — it is excluded
+// from the reconciled balance, which is therefore not final, and its possible effect is shown.
+export function refundReview({ transactions = [], resolutions = {} } = {}) {
+  const charges = [], refundRows = []
   for (const transaction of transactions || []) {
-    if (providerMoneyOut(transaction)) moneyOut.push(transaction)
+    if (providerMoneyOut(transaction)) refundRows.push(transaction)
     else charges.push(transaction)
   }
   const idOf = (row) => String(row?.gateway_transaction_id || row?.id || '')
   const chargeById = new Map(charges.map((charge) => [idOf(charge), charge]))
-  const aggregateOf = (charge) => Math.max(0, Math.round(Math.abs(Number(charge.amount_refunded_cents || 0))))
-  const verified = new Map(), rows = [], unverified = [], unlinkedByAccount = new Map()
-  for (const refund of moneyOut) {
+  const effects = []
+  let unresolvedTotal = 0, separateTotal = 0
+  for (const refund of refundRows) {
     if (NON_POSTING_STATUS.test(String(refund.status || '').toLowerCase())) continue
+    const refundId = idOf(refund)
     const amount = amountCents(refund)
     const linkedId = String(refund.original_transaction_id || refund.raw?.mio_original_transaction_id || '')
-    const charge = linkedId && refund.original_link_verified !== false ? chargeById.get(linkedId) : null
-    const entry = { gateway_transaction_id: idOf(refund), amount_cents: amount, original_transaction_id: linkedId }
-    if (charge) {
-      const key = idOf(charge)
-      verified.set(key, (verified.get(key) || 0) + amount)
-      rows.push({ ...entry, counts_as: 'verified_refund_row', linked_charge: key })
+    const confirmed = resolutions[refundId] || null
+    const providerLinked = linkedId && refund.original_link_verified !== false ? chargeById.get(linkedId) || null : null
+    const confirmedLinked = confirmed && String(confirmed.resolution) === 'same_refund' ? chargeById.get(String(confirmed.charge_transaction_id || '')) || null : null
+    const linkedCharge = providerLinked || confirmedLinked
+    if (linkedCharge) {
+      effects.push({ refund_id: refundId, charge_id: idOf(linkedCharge), amount_cents: amount, effect: 'already_reflected', source: providerLinked ? 'provider_identifier' : 'confirmed_match', resolution: confirmed || null })
+    } else if (confirmed && String(confirmed.resolution) === 'separate_refund') {
+      effects.push({ refund_id: refundId, charge_id: '', amount_cents: amount, effect: 'additional_refund', source: 'confirmed_separate', resolution: confirmed })
+      separateTotal += amount
     } else {
-      unverified.push({ ...entry, counts_as: 'unlinked_refund_row' })
-      const account = String(accountKeyOf(refund) || '')
-      unlinkedByAccount.set(account, (unlinkedByAccount.get(account) || 0) + amount)
+      effects.push({ refund_id: refundId, charge_id: '', amount_cents: amount, effect: 'unresolved', source: 'unresolved', possible_effects: { additional_refund_cents: amount, already_reflected_cents: 0 }, resolution: null })
+      unresolvedTotal += amount
     }
   }
-  for (const entry of unverified) rows.push(entry)
-  const aggregateByAccount = new Map()
-  let chargeTotal = 0
-  for (const charge of charges) {
-    const key = idOf(charge), gross = amountCents(charge), aggregate = aggregateOf(charge)
-    const represented = verified.has(key) ? verified.get(key) : aggregate
-    chargeTotal += Math.max(0, gross - represented)
-    if (!verified.has(key)) {
-      const account = String(accountKeyOf(charge) || '')
-      aggregateByAccount.set(account, (aggregateByAccount.get(account) || 0) + aggregate)
-    }
-  }
-  let excessRefundTotal = 0
-  for (const [account, unlinked] of unlinkedByAccount) {
-    excessRefundTotal += Math.max(0, unlinked - (aggregateByAccount.get(account) || 0))
-  }
+  const chargeTotal = charges.reduce((sum, charge) => sum + Math.max(0, amountCents(charge) - Math.max(0, Math.round(Math.abs(Number(charge.amount_refunded_cents || 0))))), 0)
+  const resolvedTotal = chargeTotal - separateTotal
   return {
+    effects,
     charge_total_cents: chargeTotal,
-    separate_refund_total_cents: excessRefundTotal,
-    unverified_refund_cents: unverified.reduce((sum, entry) => sum + entry.amount_cents, 0),
-    total_cents: chargeTotal - excessRefundTotal,
-    refunds: rows,
-    suppressed_refunds: [],
-    requires_review: unverified.length > 0,
-    reason: unverified.length
-      ? 'A charge reports a refunded total and separate refund records exist that no provider identifier links to it. Nothing is assumed: each charge is counted once net of its own reported total, an unlinked refund is only subtracted beyond that, and the relationship is kept for review.'
+    separate_refund_total_cents: separateTotal,
+    resolved_total_cents: resolvedTotal,
+    unresolved_refund_cents: unresolvedTotal,
+    unresolved_possible_totals: { minimum_refund_cents: separateTotal, maximum_refund_cents: separateTotal + unresolvedTotal, maximum_total_cents: resolvedTotal, minimum_total_cents: resolvedTotal - unresolvedTotal },
+    reconciled: unresolvedTotal === 0,
+    status: unresolvedTotal === 0 ? 'resolved' : 'refund_relationship_unresolved',
+    label: unresolvedTotal === 0 ? '' : 'Refund relationship unresolved',
+    requires_review: unresolvedTotal > 0,
+    reason: unresolvedTotal > 0
+      ? `Refund relationship unresolved: $${(unresolvedTotal / 100).toFixed(2)} of refunds here are tied to a charge by neither a provider identifier nor a confirmed match, so nothing has been assumed about them. The reconciled total is not final: it is between $${((resolvedTotal - unresolvedTotal) / 100).toFixed(2)} and $${(resolvedTotal / 100).toFixed(2)} until each refund is resolved.`
       : '',
+  }
+}
+
+// Summary used by the reconciliation arithmetic: the resolved effect, plus the unresolved amount
+// and whether the total may be treated as an authoritative reconciled balance.
+export function singleCountProviderPayments(transactions = [], { resolutions = {} } = {}) {
+  const review = refundReview({ transactions, resolutions })
+  return {
+    charge_total_cents: review.charge_total_cents,
+    separate_refund_total_cents: review.separate_refund_total_cents,
+    unverified_refund_cents: review.unresolved_refund_cents,
+    total_cents: review.resolved_total_cents,
+    refunds: review.effects,
+    reconciled: review.reconciled,
+    requires_review: review.requires_review,
+    reason: review.reason,
+    review,
   }
 }
 

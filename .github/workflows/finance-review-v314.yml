@@ -56,7 +56,9 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-schema.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260922090000_lawpay_classification_v323.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260922090001_lawpay_refund_resolution_v323.sql
           psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-behavior.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-refund-resolution-v323-behavior.sql
           # Two overlapping sessions posting the same provider transaction: exactly one may post,
           # and a trust posting must leave exactly one ledger entry.
           psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &
