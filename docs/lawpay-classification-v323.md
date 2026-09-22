@@ -156,8 +156,13 @@ transactions themselves. Reversals contribute nothing.
 
 `singleCountProviderPayments` also fixed a real pre-existing defect in the invoice reconciliation
 arithmetic: a charge that reported a refunded total *and* had its own refund record was being
-reduced twice, which understated what the client had paid. The refund is now counted once and any
-overlap is reported for review.
+reduced twice, which understated what the client had paid. Only an **immutable provider
+identifier** now decides that a refund row and a charge's refunded total are the same money — an
+identical amount in the same account is not proof, because two unrelated refunds can share an
+amount. Each charge is counted once net of its own reported total, an unlinked refund row is
+subtracted only to the extent it *exceeds* the refunded totals already recorded in that account
+(which cannot be the same money), and every unlinked refund is reported for review rather than
+resolved silently.
 
 ### Diagnostics are their own function
 
@@ -258,22 +263,24 @@ transform (`mio-v323-lawpay-classification.js`). It is released only after both 
 3. **Account mapping.** Record the firm's provider-account mapping (the mapping action, or the map
    control in the panel once the interface is live). Verify each account key against the bank before
    relying on it. A wrong mapping is corrected by saving the row again: it is data, not schema.
-4. **Gateway.** Deploy `lawpay-gateway` with the financial actions. Verify read-only first:
+4. **Gateway.** Deploy `lawpay-gateway` with the financial actions. Verify **read-only** first:
    `action: 'review'` must return the stored transactions, classifications and entries, and a
-   non-administrator must be refused. Then record one small, real, reversible payment and check the
-   ledger entry, the matter trust balance and the audit history before telling the firm.
-5. **Interface.** Release the panel only after step 4 is verified. Until then the panel shows a
-   gateway error rather than pretending the workflow works.
-6. **Read-only verification.** Confirm: exactly one classification and one ledger entry per
-   recorded payment; the trust balance on the matter dashboard, the accounting view, Bulk billing
-   and the withdrawal page agree; the pending cards are unchanged; and no client role can read or
-   write the three tables (`select` still revoked).
-7. **If verification fails.** Stop recording. Nothing is derived, so a mistake is *corrected*, not
-   deleted, through the workflow itself: open the payment, choose the right ownership, account and
-   category, state the reason, and confirm. The previous entry is reversed once, the replacement
-   posts once, and both stay linked in the audit history. If the workflow cannot do it, correction
-   is the service-role function `mio_correct_lawpay_classification_v323`, in one transaction.
-   Reverting the release is a frontend rollback plus a redeploy of the previous gateway revision.
-   The migration is reverted with `drop function` for the five functions and `drop table` for the
-   three new tables in one transaction; no existing table was altered, so nothing else needs
-   repairing. Never delete a posted ledger entry by hand — reverse it.
+   non-administrator must be refused. Do not record a live payment as a deployment check: the first
+   live recording happens only on a transaction the firm administrator selects and approves, after
+   the read-only checks pass. Account mapping and any live classification are production financial
+   data changes and are made only with the firm's explicit approval.
+5. **Interface.** Release the panel only after step 4's read-only checks pass. Until then the panel
+   shows a gateway error rather than pretending the workflow works.
+6. **Read-only verification.** Confirm: no row in the three new tables was written by a client role
+   (`select` still revoked); `review` returns the expected counts; the rest of Mio's finances are
+   unchanged (trust balances, pending cards, invoices) because nothing posts until a reviewer
+   records a transaction.
+7. **If verification fails.** Stop and roll back the *release*, not the data: redeploy the previous
+   `lawpay-gateway` revision and roll the frontend back, and leave the three new tables and their
+   rows in place — they hold the audit trail, and they are empty until something is recorded. A
+   wrong *classification* is never deleted: open the payment, choose the right ownership, account
+   and category, state the reason and confirm, and the previous entry is reversed once with the
+   replacement posted once, both linked. The same correction is available as the service-role
+   function `mio_correct_lawpay_classification_v323`. Tables are dropped only as a deliberate,
+   separately approved removal of the feature *and* only after the records they hold have been
+   exported — never as a routine rollback.

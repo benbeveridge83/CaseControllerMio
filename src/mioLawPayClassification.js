@@ -289,46 +289,74 @@ export function duplicateClassification({ existing = [], identity = '', category
   }
   return { duplicate: true, requires_correction: true, reason: 'This transaction is already recorded under a different classification. Use a linked correction instead of recording it again.' }
 }
-// A charge may expose a refunded total while separate refund records exist for the same money.
-// Balance arithmetic must count that refund once. The rule here is deliberately conservative:
-// a separate refund row is treated as already included in a charge's refunded total only when
-// the two can be tied together — a verified original-payment link, or an amount that exactly
-// matches that charge's refunded total in the same account — and any such suppression is
-// reported for review rather than hidden.
+// A refund can be described twice: as a refunded total on the charge, and as its own refund row.
+// It must be counted once — but only an immutable provider identifier may decide that a refund row
+// is the same money as a charge's refunded total. An identical amount in the same account is not
+// proof: two unrelated refunds can share an amount, so a row is never suppressed on that basis.
+//
+// The rule that keeps this honest in both directions:
+//   * a charge linked by the provider's own identifier uses its refund rows, and its aggregate is
+//     treated as the duplicate description;
+//   * any other charge uses its own reported refunded total, which is an immutable field of that
+//     transaction;
+//   * unlinked refund rows are never assumed to belong to a charge, so they are not subtracted
+//     again on top of an aggregate: only the amount by which they *exceed* the refunded totals
+//     already recorded in the same account is subtracted, because that excess cannot be the same
+//     money;
+//   * every unlinked refund is reported for review instead of being resolved silently.
 export function singleCountProviderPayments(transactions = [], { accountKeyOf = (row) => String(row?.account_key || '') } = {}) {
   const charges = [], moneyOut = []
   for (const transaction of transactions || []) {
     if (providerMoneyOut(transaction)) moneyOut.push(transaction)
     else charges.push(transaction)
   }
-  const chargeTotal = charges.reduce((sum, charge) => sum + Math.max(0, amountCents(charge) - Math.round(Math.abs(Number(charge.amount_refunded_cents || 0)))), 0)
-  const summarised = [] , suppressed = []
-  let refundTotal = 0
+  const idOf = (row) => String(row?.gateway_transaction_id || row?.id || '')
+  const chargeById = new Map(charges.map((charge) => [idOf(charge), charge]))
+  const aggregateOf = (charge) => Math.max(0, Math.round(Math.abs(Number(charge.amount_refunded_cents || 0))))
+  const verified = new Map(), rows = [], unverified = [], unlinkedByAccount = new Map()
   for (const refund of moneyOut) {
     if (NON_POSTING_STATUS.test(String(refund.status || '').toLowerCase())) continue
     const amount = amountCents(refund)
     const linkedId = String(refund.original_transaction_id || refund.raw?.mio_original_transaction_id || '')
-    const linked = linkedId ? charges.find((charge) => String(charge.gateway_transaction_id || charge.id || '') === linkedId) : null
-    const matched = charges.find((charge) => Math.round(Math.abs(Number(charge.amount_refunded_cents || 0))) === amount
-      && (!linkedId || String(charge.gateway_transaction_id || charge.id || '') === linkedId)
-      && accountKeyOf(charge) === accountKeyOf(refund))
-    const alreadyIncluded = !!matched
-    if (alreadyIncluded) {
-      summarised.push({ gateway_transaction_id: String(refund.gateway_transaction_id || refund.id || ''), amount_cents: amount, counts_as: 'included_in_refunded_total', original_transaction_id: String(matched.gateway_transaction_id || matched.id || '') })
-      suppressed.push(String(refund.gateway_transaction_id || refund.id || ''))
+    const charge = linkedId && refund.original_link_verified !== false ? chargeById.get(linkedId) : null
+    const entry = { gateway_transaction_id: idOf(refund), amount_cents: amount, original_transaction_id: linkedId }
+    if (charge) {
+      const key = idOf(charge)
+      verified.set(key, (verified.get(key) || 0) + amount)
+      rows.push({ ...entry, counts_as: 'verified_refund_row', linked_charge: key })
     } else {
-      summarised.push({ gateway_transaction_id: String(refund.gateway_transaction_id || refund.id || ''), amount_cents: amount, counts_as: linked ? 'linked_refund' : 'separate_refund', original_transaction_id: linked ? String(linked.gateway_transaction_id || linked.id || '') : '' })
-      refundTotal += amount
+      unverified.push({ ...entry, counts_as: 'unlinked_refund_row' })
+      const account = String(accountKeyOf(refund) || '')
+      unlinkedByAccount.set(account, (unlinkedByAccount.get(account) || 0) + amount)
     }
+  }
+  for (const entry of unverified) rows.push(entry)
+  const aggregateByAccount = new Map()
+  let chargeTotal = 0
+  for (const charge of charges) {
+    const key = idOf(charge), gross = amountCents(charge), aggregate = aggregateOf(charge)
+    const represented = verified.has(key) ? verified.get(key) : aggregate
+    chargeTotal += Math.max(0, gross - represented)
+    if (!verified.has(key)) {
+      const account = String(accountKeyOf(charge) || '')
+      aggregateByAccount.set(account, (aggregateByAccount.get(account) || 0) + aggregate)
+    }
+  }
+  let excessRefundTotal = 0
+  for (const [account, unlinked] of unlinkedByAccount) {
+    excessRefundTotal += Math.max(0, unlinked - (aggregateByAccount.get(account) || 0))
   }
   return {
     charge_total_cents: chargeTotal,
-    separate_refund_total_cents: refundTotal,
-    total_cents: chargeTotal - refundTotal,
-    refunds: summarised,
-    suppressed_refunds: suppressed,
-    requires_review: suppressed.length > 0,
-    reason: suppressed.length ? 'A charge reports a refunded total and separate refund records appear to describe the same money. The refund is counted once; confirm the relationship.' : '',
+    separate_refund_total_cents: excessRefundTotal,
+    unverified_refund_cents: unverified.reduce((sum, entry) => sum + entry.amount_cents, 0),
+    total_cents: chargeTotal - excessRefundTotal,
+    refunds: rows,
+    suppressed_refunds: [],
+    requires_review: unverified.length > 0,
+    reason: unverified.length
+      ? 'A charge reports a refunded total and separate refund records exist that no provider identifier links to it. Nothing is assumed: each charge is counted once net of its own reported total, an unlinked refund is only subtracted beyond that, and the relationship is kept for review.'
+      : '',
   }
 }
 

@@ -187,33 +187,54 @@ test('the matter dashboard and the firm-wide queue split the same records consis
   assert.equal(split.totals.matter_cents + split.totals.firm_wide_cents, split.totals.all_cents)
 })
 
-test('balance arithmetic counts a refund once when a refunded total and a separate refund row describe the same money', () => {
+test('a refund is counted once from a provider identifier, and an equal amount is never proof', () => {
   const charge = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 112000, account_key: 'trust' }
-  const refund = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
-  const both = singleCountProviderPayments([charge, refund])
-  assert.equal(both.charge_total_cents, 388000, 'the charge is counted net of its refunded total')
-  assert.equal(both.separate_refund_total_cents, 0, 'the refund must not be subtracted a second time')
-  assert.equal(both.total_cents, 388000)
-  assert.equal(both.requires_review, true, 'the relationship is reported, not silently assumed')
-  assert.deepEqual(both.suppressed_refunds, ['refund-1'])
-  assert.equal(both.refunds[0].counts_as, 'included_in_refunded_total')
-  const verified = singleCountProviderPayments([charge, { ...refund, original_transaction_id: 'charge-1' }])
+  const unlinked = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
+  // The same amount in the same account is not evidence: the charge is counted net of its own
+  // reported total, the unlinked row is not subtracted a second time, and the ambiguity is flagged.
+  const ambiguous = singleCountProviderPayments([charge, unlinked])
+  assert.equal(ambiguous.charge_total_cents, 388000, 'the charge is counted net of its own reported refunded total')
+  assert.equal(ambiguous.separate_refund_total_cents, 0, 'an equal amount must not be subtracted again')
+  assert.equal(ambiguous.total_cents, 388000)
+  assert.equal(ambiguous.requires_review, true, 'an unlinked refund is flagged, never resolved silently')
+  assert.match(ambiguous.reason, /no provider identifier links to it/)
+  assert.equal(ambiguous.unverified_refund_cents, 112000)
+  assert.equal(ambiguous.refunds[0].counts_as, 'unlinked_refund_row')
+  assert.deepEqual(ambiguous.suppressed_refunds, [])
+  // A provider link is proof: the refund rows are the money movements and the aggregate on the
+  // charge is the duplicate description of the same money.
+  const verified = singleCountProviderPayments([charge, { ...unlinked, original_transaction_id: 'charge-1' }])
   assert.equal(verified.total_cents, 388000)
-  assert.equal(verified.refunds[0].counts_as, 'included_in_refunded_total')
-  assert.equal(verified.refunds[0].original_transaction_id, 'charge-1')
-  const separate = singleCountProviderPayments([{ ...charge, amount_refunded_cents: 0 }, refund])
-  assert.equal(separate.charge_total_cents, 500000)
-  assert.equal(separate.separate_refund_total_cents, 112000)
-  assert.equal(separate.total_cents, 388000, 'a refund with no refunded total on the charge is a separate movement')
-  assert.equal(separate.requires_review, false)
-  const partial = singleCountProviderPayments([{ ...charge, amount_refunded_cents: 112000 }, { ...refund, gateway_transaction_id: 'refund-2', amount_cents: 50000 }])
-  assert.equal(partial.separate_refund_total_cents, 50000, 'a smaller, unrelated refund is a separate movement')
-  assert.equal(partial.total_cents, 338000)
-  const otherAccount = singleCountProviderPayments([charge, { ...refund, account_key: 'operating' }])
-  assert.equal(otherAccount.separate_refund_total_cents, 112000, 'a refund in another account is never folded into a charge elsewhere')
-  assert.equal(otherAccount.total_cents, 276000)
-  const reversed = singleCountProviderPayments([charge, { ...refund, status: 'FAILED' }])
-  assert.equal(reversed.separate_refund_total_cents, 0, 'a failed refund moves nothing')
+  assert.equal(verified.requires_review, false)
+  assert.equal(verified.refunds[0].counts_as, 'verified_refund_row')
+  assert.equal(verified.refunds[0].linked_charge, 'charge-1')
+  // A link the firm has disputed is not proof either.
+  const disputed = singleCountProviderPayments([charge, { ...unlinked, original_transaction_id: 'charge-1', original_link_verified: false }])
+  assert.equal(disputed.requires_review, true)
+  assert.equal(disputed.refunds[0].counts_as, 'unlinked_refund_row')
+  assert.equal(disputed.total_cents, 388000)
+})
+
+test('two unrelated same-account refunds of the same amount are each counted once, not merged', () => {
+  const charge = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, amount_refunded_cents: 112000, account_key: 'trust' }
+  const first = { gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
+  const second = { gateway_transaction_id: 'refund-2', transaction_type: 'REFUND', status: 'COMPLETED', amount_cents: 112000, account_key: 'trust' }
+  const counted = singleCountProviderPayments([charge, first, second])
+  assert.equal(counted.charge_total_cents, 388000)
+  assert.equal(counted.separate_refund_total_cents, 112000, 'only the refund beyond the charge reported total is subtracted')
+  assert.equal(counted.total_cents, 276000, 'each refund is counted once: 5000 less 1120 reported, less the 1120 that cannot be the same money')
+  assert.equal(counted.unverified_refund_cents, 224000, 'both unlinked refunds stay visible for review')
+  assert.equal(counted.requires_review, true)
+  assert.equal(counted.refunds.length, 2)
+  // A refund lawfully made in another account is still subtracted, and is still flagged.
+  const chargeWithoutTotal = { ...charge, amount_refunded_cents: 0 }
+  const otherAccount = singleCountProviderPayments([chargeWithoutTotal, { ...first, account_key: 'operating' }])
+  assert.equal(otherAccount.total_cents, 388000)
+  assert.equal(otherAccount.requires_review, true)
+  // A refund the provider voided moves nothing at all.
+  const voided = singleCountProviderPayments([charge, { ...first, status: 'VOID' }])
+  assert.equal(voided.total_cents, 388000)
+  assert.equal(voided.requires_review, false)
   assert.equal(singleCountProviderPayments([]).total_cents, 0)
 })
 

@@ -1,7 +1,7 @@
 name: Finance review and payment verification
 on:
   push:
-    branches: [fix/finance-review-payments-20260911]
+    branches: [fix/finance-review-payments-20260911, 'fix/lawpay-*']
   pull_request:
     branches: [main]
 permissions:

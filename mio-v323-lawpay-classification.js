@@ -93,6 +93,8 @@ const originalRefundSum = `      const transactionPaid = successful.reduce((sum,
         return sum + (/refund|chargeback|reversal/.test(type) ? -amount : Math.max(0, amount - refunded))
       }, 0)
 `
+const discrepancy = `        {finance.trustNegative ? <p role="alert" data-testid="trust-discrepancy" style={{ color: '#b91c1c', fontWeight: 800 }}>{'Trust ledger is negative: ' + money(finance.trust) + ' for ' + String(matter.name || 'this matter') + '. This is a discrepancy to review, not funds to spend, and it is shown rather than hidden.'}</p> : null}
+`
 //V323_APPEND
 export default function lawPayClassification() {
   return {
@@ -107,8 +109,14 @@ export default function lawPayClassification() {
         return once(part, "    return [...manualRows, ...lawPayRows.filter((row) => !manualLawPayIds.has(String(row.id).replace(/^lawpay:/, '')))]", "    return [...manualRows, ...lawPayRows.filter((row) => !manualLawPayIds.has(String(row.id).replace(/^lawpay:/, '')) && !postedLawPayKeys.has(String(row.id).replace(/^lawpay:/, '')))]", 'a recorded payment is never also shown as a derived LawPay row')
       })
       code = once(code, '  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId, mioFinanceOpeningBalances])', '  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId, mioFinanceOpeningBalances, lawPayV323Review])', 'the prepared matter finances follow the classification ledger')
+      code = once(code, '    const trust = Math.max(0, snapshotTrust + ledgerDelta)', `    // The trust ledger balance is reported exactly as it is. A negative balance is a real
+    // discrepancy to review, never hidden: only an "available to apply toward billing" figure may
+    // be floored at zero, and that is done where it is used.
+    const trust = snapshotTrust + ledgerDelta
+    const trustNegative = trust < -0.005`, 'trust is never clamped to zero')
       code = once(code, originalRefundSum, refundOnce, 'refund counted once')
-      code = editFunction(code, 'renderClientDashboardFinances', (part) => once(part, "    return <div style={{ display: 'grid', gap: 14 }}>\n", "    return <div style={{ display: 'grid', gap: 14 }}>\n" + panel, 'classification panel mount'))
+      code = once(code, '      trust,\n', '      trust,\n      trustNegative,\n', 'the negative trust balance is reported')
+      code = editFunction(code, 'renderClientDashboardFinances', (part) => once(part, "    return <div style={{ display: 'grid', gap: 14 }}>\n", "    return <div style={{ display: 'grid', gap: 14 }}>\n" + discrepancy + panel, 'classification panel and trust discrepancy mount'))
       if (code.includes('finishLawPayClassification')) throw Error('V323 transform ran twice')
       return `${code}\n// finishLawPayClassification\n`
     },

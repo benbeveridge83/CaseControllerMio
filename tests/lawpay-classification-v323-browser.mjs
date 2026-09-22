@@ -155,9 +155,10 @@ const readMoney = async (scope, label) => {
   // happens to contain the whole page.
   const text = candidates.sort((left, right) => left.length - right.length)[0]
   moneyReads.push(`${label} -> ${String(text).replace(/\s+/g, ' ').slice(0, 160)}`)
-  const match = String(text).match(/\$([\d,]+(?:\.\d{2})?)/)
+  const match = String(text).match(/-?\$([\d,]+(?:\.\d{2})?)/)
   assert.ok(match, `no amount was shown next to ${label}`)
-  return Number(match[1].replace(/,/g, ''))
+  const negative = String(text).slice(Math.max(0, String(text).indexOf('$') - 1), String(text).indexOf('$')).includes('-')
+  return Number(match[1].replace(/,/g, '')) * (negative ? -1 : 1)
 }
 // The panel reloads the stored records after a decision, so a balance is polled until it settles
 // on the expected figure instead of being read once, mid-refresh.
@@ -350,10 +351,25 @@ try {
   assert.equal(store.ledger.filter((entry) => entry.classification_id === latest.id).length, 1, 'the replacement must post exactly once')
   await dashboard.reload({ waitUntil: 'domcontentloaded' })
   await revealRow(dashboard, 'provider-a')
-  const afterTrustToOperating = await waitForMoney(dashboard, 'Trust account', trustOnFinancesBefore)
+  // The trust credit that was never trust money is taken back exactly once, and the resulting
+  // negative ledger balance stays visible instead of being clamped to zero.
+  const afterTrustToOperating = await waitForMoney(dashboard, 'Trust account', Number((trustOnFinancesBefore - 5000).toFixed(2)))
   assert.equal(Number((trustOnFinancesAfter - afterTrustToOperating).toFixed(2)), 5000, 'correcting trust to operating takes the trust credit back exactly once')
-  assert.equal(afterTrustToOperating, trustOnFinancesBefore, 'the matter trust balance returns to its pre-payment figure')
+  assert.equal(afterTrustToOperating, trustOnFinancesBefore, 'the corrected ledger balance is the pre-payment figure, shown exactly and not floored')
+  assert.equal(await dashboard.getByTestId('trust-discrepancy').count(), 0, 'a positive ledger is not flagged')
   await dashboard.screenshot({ path: 'finance-test-results/lawpay-corrected-to-operating.png' })
+  // A trust disbursement that relied on the deposit being trust money. Once the deposit is
+  // corrected away, the ledger is genuinely negative and must stay visible as it is.
+  states.set('caseMioTrustTransactions', { key: 'caseMioTrustTransactions', raw_value: JSON.stringify([...trust, { id: 'trust-alpha-reliance', matter_id: matters[0].id, direction: 'out', transaction_type: 'other_disbursement', amount: 2000, date: '2026-09-14', created_at: '2026-09-14T10:00:00Z', memo: 'Synthetic trust disbursement that relied on the deposit', source: 'Mio' }]), json_value: null, updated_at: new Date().toISOString() })
+  await dashboard.reload({ waitUntil: 'domcontentloaded' })
+  await revealRow(dashboard, 'provider-a')
+  const negativeTrust = await waitForMoney(dashboard, 'Trust account', Number((afterTrustToOperating - 2000).toFixed(2)))
+  assert.ok(negativeTrust < 0, `the fixture must be genuinely negative after the correction: ${negativeTrust}`)
+  const discrepancy = dashboard.getByTestId('trust-discrepancy')
+  await discrepancy.waitFor()
+  assert.match(await discrepancy.innerText(), /Trust ledger is negative/)
+  assert.match(await discrepancy.innerText(), /discrepancy to review, not funds to spend/)
+  await dashboard.screenshot({ path: 'finance-test-results/lawpay-negative-trust-discrepancy.png' })
   // Reload persistence, and the linked audit history.
   await dashboard.reload({ waitUntil: 'domcontentloaded' })
   const persistedRow = await revealRow(dashboard, 'provider-a')
@@ -362,7 +378,7 @@ try {
   assert.match(history, /posted · Consultation payment — money in/)
   assert.match(history, /reversed · Trust deposit — money in/)
   assert.match(history, /corrects an earlier recording/)
-  assert.equal(await readMoney(dashboard, 'Trust account'), afterTrustToOperating, 'the corrected balance survives a reload')
+  assert.equal(await readMoney(dashboard, 'Trust account'), negativeTrust, 'the corrected balance survives a reload')
   // 7. Correcting it back: operating -> trust. The operating posting never moved trust, so its
   //    reversal moves nothing and the replacement adds the trust credit once.
   await persistedRow.getByLabel('Correction account for Alpha Synthetic').selectOption('trust')
@@ -376,8 +392,10 @@ try {
   await persistedRow.getByRole('button', { name: 'Confirm correction Alpha Synthetic' }).click()
   await persistedRow.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await persistedRow.getByTestId('lawpay-message-provider-a').innerText(), /Corrected\./)
-  const backToTrust = await waitForMoney(dashboard, 'Trust account', trustOnFinancesAfter)
-  assert.equal(backToTrust, trustOnFinancesAfter, 'correcting operating back to trust restores the trust balance exactly once')
+  const backToTrust = await waitForMoney(dashboard, 'Trust account', Number((trustOnFinancesAfter - 2000).toFixed(2)))
+  assert.equal(backToTrust, trustOnFinancesAfter - 2000, 'correcting operating back to trust restores the trust credit exactly once')
+  assert.ok(backToTrust > 0, 'the balance is positive again')
+  assert.equal(await dashboard.getByTestId('trust-discrepancy').count(), 0, 'the discrepancy notice clears once the ledger is positive again')
   assert.equal(store.ledger.filter((entry) => entry.reverses_entry_id).length, 2, 'each correction reverses its own posting exactly once')
   await dashboard.screenshot({ path: 'finance-test-results/lawpay-corrected-back-to-trust.png' })
   // The accounting view shows the correction once, and the figure the withdrawal rows are built
@@ -405,7 +423,7 @@ try {
   assert.deepEqual(errors, [])
   assert.deepEqual(writes, [], 'no financial table may be written directly from the browser')
   assert.deepEqual(blocked, [], 'no service outside Mio may be called')
-  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, ledger_entries: store.ledger.length, corrections_reversed: store.ledger.filter((entry) => entry.reverses_entry_id).length, trust_after_recording: trustOnFinancesAfter, trust_after_corrections: backToTrust, tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance', 'the correction preview states the reversal and the replacement', 'a refused correction leaves the original posting unchanged', 'a double click corrects once', 'correcting trust to operating reverses the trust credit exactly once', 'the correction and its audit history survive a reload', 'correcting operating back to trust adds the trust credit exactly once', 'the accounting view shows the reversal once', 'Bulk billing / withdrawal trust agrees after the corrections'] }, null, 2))
+  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, ledger_entries: store.ledger.length, corrections_reversed: store.ledger.filter((entry) => entry.reverses_entry_id).length, trust_after_recording: trustOnFinancesAfter, trust_after_corrections: backToTrust, tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance', 'the correction preview states the reversal and the replacement', 'a refused correction leaves the original posting unchanged', 'a double click corrects once', 'correcting trust to operating reverses the trust credit exactly once', 'a negative trust ledger stays visible and is flagged as a discrepancy', 'the correction and its audit history survive a reload', 'correcting operating back to trust adds the trust credit exactly once', 'the accounting view shows the reversal once', 'Bulk billing / withdrawal trust agrees after the corrections'] }, null, 2))
 } catch (error) {
   try { fs.writeFileSync('finance-test-results/failure.txt', await page.locator('body').innerText()) } catch { /* page already gone */ }
   if (dashboardRef && dashboardRef !== page) { try { fs.writeFileSync('finance-test-results/failure-matter.txt', await dashboardRef.locator('body').innerText()) } catch { /* page already gone */ } }
