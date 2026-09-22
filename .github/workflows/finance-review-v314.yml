@@ -54,25 +54,77 @@ jobs:
           psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-concurrency.sql
       - name: Test LawPay classification posting, duplicates and corrections on the isolated PostgreSQL
         run: |
-          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-schema.sql
-          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260922090000_lawpay_classification_v323.sql
-          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260922090001_lawpay_refund_resolution_v323.sql
-          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-behavior.sql
-          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-refund-resolution-v323-behavior.sql
-          # Two overlapping sessions posting the same provider transaction: exactly one may post,
-          # and a trust posting must leave exactly one ledger entry.
-          psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &
-          race_a=$!
-          sleep 0.25
-          psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; commit;" > race-b.txt &
-          race_b=$!
-          wait "$race_a"
-          wait "$race_b"
-          cat race-a.txt race-b.txt
-          test "$(grep -c '^posted$' race-a.txt race-b.txt | awk -F: '{s+=$2} END {print s}')" = "1"
-          test "$(psql -t -A -c "select count(*) from public.mio_lawpay_classifications where identity='lawpay-refunded-charge' and posting_status='posted';")" = "1"
-          test "$(psql -t -A -c "select count(*) from public.mio_lawpay_ledger_entries where identity='lawpay-refunded-charge';")" = "1"
-          psql -t -A -c "select 'V323 concurrency: one posting, one ledger entry' as result;"
+          # The job log of this step is only visible to repository administrators, so a failure is
+          # reported through the step summary and error annotations as well. Both contain psql output
+          # about synthetic fixtures only; anything resembling a credential or connection value is
+          # redacted before it is published.
+          set -o pipefail
+          log="$(mktemp)"
+          # Keep the redaction narrow: connection strings and credentials only, so the diagnostic
+          # stays readable while no connection value or credential can be published.
+          redact() {
+            sed -E -e 's#postgres(ql)?://[^[:space:]]+#postgres://[redacted]#Ig' -e 's/(PGPASSWORD|password|passwd|pwd)=[^[:space:]]*/\1=[redacted]/Ig' -e 's/Bearer [A-Za-z0-9._-]+/Bearer [redacted]/Ig' -e 's/eyJ[A-Za-z0-9._-]{20,}/[redacted-jwt]/g'
+          }
+          summary() {
+            {
+              echo '### LawPay classification database suite failed'
+              echo
+              echo "Failing file: ${failing_file:-unknown}"
+              echo
+              echo '```'
+              grep -n -i -E '(^|[^a-z])(error|detail|hint|context|fatal|exception|assert|expected)([^a-z]|$)' "$log" | tail -n 20 | redact
+              echo '```'
+              echo
+              echo 'Last lines of output:'
+              echo
+              echo '```'
+              tail -n 15 "$log" | redact
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # One precise annotation, because GitHub samples a long run of them unhelpfully.
+            {
+              echo "psql failed on ${failing_file:-an unknown file}. "
+              grep -n -i -E '(^|[^a-z])(error|detail|hint|context|fatal|exception|assert|expected)([^a-z]|$)' "$log" | tail -n 8 | tr '\n' ' | '
+              echo 'Last output: '
+              tail -n 4 "$log" | tr '\n' ' | '
+            } | redact | while IFS= read -r line; do echo "::error::${line}"; done
+          }
+          status=0
+          for file in \
+            tests/sql/lawpay-classification-v323-schema.sql \
+            supabase/migrations/20260922090000_lawpay_classification_v323.sql \
+            supabase/migrations/20260922090001_lawpay_refund_resolution_v323.sql \
+            tests/sql/lawpay-classification-v323-behavior.sql \
+            tests/sql/lawpay-refund-resolution-v323-behavior.sql
+          do
+            echo "--- psql -v ON_ERROR_STOP=1 -f $file" | tee -a "$log"
+            psql -v ON_ERROR_STOP=1 -f "$file" >> "$log" 2>&1 || { status=1; failing_file="$file"; }
+            [ "$status" = "0" ] || break
+          done
+          if [ "$status" = "0" ]; then
+            # Two overlapping sessions posting the same provider transaction: exactly one may post,
+            # and a trust posting must leave exactly one ledger entry.
+            psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &
+            race_a=$!
+            sleep 0.25
+            psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; commit;" > race-b.txt &
+            race_b=$!
+            wait "$race_a" || status=1
+            wait "$race_b" || status=1
+            cat race-a.txt race-b.txt | tee -a "$log"
+            if [ "$(grep -c '^posted$' race-a.txt race-b.txt | awk -F: '{s+=$2} END {print s}')" != "1" ]; then
+              echo "race: expected exactly one posted status" >> "$log"; status=1
+            fi
+            posted="$(psql -t -A -c "select count(*) from public.mio_lawpay_classifications where identity='lawpay-refunded-charge' and posting_status='posted';")"
+            entries="$(psql -t -A -c "select count(*) from public.mio_lawpay_ledger_entries where identity='lawpay-refunded-charge';")"
+            echo "race: posted=$posted ledger_entries=$entries" | tee -a "$log"
+            [ "$posted" = "1" ] || { echo "expected one posted classification" >> "$log"; status=1; failing_file="concurrency race"; }
+            [ "$entries" = "1" ] || { echo "expected one ledger entry" >> "$log"; status=1; failing_file="concurrency race"; }
+            psql -t -A -c "select 'V323 concurrency: one posting, one ledger entry' as result;" | tee -a "$log"
+          fi
+          # The full output also travels with the run's artifacts, for anyone with repository access.
+          mkdir -p finance-test-results && cp "$log" finance-test-results/lawpay-database-suite.log
+          if [ "$status" != "0" ]; then summary; exit 1; fi
       - run: npm run build
       - run: node node_modules/playwright-core/cli.js install chromium --with-deps
       - name: Test real production bundle with intercepted synthetic services
