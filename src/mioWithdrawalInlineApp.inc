@@ -64,7 +64,10 @@
     })
   }
   function mioWdRenderGraph(rows){
-    const series=rows.map(r=>({matter_id:r.matter_id,display_number:r.client+' - '+r.name,mio_matter_ids:[r.matter_id],matter_names:[{id:r.matter_id,name:r.name}],points:r.points,color:r.withdrawing?'#c62828':'#111111'}))
+    // Every matching matter is plotted, so overlapping balances are normal: each
+    // non-withdrawing matter keeps its own color and the legend names every line.
+    const palette=['#0b5fff','#16a34a','#9333ea','#ea580c','#0891b2','#be123c','#4f46e5','#65a30d','#7c2d12','#0f766e','#a21caf','#b45309']
+    const series=rows.map((r,index)=>({matter_id:r.matter_id,display_number:r.client+' - '+r.name,mio_matter_ids:[r.matter_id],matter_names:[{id:r.matter_id,name:r.name}],points:r.points,color:r.withdrawing?'#c62828':palette[index%palette.length]}))
     if(rows.length===1&&rows[0].points.length){const r=rows[0];series.push({matter_id:'minimum-'+r.matter_id,display_number:'Minimum trust balance',points:[{date:r.points[0].date,balance:r.minimum},{date:new Date().toISOString(),balance:r.minimum}],color:'#7a7a7a'})}
     return renderClioGraph(series,{small:true,step:true,extendToToday:true,invoiceMarkers:rows.flatMap(r=>r.notices)})
   }

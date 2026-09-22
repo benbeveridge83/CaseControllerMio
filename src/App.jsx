@@ -5902,6 +5902,13 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioFinanceOpeningBalances') || '{}') }
     catch { return {} }
   })
+  // Attribution decisions for provider charges that arrived without a Mio invoice reference.
+  // The record is the audit trail; a trust deposit is only ever posted by the tested rules
+  // in src/mioLawPayAttribution.js after a person chose the matter.
+  const [lawPayAttribution, setLawPayAttribution] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioLawPayAttribution') || '[]') }
+    catch { return [] }
+  })
   const [clioHistoricalFinancialArchive, setClioHistoricalFinancialArchive] = useState([])
   const [clioMigrationPreview, setClioMigrationPreview] = useState(null)
   const [clioMigrationBusy, setClioMigrationBusy] = useState(false)
@@ -7218,6 +7225,7 @@ function App() {
         return mergeMioInvoiceState(current, cloudOnlyRows)
       }), kind: 'array', fallback: [] },
       caseMioTrustTransactions: { setter: setMioTrustTransactions, kind: 'array', fallback: [] },
+      caseMioLawPayAttribution: { setter: (value) => setLawPayAttribution(Array.isArray(value) ? value : []), kind: 'array', fallback: [] },
       caseMioFinanceOpeningBalances: { setter: (value) => setMioFinanceOpeningBalances(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseMioFinanceEmailSettings: { setter: (value) => setFinanceEmailSettings({ sender_email: '', ...(value || {}) }), kind: 'object', fallback: { sender_email: '' } },
       caseMioBillingEmailTemplates: { setter: (value) => setBillingEmailTemplates(Object.fromEntries(Object.entries(defaultBillingEmailTemplates).map(([key, template]) => [key, { ...template, ...(value?.[key] || {}) }]))), kind: 'object', fallback: defaultBillingEmailTemplates },
@@ -8566,6 +8574,10 @@ function App() {
   useEffect(() => {
     try { saveMioStateKey('caseMioTrustTransactions', JSON.stringify(mioTrustTransactions || [])) } catch {}
   }, [mioTrustTransactions])
+
+  useEffect(() => {
+    try { saveMioStateKey('caseMioLawPayAttribution', JSON.stringify(lawPayAttribution || [])) } catch {}
+  }, [lawPayAttribution])
 
   useEffect(() => {
     try { saveMioStateKey('caseMioFinanceOpeningBalances', JSON.stringify(mioFinanceOpeningBalances || {})) } catch {}
@@ -55128,7 +55140,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const tasks = [
         loadMioInvoicesFromDatabase({ force: true }),
         loadMioInvoiceEventsFromDatabase({ force: true }),
-        loadLawPayWorkspace({ force: true }),
+        // loadLawPayWorkspace reports a failed background read by returning false instead of
+        // throwing. Silence here would let an older trust balance look current, so treat it
+        // as a failure the caller can report.
+        (async () => { const loaded = await loadLawPayWorkspace({ force: true }); if (loaded === false) throw new Error('The recorded LawPay receipts could not be reloaded (another tab is syncing, or Supabase is temporarily unavailable).') })(),
         loadClioFinancialSnapshots({ ignoreDateFilters: true }),
         loadClioHistoricalFinancialArchive()
       ]
@@ -55136,8 +55151,12 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
       const results = await Promise.allSettled(tasks)
       const failures = results.filter((result) => result.status === 'rejected')
       if (failures.length === results.length) throw failures[0].reason || new Error('Mio graph data could not be refreshed.')
+      // Callers that show these balances must be able to say whether the reload actually
+      // happened instead of presenting an older balance as the current one.
+      return { ok: true, failures: failures.length }
     } catch (error) {
       setClioSnapshotError(error?.message || String(error))
+      return { ok: false, error: error?.message || String(error) }
     } finally {
       setClioSnapshotLoading(false)
     }
@@ -56885,13 +56904,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14, overflowX: 'auto' }}>
         <h2 style={{ marginTop: 0 }}>Payment requests</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}><thead><tr>{['Created','Client / Matter','Account','Amount','Invoice','Reference','Status','Actions'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayPaymentRequests.map((request) => <tr key={request.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.created_at ? new Date(request.created_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}><strong>{request.client_name || request.payer_name || ''}</strong><br/><small>{request.matter_name || ''}</small></td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.account_key}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(request.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.invoice_number || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.status || 'sent'}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => window.open(request.payment_url, '_blank', 'noopener,noreferrer')}>Open</button> <button type="button" onClick={() => copyLawPayLink(request.payment_url)}>Copy</button> <button type="button" onClick={() => emailLawPayLink(request)}>Email</button></td></tr>)}</tbody></table>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}><thead><tr>{['Created','Client / Matter','Account','Amount','Invoice','Reference','Status','Actions'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayPaymentRequests.map((request) => <tr key={request.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.created_at ? new Date(request.created_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}><strong>{request.client_name || request.payer_name || ''}</strong><br/><small>{request.matter_name || ''}</small></td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{lawPayAccountLabel(request)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(request.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.invoice_number || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{request.status || 'sent'}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}><button type="button" onClick={() => window.open(request.payment_url, '_blank', 'noopener,noreferrer')}>Open</button> <button type="button" onClick={() => copyLawPayLink(request.payment_url)}>Copy</button> <button type="button" onClick={() => emailLawPayLink(request)}>Email</button></td></tr>)}</tbody></table>
         {!lawPayPaymentRequests.length && <p>No payment requests recorded yet.</p>}
       </section>
 
       <section style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, overflowX: 'auto' }}>
         <h2 style={{ marginTop: 0 }}>Gateway transaction activity</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr>{['Date','Status','Type','Account','Amount','Payer','Reference','Transaction ID'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayTransactions.map((transaction) => <tr key={transaction.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.status || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.transaction_type || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.account_key || transaction.account_id || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(transaction.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.payer_name || transaction.payer_email || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', fontFamily: 'monospace', fontSize: 11 }}>{transaction.gateway_transaction_id || ''}</td></tr>)}</tbody></table>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}><thead><tr>{['Date','Status','Type','Account','Amount','Payer','Reference','Transaction ID'].map((label) => <th key={label} style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 7 }}>{label}</th>)}</tr></thead><tbody>{lawPayTransactions.map((transaction) => <tr key={transaction.id}><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.occurred_at ? new Date(transaction.occurred_at).toLocaleString() : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.status || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.transaction_type || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{lawPayAccountLabel(transaction)}{!transaction.account_key && transaction.account_id ? ' (' + String(transaction.account_id).slice(-4) + ')' : ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{money(Number(transaction.amount_cents || 0) / 100)}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.payer_name || transaction.payer_email || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0' }}>{transaction.reference || ''}</td><td style={{ padding: 7, borderBottom: '1px solid #e2e8f0', fontFamily: 'monospace', fontSize: 11 }}>{transaction.gateway_transaction_id || ''}</td></tr>)}</tbody></table>
         {!lawPayTransactions.length && <p>No synchronized gateway transactions yet.</p>}
       </section>
     </div>

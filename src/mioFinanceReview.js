@@ -74,6 +74,26 @@ export async function scanLawPayPages(invoke,options={},onProgress=()=>{}) {
   }
   throw new Error('LawPay scan reached its page safety limit and is incomplete.')
 }
+// Every stored transaction records the LawPay deposit account the charge was taken into.
+// The gateway resolves it from the provider account ID (or the payment link that created
+// it) and records the provenance in raw.mio_account_key_source; '' means it could not be
+// resolved. Operating and trust must never be confused: a trust payment moves client
+// money, an operating payment does not.
+const trustAccountKeys=new Set(['trust','echeck_trust','clientcredit_trust'])
+const operatingAccountKeys=new Set(['operating','echeck_operating'])
+export function transactionAccountKey(tx={}) {
+  const raw=tx&&typeof tx==='object'&&tx.raw&&typeof tx.raw==='object'?tx.raw:{}
+  return String(tx?.account_key||raw.account_key||'').trim().toLowerCase()
+}
+const accountKeyOf=value=>value&&typeof value==='object'?transactionAccountKey(value):String(value||'').trim().toLowerCase()
+const accountSourceOf=value=>value&&typeof value==='object'&&value.raw&&typeof value.raw==='object'?String(value.raw.mio_account_key_source||'').trim():''
+export function lawPayAccountLabel(value={}) {
+  const key=accountKeyOf(value)
+  if(trustAccountKeys.has(key))return key==='echeck_trust'?'Trust (e-check)':key==='clientcredit_trust'?'Trust (client credit)':'Trust'
+  if(operatingAccountKeys.has(key))return key==='echeck_operating'?'Operating (e-check)':'Operating'
+  if(!key||accountSourceOf(value)==='unresolved')return 'Account not reported'
+  return 'Account '+key
+}
 export function transactionInvoiceNumber(tx={}) {
   const raw=tx.raw&&typeof tx.raw==='object'?tx.raw:{}
   const fields=raw.data?.custom_fields||raw.custom_fields||{}
@@ -91,7 +111,7 @@ export function auditLawPayRecords(transactions=[],invoices=[],events=[]) {
     if(!['CHARGE','REFUND','REVERSAL','CHARGEBACK'].includes(type))continue
     completed++
     const invoiceNumber=transactionInvoiceNumber(tx),invoice=byNumber.get(invoiceNumber)
-    const detail={id,invoiceNumber,payer:tx.payer_name||tx.payer_email||'',amount:number(tx.amount_cents)/100,type}
+    const detail={id,invoiceNumber,payer:tx.payer_name||tx.payer_email||'',amount:number(tx.amount_cents)/100,type,account:transactionAccountKey(tx),account_label:lawPayAccountLabel(tx)}
     if(!invoiceNumber){unlinked.push({...detail,kind:'unlinked',reason:'No Mio invoice reference. Review attribution; this may be a consultation or refund.'});continue}
     if(!invoice){issues.push({...detail,kind:'missing_invoice',reason:'The referenced Mio invoice was not found.'});continue}
     const paymentEvents=events.filter(e=>String(e.invoice_id)===String(invoice.id)&&e.event_type==='lawpay_payment_recorded'&&String(e.provider_event_id)===id)

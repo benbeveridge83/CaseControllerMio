@@ -64,3 +64,23 @@ test('composed app preserves all new controls and read-only browser finance load
  assert.doesNotMatch(fn('loadLawPayWorkspace'),/\.limit\((100|200)\)/)
  assert.match(fn('refreshLawPayFinancialData'),/action:'sync_transactions'/)
 })
+// The client dashboard must offer a real decision for an unlinked LawPay charge, name the
+// deposit account it was taken into, and never post trust money without a verified record.
+test('unlinked LawPay charges can be attributed from the dashboard with the deposit account named',()=>{
+ assert.match(source,/caseMioLawPayAttribution/)
+ assert.match(source,/lawPayAttributionEntry\(\{transaction,decision:editor\.decision/)
+ const editor=fn('renderLawPayAttributionEditor')
+ assert.match(editor,/Attribution decision/)
+ assert.match(editor,/PNC consultation \/ retainer payment/)
+ assert.match(editor,/Neither - not a matter payment/)
+ assert.match(editor,/LawPay recorded the deposit account as/)
+ assert.match(editor,/Why this payment belongs to neither/)
+ const save=fn('saveLawPayAttribution')
+ assert.match(save,/saveMioStateKeyNow\('caseMioTrustTransactions'/)
+ assert.match(save,/duplicateLawPayAttribution\(latestTrust,transaction\)/)
+ assert.match(save,/latestStoredLawPayAttribution/)
+ assert.match(save,/setMioTrustTransactions\(withoutEntry\)/,'A failed decision must remove the trust entry it posted')
+ assert.match(fn('renderFinanceSyncStatus'),/Categorize this payment/)
+ assert.match(fn('renderFinanceSyncStatus'),/lawPayAttributionSummary/)
+})
+
