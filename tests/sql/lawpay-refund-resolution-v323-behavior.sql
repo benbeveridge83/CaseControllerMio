@@ -88,9 +88,13 @@ begin
   if v_count <> 1 then raise exception 'exactly one decision may be active, found %', v_count; end if;
   select count(*) into v_count from public.mio_lawpay_refund_resolutions where refund_transaction_id = 'refund-suite-refund-two';
   if v_count <> 2 then raise exception 'the superseded decision must be preserved, found % records', v_count; end if;
-  select count(*) into v_count from public.mio_lawpay_refund_resolutions
-    where refund_transaction_id = 'refund-suite-refund-two' and superseded_at is not null and corrects_resolution_id is null;
-  if v_count <> 0 then raise exception 'a superseded decision must be linked from the decision that replaced it'; end if;
+  select count(*) into v_count from public.mio_lawpay_refund_resolutions newer
+    join public.mio_lawpay_refund_resolutions older on older.id = newer.corrects_resolution_id
+   where newer.refund_transaction_id = 'refund-suite-refund-two'
+     and newer.superseded_at is null
+     and older.refund_transaction_id = 'refund-suite-refund-two'
+     and older.superseded_at is not null;
+  if v_count <> 1 then raise exception 'the active decision must link to the superseded decision it replaced, found %', v_count; end if;
 
   -- Retrying the correction is a no-op: no second reversal, no second effect.
   v_first := public.mio_resolve_lawpay_refund_v323(jsonb_build_object(
