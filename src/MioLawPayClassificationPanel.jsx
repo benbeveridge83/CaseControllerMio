@@ -81,7 +81,7 @@ export default function MioLawPayClassificationPanel({
   const openRefunds = refunds.effects.filter((effect) => effect.effect !== 'already_reflected')
   async function resolveRefund(refundId, resolution, evidence) {
     const refund = (transactions || []).find((transaction) => String(transaction.gateway_transaction_id || '') === refundId) || {}
-    const chargeId = resolution === 'same_refund' ? String((classifications || []).find((record) => String(record.matter_id || '') === String(matter?.id || '') && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '') : ''
+    const chargeId = String((classifications || []).find((record) => String(record.matter_id || '') === String(matter?.id || '') && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '')
     const decision = refundResolutionRecord({
       refund, charge: { gateway_transaction_id: chargeId }, resolution, evidence_reference: evidence,
       actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',

@@ -1,0 +1,142 @@
+From 7cb28d468f8957a3dff7593e41f7b497cc5ba3bd Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 21 Sep 2026 10:20:31 +0900
+Subject: [PATCH 1/3] docs: define reusable process builder v1
+
+---
+ .../2026-09-21-process-builder-v1-design.md   | 123 ++++++++++++++++++
+ 1 file changed, 123 insertions(+)
+ create mode 100644 docs/superpowers/specs/2026-09-21-process-builder-v1-design.md
+
+diff --git a/docs/superpowers/specs/2026-09-21-process-builder-v1-design.md b/docs/superpowers/specs/2026-09-21-process-builder-v1-design.md
+new file mode 100644
+index 0000000..a4389a5
+--- /dev/null
++++ b/docs/superpowers/specs/2026-09-21-process-builder-v1-design.md
+@@ -0,0 +1,123 @@
++# Mio Process Builder — Version One Design
++
++Status: design approved in conversation; written specification awaiting review.
++Date: 2026-09-21
++Owner: Ben Beveridge
++
++## 1. Outcome and scope
++
++Build a reusable, functional block system in Settings → Process Builder. Ben can create and name a process/page, drag blocks onto a canvas, connect them, configure their behavior, and run a separate process instance for each matter/task row. This is not a checklist editor or a visual-only mockup.
++
++Version one includes Email, Calendar availability, Draft document, E-file/E-serve, and Save file blocks; a generic row list; configurable row fields; a test-run mode; and a Need to Set example. The architecture supports Orders, Withdrawals, and future pages without copying the engine. Existing pages and running workflows remain unchanged until explicitly connected to the new engine. Converting all existing workflows and finalizing billing UX are outside this first release.
++
++Success means a configured block performs its supported action, exposes its outputs, changes the row's waiting status, and advances only when its completion condition is satisfied. Unsupported or disconnected actions must remain visibly blocked, never simulate success.
++
++## 2. Existing code and implementation boundary
++
++Inspected existing components include `src/MioWorkflowBuilder.jsx`, `src/mioWorkflowBlocks.js`, `src/mioWithdrawalBlocksApp.inc`, and `mio-v305-workflow-blocks.js`. The current editor provides textual steps, document slots, dependencies, and adapters for drafting, mail preparation, and filing preparation. Validation is withdrawal-specific, including a required judge-signed-order slot. It is not suitable as the general process schema without separating those assumptions.
++
++Create focused builder, schema/validation, execution, persistence, and integration-adapter modules. Reuse existing authorized email, document, template, calendar, and filing services where they actually provide the required capability. Do not copy the withdrawal completion rule into the new engine. Keep changes to the large App component limited to Settings, navigation, and adapter boundaries. Reconfirm current source before implementation; this specification does not assert provider readiness.
++
++## 3. Builder and page configuration
++
++Settings gains a Process Builder tab containing saved processes, Create process/page, draft/published version indicators, and edit/test/publish controls.
++
++The editor has a block palette, draggable canvas with labeled input/output ports and connection lines, and a configuration panel for the selected block. Provide keyboard-accessible add, connect, disconnect, and move controls as alternatives to dragging. Connection lines define activation dependencies; explicit field mappings define which data travels between blocks.
++
++Page settings include name, process definition, row creation mode (manual or supported source event), matter link, visible columns, and custom field definitions. Publishing a page adds its navigation entry. A manually added row is a real activation event; it must not be confused with refreshing or rendering a row.
++
++Version one supports acyclic graphs and all/any prerequisite completion. No loops, arbitrary user code, or conditional branching editor. Deleting or rewiring a block requires validation of its dependents and field references before publishing.
++
++## 4. Shared block contract
++
++Each block has a stable ID, type, name, displayed step number/order, canvas position, activation rule, prerequisites, input mappings, output definitions, review policy, status-message templates, completion rule, and billing metadata.
++
++Activation is either row-created or connected predecessor completion. All/any applies when multiple predecessors exist. A block activates at most once per instance unless an explicit retry is recorded. Cancellation is not successful completion and does not silently activate successors.
++
++Inputs can reference matter fields, custom row fields, previous block outputs, or constants. Types include text, email/address lists, date-time/date lists with timezone, document references, and booleans. A token picker inserts supported merge fields such as client name, opposing counsel name, opposing party name, cause number, and prior outputs. Missing required values block execution with a named-field message; unresolved tokens are never sent.
++
++Completion rules are selected from block-supported rules: valid required field populated, review approved, provider action confirmed, or required output document saved. Required-field completion applies only after activation and any mandatory action/review succeeds. A prefilled output field must not skip a required email send or approval.
++
++## 5. Email block
++
++Configuration:
++
++- From: selected authorized mailbox, including Ben or office when the connection grants the needed send permission.
++- To and CC: matter roles, explicit addresses, or typed upstream address outputs. Resolve and preview actual recipients for each row; unresolved or ambiguous recipients block sending.
++- Subject and body: editable templates with merge-field insertion and rendered preview.
++- Attachments: mapped document outputs or matter document references.
++- Review before sending: Yes/No, default Yes. No enables automatic sending only in a published, enabled process.
++- Editable messages for missing input, review, waiting after sending, and reply received.
++- Wait for reply: Yes/No; completion output field and expected type when the reply supplies data.
++
++Court-date example: activation prepares the email → waiting on me / “Review email to court” → confirmed send → waiting on someone else / “Waiting for court dates” → linked incoming reply and unread icon → waiting on me / “Read court’s response” → valid Available hearing dates supplied → complete.
++
++Reply receipt is not completion. Version one permits manual entry of dates and does not require AI extraction. An unmatched incoming message cannot automatically change an instance: match provider thread/reply identifiers and matter context, or require explicit linking. Sending success means provider acknowledgement, not delivery or receipt by the recipient. Read the reply through its linked message; marking it read does not populate the completion output.
++
++Approval is tied to the rendered recipients, sender, text, and attachment versions. Changing them invalidates approval. A permission failure on a shared mailbox must not silently fall back to a different sender.
++
++## 6. Other block types
++
++| Block | Inputs and configuration | Outputs and completion |
++| --- | --- | --- |
++| Calendar availability | Candidate date/time windows, selected calendar(s), timezone, duration, working hours, before/after buffers, treatment of tentative and all-day busy events | Available windows and conflicting windows, with query time. Unknown/unavailable calendar data blocks the result; empty availability is a needs-me result, not silent completion. |
++| Draft document | Existing template selection/version, mapped fields, missing-information message, output format, review requirement/message | Generated document references and reviewed version. Missing data waits on me. Approval of the current version completes a review-required block. PDF conversion is only offered when a real conversion path is supported. |
++| E-file/E-serve | Filing only, service only, or both; reviewed PDF inputs; case/court mappings; filing codes; service recipients; permitted account/fee details; approval message | Provider job/envelope reference, real submission/acceptance or service evidence, returned documents when available. Default completion is filing acceptance for filing and service-provider confirmation for service; both mode requires both. Rejections become needs-me. |
++| Save file | Input document reference, destination (matter documents or authorized OneDrive folder), filename pattern, conflict policy | Saved document/location reference. Complete only after durable save acknowledgement. Default conflict behavior creates a version or asks; never silently overwrites. |
++
++Filing submissions require explicit final approval in version one. The block may prepare a package through existing adapters even when direct submission is unavailable, but must display that limitation and remain incomplete. Do not imply Tyler certification or any provider integration exists merely because its settings fields exist.
++
++## 7. Row status and progress
++
++Execution states include not started, ready, running, needs input, needs approval, waiting externally, reply received, completed, failed, paused, and cancelled. These technical states map to the concise row presentation:
++
++- Waiting on me: light red, editable explanation and direct action; includes input/review needs, replies, and actionable errors.
++- Waiting on someone else: light orange, editable explanation.
++- Running: neutral activity indicator; do not mislabel internal processing as someone else's delay.
++- Complete, paused, or cancelled: neutral, explicitly labeled.
++
++Never rely on color alone. Show current step name/number, message, unread-email icon where relevant, and pending-action count. With multiple active blocks, needs-me actions take precedence, oldest first; otherwise show running before external waiting. Expanded row details list every active block. Progress counts completed applicable blocks; no invented linear step when parallel blocks are active.
++
++Message templates can include supported matter/output fields. A missing-field or provider error appends clear diagnostic detail even when a custom message exists, so a misleading configured message cannot conceal failure.
++
++## 8. Need to Set starter process
++
++1. Request dates from court — Email; activates on new task row; output court date windows.
++2. Compare with attorney calendar — Calendar; output attorney-available windows.
++3. Request client's availability — Email; output client-available windows.
++4. Request opposing counsel's availability — Email; output mutually available windows.
++5. Draft notice — Draft document; requires selected hearing date/time, location/method, and chosen notice template; missing selection waits on me.
++6. Save reviewed notice — Save file; output durable reviewed notice reference.
++7. File/serve notice — E-file/E-serve; consumes the reviewed PDF and configured service recipients.
++
++Each reply block exposes a configurable field for entering its result. Calendar filtering does not itself reserve or confirm a court setting. Before notice drafting, the selected hearing details must be explicitly confirmed; no inferred booking based solely on shared availability.
++
++The example starts as a draft with review enabled and no live sends. Ben supplies his actual email text, templates, addresses, and court-specific details before publishing.
++
++## 9. Persistence and execution reliability
++
++Persist process definitions, immutable published versions, custom-page metadata, row instances, block states, events, action jobs, and provider references server-side. Each instance pins its process version. Editing a draft or publishing a new version affects new instances only. Existing instances require an explicit future migration feature; no implicit replacement.
++
++Background execution must continue with the browser closed. Use a server-side dispatcher/worker and provider-event reconciliation, not render effects or browser-only timers. Store credentials through existing secure server-side integration facilities, never in process JSON or the canvas.
++
++Each external action has a stable idempotency key, persisted execution claim, and result reference. Duplicate row events, replies, refreshes, and worker retries must not duplicate sends, filings, saves, or billing links. If a provider times out after potentially accepting an action, mark outcome unknown and reconcile or request review before retrying; do not promise exactly-once external effects without provider support.
++
++Use ownership/access enforcement for all definitions, instances, documents, events, and jobs. Validate same-matter inputs. Use revision checks for competing edits and append-only execution history. Pausing prevents new actions; already-submitted external work is tracked, not described as recalled. Errors preserve inputs and completed progress.
++
++## 10. Billing boundary
++
++Each block supports billing-enabled flag, suggested description with merge fields, time-entry category, and optional suggested duration. Row/block action icons open the existing billing flow with matter, process, and step linked. Ben reviews time and amount before saving. Do not automatically charge for elapsed waiting or provider execution. Link entries using stable instance/block IDs and prevent duplicate entries on retries. Icon layout and more detailed billing rules remain for later UI refinement; this boundary is functional, not a redesigned accounting system.
++
++## 11. Verification and release criteria
++
++Tests must cover graph cycles and dangling mappings; activation only on real row creation; each completion rule; missing tokens/recipients; invalid sender permissions; review invalidation; reply correlation; status priority; calendar timezone/conflict handling; missing calendar access; template generation and review; filing versus service mode; durable-save failure; immutable instance versions; access isolation; parallel updates; duplicate events; and ambiguous provider timeouts.
++
++Browser tests must create a page, add/drag/connect blocks, edit every type's properties, save/reload, render merge previews, and run the starter sequence with synthetic data. Confirm keyboard alternatives, row colors/text/icons, current-step display, and billing linkage. Existing Withdrawals, Orders, and Need to Set flows must retain their current behavior.
++
++Test-run mode uses isolated synthetic rows and mock providers with a conspicuous label. It cannot send real mail, file documents, alter actual calendars, or create real bills. Separately verify live adapter capability through non-mutating checks; any real test send or filing needs explicit authorization for its target.
++
++Release reporting must distinguish working live integrations, tested mock behavior, and blocked provider capabilities. A builder-only result must not be reported as a completed functional engine.
++
++## 12. Review and next stage
++
++This specification records the approved direction with explicit version-one assumptions: draft versus published separation, acyclic connections, no automatic billing, filing approval, and existing-page preservation. After Ben approves this written specification, prepare the implementation plan with dependencies, integration capability checks, test coverage, and the chosen execution method. No production code, database migrations, pushes, or deployment are included in this specification stage.
+-- 
+2.51.1
+

@@ -31,7 +31,7 @@ try {
     return response.json()
   })
   assert.equal(review.ok, true)
-  assert.equal(review.transactions.length, 3, 'the synthetic transactions must be served')
+  assert.equal(review.transactions.length, 5, 'the synthetic transactions must be served')
   const live = await page.evaluate(async () => (await fetch('https://vnnkxqpyndidnjbrbywz.supabase.co/rest/v1/matters')).status)
   assert.equal(live, 403, 'the preview must refuse to talk to a live project')
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
@@ -42,7 +42,7 @@ try {
   const dashboard = (await opened) || page
   await dashboard.getByTestId('lawpay-classification-summary').waitFor({ timeout: 60000 })
   const summary = await dashboard.getByTestId('lawpay-classification-summary').innerText()
-  assert.match(summary, /3 payment\(s\) need a decision/)
+  assert.match(summary, /5 payment\(s\) need a decision/)
   assert.match(await dashboard.getByTestId('lawpay-account-provider-d').innerText(), /Account not reported/)
   await dashboard.screenshot({ path: 'finance-test-results/preview-synthetic.png' })
   assert.deepEqual(errors, [])

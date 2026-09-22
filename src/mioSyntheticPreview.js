@@ -32,6 +32,10 @@ const trustRows = [{ id: 'trust-alpha', matter_id: matters[0].id, direction: 'ou
 // provider-p: a charge the provider has only authorised, which never posts.
 const transactions = [
   { id: 'tx-a', gateway_transaction_id: 'provider-a', occurred_at: '2026-09-12T15:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 500000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Alpha Synthetic', payer_email: 'alpha@example.invalid', raw: { mio_matter_id: matters[0].id } },
+  { id: 'tx-r', gateway_transaction_id: 'provider-r', occurred_at: '2026-09-11T10:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 300000, amount_refunded_cents: 10000, currency: 'USD', reference: '', payer_name: 'Alpha Synthetic', payer_email: 'alpha@example.invalid', raw: { mio_matter_id: matters[0].id } },
+  // The ambiguous pair: a charge that reports its own $100 refunded total, and a separate $100
+  // refund in the same provider account with no immutable link. Resolve it both ways in the panel.
+  { id: 'tx-refund-r', gateway_transaction_id: 'refund-synthetic-1', occurred_at: '2026-09-12T09:00:00Z', transaction_type: 'REFUND', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 10000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Alpha Synthetic', payer_email: 'alpha@example.invalid', raw: {} },
   { id: 'tx-d', gateway_transaction_id: 'provider-d', occurred_at: '2026-09-12T17:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: '', account_id: 'acct-4471', amount_cents: 112000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Yasmine Said', payer_email: 'yasmine@example.invalid', raw: { mio_account_key_source: 'unresolved' } },
   { id: 'tx-p', gateway_transaction_id: 'provider-p', occurred_at: '2026-09-13T09:00:00Z', transaction_type: 'CHARGE', status: 'AUTHORIZED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 25000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Pending Payer', payer_email: 'pending@example.invalid', raw: {} },
 ]
@@ -49,11 +53,38 @@ const resolvedFor = (transaction) => {
 }
 const identityOf = (record) => `${String(record.provider_account_id || '')}:${String(record.gateway_transaction_id || '')}`
 function gateway(body) {
-  if (body.action === 'review') return { ok: true, version: 323, mapping_table_available: true, accounts: store.mapping, classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })) }
+  if (body.action === 'review') return { ok: true, version: 323, mapping_table_available: true, refund_resolutions_available: true, accounts: store.mapping, classifications: store.classifications, ledger_entries: store.ledger, refund_resolutions: store.resolutions || [], transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })) }
   if (body.action === 'map_account') {
     const row = body.mapping
     store.mapping = [...store.mapping.filter((existing) => existing.provider_account_id !== row.provider_account_id), { provider_account_id: row.provider_account_id, account_key: row.account_key, bank_role: row.bank_role, label: row.label, last4: row.last4, is_active: true }]
     return { ok: true, result: { status: 'mapped' } }
+  }
+  if (body.action === 'resolve_refund') {
+    // Mirrors mio_resolve_lawpay_refund_v323: a decision with who, when, evidence and the immutable
+    // ids; a separate refund is its own money movement once; a later decision supersedes and
+    // reverses the earlier one instead of overwriting it.
+    store.resolutions = store.resolutions || []
+    const record = body.resolution || {}
+    if (!String(record.evidence_reference || '').trim()) return { ok: false, error: 'Record what establishes the relationship: the provider reference, or the report that shows it.' }
+    const previous = store.resolutions.find((row) => row.refund_transaction_id === record.refund_transaction_id && !row.superseded_at) || null
+    if (previous && previous.resolution === record.resolution && previous.charge_transaction_id === record.charge_transaction_id) return { ok: true, result: { status: 'unchanged', resolution_id: previous.id } }
+    if (previous) {
+      previous.superseded_at = now()
+      const supersededEntry = store.ledger.find((entry) => entry.id === previous.ledger_entry_id)
+      if (supersededEntry) store.ledger = [...store.ledger, { ...supersededEntry, id: 'e' + (++store.seq), entry_kind: 'refund_reversal', direction: supersededEntry.direction === 'out' ? 'in' : 'out', reverses_entry_id: supersededEntry.id, refund_resolution_id: null, created_by: adminEmail }]
+    }
+    const decision = { ...record, id: 'r' + (++store.seq), resolved_at: now(), superseded_at: null, ledger_entry_id: null, corrects_resolution_id: previous ? previous.id : '' }
+    if (record.resolution === 'separate_refund') {
+      const refund = transactions.find((row) => row.gateway_transaction_id === record.refund_transaction_id) || {}
+      const chargeClassification = store.classifications.find((row) => String(row.gateway_transaction_id || '') === String(record.charge_transaction_id || ''))
+      if (chargeClassification) {
+        const entryId = 'e' + (++store.seq)
+        store.ledger = [...store.ledger, { id: entryId, identity: record.refund_transaction_id, classification_id: chargeClassification.id, entry_kind: 'refund_effect', direction: 'out', account_key: refund.account_key || chargeClassification.actual_account_key, matter_id: chargeClassification.matter_id, amount_cents: Math.abs(Number(refund.amount_cents || 0)), currency: 'USD', occurred_at: refund.occurred_at || now(), provider_account_id: refund.account_id || '', refund_resolution_id: decision.id, created_by: adminEmail }]
+        decision.ledger_entry_id = entryId
+      }
+    }
+    store.resolutions = [...store.resolutions, decision]
+    return { ok: true, result: { status: 'resolved', resolution_id: decision.id, resolution: record.resolution, ledger_effect_cents: record.resolution === 'separate_refund' ? -Math.abs(Number(record.amount_cents || 0)) : 0 } }
   }
   if (!['save', 'post', 'match', 'correct'].includes(body.action)) return { ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }
   const record = body.classification || {}
