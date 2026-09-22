@@ -1,5 +1,6 @@
 import {readMioCloudRows,cloudReadRequest} from './mioCloudRead.js'
 import {rebaseFilterValue} from './mioStickyFilterValues.js'
+import {repairMioCloudConflict} from './mioCloudConflictRepair.js'
 // Explicit allowlist: never infer that a business record is safe to overwrite.
 const displayKeys=new Set(['caseMioWithdrawalViewV305','caseMioChecklistStepsExpandedByRow','caseMioMatterStepsExpandedByRow','caseMioNeedToSetTocCollapsed','caseMioNeedToSetTocDock','caseMioNeedToSetPageTab','caseMioChecklistNeedToSetSortMode','caseMioChecklistViewMode','caseMioChecklistTimelineMonths','caseMioChecklistTimelineGroupBy','caseMioChecklistTimelineSettingsOpen','caseMioChecklistTimelineDetailsOpen','caseMioChecklistTimelineVisibleSettings','caseMioChecklistDayGridShowEmptyDays','caseMioChecklistDayGridRowHeight','caseMioOrderExpandedIds','visibleMatterColumns','matterColumnWidths'])
 const isDisplayKey=key=>key.startsWith('caseMioStickyFilter:')||displayKeys.has(key)
@@ -94,6 +95,26 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     const old=s.baseline.get(key)
     const {data,error}=await client.rpc('mio_cloud_state_write_v277',{p_user_id:s.id,p_key:key,p_raw:change.raw,p_expected_at:old?.updated_at??null,p_expected_exists:!!old,p_delete:change.deleting,p_origin:origin})
     check(s)
+    // A rejected write is repaired when the cloud already holds exactly the intended
+    // value, or when both tabs only added records of their own. A genuine two-sided
+    // edit keeps the pending value and the strict conflict notice.
+    if(error&&['PT409','40001'].includes(error.code)&&retry<2){
+      const remote=await readKey(s,key),pending=s.pending.get(key)
+      if(pending===change){
+        const repaired=repairMioCloudConflict({baselineRaw:old?old.raw_value:null,localRaw:pending.deleting?null:pending.raw,deleting:!!pending.deleting,remoteRaw:remote?remote.raw_value:null})
+        if(repaired!==undefined){
+          if(remote)s.baseline.set(key,remote);else s.baseline.delete(key)
+          s.conflicts.delete(key)
+          if(repaired===null){s.pending.delete(key);if(!s.pending.size)s.error='';notify();return}
+          s.pending.set(key,{...pending,raw:repaired});s.values.set(key,repaired)
+          // The merged value contains another tab's records that this window has not
+          // loaded. Block stale component writes and let the refresh path re-read it.
+          s.mergedKeys??=new Set();s.mergedKeys.add(key)
+          s.resolvedKeys??=new Set();s.resolvedKeys.add(key);s.remoteChanged=true
+          notify();return write(s,key,retry+1)
+        }
+      }
+    }
     // PT409 is a permanent application-version conflict, not a retryable SQL serialization failure.
     // Keep legacy 40001 recognition while older servers/tabs finish rolling over.
     if(error&&['PT409','40001'].includes(error.code)&&isDisplayKey(key)&&!change.deleting&&retry<2){
@@ -129,7 +150,10 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     try {
       const s=ready();const text=String(value??'');stage(key,text)
       await enqueue(s,()=>write(s,key))
-      if(s.pending.has(key)||(!isDisplayKey(key)&&s.baseline.get(key)?.raw_value!==text))throw new Error('A newer edit superseded this save. Review the current value before continuing.')
+      // A lossless merge keeps the caller's own rows inside the merged value, so a
+      // merged key is not reported as a superseded edit. It is blocked from further
+      // writes until the window reloads.
+      if(s.pending.has(key)||(!isDisplayKey(key)&&s.baseline.get(key)?.raw_value!==text&&!s.mergedKeys?.has(key)))throw new Error('A newer edit superseded this save. Review the current value before continuing.')
       return true
     }catch(error){if(current?.phase==='ready'&&current.pending.has(key)){current.error=error.message||String(error);notify()}if(throwOnError)throw error;return false}
   }
