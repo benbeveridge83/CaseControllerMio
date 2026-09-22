@@ -423,7 +423,101 @@ try {
   assert.deepEqual(errors, [])
   assert.deepEqual(writes, [], 'no financial table may be written directly from the browser')
   assert.deepEqual(blocked, [], 'no service outside Mio may be called')
-  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, ledger_entries: store.ledger.length, corrections_reversed: store.ledger.filter((entry) => entry.reverses_entry_id).length, trust_after_recording: trustOnFinancesAfter, trust_after_corrections: backToTrust, tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance', 'the correction preview states the reversal and the replacement', 'a refused correction leaves the original posting unchanged', 'a double click corrects once', 'correcting trust to operating reverses the trust credit exactly once', 'a negative trust ledger stays visible and is flagged as a discrepancy', 'the correction and its audit history survive a reload', 'correcting operating back to trust adds the trust credit exactly once', 'the accounting view shows the reversal once', 'Bulk billing / withdrawal trust agrees after the corrections'] }, null, 2))
+  // 7. Cross-page and multi-tab behaviour on one unposted charge. Both pages are open and loaded
+  //    before anything is recorded, so the second page is genuinely stale when it tries to record.
+  const pushCharge = (id, provider, payer, cents, occurred) => transactions.push({ id, gateway_transaction_id: provider, occurred_at: occurred, transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: cents, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: payer, payer_email: `${provider}@example.invalid`, raw: { mio_matter_id: matters[0].id } })
+  const panelOf = (tab) => tab.locator('section[aria-label="LawPay payment classification"]')
+  const rowOf = (tab, provider) => panelOf(tab).getByTestId(`lawpay-row-${provider}`)
+  const loadTab = async (tab) => {
+    await tab.reload({ waitUntil: 'domcontentloaded' })
+    await panelOf(tab).waitFor({ timeout: 60000 })
+    const toggle = panelOf(tab).getByRole('button', { name: 'Show every LawPay payment' })
+    if (await toggle.count()) await toggle.click()
+  }
+  // A second page reaches the same dashboard the way the firm does: through the billing page's
+  // client link. It loads before anything is recorded, which is what makes it stale later.
+  const openDashboardTab = async () => {
+    const extra = await context.newPage(); watch(extra)
+    await extra.goto(`${origin}/#billing`, { waitUntil: 'domcontentloaded' })
+    await extra.getByRole('button', { name: 'Bulk Billing', exact: true }).waitFor({ timeout: 60000 })
+    await extra.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
+    const link = extra.locator('a').filter({ hasText: /^Alpha (Synthetic|Matter)$/ }).first()
+    await link.waitFor({ timeout: 60000 })
+    const opened = context.waitForEvent('page', { timeout: 20000 }).catch(() => null)
+    await link.click()
+    const target = (await opened) || extra
+    if (target === extra) watch(extra)
+    await target.setDefaultTimeout(20000)
+    await panelOf(target).waitFor({ timeout: 60000 })
+    return target
+  }
+  const armRow = async (tab, provider, payer) => {
+    await panelOf(tab).getByRole('button', { name: `Decide ${payer}` }).click()
+    const row = rowOf(tab, provider)
+    await row.waitFor()
+    await row.getByLabel(`Ownership for ${payer}`).selectOption('matter')
+    await row.getByLabel(`Matter for ${payer}`).selectOption({ label: 'Alpha Matter' })
+    await row.getByLabel(`Transaction type for ${payer}`).selectOption('trust_deposit')
+    return row
+  }
+  const postedFor = (provider) => store.classifications.filter((record) => String(record.gateway_transaction_id) === provider && record.posting_status === 'posted').length
+  const effectsFor = (provider) => store.ledger.filter((entry) => String(entry.identity).endsWith(`:${provider}`)).length
+  pushCharge('tx-multi', 'provider-multi', 'Multi Payer', 300000, '2026-09-14T10:00:00Z')
+  const staleTab = await openDashboardTab()
+  await loadTab(dashboard)
+  await loadTab(staleTab)
+  assert.equal(await rowOf(dashboard, 'provider-multi').getByText('Needs classification').count(), 1, 'both pages must see the charge as undecided before anything is recorded')
+  assert.equal(await rowOf(staleTab, 'provider-multi').getByText('Needs classification').count(), 1)
+  const winner = await armRow(dashboard, 'provider-multi', 'Multi Payer')
+  await winner.getByRole('button', { name: 'Confirm and record Multi Payer' }).click()
+  await rowOf(dashboard, 'provider-multi').getByTestId('lawpay-message-provider-multi').waitFor()
+  assert.match(await rowOf(dashboard, 'provider-multi').getByTestId('lawpay-message-provider-multi').innerText(), /Recorded in Mio/)
+  assert.equal(postedFor('provider-multi'), 1, 'exactly one posting')
+  assert.equal(effectsFor('provider-multi'), 1, 'exactly one ledger effect')
+  // The stale page still believes the charge is undecided, so it attempts the same recording. The
+  // service refuses it: a page cannot duplicate a posting it never saw.
+  const staleWorker = await armRow(staleTab, 'provider-multi', 'Multi Payer')
+  await staleWorker.getByRole('button', { name: 'Confirm and record Multi Payer' }).click()
+  const staleMessage = rowOf(staleTab, 'provider-multi').getByTestId('lawpay-message-provider-multi')
+  await staleMessage.waitFor()
+  assert.match(await staleMessage.innerText(), /already recorded in Mio/, 'a stale page must be refused by the service')
+  assert.equal(postedFor('provider-multi'), 1, 'the refusal must not post again')
+  assert.equal(effectsFor('provider-multi'), 1, 'the refusal must not move money again')
+  // Focus and reload converge the stale page on the recorded truth.
+  await staleTab.bringToFront()
+  await loadTab(staleTab)
+  await rowOf(staleTab, 'provider-multi').getByText('Recorded in Mio').waitFor()
+  const trustedOnFirst = await readMoney(dashboard, 'Trust account')
+  const trustedOnStale = await waitForMoney(staleTab, 'Trust account', trustedOnFirst)
+  assert.equal(trustedOnStale, trustedOnFirst, 'both pages must show the same trust balance after the reload')
+  // A retry on the converged page adds nothing.
+  const retryRow = rowOf(staleTab, 'provider-multi')
+  if (!(await retryRow.getByLabel('Transaction type for Multi Payer').count())) await retryRow.getByRole('button', { name: 'Decide Multi Payer' }).click()
+  assert.equal(await retryRow.getByRole('button', { name: 'Confirm and record Multi Payer' }).isDisabled(), true, 'a recorded charge must not be recordable again')
+  assert.equal(postedFor('provider-multi'), 1)
+  assert.equal(effectsFor('provider-multi'), 1)
+  await dashboard.screenshot({ path: 'finance-test-results/lawpay-multi-tab.png' })
+  // 8. Two pages record the same brand new charge at the same moment. Only one may win, and the
+  //    losing attempt may not add a posting, a ledger effect or a second balance change.
+  pushCharge('tx-race', 'provider-race', 'Race Payer', 200000, '2026-09-14T11:00:00Z')
+  await loadTab(dashboard)
+  await loadTab(staleTab)
+  const raceTrust = await readMoney(dashboard, 'Trust account')
+  const [raceOne, raceTwo] = await Promise.all([armRow(dashboard, 'provider-race', 'Race Payer'), armRow(staleTab, 'provider-race', 'Race Payer')])
+  const postsBefore = store.actions.filter((action) => action === 'post').length
+  await Promise.all([raceOne.getByRole('button', { name: 'Confirm and record Race Payer' }).click(), raceTwo.getByRole('button', { name: 'Confirm and record Race Payer' }).click()])
+  for (let attempt = 0; attempt < 60 && store.actions.filter((action) => action === 'post').length < postsBefore + 2; attempt += 1) await dashboard.waitForTimeout(250)
+  assert.equal(store.actions.filter((action) => action === 'post').length, postsBefore + 2, 'both pages must have attempted the recording')
+  assert.equal(postedFor('provider-race'), 1, 'a simultaneous attempt must not post twice')
+  assert.equal(effectsFor('provider-race'), 1, 'a simultaneous attempt must not move money twice')
+  await loadTab(dashboard)
+  await loadTab(staleTab)
+  const raceOnFirst = await waitForMoney(dashboard, 'Trust account', Number((raceTrust + 2000).toFixed(2)))
+  assert.equal(await waitForMoney(staleTab, 'Trust account', raceOnFirst), raceOnFirst, 'every page must agree the trust balance moved once')
+  assert.equal(Number((raceOnFirst - raceTrust).toFixed(2)), 2000, 'the balance moved by the recorded amount exactly once')
+
+
+  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, ledger_entries: store.ledger.length, corrections_reversed: store.ledger.filter((entry) => entry.reverses_entry_id).length, trust_after_recording: trustOnFinancesAfter, trust_after_corrections: backToTrust, tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance', 'the correction preview states the reversal and the replacement', 'a refused correction leaves the original posting unchanged', 'a double click corrects once', 'correcting trust to operating reverses the trust credit exactly once', 'a negative trust ledger stays visible and is flagged as a discrepancy', 'the correction and its audit history survive a reload', 'correcting operating back to trust adds the trust credit exactly once', 'the accounting view shows the reversal once', 'Bulk billing / withdrawal trust agrees after the corrections', 'two pages opened before the recording: one posting, and the stale page is refused by the service', 'focus and reload converge every page on the same trust balance', 'simultaneous recording attempts post once and move money once'] }, null, 2))
 } catch (error) {
   try { fs.writeFileSync('finance-test-results/failure.txt', await page.locator('body').innerText()) } catch { /* page already gone */ }
   if (dashboardRef && dashboardRef !== page) { try { fs.writeFileSync('finance-test-results/failure-matter.txt', await dashboardRef.locator('body').innerText()) } catch { /* page already gone */ } }

@@ -112,7 +112,39 @@ export default function lawPayClassification() {
         return once(part, "    return [...manualRows, ...lawPayRows.filter((row) => !manualLawPayIds.has(String(row.id).replace(/^lawpay:/, '')))]", "    return [...manualRows, ...lawPayRows.filter((row) => !manualLawPayIds.has(String(row.id).replace(/^lawpay:/, '')) && !postedLawPayKeys.has(String(row.id).replace(/^lawpay:/, '')))]", 'a recorded payment is never also shown as a derived LawPay row')
       })
 
+      code = once(code, `      if(result.entry) {
+        const latestTrust=await latestStoredTrustTransactions()
+        if(duplicateLawPayAttribution(latestTrust,transaction))throw new Error('This charge is already in the trust ledger, so Mio did not post it twice. Refresh the matter to see the recorded deposit.')
+        const nextTrust=[result.entry,...latestTrust]
+        await saveMioStateKeyNow('caseMioTrustTransactions',JSON.stringify(nextTrust),{throwOnError:true})
+        const verified=await latestStoredTrustTransactions()
+        if(!verified.some(row=>String(row?.id||'')===String(result.entry.id)))throw new Error('The trust-ledger entry could not be verified, so Mio recorded no attribution.')
+        verifiedTrustRows=verified
+      }`, `      // The Bulk Billing control no longer keeps a ledger or an attribution state of its own. It
+      // records the decision through the same classification workflow, gateway and server tables
+      // that Matter Finances uses, so one immutable LawPay transaction has exactly one posting
+      // wherever it is categorized. It never writes a trust row itself, and the server refuses a
+      // second posting of the same transaction.
+      const attributedAccountKey=String(transaction.account_key||transaction.raw?.account_key||'').trim().toLowerCase()
+      // A charge whose deposit account LawPay did not report is never posted, but the decision is
+      // still recorded through the shared workflow so it stays reviewable and can be corrected
+      // once the account is verified. The server refuses to post it without account evidence.
+      const attributedDecisionMatter=['matter','pnc'].includes(editor.decision)
+      const attributedUnresolvedAccount=!result.ok
+      const attributedCategory=attributedDecisionMatter?(attributedUnresolvedAccount||attributedAccountKey.includes('trust')?'trust_deposit':'consultation_payment'):'other'
+      const attributedSharesLedger=attributedDecisionMatter&&!attributedUnresolvedAccount&&attributedAccountKey.includes('trust')
+      const {data:attributedResult,error:attributedError}=await supabase.functions.invoke('lawpay-gateway',{body:{action:attributedSharesLedger?'post':'save',classification:{gateway_transaction_id:String(transaction.gateway_transaction_id||transaction.id||''),provider_account_id:String(transaction.account_id||''),ownership:editor.decision==='matter'?'matter':editor.decision==='pnc'?'pnc':'other_unresolved',matter_id:editor.decision==='matter'?String(editor.matter_id||''):'',pnc_workflow_id:editor.decision==='pnc'?String(editor.matter_id||''):'',other_reason:editor.decision==='neither'?String(editor.reason||''):'',actual_account_key:attributedAccountKey,account_source:attributedAccountKey?'reported_by_lawpay':'',account_evidence:'',account_explanation:String(editor.reason||''),category:attributedCategory,direction:editor.money_out?'out':'in',explanation:String(editor.reason||'')}}})
+      if(attributedError)throw new Error(attributedError.message||'The LawPay gateway could not be reached, so nothing was recorded.')
+      if(attributedResult?.error)throw new Error(attributedResult.error)
+      try { await loadLawPayClassification() } catch {}`, 'bulk billing records through the one classification workflow')
+      // Only the refusal that means "LawPay did not report the deposit account" may continue: that
+      // decision is recorded for review through the same workflow and is never posted. Every other
+      // legacy refusal still stops the decision exactly where it stopped before.
+      code = once(code, `if(!result.ok){setLawPayAttributionEditor({...editor,error:result.error});return}`, `if(!result.ok&&!/Account not reported/.test(String(result.error||''))){setLawPayAttributionEditor({...editor,error:result.error});return}`, 'an unresolved deposit account is recorded for review, never posted')
       code = once(code, '  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId, mioFinanceOpeningBalances])', '  }, [matters, latestFinancialSnapshotByMatterId, billingEntries, mioInvoices, mioTrustTransactions, lawPayTransactions, lawPayPaymentRequests, activeMioBillingCutoverDate, clioMinimumBalancesByMatterId, mioFinanceOpeningBalances, lawPayV323Review])', 'the prepared matter finances follow the classification ledger')
+      code = once(code, `const nextRecords=[result.record,...latestRecords.filter(record=>String(record?.gateway_transaction_id||'')!==String(result.record.gateway_transaction_id))]`, `const nextRecords=result.record?[result.record,...latestRecords.filter(record=>String(record?.gateway_transaction_id||'')!==String(result.record.gateway_transaction_id))]:latestRecords`, 'an unresolved account has no legacy attribution record to write')
+      code = once(code, `if(!verifiedRecords.some(record=>String(record?.gateway_transaction_id||'')===String(result.record.gateway_transaction_id)))throw new Error('The attribution decision could not be verified.')`, `if(result.record&&!verifiedRecords.some(record=>String(record?.gateway_transaction_id||'')===String(result.record.gateway_transaction_id)))throw new Error('The attribution decision could not be verified.')`, 'an unresolved account has nothing to verify against the legacy state')
+      code = once(code, `setLawPayMessage(lawPayAttributionSummary(result.record,{matterName:matter?.name||'',pncLabel:matter?.name||''})+'. This charge no longer requires review.')`, `setLawPayMessage(result.record?lawPayAttributionSummary(result.record,{matterName:matter?.name||'',pncLabel:matter?.name||''})+'. This charge no longer requires review.':'This charge is saved for review. LawPay did not report which account the money went into, so Mio posted nothing and the account can be verified later.')`, 'an unresolved account says plainly that it was saved for review')
       code = once(code, '    const trust = Math.max(0, snapshotTrust + ledgerDelta)', `    // The trust ledger balance is reported exactly as it is. A negative balance is a real
     // discrepancy to review, never hidden: only an "available to apply toward billing" figure may
     // be floored at zero, and that is done where it is used.
