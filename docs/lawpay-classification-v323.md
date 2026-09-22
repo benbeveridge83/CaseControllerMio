@@ -124,9 +124,9 @@ posted; (3) add the browser flow test (categorize, save, reload, balances) and a
    transaction.
 3. The gateway actions must be deployed before the interface that uses them; the interface must
    not be released while the actions are missing.
-4. Verify afterwards that `mio_lawpay_classifications` and `mio_lawpay_ledger_entries` exist,
-   that their grants exclude `anon` and `authenticated`, and that `mio_lawpay_accounts` holds
-   the firm's provider-account mapping.
+4. Verify afterwards that all three new tables exist — `mio_lawpay_accounts`,
+   `mio_lawpay_classifications` and `mio_lawpay_ledger_entries` — that their grants exclude `anon`
+   and `authenticated`, and that `mio_lawpay_accounts` holds the firm's provider-account mapping.
 
 ## Reviewing and recording from the matter Finances page (increment 4)
 
@@ -198,3 +198,81 @@ when the deployed revision differs from production by nothing else.
 - Bulk billing and the withdrawal page round their trust column to whole dollars; the recorded
   amount is compared after that rounding.
 
+## Exactly what production receives (complete inventory)
+
+Nothing is applied or deployed yet; this is the whole change set for review.
+
+Database, from `supabase/migrations/20260922090000_lawpay_classification_v323.sql` (one file):
+
+| Object | Kind | Notes |
+| --- | --- | --- |
+| `public.mio_lawpay_accounts` | table | provider account id → firm account key, bank account, role, label, active flag, verified by/at. RLS enabled. |
+| `public.mio_lawpay_classifications` | table | one decision per provider transaction: ownership, matter, PNC, actual account, provenance, category, direction, money-out, currency, amount, fee, net, invoice, explanation, original link, posting status, posted at, matched entry, correction link, created/updated. RLS enabled. |
+| `public.mio_lawpay_ledger_entries` | table | the posted money: entry kind (trust entry, operating association, reversal), direction, account, matter, amount, currency, occurred at, provider account, reversal link, created by. RLS enabled. |
+| `mio_lawpay_classifications_identity_active` | unique index | one active classification per provider transaction. |
+| `mio_lawpay_classifications_matched_entry` | unique index | an existing entry can be matched by one transaction only. |
+| `mio_lawpay_classifications_transaction`, `mio_lawpay_classifications_matter`, `mio_lawpay_ledger_entries_identity` | indexes | lookups by transaction, matter and identity. |
+| `mio_lawpay_ledger_entries_once` | unique index | one entry of each kind per classification. |
+| `mio_lawpay_ledger_entries_reversal_once` | unique index | one reversal per reversed entry — this is what makes a correction single. |
+| `public.mio_lawpay_write_posting_v323(uuid,text)` | function, `security definer` | internal posting helper. Execute revoked from `public`, `anon`, `authenticated`; no grant is issued, so only the definer's own context calls it. |
+| `public.mio_post_lawpay_classification_v323(jsonb,text)` | function, `security definer` | records a payment once; refuses a non-established account; advisory lock plus the unique index make a replay a no-op. Execute revoked from `public`, `anon`, `authenticated`; granted to `service_role`. |
+| `public.mio_save_lawpay_classification_v323(jsonb,text)` | function, `security definer` | saves a decision without posting. Same grants. |
+| `public.mio_correct_lawpay_classification_v323(jsonb,text,text)` | function, `security definer` | reverses the previous posting once, posts the replacement once, links them, and rolls the whole correction back if the replacement is refused. Same grants. |
+| `public.mio_match_lawpay_classification_v323(jsonb,uuid,text)` | function, `security definer` | links an existing entry instead of posting; validates amount, direction, matter and single use. Same grants. |
+| `public.mio_map_lawpay_account_v323(jsonb,text)` | function, `security definer` | stores the firm's provider-account mapping. Same grants. |
+
+No row-level-security *policies* are created anywhere: the three tables have RLS **enabled** with
+`revoke all ... from public, anon, authenticated`, so no client role can read or write them
+directly. All access goes through the service-role functions. No `anon`/`authenticated` grant and
+no policy is part of this change.
+
+Edge Functions (each is deployed as a whole function):
+
+| Function | Contains | Safe to deploy alone? |
+| --- | --- | --- |
+| `lawpay-account-diagnostics` (new) | one read-only, administrator-only action returning aggregated, redacted account diagnostics. No action records, corrects, matches or maps anything. | Yes, and only if the deployed revision differs from production by nothing else. |
+| `lawpay-gateway` (changed) | the existing `health`, `create_link` and sync actions, plus the new `review`, `save`, `post`, `correct`, `match` and `map_account` actions, each requiring a firm finance administrator. The `diagnostics` action has moved out to the function above. | No — this is a whole-function deploy and it records money. It is held for approval. |
+
+Function environment variables the deployment needs (unchanged names, no new secret types):
+`MIO_FINANCE_ADMIN_EMAILS` (who may review or record), `LAWPAY_SECRET_KEY`,
+`LAWPAY_ACCOUNT_OPERATING`, `LAWPAY_ACCOUNT_TRUST`, `LAWPAY_ACCOUNT_ECHECK_OPERATING`,
+`LAWPAY_ACCOUNT_ECHECK_TRUST`, `LAWPAY_ACCOUNT_CLIENTCREDIT_TRUST`, `SUPABASE_URL` (or `URL`),
+`SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (or `SERVICE_ROLE_KEY`).
+
+Frontend: the Matter Dashboard → Finances classification panel, its rules module and one Vite
+transform (`mio-v323-lawpay-classification.js`). It is released only after both functions answer.
+
+
+
+
+## Rollout order, and how to revert
+
+1. **Migration.** Apply `20260922090000_lawpay_classification_v323.sql` on an isolated database
+   first (CI already does this on every pull request), then in production. It only creates objects;
+   no existing row is read, changed or deleted, and nothing posts by itself.
+2. **Diagnostics.** Deploy `lawpay-account-diagnostics` alone and review its output with the
+   administrator account: which provider accounts appear, which are unmapped, and whether the
+   transaction counts match LawPay. This changes no money, and it is reverted by redeploying the
+   previous revision of that function (nothing else calls it yet).
+3. **Account mapping.** Record the firm's provider-account mapping (the mapping action, or the map
+   control in the panel once the interface is live). Verify each account key against the bank before
+   relying on it. A wrong mapping is corrected by saving the row again: it is data, not schema.
+4. **Gateway.** Deploy `lawpay-gateway` with the financial actions. Verify read-only first:
+   `action: 'review'` must return the stored transactions, classifications and entries, and a
+   non-administrator must be refused. Then record one small, real, reversible payment and check the
+   ledger entry, the matter trust balance and the audit history before telling the firm.
+5. **Interface.** Release the panel only after step 4 is verified. Until then the panel shows a
+   gateway error rather than pretending the workflow works.
+6. **Read-only verification.** Confirm: exactly one classification and one ledger entry per
+   recorded payment; the trust balance on the matter dashboard, the accounting view, Bulk billing
+   and the withdrawal page agree; the pending cards are unchanged; and no client role can read or
+   write the three tables (`select` still revoked).
+7. **If verification fails.** Stop recording. Nothing is derived, so a mistake is *corrected*, not
+   deleted, through the workflow itself: open the payment, choose the right ownership, account and
+   category, state the reason, and confirm. The previous entry is reversed once, the replacement
+   posts once, and both stay linked in the audit history. If the workflow cannot do it, correction
+   is the service-role function `mio_correct_lawpay_classification_v323`, in one transaction.
+   Reverting the release is a frontend rollback plus a redeploy of the previous gateway revision.
+   The migration is reverted with `drop function` for the five functions and `drop table` for the
+   three new tables in one transaction; no existing table was altered, so nothing else needs
+   repairing. Never delete a posted ledger entry by hand — reverse it.

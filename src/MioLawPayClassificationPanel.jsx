@@ -4,11 +4,11 @@
 // the actual deposit account, and what the transaction was. Nothing here derives an account
 // from a payer, a matter or an invoice, and nothing here moves money by itself: the preview
 // shows exactly what the gateway will record before the reviewer asks for it.
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { ACCOUNT_KEYS } from './mioLawPayAccounts.js'
 import {
-  CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, amountBreakdown, categoryById, categoryDirection,
+  CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, amountBreakdown, categoryById, categoryDirection, correctionPreview,
   duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility,
   postingPreview, providerMoneyOut, reviewStatus, suggestions, validateClassification,
 } from './mioLawPayClassification.js'
@@ -58,11 +58,13 @@ export default function MioLawPayClassificationPanel({
   const [drafts, setDrafts] = useState({})
   const [messages, setMessages] = useState({})
   const [working, setWorking] = useState('')
+  // Guards a decision that is already in flight for a payment, so a double click cannot record it twice.
+  const inFlightRef = useRef('')
   const [expanded, setExpanded] = useState(false)
   const scoped = useMemo(() => (transactions || []).filter((transaction) => providerIdOf(transaction)), [transactions])
   const posted = useMemo(() => (classifications || []).filter((record) => String(record.posting_status || '') === 'posted'), [classifications])
   const anyFor = (transaction) => (classifications || []).find((record) => String(record.gateway_transaction_id || '') === providerIdOf(transaction)) || null
-  const decisionsFor = (id) => drafts[id] || { ownership: 'matter', category: '', matter_id: String(matter?.id || ''), pnc_workflow_id: '', other_reason: '', invoice_id: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', entry_id: '' }
+  const decisionsFor = (id) => drafts[id] || { ownership: 'matter', category: '', matter_id: String(matter?.id || ''), pnc_workflow_id: '', other_reason: '', invoice_id: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
   const patch = (id, change) => setDrafts((current) => ({ ...current, [id]: { ...decisionsFor(id), ...change } }))
   const outstanding = scoped.filter((transaction) => reviewStatus({ record: anyFor(transaction) }) !== 'recorded_in_mio')
   // The panel loads its own records when it appears on a matter's Finances view, so the gateway
@@ -78,13 +80,36 @@ export default function MioLawPayClassificationPanel({
     matter: { id: draft.matter_id, name: String(matter?.name || '') },
     invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
   })
+  // A second click, a retry or a replay must not record the same payment twice: the marker is set
+  // before the first await, and cleared on every path out of the decision.
   async function submit(action, transaction, mode) {
-    const id = providerIdOf(transaction), draft = decisionsFor(id)
-    const manual = draft.manual_key ? manualAccountVerification({
-      account_key: draft.manual_key, evidence_reference: draft.manual_evidence, explanation: draft.manual_explanation,
-      actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',
+    const id = providerIdOf(transaction)
+    if (inFlightRef.current === id) {
+      setMessages((current) => ({ ...current, [id]: 'That decision is already being sent. Nothing else will be recorded for this payment.' }))
+      return
+    }
+    inFlightRef.current = id
+    try {
+      await submitDecision(action, transaction, mode)
+    } finally {
+      inFlightRef.current = ''
+    }
+  }
+  async function submitDecision(action, transaction, mode) {
+    const id = providerIdOf(transaction)
+    const draft = decisionsFor(id)
+    // A correction uses the account chosen for the correction when the money actually reached a
+    // different account, and that account is verified with evidence exactly like a first posting.
+    const correcting = action === 'correct'
+    const verification = correcting && draft.correction_key
+      ? { account_key: draft.correction_key, evidence_reference: draft.correction_evidence, explanation: draft.correction_explanation }
+      : draft.manual_key
+        ? { account_key: draft.manual_key, evidence_reference: draft.manual_evidence, explanation: draft.manual_explanation }
+        : null
+    const manual = verification ? manualAccountVerification({
+      ...verification, actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',
     }) : null
-    if (draft.manual_key && !manual.ok) { setMessages((current) => ({ ...current, [id]: manual.errors.join(' ') })); return }
+    if (verification && !manual.ok) { setMessages((current) => ({ ...current, [id]: manual.errors.join(' ') })); return }
     const decision = accountDecision(transaction, manual)
     const record = {
       gateway_transaction_id: providerIdOf(transaction), provider_account_id: String(transaction.account_id || ''),
@@ -102,16 +127,31 @@ export default function MioLawPayClassificationPanel({
       invoice: draft.invoice_id ? { id: draft.invoice_id, matter_id: String(matter?.id || '') } : null,
     })
     if (!local.ok) { setMessages((current) => ({ ...current, [id]: local.errors.join(' ') })); return }
+    if (action === 'correct') {
+      // The record being corrected is the latest *posted* classification for this payment: an
+      // earlier, already-reversed record must never be selected as the thing being corrected.
+      const corrections = (classifications || []).filter((entry) => String(entry.gateway_transaction_id || '') === id)
+      const previousRecording = corrections.find((entry) => String(entry.posting_status || '') === 'posted')
+        || corrections.find((entry) => String(entry.posting_status || '') === 'reversed')
+      const preview = correctionPreview({
+        previous: previousRecording || {}, transaction, resolvedAccount: decision, category: draft.category,
+        matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: String(matter?.name || '') } : null,
+        invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
+        reason: draft.correction_reason,
+      })
+      if (!preview.ok) { setMessages((current) => ({ ...current, [id]: preview.errors.join(' ') })); return }
+    }
     if (action === 'match') {
       const match = existingEntryMatch({ transaction, entry: { id: draft.entry_id, source: 'mio_trust_transactions', amount: 0 } })
       if (!match.ok) { setMessages((current) => ({ ...current, [id]: match.error })); return }
     }
     setWorking(id); setMessages((current) => ({ ...current, [id]: '' }))
     try {
-      await callGateway(action, { classification: record, reason: draft.explanation })
+      await callGateway(action, { classification: record, reason: draft.correction_reason || draft.explanation })
       const trust = decision.account_key.includes('trust')
       setMessages((current) => ({ ...current, [id]: action === 'post'
         ? `Recorded in Mio. ${money(amountBreakdown(transaction).gross_cents)} is now ${trust ? 'in this client’s trust balance' : 'recorded in the operating view'}.`
+        : action === 'correct' ? `Corrected. The previous posting was reversed once and the replacement was recorded once; both stay in the audit history.`
         : action === 'match' ? 'Matched to the existing entry. No second entry was created.' : 'Saved for later. Nothing posted.' }))
       setOpenId(''); if (onActed) await onActed()
     } catch (failure) { setMessages((current) => ({ ...current, [id]: failure.message })) } finally { setWorking('') }
@@ -173,6 +213,24 @@ export default function MioLawPayClassificationPanel({
           const state = reviewStatus({ record })
           const open = openId === id
           const duplicate = duplicateClassification({ existing: classifications, identity: `${String(transaction.account_id || '')}:${id}`, category: draft.category })
+          // Corrections: the recorded posting is preserved, its effect is reversed once and the
+          // replacement posts once. The history keeps every record, newest first.
+          const history = (classifications || []).filter((entry) => String(entry.gateway_transaction_id || '') === id)
+            .sort((left, right) => String(right.created_at || right.posted_at || '').localeCompare(String(left.created_at || left.posted_at || '')))
+          const previousRecording = history.find((entry) => String(entry.posting_status || '') === 'posted')
+            || history.find((entry) => String(entry.posting_status || '') === 'reversed') || null
+          // A correction may move the money to a different account, which must be verified with
+          // evidence like any other hand-recorded account.
+          const correctionAccount = draft.correction_key
+            ? { account_key: draft.correction_key, provenance: 'manually_verified', label: 'Manually verified', detail: `${draft.correction_evidence}` }
+            : decision
+          const correction = previousRecording ? correctionPreview({
+            previous: previousRecording, transaction, resolvedAccount: correctionAccount, category: draft.category,
+            matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: String(matter?.name || '') } : null,
+            invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
+            reason: draft.correction_reason,
+          }) : null
+          const canCorrect = !!previousRecording && String(previousRecording.posting_status || '') === 'posted'
           return (
             <li key={id} data-testid={`lawpay-row-${id}`} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: open ? '#f8fafc' : '#fff' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
@@ -270,6 +328,58 @@ export default function MioLawPayClassificationPanel({
                     </ul>
                     {duplicate?.duplicate ? <p style={{ margin: '6px 0 0', color: '#b45309' }}>{duplicate.reason}</p> : null}
                   </div>
+                  {canCorrect ? (
+                    <fieldset data-testid={`lawpay-correction-${id}`} style={{ border: '1px solid #fbbf24', borderRadius: 8, padding: 8 }}>
+                      <legend>{`Correct the recorded classification for ${payer}`}</legend>
+                      <p style={{ margin: '0 0 6px', color: '#475569' }}>
+                        {`Recorded as ${categoryById(previousRecording?.category || '')?.label || previousRecording?.category || 'unclassified'} on ${accountLabel(previousRecording?.actual_account_key || '')}. Change the decisions above, then confirm: the original posting, its ledger entry and its reversal all stay in the audit history.`}
+                      </p>
+                      <label>Reason for the correction
+                        <input aria-label={`Correction reason for ${payer}`} value={draft.correction_reason} onChange={(event) => patch(id, { correction_reason: event.target.value })} placeholder="Why the recorded classification is wrong, in words that will still make sense next year" />
+                      </label>
+                      <label>Account the money actually reached
+                        <select aria-label={`Correction account for ${payer}`} value={draft.correction_key} onChange={(event) => patch(id, { correction_key: event.target.value })}>
+                          <option value="">{`Keep the recorded account (${accountLabel(previousRecording?.actual_account_key || '')})`}</option>
+                          {(accounts.length ? accounts : ACCOUNT_KEYS.map((key) => ({ account_key: key, label: accountLabel(key) })))
+                            .map((row) => <option key={row.account_key} value={row.account_key}>{String(row.label || accountLabel(row.account_key))}</option>)}
+                        </select>
+                      </label>
+                      {draft.correction_key ? (
+                        <div style={{ display: 'grid', gap: 8, marginTop: 6 }}>
+                          <label>Correction account evidence
+                            <input aria-label={`Correction evidence for ${payer}`} value={draft.correction_evidence} onChange={(event) => patch(id, { correction_evidence: event.target.value })} placeholder="LawPay report or bank statement line that shows where the money went" />
+                          </label>
+                          <label>Correction account explanation
+                            <input aria-label={`Correction explanation for ${payer}`} value={draft.correction_explanation} onChange={(event) => patch(id, { correction_explanation: event.target.value })} placeholder="How you confirmed the account the money actually reached" />
+                          </label>
+                        </div>
+                      ) : null}
+                      <div data-testid={`lawpay-correction-preview-${id}`} aria-label={`Correction preview for ${payer}`} style={{ background: '#fffbeb', borderRadius: 8, padding: 8, marginTop: 6 }}>
+                        <strong>{'Correction preview — nothing has been written yet'}</strong>
+                        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                          {(correction?.lines || []).map((line, index) => <li key={index}>{line}</li>)}
+                        </ul>
+                        {correction && !correction.ok ? <p style={{ margin: '6px 0 0', color: '#b45309' }}>{correction.errors.join(' ')}</p> : null}
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <button type="button" aria-label={`Confirm correction ${payer}`} disabled={working === id || !correction?.ok} onClick={() => submit('correct', transaction, 'post')}>{'Confirm correction'}</button>
+                      </div>
+                    </fieldset>
+                  ) : null}
+                  {history.length ? (
+                    <div data-testid={`lawpay-history-${id}`}>
+                      <strong>{'Audit history, newest first'}</strong>
+                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {history.map((entry) => (
+                          <li key={String(entry.id)}>
+                            {`${String(entry.posting_status || 'saved')} · ${categoryById(entry.category || '')?.label || entry.category || 'unclassified'} · ${accountLabel(entry.actual_account_key || '')} · ${entry.created_by || 'unknown'} · ${String(entry.posted_at || entry.updated_at || entry.created_at || '').slice(0, 10)}`}
+                            {entry.corrects_classification_id ? ' · corrects an earlier recording' : ''}
+                            {entry.explanation ? ` · ${entry.explanation}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                   <label>Existing entry for {payer}
                     <select aria-label={`Existing entry for ${payer}`} value={draft.entry_id} onChange={(event) => patch(id, { entry_id: event.target.value })}>
                       <option value="">Choose an entry Mio already has, if this money is already recorded</option>

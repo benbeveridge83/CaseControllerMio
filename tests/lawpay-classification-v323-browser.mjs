@@ -66,7 +66,7 @@ function gateway(body) {
   const recorded = store.classifications.find((existing) => existing.identity === identity && existing.posting_status === 'posted')
   if (body.action === 'save') {
     if (recorded) return { ok: false, error: 'This transaction is already recorded in Mio, so nothing else will post.' }
-    store.classifications = [...store.classifications.filter((existing) => existing.identity !== identity), { ...record, id: 'c' + (++store.seq), identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'saved', matched_entry_id: '', created_by: email }]
+    store.classifications = [...store.classifications.filter((existing) => existing.identity !== identity), { ...record, id: 'c' + (++store.seq), identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'saved', matched_entry_id: '', created_by: email, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]
     return { ok: true, result: { status: 'saved' } }
   }
   if (body.action === 'match') {
@@ -76,13 +76,30 @@ function gateway(body) {
     return { ok: true, result: { status: 'matched', ledger_entry_id: null } }
   }
   if (body.action === 'correct') {
-    store.classifications = [...store.classifications, { ...record, id: 'c' + (++store.seq), identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'posted', corrects_classification_id: 'previous', created_by: email }]
-    return { ok: true, result: { status: 'corrected', ledger_entry_id: null } }
+    assert.ok(String(body.reason || '').trim(), 'a correction must state why')
+    const previous = store.classifications.find((existing) => existing.identity === identity && existing.posting_status === 'posted')
+    if (!previous) return { ok: false, error: 'Only a recorded transaction can be corrected.' }
+    const originalEntry = store.ledger.find((entry) => entry.classification_id === previous.id && entry.entry_kind !== 'reversal')
+    if (originalEntry && store.ledger.some((entry) => entry.reverses_entry_id === originalEntry.id)) return { ok: false, error: 'This posting has already been corrected.' }
+    // The replacement must be recordable before anything is reversed: a refused corrected posting
+    // leaves the previous record and its ledger entry exactly as they were.
+    if (!record.actual_account_key) return { ok: false, error: 'The deposit account is not established yet. Record the actual trust or operating account with supporting evidence, then record the transaction.' }
+    if (!record.category) return { ok: false, error: 'Choose what the transaction should be recorded as.' }
+    if (originalEntry) {
+      store.ledger = [...store.ledger, { id: 'e' + (++store.seq), identity, classification_id: previous.id, entry_kind: 'reversal', direction: originalEntry.direction === 'in' ? 'out' : 'in', account_key: originalEntry.account_key, matter_id: originalEntry.matter_id, amount_cents: originalEntry.amount_cents, currency: originalEntry.currency, occurred_at: originalEntry.occurred_at, provider_account_id: originalEntry.provider_account_id, reverses_entry_id: originalEntry.id, created_by: email }]
+    }
+    store.classifications = store.classifications.map((existing) => existing.id === previous.id ? { ...existing, posting_status: 'reversed', updated_at: new Date().toISOString() } : existing)
+    const replacement = { ...record, id: 'c' + (++store.seq), identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'posted', posted_at: new Date().toISOString(), created_at: new Date().toISOString(), corrects_classification_id: previous.id, reason: String(body.reason), created_by: email }
+    store.classifications = [...store.classifications, replacement]
+    const replacementEntry = { id: 'e' + (++store.seq), identity, classification_id: replacement.id, entry_kind: String(record.actual_account_key).includes('trust') ? 'trust_entry' : 'operating_association', direction: record.direction === 'out' ? 'out' : 'in', account_key: record.actual_account_key, matter_id: record.matter_id || '', amount_cents: transaction.amount_cents, currency: 'USD', occurred_at: transaction.occurred_at, provider_account_id: transaction.account_id || '', created_at: new Date().toISOString() }
+    store.ledger = [...store.ledger, replacementEntry]
+    return { ok: true, result: { status: 'posted', classification_id: replacement.id, ledger_entry_id: replacementEntry.id, corrected_classification_id: previous.id, reversed_entry_id: originalEntry ? originalEntry.id : null, reason: String(body.reason) } }
   }
   if (recorded) return { ok: false, error: 'This transaction is already recorded in Mio. Change it with a linked correction instead of recording it again.' }
   if (!record.actual_account_key) return { ok: false, error: 'The deposit account is not established yet. Record the actual trust or operating account with supporting evidence, then record the transaction.' }
-  store.classifications = [...store.classifications.filter((existing) => existing.identity !== identity), { ...record, id: 'c' + (++store.seq), identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'posted', posted_at: new Date().toISOString(), created_by: email }]
-  const entry = { id: 'e' + (++store.seq), identity, classification_id: 'c' + store.seq, entry_kind: String(record.actual_account_key).includes('trust') ? 'trust_entry' : 'operating_association', direction: record.direction === 'out' ? 'out' : 'in', account_key: record.actual_account_key, matter_id: record.matter_id || '', amount_cents: transaction.amount_cents, currency: 'USD', occurred_at: transaction.occurred_at, provider_account_id: transaction.account_id || '', created_at: new Date().toISOString() }
+  const replacementId = 'c' + (++store.seq)
+  store.classifications = [...store.classifications.filter((existing) => existing.identity !== identity), { ...record, id: replacementId, identity, amount_cents: transaction.amount_cents, currency: transaction.currency, posting_status: 'posted', posted_at: new Date().toISOString(), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_by: email }]
+  const entry = { id: 'e' + (++store.seq), identity, classification_id: replacementId, entry_kind: String(record.actual_account_key).includes('trust') ? 'trust_entry' : 'operating_association', direction: record.direction === 'out' ? 'out' : 'in', account_key: record.actual_account_key, matter_id: record.matter_id || '', amount_cents: transaction.amount_cents, currency: 'USD', occurred_at: transaction.occurred_at, provider_account_id: transaction.account_id || '', created_at: new Date().toISOString() }
   store.ledger = [...store.ledger.filter((existing) => existing.identity !== identity), entry]
   return { ok: true, result: { status: 'posted', ledger_entry_id: entry.id } }
 }
@@ -142,6 +159,27 @@ const readMoney = async (scope, label) => {
   assert.ok(match, `no amount was shown next to ${label}`)
   return Number(match[1].replace(/,/g, ''))
 }
+// The panel reloads the stored records after a decision, so a balance is polled until it settles
+// on the expected figure instead of being read once, mid-refresh.
+const waitForMoney = async (scope, label, expected) => {
+  let value = NaN
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    value = await readMoney(scope, label)
+    if (Number(value) === Number(expected)) return value
+    await scope.waitForTimeout(250)
+  }
+  return value
+}
+// After a reload the panel starts collapsed, so a recorded payment has to be revealed again.
+const revealRow = async (scope, id) => {
+  const section = scope.locator('section[aria-label="LawPay payment classification"]')
+  await section.waitFor({ timeout: 60000 })
+  const toggle = section.getByRole('button', { name: 'Show every LawPay payment' })
+  if (await toggle.count()) await toggle.click()
+  const row = section.locator(`[data-testid="lawpay-row-${id}"]`)
+  await row.waitFor({ timeout: 60000 })
+  return row
+}
 let dashboardRef = null
 fs.mkdirSync('finance-test-results', { recursive: true })
 try {
@@ -151,14 +189,21 @@ try {
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
   const dashboardLink = page.locator('a').filter({ hasText: /^Alpha (Synthetic|Matter)$/ }).first()
   await dashboardLink.waitFor({ timeout: 60000 })
-  const opened = context.waitForEvent('page', { timeout: 10000 }).catch(() => null)
+  const opened = context.waitForEvent('page', { timeout: 20000 }).catch(() => null)
   await dashboardLink.click()
-  const dashboard = (await opened) || page
+  let dashboard = (await opened) || page
   dashboardRef = dashboard
   if (dashboard === page) watch(dashboard)
   await dashboard.waitForLoadState('domcontentloaded')
   const panel = dashboard.locator('section[aria-label="LawPay payment classification"]')
-  await panel.waitFor({ timeout: 60000 })
+  await panel.waitFor({ timeout: 60000 }).catch(async () => {
+    // The client link may open the dashboard in a second tab, or the first click may land before
+    // the link is live: try once more before failing.
+    const retry = context.waitForEvent('page', { timeout: 20000 }).catch(() => null)
+    await dashboardLink.click()
+    const second = await retry
+    if (second) { dashboard = second; dashboardRef = second; watch(second); await second.locator('section[aria-label="LawPay payment classification"]').waitFor({ timeout: 60000 }) }
+  })
   const trustOnFinancesBefore = await readMoney(dashboard, 'Trust account')
   assert.ok(await panel.getByRole('heading', { name: 'LawPay payment classification' }).count(), 'the Finances page must carry the classification workflow')
   // 1. Every stored charge waiting on a decision is listed, with its reported account or the
@@ -217,11 +262,8 @@ try {
   await savedRow.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await savedRow.getByTestId('lawpay-message-provider-a').innerText(), /Recorded in Mio\. \$5,000\.00 is now in this client’s trust balance\./)
   // The recorded money reaches the trust balance the Finances page shows, exactly once.
-  await dashboard.getByTestId('lawpay-message-provider-a').waitFor()
-  const trustOnFinancesAfter = await readMoney(dashboard, 'Trust account')
+  const trustOnFinancesAfter = await waitForMoney(dashboard, 'Trust account', Number((trustOnFinancesBefore + 5000).toFixed(2)))
   assert.equal(Number((trustOnFinancesAfter - trustOnFinancesBefore).toFixed(2)), 5000, 'the trust balance must move by the recorded amount exactly once')
-  await dashboard.waitForTimeout(500)
-  assert.equal(await readMoney(dashboard, 'Trust account'), trustOnFinancesAfter, 'the trust balance must settle')
   await dashboard.screenshot({ path: 'finance-test-results/lawpay-recorded-trust.png' })
   // The accounting view is a display ledger: the recorded deposit appears once and is not
   // added as a second payment.
@@ -260,11 +302,110 @@ try {
   const billingCells = await alphaRow.locator('td').allInnerTexts()
   const billingTrust = Number(String(billingCells[trustIndex] || '').replace(/[^0-9.-]/g, ''))
   assert.equal(billingTrust, trustOnFinancesAfter, 'Bulk billing / withdrawal trust must agree with the matter Finances trust balance')
+  // 6. Correcting a recorded classification: trust -> operating. The previous posting is preserved,
+  //    its ledger effect reversed exactly once, and the replacement posts exactly once.
+  await dashboard.getByRole('button', { name: 'Finances', exact: true }).last().click()
+  await panel.waitFor()
+  const correctedRow = panel.getByTestId('lawpay-row-provider-a')
+  await correctedRow.waitFor()
+  if (!(await correctedRow.getByLabel('Correction reason for Alpha Synthetic').count())) {
+    await correctedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
+  }
+  await correctedRow.getByTestId('lawpay-correction-provider-a').waitFor()
+  await correctedRow.getByLabel('Correction account for Alpha Synthetic').selectOption('operating')
+  await correctedRow.getByLabel('Correction evidence for Alpha Synthetic').fill('LawPay settlement report 12 Sep 2026, line 4: settled to the firm operating account')
+  await correctedRow.getByLabel('Correction explanation for Alpha Synthetic').fill('The settlement report shows this charge was deposited to the operating account, not IOLTA.')
+  await correctedRow.getByLabel('Transaction type for Alpha Synthetic').selectOption('consultation_payment')
+  await correctedRow.getByLabel('Correction reason for Alpha Synthetic').fill('The settlement report shows the money reached the operating account.')
+  const correctionPreview = await correctedRow.getByTestId('lawpay-correction-preview-provider-a').innerText()
+  assert.match(correctionPreview, /Reversal: money out 5000\.00 on the previously recorded account, undoing a trust credit/)
+  assert.match(correctionPreview, /Trust balance change from the reversal: −\$5000\.00/)
+  assert.match(correctionPreview, /Trust balance change overall: −\$5000\.00/)
+  assert.match(correctionPreview, /stay in the audit history/)
+  await dashboard.screenshot({ path: 'finance-test-results/lawpay-correction-preview.png' })
+  // A correction that cannot be recorded must leave the original posting exactly as it was.
+  const beforeRefusal = { ledger: store.ledger.length, posted: store.classifications.filter((row) => row.identity === 'acct-7788:provider-a' && row.posting_status === 'posted').length }
+  const refusedCorrection = gateway({ action: 'correct', reason: 'no account established', classification: { gateway_transaction_id: 'provider-a', provider_account_id: 'acct-7788', matter_id: matters[0].id, category: 'consultation_payment', direction: 'in' } })
+  assert.equal(refusedCorrection.ok, false, 'a correction without an established account must be refused')
+  assert.equal(store.ledger.length, beforeRefusal.ledger, 'a refused correction must reverse nothing')
+  assert.equal(store.classifications.filter((row) => row.identity === 'acct-7788:provider-a' && row.posting_status === 'posted').length, beforeRefusal.posted, 'a refused correction must leave the original posting unchanged')
+  // Double-click protection: two clicks are dispatched in the same browser task, and only one
+  // decision may be sent for this payment.
+  const correctionButton = correctedRow.getByRole('button', { name: 'Confirm correction Alpha Synthetic' })
+  await correctionButton.evaluate((element) => { element.click(); element.click(); return true })
+  let correctionMessage = ''
+  for (let attempt = 0; attempt < 48; attempt += 1) {
+    correctionMessage = await correctedRow.getByTestId('lawpay-message-provider-a').innerText().catch(() => '')
+    if (/Corrected\./.test(correctionMessage)) break
+    await dashboard.waitForTimeout(250)
+  }
+  assert.match(correctionMessage, /Corrected\. The previous posting was reversed once and the replacement was recorded once/)
+  assert.equal(store.classifications.filter((row) => row.corrects_classification_id).length, 1, 'a double click must correct once')
+  await correctedRow.getByTestId('lawpay-message-provider-a').waitFor()
+  assert.match(await correctedRow.getByTestId('lawpay-message-provider-a').innerText(), /Corrected\. The previous posting was reversed once and the replacement was recorded once/)
+  const reversals = store.ledger.filter((entry) => entry.reverses_entry_id)
+  assert.equal(reversals.length, 1, 'the previous ledger effect must be reversed exactly once')
+  assert.equal(reversals[0].direction, 'out', 'the reversal of a trust credit is a trust debit')
+  const latest = store.classifications[store.classifications.length - 1]
+  assert.equal(store.ledger.filter((entry) => entry.classification_id === latest.id).length, 1, 'the replacement must post exactly once')
+  await dashboard.reload({ waitUntil: 'domcontentloaded' })
+  await revealRow(dashboard, 'provider-a')
+  const afterTrustToOperating = await waitForMoney(dashboard, 'Trust account', trustOnFinancesBefore)
+  assert.equal(Number((trustOnFinancesAfter - afterTrustToOperating).toFixed(2)), 5000, 'correcting trust to operating takes the trust credit back exactly once')
+  assert.equal(afterTrustToOperating, trustOnFinancesBefore, 'the matter trust balance returns to its pre-payment figure')
+  await dashboard.screenshot({ path: 'finance-test-results/lawpay-corrected-to-operating.png' })
+  // Reload persistence, and the linked audit history.
+  await dashboard.reload({ waitUntil: 'domcontentloaded' })
+  const persistedRow = await revealRow(dashboard, 'provider-a')
+  await persistedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
+  const history = await persistedRow.getByTestId('lawpay-history-provider-a').innerText()
+  assert.match(history, /posted · Consultation payment — money in/)
+  assert.match(history, /reversed · Trust deposit — money in/)
+  assert.match(history, /corrects an earlier recording/)
+  assert.equal(await readMoney(dashboard, 'Trust account'), afterTrustToOperating, 'the corrected balance survives a reload')
+  // 7. Correcting it back: operating -> trust. The operating posting never moved trust, so its
+  //    reversal moves nothing and the replacement adds the trust credit once.
+  await persistedRow.getByLabel('Correction account for Alpha Synthetic').selectOption('trust')
+  await persistedRow.getByLabel('Correction evidence for Alpha Synthetic').fill('IOLTA deposit report, 12 Sep 2026, line 12')
+  await persistedRow.getByLabel('Correction explanation for Alpha Synthetic').fill('The deposit appears on the IOLTA statement, so it was never operating money.')
+  await persistedRow.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
+  await persistedRow.getByLabel('Correction reason for Alpha Synthetic').fill('The deposit is on the IOLTA statement.')
+  const backToTrustPreview = await persistedRow.getByTestId('lawpay-correction-preview-provider-a').innerText()
+  assert.match(backToTrustPreview, /Trust balance change from the reversal: none/)
+  assert.match(backToTrustPreview, /Trust balance change overall: \+\$5000\.00/)
+  await persistedRow.getByRole('button', { name: 'Confirm correction Alpha Synthetic' }).click()
+  await persistedRow.getByTestId('lawpay-message-provider-a').waitFor()
+  assert.match(await persistedRow.getByTestId('lawpay-message-provider-a').innerText(), /Corrected\./)
+  const backToTrust = await waitForMoney(dashboard, 'Trust account', trustOnFinancesAfter)
+  assert.equal(backToTrust, trustOnFinancesAfter, 'correcting operating back to trust restores the trust balance exactly once')
+  assert.equal(store.ledger.filter((entry) => entry.reverses_entry_id).length, 2, 'each correction reverses its own posting exactly once')
+  await dashboard.screenshot({ path: 'finance-test-results/lawpay-corrected-back-to-trust.png' })
+  // The accounting view shows the correction once, and the figure the withdrawal rows are built
+  // from still agrees with the matter Finances balance.
+  await dashboard.getByRole('button', { name: 'Accounting', exact: true }).last().click()
+  await dashboard.getByRole('columnheader', { name: 'Operating payment', exact: true }).waitFor()
+  const accountingTable = dashboard.locator('table').filter({ has: dashboard.getByRole('columnheader', { name: 'Operating payment', exact: true }) }).first()
+  await accountingTable.waitFor()
+  const reversalRows = accountingTable.locator('tbody tr').filter({ hasText: 'Reversal of a corrected LawPay posting' })
+  await reversalRows.first().waitFor()
+  assert.equal(await reversalRows.count(), 1, 'the trust reversal must appear once in the accounting view')
+  const accountingText = await accountingTable.innerText()
+  assert.ok(accountingText.includes(`$${backToTrust.toLocaleString('en-US')}`), `the accounting trust balance must agree with the matter Finances balance: ${accountingText.slice(-300)}`)
+  const correctedPage = await context.newPage(); watch(correctedPage)
+  await correctedPage.goto(`${origin}/#billing`, { waitUntil: 'domcontentloaded' })
+  await correctedPage.getByRole('button', { name: 'Bulk Billing', exact: true }).waitFor({ timeout: 60000 })
+  await correctedPage.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
+  const correctedTable = correctedPage.locator('table').filter({ has: correctedPage.locator('thead th', { hasText: /^Trust/ }) }).first()
+  await correctedTable.waitFor()
+  const correctedHeads = await correctedTable.locator('thead th').allInnerTexts()
+  const correctedIndex = correctedHeads.findIndex((text) => /^\s*Trust/.test(String(text)))
+  const correctedCells = await correctedTable.locator('tr').filter({ hasText: 'Alpha Matter' }).first().locator('td').allInnerTexts()
+  assert.equal(Number(String(correctedCells[correctedIndex] || '').replace(/[^0-9.-]/g, '')), backToTrust, 'Bulk billing / withdrawal trust must agree after the corrections')
   assert.ok(store.actions.includes('review') && store.actions.includes('post'), 'the browser must reach the gateway for both reading and recording')
   assert.deepEqual(errors, [])
   assert.deepEqual(writes, [], 'no financial table may be written directly from the browser')
   assert.deepEqual(blocked, [], 'no service outside Mio may be called')
-  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, classifications: store.classifications.length, ledger_entries: store.ledger.length, trust_moved: Number((trustOnFinancesAfter - trustOnFinancesBefore).toFixed(2)), tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance'] }, null, 2))
+  console.log(JSON.stringify({ ok: true, recording_actions: store.actions, ledger_entries: store.ledger.length, corrections_reversed: store.ledger.filter((entry) => entry.reverses_entry_id).length, trust_after_recording: trustOnFinancesAfter, trust_after_corrections: backToTrust, tests: ['the Finances page carries the classification workflow', 'a reported deposit account is named from the provider record', 'an unreported deposit account is stated plainly', 'an unverified account cannot be recorded and a verified one can', 'the preview states the money, the trust change and the invoice effect', 'saving for later writes nothing and survives a reload', 'recording moves the matter trust balance exactly once', 'the accounting view shows the recorded payment once', 'a recorded payment cannot be recorded twice', 'Bulk billing / withdrawal trust agrees with the matter Finances balance', 'the correction preview states the reversal and the replacement', 'a refused correction leaves the original posting unchanged', 'a double click corrects once', 'correcting trust to operating reverses the trust credit exactly once', 'the correction and its audit history survive a reload', 'correcting operating back to trust adds the trust credit exactly once', 'the accounting view shows the reversal once', 'Bulk billing / withdrawal trust agrees after the corrections'] }, null, 2))
 } catch (error) {
   try { fs.writeFileSync('finance-test-results/failure.txt', await page.locator('body').innerText()) } catch { /* page already gone */ }
   if (dashboardRef && dashboardRef !== page) { try { fs.writeFileSync('finance-test-results/failure-matter.txt', await dashboardRef.locator('body').innerText()) } catch { /* page already gone */ } }

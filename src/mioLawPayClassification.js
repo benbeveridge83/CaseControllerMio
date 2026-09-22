@@ -351,6 +351,44 @@ export function correctionRecord({ previous = {}, actor = '', at = '', reason = 
   }
 }
 
+// What a correction would do, in numbers and in words, before anything is written. The previous
+// posting is preserved and its effect is reversed exactly once; the replacement posts exactly
+// once. A replacement that cannot post is refused before the correction is offered, because a
+// refused corrected posting must leave the original posting unchanged.
+export function correctionPreview({ previous = {}, transaction = {}, resolvedAccount = {}, category = '', matter = null, invoice = null, reason = '' } = {}) {
+  const replacement = ledgerPlan({ transaction, resolvedAccount, category, matter, invoice })
+  const previousAccount = String(previous.actual_account_key || '')
+  const previousFamily = accountFamily(previousAccount)
+  const previousDirection = String(previous.direction || (previous.money_out ? 'out' : 'in')) === 'out' ? 'out' : 'in'
+  const amount = Math.max(0, Math.round(Math.abs(Number(previous.amount_cents || 0))))
+  const reversal = {
+    exists: !!(previous.id && previousAccount),
+    account_key: previousAccount,
+    account_family: previousFamily,
+    direction: previousDirection === 'out' ? 'in' : 'out',
+    amount_cents: amount,
+    currency: String(previous.currency || 'USD'),
+    matter_id: String(previous.matter_id || ''),
+    // The reversal undoes the trust movement the previous posting made, and nothing else.
+    trust_delta_cents: previousFamily === 'trust' ? (previousDirection === 'out' ? amount : -amount) : 0,
+  }
+  const decision = correctionRecord({ previous, reason })
+  const errors = []
+  if (!decision.ok) errors.push(decision.error)
+  if (!reversal.exists) errors.push('The recorded classification has no posting to reverse.')
+  const replacementMovesMoney = !!categoryById(category) && categoryById(category).posts !== 'none'
+  if (!replacementMovesMoney) errors.push('Choose what the transaction should be recorded as before confirming the correction.')
+  const trustDeltaCents = reversal.trust_delta_cents + Number(replacement.trust_delta_cents || 0)
+  const lines = []
+  lines.push(`Reversal: ${reversal.direction === 'out' ? 'money out' : 'money in'} ${(amount / 100).toFixed(2)} on the previously recorded account` +
+    (reversal.account_family === 'trust' ? `, undoing a trust ${previousDirection === 'out' ? 'debit' : 'credit'}.` : ', which never moved trust.'))
+  lines.push(`Trust balance change from the reversal: ${reversal.trust_delta_cents ? `${reversal.trust_delta_cents > 0 ? '+' : '−'}$${(Math.abs(reversal.trust_delta_cents) / 100).toFixed(2)}` : 'none'}.`)
+  for (const line of postingPreview({ plan: replacement, status: { eligible: replacementMovesMoney, reason: replacementMovesMoney ? '' : 'Choose what the transaction should be recorded as.' } })) lines.push(line)
+  lines.push(`Trust balance change overall: ${trustDeltaCents ? `${trustDeltaCents > 0 ? '+' : '−'}$${(Math.abs(trustDeltaCents) / 100).toFixed(2)}` : 'none'}.`)
+  lines.push('The original classification, its ledger entry and its reversal stay in the audit history, linked to this correction.')
+  return { ok: errors.length === 0, errors, reversal, replacement, trust_delta_cents: trustDeltaCents, correction: decision.ok ? decision.correction : null, lines }
+}
+
 // The matter dashboard shows only that matter's transactions. Everything else stays in the
 // firm-wide review queue, which is always labelled as firm-wide so another client's payment
 // cannot be mistaken for this matter's transaction. Both views read the same records, so the

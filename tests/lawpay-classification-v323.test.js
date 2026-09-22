@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { accountRegistry, resolveTransactionAccount, accountDiagnostics, maskAccountId, sameProviderAccountId, accountDiscrepancy } from '../src/mioLawPayAccounts.js'
-import { amountBreakdown, classificationIdentity, correctionRecord, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
+import { amountBreakdown, classificationIdentity, correctionPreview, correctionRecord, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
 
 const trustAccount = { provider_account_id: 'acct-91075', account_key: 'trust', bank_account_id: 'plaid-trust', bank_role: 'trust', label: 'Trust / IOLTA ••••1075', is_active: true }
 const operatingAccount = { provider_account_id: 'acct-91077', account_key: 'operating', bank_account_id: 'plaid-operating', bank_role: 'operating', label: 'Operating ••••1077', is_active: true }
@@ -215,6 +215,34 @@ test('balance arithmetic counts a refund once when a refunded total and a separa
   const reversed = singleCountProviderPayments([charge, { ...refund, status: 'FAILED' }])
   assert.equal(reversed.separate_refund_total_cents, 0, 'a failed refund moves nothing')
   assert.equal(singleCountProviderPayments([]).total_cents, 0)
+})
+
+test('a correction preview states the reversal and the replacement once each, and refuses to offer an impossible correction', () => {
+  const transaction = { gateway_transaction_id: 'charge-1', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 500000, currency: 'USD' }
+  const trustPosting = { id: 'classification-1', posting_status: 'posted', gateway_transaction_id: 'charge-1', matter_id: 'matter-1', actual_account_key: 'trust', direction: 'in', amount_cents: 500000, currency: 'USD', owner: 'ben@firm' }
+  const toOperating = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', matter: { id: 'matter-1', name: 'Matter One' }, reason: 'The money reached the operating account, not IOLTA.' })
+  assert.equal(toOperating.ok, true, toOperating.errors.join(' '))
+  assert.equal(toOperating.reversal.direction, 'out', 'the reversal of a trust credit is a trust debit')
+  assert.equal(toOperating.reversal.trust_delta_cents, -500000)
+  assert.equal(toOperating.replacement.trust_delta_cents, 0)
+  assert.equal(toOperating.trust_delta_cents, -500000, 'correcting trust to operating takes the trust credit back exactly once')
+  assert.equal(toOperating.correction.corrects_classification_id, 'classification-1')
+  assert.match(toOperating.lines.join(' '), /undoing a trust credit/)
+  assert.match(toOperating.lines.join(' '), /Trust balance change overall: −\$5000\.00/)
+  const fromOperating = correctionPreview({ previous: { ...trustPosting, actual_account_key: 'operating', direction: 'in' }, transaction, resolvedAccount: { account_key: 'trust', provenance: 'manually_verified' }, category: 'trust_deposit', matter: { id: 'matter-1', name: 'Matter One' }, reason: 'The deposit went to IOLTA after all.' })
+  assert.equal(fromOperating.ok, true, fromOperating.errors.join(' '))
+  assert.equal(fromOperating.reversal.trust_delta_cents, 0, 'an operating posting never moved trust, so its reversal does not either')
+  assert.equal(fromOperating.replacement.trust_delta_cents, 500000)
+  assert.equal(fromOperating.trust_delta_cents, 500000, 'correcting operating to trust adds the trust credit exactly once')
+  const noReason = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', reason: '' })
+  assert.equal(noReason.ok, false)
+  assert.match(noReason.errors.join(' '), /Explain why/)
+  assert.equal(noReason.correction, null)
+  const notPosted = correctionPreview({ previous: { ...trustPosting, posting_status: 'saved' }, transaction, resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' }, category: 'consultation_payment', reason: 'wrong account' })
+  assert.equal(notPosted.ok, false)
+  assert.match(notPosted.errors.join(' '), /Only a recorded transaction can be corrected/)
+  const voided = correctionPreview({ previous: trustPosting, transaction, resolvedAccount: { account_key: 'trust', provenance: 'reported_by_lawpay' }, category: 'void', reason: 'voided' })
+  assert.equal(voided.ok, false, 'a correction cannot record a transaction that moves no money')
 })
 
 test('review statuses keep recorded in Mio separate from bank reconciled', () => {
