@@ -52,6 +52,25 @@ jobs:
           wait "$second"
           wait "$third"
           psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-concurrency.sql
+      - name: Test LawPay classification posting, duplicates and corrections on the isolated PostgreSQL
+        run: |
+          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-schema.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20260922090000_lawpay_classification_v323.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-classification-v323-behavior.sql
+          # Two overlapping sessions posting the same provider transaction: exactly one may post,
+          # and a trust posting must leave exactly one ledger entry.
+          psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &
+          race_a=$!
+          sleep 0.25
+          psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; commit;" > race-b.txt &
+          race_b=$!
+          wait "$race_a"
+          wait "$race_b"
+          cat race-a.txt race-b.txt
+          test "$(grep -c '^posted$' race-a.txt race-b.txt | awk -F: '{s+=$2} END {print s}')" = "1"
+          test "$(psql -t -A -c "select count(*) from public.mio_lawpay_classifications where identity='lawpay-refunded-charge' and posting_status='posted';")" = "1"
+          test "$(psql -t -A -c "select count(*) from public.mio_lawpay_ledger_entries where identity='lawpay-refunded-charge';")" = "1"
+          psql -t -A -c "select 'V323 concurrency: one posting, one ledger entry' as result;"
       - run: npm run build
       - run: node node_modules/playwright-core/cli.js install chromium --with-deps
       - name: Test real production bundle with intercepted synthetic services
