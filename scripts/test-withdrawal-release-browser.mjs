@@ -59,8 +59,13 @@ try{
  assert.equal(await page.locator('.mio-block-expanded').count(),0)
  await page.getByRole('heading',{name:'Edit Matter',exact:true}).waitFor()
  assert.equal(await page.getByLabel('Matter Name *',{exact:true}).inputValue(),'Matter 1')
- assert.equal(await page.getByLabel('Case Status',{exact:true}).inputValue(),'Open')
- assert.equal(await page.getByLabel('Withdrawal',{exact:true}).inputValue(),'withdrawing')
+ // Case Status and Withdrawal are <select> controls wrapped by their <label>, so the browser reports
+ // the accessible name as exactly 'Case Status' / 'Withdrawal'. Playwright's getByLabel matches the
+ // label's raw textContent instead, which also contains the option text (for example
+ // 'Case StatusCase StatusOpenClosed'), so exact label matching cannot resolve these two comboboxes.
+ // Match the accessible name through the combobox role to assert the same label and value.
+ assert.equal(await page.getByRole('combobox',{name:'Case Status',exact:true}).inputValue(),'Open')
+ assert.equal(await page.getByRole('combobox',{name:'Withdrawal',exact:true}).inputValue(),'withdrawing')
  await page.getByRole('button',{name:'Cancel',exact:true}).click()
  await page.getByRole('heading',{name:'Edit Matter',exact:true}).waitFor({state:'hidden'})
  console.log('PASS withdrawal-row Edit matter opens the existing full matter editor without expanding the row')
