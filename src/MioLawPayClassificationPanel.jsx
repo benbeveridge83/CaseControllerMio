@@ -262,6 +262,12 @@ export default function MioLawPayClassificationPanel({
           const state = reviewStatus({ record })
           const open = openId === id
           const duplicate = duplicateClassification({ existing: classifications, identity: `${String(transaction.account_id || '')}:${id}`, category: draft.category })
+          // A legacy attribution already put this immutable provider transaction in Mio's ledger
+          // outside this workflow. It is shown as recorded, and the only way forward is to match it
+          // to that exact entry: posting again would move the same money twice.
+          const legacyEntry = (existingEntries || []).find((entry) => String(entry.source || '') === 'legacy_attribution' && String(entry.lawpay_transaction_id || '') === id) || null
+          const legacyAmountMismatch = !!legacyEntry && Math.abs(Number(legacyEntry.amount || 0) - amountBreakdown(transaction).gross_cents / 100) > 0.005
+          const statusLabel = legacyEntry && state === 'needs_classification' ? 'Recorded in Mio — legacy attribution needs matching' : REVIEW_STATUS_LABELS[state]
           // Corrections: the recorded posting is preserved, its effect is reversed once and the
           // replacement posts once. The history keeps every record, newest first.
           const history = (classifications || []).filter((entry) => String(entry.gateway_transaction_id || '') === id)
@@ -289,7 +295,7 @@ export default function MioLawPayClassificationPanel({
                   <div style={{ color: '#0f172a' }} data-testid={`lawpay-account-${id}`}>{`${decision.label}${decision.detail ? ` · ${decision.detail}` : ''}`}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 700 }}>{REVIEW_STATUS_LABELS[state]}</div>
+                  <div style={{ fontWeight: 700 }}>{statusLabel}</div>
                   <button type="button" aria-label={`Decide ${payer}`} onClick={() => setOpenId(open ? '' : id)}>{open ? 'Close' : 'Choose what this payment is'}</button>
                 </div>
               </div>
@@ -377,6 +383,22 @@ export default function MioLawPayClassificationPanel({
                     </ul>
                     {duplicate?.duplicate ? <p style={{ margin: '6px 0 0', color: '#b45309' }}>{duplicate.reason}</p> : null}
                   </div>
+                  {legacyEntry ? (
+                    <div data-testid={`lawpay-legacy-${id}`} style={{ border: '1px solid #38bdf8', background: '#f0f9ff', borderRadius: 8, padding: 8 }}>
+                      <strong>{'Already recorded in Mio outside this classification workflow'}</strong>
+                      <p style={{ margin: '4px 0' }}>{`A legacy attribution posted this exact LawPay transaction ${money(Math.abs(Number(legacyEntry.amount || 0)))} to the trust ledger (${legacyEntry.label}). It is counted once and cannot be posted again. Match it to that entry so Mio has one canonical record of it.`}</p>
+                      {legacyAmountMismatch ? <p role="alert" style={{ margin: '4px 0', color: '#b91c1c' }}>{`Conflict: the legacy entry is ${money(Math.abs(Number(legacyEntry.amount || 0)))} but LawPay reports ${money(amountBreakdown(transaction).gross_cents)} for this transaction. Resolve the difference before matching.`}</p> : null}
+                      <label>Existing entry for {payer}
+                        <select aria-label={`Existing entry for ${payer}`} value={draft.entry_id || String(legacyEntry.id)} onChange={(event) => patch(id, { entry_id: event.target.value })}>
+                          <option value={String(legacyEntry.id)}>{legacyEntry.label}</option>
+                          {(existingEntries || []).filter((entry) => String(entry.id) !== String(legacyEntry.id)).map((entry) => <option key={String(entry.id)} value={String(entry.id)}>{String(entry.label)}</option>)}
+                        </select>
+                      </label>
+                      <div style={{ marginTop: 6 }}>
+                        <button type="button" aria-label={`Match the legacy entry ${payer}`} disabled={working === id || !!legacyAmountMismatch} onClick={() => submit('match', transaction, 'save')}>{'Match this transaction to that recorded entry'}</button>
+                      </div>
+                    </div>
+                  ) : null}
                   {canCorrect ? (
                     <fieldset data-testid={`lawpay-correction-${id}`} style={{ border: '1px solid #fbbf24', borderRadius: 8, padding: 8 }}>
                       <legend>{`Correct the recorded classification for ${payer}`}</legend>
@@ -437,7 +459,7 @@ export default function MioLawPayClassificationPanel({
                   </label>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button type="button" aria-label={`Save for later ${payer}`} disabled={working === id} onClick={() => submit('save', transaction, 'save')}>{'Save for later'}</button>
-                    <button type="button" aria-label={`Confirm and record ${payer}`} disabled={working === id || !status.eligible || !accountEstablished || !!duplicate?.duplicate} onClick={() => submit('post', transaction, 'post')}>{status.eligible && accountEstablished && !duplicate?.duplicate ? 'Confirm and record' : 'Not eligible to record yet'}</button>
+                    <button type="button" aria-label={`Confirm and record ${payer}`} disabled={working === id || !status.eligible || !accountEstablished || !!duplicate?.duplicate || (existingEntries || []).some((entry) => String(entry.source || '') === 'legacy_attribution' && String(entry.lawpay_transaction_id || '') === id)} onClick={() => submit('post', transaction, 'post')}>{status.eligible && accountEstablished && !duplicate?.duplicate && !(existingEntries || []).some((entry) => String(entry.source || '') === 'legacy_attribution' && String(entry.lawpay_transaction_id || '') === id) ? 'Confirm and record' : 'Not eligible to record yet'}</button>
                     <button type="button" aria-label={`Match the existing entry ${payer}`} disabled={working === id || !draft.entry_id} onClick={() => submit('match', transaction, 'save')}>{'Match the existing entry'}</button>
                     <button type="button" aria-label={`Leave undecided ${payer}`} onClick={() => setOpenId('')}>{'Leave for now'}</button>
                   </div>
