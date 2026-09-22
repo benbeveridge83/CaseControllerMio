@@ -1,0 +1,28 @@
+{
+  "note": "Synthetic LawPay legacy reconciliation fixtures. No production data, no real provider ids, no real money.",
+  "legacyRecords": [
+    { "id": "rec-bravo", "gateway_transaction_id": "synthetic-provider-bravo", "decision": "matter", "amount": 5000, "entry_kind": "trust_deposit", "matter_id": "matter-bravo", "account": "trust" },
+    { "id": "rec-charlie", "gateway_transaction_id": "synthetic-provider-charlie", "decision": "matter", "amount": 1000, "entry_kind": "operating_association", "matter_id": "matter-charlie", "account": "operating" },
+    { "id": "rec-delta", "gateway_transaction_id": "synthetic-provider-delta", "decision": "matter", "amount": 250, "entry_kind": "trust_deposit", "matter_id": "matter-delta", "account": "trust" },
+    { "id": "rec-golf", "gateway_transaction_id": "synthetic-provider-golf", "decision": "matter", "amount": 450, "entry_kind": "trust_deposit", "matter_id": "matter-golf", "account": "trust" },
+    { "id": "rec-no-provider", "decision": "matter", "amount": 125, "entry_kind": "trust_deposit", "matter_id": "matter-alpha" },
+    { "id": "rec-unmatched", "gateway_transaction_id": "synthetic-provider-never-classified", "decision": "matter", "amount": 700, "entry_kind": "trust_deposit", "matter_id": "matter-alpha" }
+  ],
+  "legacyEntries": [
+    { "id": "entry-bravo", "lawpay_transaction_id": "synthetic-provider-bravo", "amount": 5000, "direction": "in", "matter_id": "matter-bravo", "entry_kind": "trust_deposit", "source": "Mio LawPay attribution" },
+    { "id": "entry-echo", "lawpay_transaction_id": "synthetic-provider-echo", "amount": 900, "direction": "in", "matter_id": "matter-echo", "entry_kind": "trust_deposit", "source": "Mio LawPay attribution" }
+  ],
+  "classifications": [
+    { "id": "c-bravo", "gateway_transaction_id": "synthetic-provider-bravo", "posting_status": "posted", "amount_cents": 500000, "matter_id": "matter-bravo", "actual_account_key": "trust", "direction": "in" },
+    { "id": "c-charlie", "gateway_transaction_id": "synthetic-provider-charlie", "posting_status": "saved", "amount_cents": 100000, "matter_id": "matter-charlie", "actual_account_key": "operating", "direction": "in" },
+    { "id": "c-delta", "gateway_transaction_id": "synthetic-provider-delta", "posting_status": "posted", "amount_cents": 30000, "matter_id": "matter-delta", "actual_account_key": "trust", "direction": "in" },
+    { "id": "c-golf", "gateway_transaction_id": "synthetic-provider-golf", "posting_status": "saved", "amount_cents": 45000, "matter_id": "matter-golf", "actual_account_key": "", "direction": "in" },
+    { "id": "c-echo-a", "gateway_transaction_id": "synthetic-provider-echo", "posting_status": "posted", "amount_cents": 90000, "matter_id": "matter-echo", "actual_account_key": "trust", "direction": "in" },
+    { "id": "c-echo-b", "gateway_transaction_id": "synthetic-provider-echo", "posting_status": "saved", "amount_cents": 90000, "matter_id": "matter-echo", "actual_account_key": "trust", "direction": "in" }
+  ],
+  "ledgerEntries": [
+    { "id": "e-bravo", "classification_id": "c-bravo", "identity": "acct-synthetic:synthetic-provider-bravo", "amount_cents": 500000, "entry_kind": "trust_entry", "direction": "in" },
+    { "id": "e-echo-a", "classification_id": "c-echo-a", "identity": "acct-synthetic:synthetic-provider-echo", "amount_cents": 90000, "entry_kind": "trust_entry", "direction": "in" }
+  ],
+  "links": []
+}
