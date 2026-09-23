@@ -209,6 +209,13 @@ no push trigger, so it cannot deploy anything by itself. Add the repository secr
 deploying). The run refuses to publish if the function ever contains a write call, prints the commit
 and both SHA-256 hashes before deploying, and prints the rollback command whatever the outcome.
 
+GitHub only offers the **Run workflow** button for a `workflow_dispatch` file that is on the **default
+branch**, so Path B needs one small, separate, reviewed change first: put just this workflow file on
+`main` (it deploys nothing by itself). It must then appear under **Actions** with a **Run workflow**
+button — if it does not appear, the file did not parse, so fix it before continuing. Run it against the
+reviewed revision with `--ref fix/lawpay-account-resolution-v324` (or pick that branch in the dropdown)
+so it deploys this plan's artifact, not whatever `main` holds.
+
 **Confirm the reference first:** **Project Settings → General → Reference ID** must read exactly
 `vnnkxqpyndidnjbrbywz`. An earlier command of mine contained a typo (`...ndndid...`); nothing is
 deployed until the dashboard confirms it.
