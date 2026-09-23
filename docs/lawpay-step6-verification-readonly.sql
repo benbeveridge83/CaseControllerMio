@@ -14,7 +14,7 @@ with lines as (
                                      || case when a.is_active then '' else ' (stop)' end, ' | ' order by a.provider_account_id)
                    from public.mio_lawpay_accounts a), 'no mapping rows (stop)') as verdict
   union all select 2, 'A. mappings', 'count, and the two expected masked identifiers',
-         coalesce((select count(*)::text || ' row(s); masked ids: ' || coalesce(string_agg('.....' || right(a.provider_account_id, 4), ', ' order by a.provider_account_id), 'none'), '0') 
+         coalesce((select count(*)::text || ' row(s); masked ids: ' || coalesce(string_agg('.....' || right(a.provider_account_id, 4), ', ' order by a.provider_account_id), 'none')), '0') 
          || case when (select count(*) from public.mio_lawpay_accounts) = 2
                   and (select count(*) from public.mio_lawpay_accounts where right(provider_account_id, 4) in ('PvRA', 'B88Q')) = 2
                   and (select count(*) from public.mio_lawpay_accounts where is_active) = 2
