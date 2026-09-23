@@ -1,7 +1,13 @@
-# LawPay V324 production rollout plan — NOT EXECUTED
+# LawPay V324 production rollout plan
 
-Every step below is independently approvable and independently revertible. Nothing in this plan has
-been run: no migration applied, no Edge Function deployed, no mapping created, no transaction
+**Step 2 is applied and verified in production** (project `vnnkxqpyndidnjbrbywz`). The two V323
+migrations are in place and the read-only verification grid met every acceptance criterion: four
+row-level-security-enabled tables, every required function with its expected signature, no browser-role
+privileges, the required `service_role` privileges, four empty new tables, and 59 unchanged LawPay
+transactions.
+
+Steps 3-8 remain unstarted. Each is independently approvable and independently revertible, and none of
+them has been applied: no V324 migration, no Edge Function deployed, no mapping created, no transaction
 reclassified, no money moved, no balance changed.
 
 ## Production state, as established by the read-only preflight (run, results in hand)
@@ -60,7 +66,7 @@ transaction was, decide a refund relationship, apply anything to an invoice, or 
 bank-reconciled. The four refunds on `.....PvRA` will carry trust once mapped, but they still need
 the existing refund-relationship decision before any money is affected.
 
-## Step 2 — apply the V323 migrations (required: the preflight found none of these objects)
+## Step 2 — apply the V323 migrations — **COMPLETED and verified in production**
 
 `supabase/migrations/20260922090000_lawpay_classification_v323.sql` and
 `supabase/migrations/20260922090001_lawpay_refund_resolution_v323.sql`.
@@ -98,6 +104,10 @@ clean drop of empty objects with no data loss. Re-running the preflight after ea
 verification for this step: it reports which objects now exist, the mapping table's columns, and the
 current mapping count.
 
+**Do not use `supabase db push` for a scoped step like this.** It applies every pending migration, so
+it would apply later migrations — including the V324 migration — in the same action and exceed the
+approval. Paste one reviewed file at a time in the SQL Editor.
+
 ## Step 3 — apply the V324 migration
 
 `supabase/migrations/20260923090000_lawpay_provider_account_resolution_v324.sql`.
@@ -107,7 +117,15 @@ current mapping count.
   writes no money, and now **appends the previous values to the row's own
   `raw.mio_account_resolution_history` before replacing them**, so the change is reversible from the
   data alone.
-* **Verify:** preflight row 15 reads `present (text, text, text)`.
+* **Verify:** run `docs/lawpay-step3-verification-readonly.sql` (read-only, one statement; the file is
+  executed by CI, so it is already known to parse and run). It must report: the function present;
+  `security definer=true` with a pinned `search_path`; no PUBLIC, anon or authenticated EXECUTE grant;
+  the `service_role` EXECUTE grant present; the V323 and V314 functions still present; all four V323
+  tables still `0`; **no transaction carrying a resolution history** (must be `0`); and
+  `lawpay_transactions` still at 59. Any `(stop)`, `ABSENT`, `DISABLED` or `MISSING` verdict, any
+  non-zero table, or any other transaction count means stop and report the grid before continuing.
+* **Fidelity:** the file is 72 lines and begins `-- V324: recognizing the deposit account LawPay already
+  supplied.`; the last statement is the `comment on function` describing what it may write.
 * **Rollback:** `drop function public.mio_reresolve_lawpay_accounts_v324(text,text,text);` — nothing
   depends on it, and it changes no data by itself.
 
