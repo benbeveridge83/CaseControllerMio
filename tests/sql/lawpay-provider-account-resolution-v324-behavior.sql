@@ -143,8 +143,10 @@ begin
   if (v_unknown->>'ok')::boolean is not false then raise exception 'an unknown Mio account key must be refused'; end if;
   v_unknown := public.mio_reresolve_lawpay_accounts_v324('','trust',v_actor);
   if (v_unknown->>'ok')::boolean is not false then raise exception 'an empty provider identifier must be refused'; end if;
+  -- An identifier with no active mapping is refused, exactly like a missing one: nothing is written.
   v_unknown := public.mio_reresolve_lawpay_accounts_v324('v324-suite-unknown','trust',v_actor);
-  if (v_unknown->>'ok')::boolean is not true or (v_unknown->>'updated')::integer <> 0 then raise exception 'an identifier nothing carries must update nothing, got %', v_unknown; end if;
+  if (v_unknown->>'ok')::boolean is not false then raise exception 'an identifier with no active mapping must be refused, got %', v_unknown; end if;
+  if (v_unknown->>'updated')::integer <> 0 then raise exception 'an identifier with no active mapping must update nothing, got %', v_unknown->>'updated'; end if;
 
   -- The mapping the rollout will create: payload shape, idempotency, and its rollback.
   v_mapped := public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-suite-acct-A','account_key','trust','bank_account_id','','bank_role','trust','label','LawPay trust settlement account','last4','Suite A','is_active',true), v_actor);
