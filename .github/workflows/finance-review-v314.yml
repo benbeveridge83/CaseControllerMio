@@ -90,6 +90,13 @@ jobs:
             } | redact | while IFS= read -r line; do echo "::error::${line}"; done
           }
           status=0
+          # The isolated database must mirror the production grant defaults the verifier reasons
+          # about: Supabase grants its server role access to the public schema, while anon and
+          # authenticated are created without any grant so the verifier's denial checks stay
+          # meaningful. Confirming the production grants themselves is what the verifier does when it
+          # is run against production, which is where a "(stop)" on service_role would be acted on.
+          psql -v ON_ERROR_STOP=1 -c 'do $$ begin if not exists(select 1 from pg_roles where rolname = ''anon'') then create role anon; end if; if not exists(select 1 from pg_roles where rolname = ''authenticated'') then create role authenticated; end if; if not exists(select 1 from pg_roles where rolname = ''service_role'') then create role service_role; end if; end $$;' >> "$log" 2>&1 || { status=1; failing_file='fixture prerequisites (roles)'; }
+          psql -v ON_ERROR_STOP=1 -c 'grant all on all tables in schema public to service_role; grant all on all sequences in schema public to service_role; grant execute on all functions in schema public to service_role;' >> "$log" 2>&1 || { status=1; failing_file='fixture prerequisites (service_role grants)'; }
           for file in \
             tests/sql/lawpay-classification-v323-schema.sql \
             supabase/migrations/20260922090000_lawpay_classification_v323.sql \
@@ -116,6 +123,7 @@ jobs:
             if [ "$status" = "0" ]; then
               if grep -E '\(stop\)|ABSENT|DISABLED|MISSING' step2-verdicts.txt >> "$log"; then
                 echo "The step-2 verification reported a verdict that must stop the rollout." | tee -a "$log"
+                grep -E '\(stop\)|ABSENT|DISABLED|MISSING' step2-verdicts.txt | tr '\n' ' ' | cut -c1-700 | while IFS= read -r line; do echo "::error::step-2 verification verdict: ${line}"; done
                 status=1
                 failing_file='docs/lawpay-step2-verification-readonly.sql (unexpected verdict)'
               else
