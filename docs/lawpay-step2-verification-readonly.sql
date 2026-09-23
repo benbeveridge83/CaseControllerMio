@@ -15,19 +15,32 @@ with lines as (
               else coalesce((select string_agg(c.relname || '=' || case when c.relrowsecurity then 'enabled' else 'DISABLED' end, ', ' order by c.relname)
                              from pg_class c join pg_namespace n on n.oid = c.relnamespace
                              where n.nspname = 'public' and c.relname in ('mio_lawpay_accounts','mio_lawpay_classifications','mio_lawpay_ledger_entries','mio_lawpay_refund_resolutions')), 'none found') end
-  union all select 6, 'B. functions', 'mapping: mio_map_lawpay_account_v323',
-         coalesce((select 'present (' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mio_map_lawpay_account_v323' limit 1), 'ABSENT')
-  union all select 7, 'B. functions', 'classification: save, post, correct, match',
-         coalesce((select string_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '; ' order by p.proname)
-                   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-                   where n.nspname = 'public' and p.proname in ('mio_save_lawpay_classification_v323','mio_post_lawpay_classification_v323','mio_correct_lawpay_classification_v323','mio_match_lawpay_classification_v323')), 'ABSENT')
-  union all select 8, 'B. functions', 'refund: mio_resolve_lawpay_refund_v323',
-         coalesce((select 'present (' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mio_resolve_lawpay_refund_v323' limit 1), 'ABSENT')
-  union all select 9, 'B. functions', 'V314 ingest must still be present',
+  union all select 6, 'B. functions', 'the six callable functions the rollout needs, with their arity',
+         coalesce((select string_agg(e.name || ' -> ' || case when p.oid is null then 'MISSING or WRONG ARITY (stop)' else 'present, arity ' || p.pronargs::text end, ', ' order by e.name)
+                   from (values ('mio_post_lawpay_classification_v323', 2),
+                                ('mio_save_lawpay_classification_v323', 2),
+                                ('mio_correct_lawpay_classification_v323', 3),
+                                ('mio_match_lawpay_classification_v323', 3),
+                                ('mio_map_lawpay_account_v323', 2),
+                                ('mio_resolve_lawpay_refund_v323', 2)) e(name, arity)
+                   left join pg_proc p on p.proname = e.name and p.pronargs = e.arity and p.pronamespace = 'public'::regnamespace), 'none')
+         || '  |  ' || (select case when count(*) = 6 then '6 of 6 present (good)' else count(*)::text || ' of 6 present (stop)' end
+                        from pg_proc p where p.pronamespace = 'public'::regnamespace
+                          and (p.proname, p.pronargs) in (('mio_post_lawpay_classification_v323', 2), ('mio_save_lawpay_classification_v323', 2),
+                                ('mio_correct_lawpay_classification_v323', 3), ('mio_match_lawpay_classification_v323', 3),
+                                ('mio_map_lawpay_account_v323', 2), ('mio_resolve_lawpay_refund_v323', 2)))
+  union all select 7, 'B. functions', 'the internal helper: mio_lawpay_write_posting_v323',
+         coalesce((select 'present' from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'mio_lawpay_write_posting_v323' limit 1), 'ABSENT (stop)')
+         || '  |  browser-role EXECUTE: ' || coalesce((select case when exists (select 1 from unnest(p.proacl) a where a::text like '=%' or a::text like 'anon=%' or a::text like 'authenticated=%') then 'GRANTED (stop)' else 'none (good)' end
+                                                        from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'mio_lawpay_write_posting_v323' limit 1), 'ABSENT (stop)')
+         || '  |  service_role EXECUTE: ' || coalesce((select case when exists (select 1 from unnest(p.proacl) a where a::text like 'service_role=%') then 'present' else 'absent' end
+                                                        from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'mio_lawpay_write_posting_v323' limit 1), 'ABSENT (stop)')
+         || '  (a service_role grant is NOT required: this internal helper is called only by the posting functions, which the migration revokes from the API roles and never grants to them)'
+  union all select 8, 'B. functions', 'V314 ingest must still be present',
          coalesce((select string_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '; ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname in ('mio_store_lawpay_transaction_v314','mio_reconcile_lawpay_transaction_v314')), 'ABSENT - the live ingest path is gone, stop')
-  union all select 10, 'B. functions', 'every public function whose name contains lawpay',
+  union all select 9, 'B. functions', 'every public function whose name contains lawpay',
          coalesce((select string_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '; ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname like '%lawpay%'), 'none')
@@ -66,10 +79,13 @@ with lines as (
                                                               else 'none' end, ', ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname like '%lawpay%v32%'), 'no V323 function found')
-  union all select 14, 'C. privileges', 'V323 functions: service_role EXECUTE grant (required)?',
-         coalesce((select string_agg(p.proname || '=' || case when exists (select 1 from unnest(p.proacl) a where a::text like 'service_role=%') then 'yes' else 'MISSING (stop)' end, ', ' order by p.proname)
-                   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-                   where n.nspname = 'public' and p.proname like '%lawpay%v32%'), 'no V323 function found')
+  union all select 14, 'C. privileges', 'the six callable functions must have a service_role EXECUTE grant',
+         coalesce((select string_agg(e.name || '=' || coalesce((select case when exists (select 1 from unnest(p.proacl) a where a::text like 'service_role=%') then 'yes' else 'MISSING (stop)' end
+                                                               from pg_proc p where p.proname = e.name and p.pronamespace = 'public'::regnamespace limit 1), 'ABSENT (stop)'), ', ' order by e.name)
+                   from (values ('mio_post_lawpay_classification_v323'), ('mio_save_lawpay_classification_v323'),
+                                ('mio_correct_lawpay_classification_v323'), ('mio_match_lawpay_classification_v323'),
+                                ('mio_map_lawpay_account_v323'), ('mio_resolve_lawpay_refund_v323')) e(name)), 'none')
+         || '  |  mio_lawpay_write_posting_v323 is an internal helper: it must hold no browser-role grant and needs no service_role grant'
   union all select 20, 'D. rows (each of the four must be 0)', 'mio_lawpay_accounts (provider account mappings)',
          case when to_regclass('public.mio_lawpay_accounts') is null then 'table absent'
               else (xpath('/row/c/text()', query_to_xml('select count(*) as c from public.mio_lawpay_accounts', false, true, '')))[1]::text end

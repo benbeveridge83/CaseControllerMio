@@ -108,6 +108,20 @@ jobs:
             [ "$status" = "0" ] || break
           done
           if [ "$status" = "0" ]; then
+            # The step-2 verification file must not merely execute: its returned verdicts must be
+            # clean. Any unexpected (stop), ABSENT, DISABLED or MISSING verdict fails this step too,
+            # so a passing step means the objects, the row-level security, the privileges and the
+            # service-role grants are what the rollout plan claims.
+            psql -v ON_ERROR_STOP=1 -t -A -f docs/lawpay-step2-verification-readonly.sql > step2-verdicts.txt 2>>"$log" || { status=1; failing_file='docs/lawpay-step2-verification-readonly.sql'; }
+            if [ "$status" = "0" ]; then
+              if grep -E '\(stop\)|ABSENT|DISABLED|MISSING' step2-verdicts.txt >> "$log"; then
+                echo "The step-2 verification reported a verdict that must stop the rollout." | tee -a "$log"
+                status=1
+                failing_file='docs/lawpay-step2-verification-readonly.sql (unexpected verdict)'
+              else
+                echo "The step-2 verification verdicts are clean: no (stop), ABSENT, DISABLED or MISSING." | tee -a "$log"
+              fi
+            fi
             # Two overlapping sessions posting the same provider transaction: exactly one may post,
             # and a trust posting must leave exactly one ledger entry.
             psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &
