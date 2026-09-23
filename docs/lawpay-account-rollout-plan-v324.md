@@ -1,14 +1,14 @@
 # LawPay V324 production rollout plan
 
-**Step 2 is applied and verified in production** (project `vnnkxqpyndidnjbrbywz`). The two V323
-migrations are in place and the read-only verification grid met every acceptance criterion: four
-row-level-security-enabled tables, every required function with its expected signature, no browser-role
-privileges, the required `service_role` privileges, four empty new tables, and 59 unchanged LawPay
-transactions.
+**Steps 2 and 3 are applied and verified in production** (project `vnnkxqpyndidnjbrbywz`). The two V323
+migrations and the V324 re-resolution function are in place, and both read-only verification grids met
+every acceptance criterion: four row-level-security-enabled tables, every required function with its
+expected signature, no browser-role privileges, the required `service_role` privileges, four empty new
+tables, 59 unchanged LawPay transactions, no resolution history written, and no money moved.
 
-Steps 3-8 remain unstarted. Each is independently approvable and independently revertible, and none of
-them has been applied: no V324 migration, no Edge Function deployed, no mapping created, no transaction
-reclassified, no money moved, no balance changed.
+Steps 4-8 remain unstarted. Each is independently approvable and independently revertible, and none of
+them has been applied: no Edge Function deployed, no mapping created, no transaction reclassified, no
+money moved, no balance changed.
 
 ## Production state, as established by the read-only preflight (run, results in hand)
 
@@ -108,7 +108,7 @@ current mapping count.
 it would apply later migrations — including the V324 migration — in the same action and exceed the
 approval. Paste one reviewed file at a time in the SQL Editor.
 
-## Step 3 — apply the V324 migration
+## Step 3 — apply the V324 migration — **COMPLETED and verified in production**
 
 `supabase/migrations/20260923090000_lawpay_provider_account_resolution_v324.sql`.
 
@@ -126,28 +126,123 @@ approval. Paste one reviewed file at a time in the SQL Editor.
   non-zero table, or any other transaction count means stop and report the grid before continuing.
 * **Fidelity:** the file is 111 lines, blob ac58f6b0cfe2f48414a00005941a5ec267f2b545 at `bf0df99`, and begins `-- V324: recognizing the deposit account LawPay already supplied.`; its last statement is the `comment on function` describing what it may write.
 
+* **Applied:** the file pasted into the SQL Editor as its own query, exactly as below, and
+  `docs/lawpay-step3-verification-readonly.sql` then returned a clean grid: the function present with
+  `security definer=true` and a pinned `search_path`, no PUBLIC, anon or authenticated EXECUTE grant,
+  the `service_role` grant present, the V323 and V314 dependencies intact, all four V323 tables still
+  `0`, no transaction carrying a resolution history, and `lawpay_transactions` still at 59 — no
+  `(stop)`, `ABSENT`, `DISABLED` or `MISSING` verdict anywhere.
+
+  **How it was applied:** SQL Editor → New query → paste the whole file → Run. It is a function-only
+  migration: it creates no table and writes no row. Nothing in production calls the function yet.
+
 * **Rollback:** `drop function public.mio_reresolve_lawpay_accounts_v324(text,text,text);` — nothing
   depends on it, and it changes no data by itself.
 
-## Step 4 — deploy `lawpay-account-diagnostics` alone
+## Step 4 — deploy `lawpay-account-diagnostics` alone — **prepared, not deployed**
+
+Nothing is deployed by preparing this step. This is the **first** deployment of this function: no
+production code calls it yet (the panel control that will call it is step 8), it owns no table, bucket
+or secret, and it changes no SQL object. It answers one read-only question: which deposit account
+LawPay reported for each stored transaction, and which of those still has no mapping.
+
+### The artifact, and its fingerprint
+
+Two files are uploaded, because the function imports the shared module. Nothing else in the repository
+is part of this deployment, and because each Edge Function is bundled and deployed independently,
+deploying this one cannot change what `lawpay-webhook` or `lawpay-gateway` already run.
+
+| File | Lines | Bytes | SHA-256 | Git blob at `2084dd2` |
+| --- | --- | --- | --- | --- |
+| `supabase/functions/lawpay-account-diagnostics/index.ts` | 29 | 3539 | `70c8db1963c2159ee9a9e0ad16d2e41ae64d2d9e0a0fd397144cb4c09c2e9f5f` | `186c4f21f6e85d9f9fe3fb803d965d1ba7979c36` |
+| `supabase/functions/_shared/lawpay-accounts-v323.js` | 139 | 7956 | `0dc34f444f8adb800434f3b9a6e6064e3637a10b4d3b09f42c74bb5152e4e10d` | `41a62c56ed7997c597f31b19cc2d4186b2493eea` |
+
+Confirm both before deploying — either route must print exactly the hashes above:
+
+```
+Get-FileHash supabase/functions/lawpay-account-diagnostics/index.ts -Algorithm SHA256
+Get-FileHash supabase/functions/_shared/lawpay-accounts-v323.js -Algorithm SHA256
+git rev-parse HEAD:supabase/functions/lawpay-account-diagnostics/index.ts HEAD:supabase/functions/_shared/lawpay-accounts-v323.js
+```
+
+The dashboard shows the deployed source, so the function's `index.ts` can also be compared by eye. This
+is a first deployment: there is no previous revision to diff against.
+
+### Authorization and read-only review
+
+* **What it reads:** three `select` queries only — `lawpay_transactions`, `lawpay_events` and
+  `mio_lawpay_accounts` — through the service key held server-side. The source contains zero
+  `.insert(`, `.update(`, `.delete(`, `.upsert(` and `.rpc(` calls; the deploy workflow refuses to
+  publish it if that ever stops being true, and the unit suite asserts the same on every push.
+* **Who may call it:** a signed-in Mio session whose email is a finance administrator. A signed-in
+  non-administrator gets `403`; a missing or expired session gets `500` with the reason; anything other
+  than `POST` gets `405`. With `MIO_FINANCE_ADMIN_EMAILS` unset the allowlist falls back to
+  `ben@beveridgelawfirm.com`, so it is administrator-only either way. No new secret is required:
+  `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are injected by the platform.
+* **What it returns:** counts and masked values — `••••` plus the last four digits of any provider
+  account identifier, never a complete identifier, never a gateway event id, never a payer, client or
+  matter field. `redacted: true` is enforced by the shared builder it calls.
+* **JWT verification:** leave it at the platform default (on). Do not add `--no-verify-jwt`: the
+  function authenticates the caller itself as well.
+
+* **Changes:** creates one read-only, redacted, finance-admin-only Edge Function. It adds, alters and
+  removes nothing in the database, and it contains no action that records, corrects, matches, refunds or
+  maps anything.
+
+### The exact deployment command
+
+**Path A — CLI, from a machine with an access token** (create one at **Account → Access Tokens**, then
+`supabase login`, or export `SUPABASE_ACCESS_TOKEN`):
 
 ```
 supabase functions deploy lawpay-account-diagnostics --project-ref vnnkxqpyndidnjbrbywz
 ```
 
-The project reference must be confirmed against the dashboard first (**Project Settings → General →
-Reference ID** must read exactly `vnnkxqpyndidnjbrbywz`); an earlier command of mine contained a
-typo, and nothing is deployed until the dashboard confirms it.
+Deploy **this one function by name**. Never run `supabase functions deploy` with no name: that
+publishes every function at once and would exceed this approval.
 
-* **Changes:** replaces one read-only, redacted, finance-admin-only function. It contains no action
-  that records, corrects, matches or maps anything.
-* **Verify:** as a finance administrator, the answer must carry `version: 324`, `redacted: true`,
-  `mapping_table_available: true` and the masked report with `by_ingest_path`,
-  `identifier_supplied_mapped`, `identifier_supplied_unmapped`, `identifier_absent`; a
-  non-administrator must be refused with 403. In the app, the panel's **Run LawPay account
-  diagnostics** control shows it once the interface is live.
-* **Rollback:** redeploy the previous revision, or delete the function — the live V322 front end does
-  not call it, so removing it changes nothing for users.
+**Path B — GitHub Actions, no local tooling.**
+`.github/workflows/deploy-lawpay-account-diagnostics.yml` is prepared and is **dispatch-only** — it has
+no push trigger, so it cannot deploy anything by itself. Add the repository secret
+`SUPABASE_ACCESS_TOKEN`, then **Actions → Deploy lawpay-account-diagnostics → Run workflow**, typing
+`DEPLOY-lawpay-account-diagnostics` in the confirmation box (a mismatch skips the job rather than
+deploying). The run refuses to publish if the function ever contains a write call, prints the commit
+and both SHA-256 hashes before deploying, and prints the rollback command whatever the outcome.
+
+**Confirm the reference first:** **Project Settings → General → Reference ID** must read exactly
+`vnnkxqpyndidnjbrbywz`. An earlier command of mine contained a typo (`...ndndid...`); nothing is
+deployed until the dashboard confirms it.
+
+### Post-deployment verification
+
+1. **The database is untouched (read-only, one statement):** paste
+   `docs/lawpay-step4-verification-readonly.sql`. Every row must read clean — 59 transactions, all four
+   V323 tables still `0`, no resolution history, all five V314/V323/V324 functions present, no database
+   object referencing the deployed function, and no mapping row. Run it immediately after deploying and
+   compare with the step-3 grid; any `(stop)` means send that grid before continuing.
+2. **The function answers as an administrator.** Invoke it as `POST` with a signed-in session's bearer
+   token (take one from the app's own session in your browser's network tab — use a private window,
+   never commit it, and treat it as a credential). Expected: `ok: true`, `version: 324`,
+   `redacted: true`, `mapping_table_available: true` (the table exists since step 2), and the report
+   matching the recorded read-only snapshot — `transactions_reviewed` 59, identifiers supplied 57,
+   `identifier_absent` 2, the 41 supplied-but-unmapped records (32 `••••PvRA`, 9 `••••B88Q`), and
+   `by_provenance.configured_account` `0`. **Any other figure means stop** and send the response before
+   step 5.
+3. **A non-administrator is refused** with `403`, and a request with no token is refused: try both.
+4. **`403` for your own account** means the allowlist does not include you: check **Project Settings →
+   Edge Functions → Secrets → `MIO_FINANCE_ADMIN_EMAILS`**. No data risk; correct the secret and invoke
+   it again.
+
+### Rollback
+
+```
+supabase functions delete lawpay-account-diagnostics --project-ref vnnkxqpyndidnjbrbywz
+```
+
+or **Edge Functions → lawpay-account-diagnostics → ⋯ → Delete** in the dashboard. Because this is the
+first deployment and nothing calls it before step 8, deletion is complete and loses nothing — and it is
+safe at any moment, including mid-verification. The function's "last updated" time under **Edge
+Functions** is the only trace that this step ran.
 
 ## Step 5 — deploy `lawpay-gateway` (the financial actions)
 
@@ -222,7 +317,7 @@ same for `.....B88Q` with `operating`.
 | --- | --- | --- |
 | 2 V323 migration | drop the created objects (only if nothing has been written) | high once data exists — export first |
 | 3 V324 migration | drop one function | none |
-| 4 diagnostics function | redeploy the previous revision, or delete it | none |
+| 4 diagnostics function | delete it (first deployment; nothing calls it before step 8) | none |
 | 5 gateway | redeploy the previous revision | none |
 | 6 mappings | `is_active = false`, or delete the two new rows | none |
 | 7 re-resolution | restore from the appended history | none — the history is append-only |

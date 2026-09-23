@@ -109,6 +109,7 @@ jobs:
               docs/lawpay-step3-verification-readonly.sql \
               docs/lawpay-step6-verification-readonly.sql \
               docs/lawpay-step7-rollback-restore.sql
+              docs/lawpay-step4-verification-readonly.sql
           do
             echo "--- psql -v ON_ERROR_STOP=1 -f $file" | tee -a "$log"
             psql -v ON_ERROR_STOP=1 -f "$file" >> "$log" 2>&1 || { status=1; failing_file="$file"; }

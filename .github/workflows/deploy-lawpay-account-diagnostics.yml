@@ -1,0 +1,66 @@
+# Step 4 of the LawPay V324 rollout: deploy ONE Edge Function, on demand only.
+#
+# This workflow deploys nothing by itself. It has no push or pull_request trigger, so it runs only when
+# an operator starts it from the Actions tab, types the confirmation string, and the repository secret
+# SUPABASE_ACCESS_TOKEN exists (Project Settings, then Account, then Access Tokens). It deploys
+# lawpay-account-diagnostics and nothing else, and it prints the commit and the SHA-256 of both uploaded
+# files before it calls the CLI, so the run log records what went out even if the deployment fails.
+name: Deploy lawpay-account-diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DEPLOY-lawpay-account-diagnostics to run step 4 of the LawPay V324 rollout
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lawpay-account-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # A skipped job, not a failed deploy, when the confirmation does not match.
+    if: ${{ inputs.confirm == 'DEPLOY-lawpay-account-diagnostics' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the access token secret
+        run: |
+          if [ -z "${{ secrets.SUPABASE_ACCESS_TOKEN }}" ]; then
+            echo "::error::Add the repository secret SUPABASE_ACCESS_TOKEN before deploying step 4; nothing was deployed."
+            exit 1
+          fi
+
+      - name: Refuse to deploy a function that can write
+        run: |
+          if grep -nE '\.(insert|update|delete|upsert|rpc)\(' supabase/functions/lawpay-account-diagnostics/index.ts; then
+            echo "::error::the diagnostics function must contain no write or rpc call; refusing to deploy."
+            exit 1
+          fi
+          echo "The diagnostics function contains no insert, update, delete, upsert or rpc call."
+
+      - name: Print the fingerprint of what is about to be deployed
+        run: |
+          echo "commit: $(git rev-parse HEAD)"
+          sha256sum supabase/functions/lawpay-account-diagnostics/index.ts supabase/functions/_shared/lawpay-accounts-v323.js
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy lawpay-account-diagnostics only
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions deploy lawpay-account-diagnostics --project-ref vnnkxqpyndidnjbrbywz
+
+      - name: State the rollback, whatever the outcome
+        if: always()
+        run: |
+          echo "Rollback: supabase functions delete lawpay-account-diagnostics --project-ref vnnkxqpyndidnjbrbywz"
+          echo "or Edge Functions -> lawpay-account-diagnostics -> Delete in the dashboard."
