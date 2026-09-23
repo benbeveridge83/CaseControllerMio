@@ -95,7 +95,7 @@ jobs:
           # authenticated are created without any grant so the verifier's denial checks stay
           # meaningful. Confirming the production grants themselves is what the verifier does when it
           # is run against production, which is where a "(stop)" on service_role would be acted on.
-          psql -v ON_ERROR_STOP=1 -c 'do $$ begin if not exists(select 1 from pg_roles where rolname = ''anon'') then create role anon; end if; if not exists(select 1 from pg_roles where rolname = ''authenticated'') then create role authenticated; end if; if not exists(select 1 from pg_roles where rolname = ''service_role'') then create role service_role; end if; end $$;' >> "$log" 2>&1 || { status=1; failing_file='fixture prerequisites (roles)'; }
+          psql -v ON_ERROR_STOP=1 -c "do \$\$ begin if not exists(select 1 from pg_roles where rolname = 'anon') then create role anon; end if; if not exists(select 1 from pg_roles where rolname = 'authenticated') then create role authenticated; end if; if not exists(select 1 from pg_roles where rolname = 'service_role') then create role service_role; end if; end \$\$;" >> "$log" 2>&1 || { status=1; failing_file='fixture prerequisites (roles)'; }
           psql -v ON_ERROR_STOP=1 -c 'grant all on all tables in schema public to service_role; grant all on all sequences in schema public to service_role; grant execute on all functions in schema public to service_role;' >> "$log" 2>&1 || { status=1; failing_file='fixture prerequisites (service_role grants)'; }
           for file in \
             tests/sql/lawpay-classification-v323-schema.sql \
