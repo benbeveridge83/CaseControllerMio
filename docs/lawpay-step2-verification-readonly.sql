@@ -1,8 +1,9 @@
 -- Step-2 verification, READ-ONLY. Run straight after the two V323 migrations, then stop.
--- Confirms: the four tables exist with row-level security on; every mapping, classification, refund
--- and V314 ingest function exists with its exact signature; anon and authenticated hold nothing while
--- service_role holds everything; and all four new tables are empty while lawpay_transactions is
--- untouched. Only SELECTs, read-only CTEs and catalog reads. It writes nothing.
+-- Confirms: the four tables exist with row-level security on; PUBLIC, anon and authenticated hold
+-- none of SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER on any of them; service_role
+-- holds the SELECT it needs (anything else it holds is reported, not required); every mapping,
+-- classification, refund and V314 ingest function exists with its exact signature and is service-role
+-- only; and all four new tables are empty while lawpay_transactions is untouched. Only SELECTs, read-only CTEs and catalog reads. It writes nothing.
 
 with lines as (
   select 1 as ord, 'A. tables' as section, 'public.mio_lawpay_accounts' as item, coalesce(to_regclass('public.mio_lawpay_accounts')::text, 'ABSENT') as detail
@@ -30,20 +31,42 @@ with lines as (
          coalesce((select string_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '; ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname like '%lawpay%'), 'none')
-  union all select 11, 'C. privileges', 'tables: anon / authenticated / service_role',
-         case when to_regclass('public.mio_lawpay_accounts') is null then 'cannot check: a table is missing'
-              else coalesce((select string_agg(t.obj || '  anon=' || has_table_privilege('anon', t.obj, 'SELECT')::text
-                                               || ' authenticated=' || has_table_privilege('authenticated', t.obj, 'SELECT')::text
-                                               || ' service_role=' || has_table_privilege('service_role', t.obj, 'SELECT')::text, ' | ' order by t.obj)
+  union all select 11, 'C. privileges',
+         'tables: PUBLIC, anon and authenticated must hold NONE of SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER',
+         case when to_regclass('public.mio_lawpay_accounts') is null then 'cannot check: a table is missing (stop)'
+              else coalesce((select string_agg(t.obj || ' -> ' || case when coalesce(v.held,'') = '' then 'none held (good)' else v.held || ' GRANTED (stop)' end, ' | ' order by t.obj)
+                             from (values ('public.mio_lawpay_accounts'),('public.mio_lawpay_classifications'),
+                                          ('public.mio_lawpay_ledger_entries'),('public.mio_lawpay_refund_resolutions')) t(obj)
+                             left join lateral (
+                               select string_agg(distinct a.privilege_type || ' via ' || case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end, ', ' order by a.privilege_type || ' via ' || case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end) as held
+                               from pg_class c
+                               join pg_namespace n on n.oid = c.relnamespace
+                               cross join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+                               where n.nspname = split_part(t.obj, '.', 1)
+                                 and c.relname = split_part(t.obj, '.', 2)
+                                 and (a.grantee = 0 or pg_get_userbyid(a.grantee) in ('anon', 'authenticated'))
+                             ) v on true), 'none found') end
+  union all select 12, 'C. privileges',
+         'tables: service_role must hold SELECT; any other privilege it holds is reported, not required',
+         case when to_regclass('public.mio_lawpay_accounts') is null then 'cannot check: a table is missing (stop)'
+              else coalesce((select string_agg(t.obj || '  select=' || has_table_privilege('service_role', t.obj, 'SELECT')::text
+                                               || case when has_table_privilege('service_role', t.obj, 'SELECT') then '' else ' (stop)' end
+                                               || coalesce('  also holds: ' || (select string_agg(a.privilege_type, ', ' order by a.privilege_type)
+                                                                                from pg_class c
+                                                                                join pg_namespace n on n.oid = c.relnamespace
+                                                                                cross join lateral aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+                                                                                where n.nspname = 'public' and c.relname = split_part(t.obj, '.', 2)
+                                                                                  and pg_get_userbyid(a.grantee) = 'service_role' and a.privilege_type <> 'SELECT'), '')
+                                               , ' | ' order by t.obj)
                              from (values ('public.mio_lawpay_accounts'),('public.mio_lawpay_classifications'),
                                           ('public.mio_lawpay_ledger_entries'),('public.mio_lawpay_refund_resolutions')) t(obj)), 'none') end
-  union all select 12, 'C. privileges', 'V323 functions: any PUBLIC, anon or authenticated grant?',
+  union all select 13, 'C. privileges', 'V323 functions: any PUBLIC, anon or authenticated EXECUTE grant?',
          coalesce((select string_agg(p.proname || '=' || case when p.proacl is null then 'DEFAULT (stop)'
                                                               when exists (select 1 from unnest(p.proacl) a where a::text like '=%' or a::text like 'anon=%' or a::text like 'authenticated=%') then 'GRANTED (stop)'
                                                               else 'none' end, ', ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname like '%lawpay%v32%'), 'no V323 function found')
-  union all select 13, 'C. privileges', 'V323 functions: service_role execute grant?',
+  union all select 14, 'C. privileges', 'V323 functions: service_role EXECUTE grant (required)?',
          coalesce((select string_agg(p.proname || '=' || case when exists (select 1 from unnest(p.proacl) a where a::text like 'service_role=%') then 'yes' else 'MISSING (stop)' end, ', ' order by p.proname)
                    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                    where n.nspname = 'public' and p.proname like '%lawpay%v32%'), 'no V323 function found')
