@@ -59,7 +59,7 @@ await context.route('**/*', async (route) => {
     if (body.action === 'review') return route.fulfill(json({ ok: true, version: 324, transactions: transactions.map(asGatewaySees), classifications: [], ledger_entries: [], accounts: mappingRows, mapping_table_available: true, refund_resolutions_available: true, refund_resolutions: [] }))
     return route.fulfill(json({ ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }))
   }
-  if (table === 'lawpay-account-diagnostics') return route.fulfill(json({ ok: true, version: 324, redacted: true, diagnostics: { transactions_reviewed: 4, missing_provider_account_id: 1, unmapped_provider_accounts: [{ account_last4: '••••0246', transactions: 1 }] } }))
+  if (table === 'lawpay-account-diagnostics') return route.fulfill(json({ ok: true, version: 324, redacted: true, mapping_table_available: true, diagnostics: { transactions_reviewed: 4, by_ingest_path: { webhook: 1, poll: 3 }, provider_account_id_types: { string: 3, number: 1, absent: 0 }, identifier_supplied_mapped: 2, identifier_supplied_unmapped: 1, identifier_absent: 1, missing_provider_account_id: 1, distinct_provider_accounts: { '••••1075': 1, '••••1077': 1, '••••0246': 1 }, supplied_mapped_provider_accounts: [{ account_last4: '••••1075', transactions: 1 }, { account_last4: '••••1077', transactions: 1 }], unmapped_provider_accounts: [{ account_last4: '••••0246', transactions: 1 }], configured_accounts: [{ account_key: 'echeck_trust', provider_account_last4: '••••1075', bank_account_id: 'plaid-trust', source: 'registry' }], mapping_problems: [], mapping_duplicates: [], provider_field_names_present: ['account_id'], configured_account_count: 2 } }))
   if (table === 'mio_cloud_state_read_chunks_v297') return route.fulfill(json([]))
   if (table === 'matters') return route.fulfill(json([matter]))
   if (table === 'clients') return route.fulfill(json([client]))
@@ -94,6 +94,23 @@ try {
   assert.match(unmapped, /^Unmapped LawPay account ending ••••0246 · LawPay named this deposit account and Mio has no mapping for it yet\./, 'a supplied identifier with no mapping says exactly that, then says what fixes it')
   assert.match(notSupplied, /^Account not supplied by LawPay — manual verification required · LawPay supplied no deposit account/, 'a missing identifier is a different message with a different remedy')
   assert.notEqual(unmapped, notSupplied, 'the two unresolved conditions are never described as the same problem')
+  // The administrator-only, read-only diagnostics control, and the report it prints: masked counts
+  // that separate supplied-and-mapped from supplied-but-unmapped from absent, with identifier types,
+  // ingest path, masked last fours, configured mapping count and mapping problems — and nothing else.
+  await dashboard.getByTestId('lawpay-run-diagnostics').click()
+  const report = dashboard.getByTestId('lawpay-diagnostics-report')
+  await report.waitFor({ state: 'visible', timeout: 20000 })
+  const reportText = await report.innerText()
+  assert.match(reportText, /"redacted": true/)
+  assert.match(reportText, /"by_ingest_path"/)
+  assert.match(reportText, /"identifier_supplied_mapped": 2/)
+  assert.match(reportText, /"identifier_supplied_unmapped": 1/)
+  assert.match(reportText, /"identifier_absent": 1/)
+  assert.match(reportText, /"provider_account_id_types"/)
+  assert.match(reportText, /account_last4/)
+  assert.match(reportText, /"configured_account_count": 2/)
+  assert.match(reportText, /"mapping_problems": \[\]/)
+  assert.doesNotMatch(reportText, /payer|email|reference|amount_cents|Direct Payer|91075/, 'the report carries no payer, amount, email, reference, payload content or full identifier')
   await dashboard.screenshot({ path: 'finance-test-results/lawpay-account-resolution-v324.png', fullPage: false })
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ ok: true, version: 324, cases: 4, labels: { trust, operating, unmapped, not_supplied: notSupplied }, by_number: true, financial_writes: 0, provider_calls: 0 }, null, 2))

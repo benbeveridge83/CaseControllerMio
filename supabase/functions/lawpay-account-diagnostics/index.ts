@@ -19,9 +19,11 @@ Deno.serve(async(req:Request)=>{
     const columns='gateway_transaction_id,account_id,account_key,amount_refunded_cents,transaction_type,status,synced_at,raw'
     const txs=await db.from('lawpay_transactions').select(columns).order('occurred_at',{ascending:false}).limit(limit)
     if(txs.error)throw txs.error
+    // The path a transaction arrived by is recorded on its events; only counts are returned.
+    const events=await db.from('lawpay_events').select('gateway_transaction_id,received_via').order('occurred_at',{ascending:false}).limit(limit)
     const mapping=await db.from('mio_lawpay_accounts').select('provider_account_id,account_key,bank_account_id,bank_role,label,is_active')
     const registry=accountRegistry({rows:mapping.error?[]:(mapping.data||[]),environment:accounts()})
-    return reply({ok:true,version:323,redacted:true,mapping_table_available:!mapping.error,
-      diagnostics:buildAccountDiagnostics({transactions:txs.data||[],registry})})
+    return reply({ok:true,version:324,redacted:true,mapping_table_available:!mapping.error,
+      diagnostics:buildAccountDiagnostics({transactions:txs.data||[],registry,events:events.error?[]:(events.data||[])})})
   } catch(error){console.error('lawpay diagnostics failed',error instanceof Error?error.message:String(error));return reply({ok:false,error:error instanceof Error?error.message:String(error)},500)}
 })

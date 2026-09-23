@@ -122,8 +122,21 @@ export function resolveTransactionAccount({ transaction = {}, registry = account
 // Redacted, administrator-facing diagnostics. No payer, amount, email, reference or full
 // account identifier is ever returned: provider account IDs are truncated to their last
 // four characters and raw payload fields are reported by name only.
-export function accountDiagnostics({ transactions = [], registry = accountRegistry() } = {}) {
-  const provenance = {}, accountLast4 = {}, idTypes = { string: 0, number: 0, absent: 0 }, unmapped = new Map(), fieldNames = new Set()
+// How each transaction reached Mio: a provider webhook, or a scheduled/page scan. Only counts are
+// returned, and only for transactions in the reviewed set. No identifier, payload or payer is read.
+function ingestPathCounts({ transactions = [], events = [] } = {}) {
+  const known = new Set((transactions || []).map((transaction) => accountIdValue(transaction?.gateway_transaction_id)))
+  const counts = {}
+  for (const event of events || []) {
+    if (!known.has(accountIdValue(event?.gateway_transaction_id))) continue
+    const path = accountIdValue(event?.received_via) || 'unknown'
+    counts[path] = (counts[path] || 0) + 1
+  }
+  return counts
+}
+
+export function accountDiagnostics({ transactions = [], registry = accountRegistry(), events = [] } = {}) {
+  const provenance = {}, accountLast4 = {}, idTypes = { string: 0, number: 0, absent: 0 }, unmapped = new Map(), mapped = new Map(), fieldNames = new Set()
   let missingProviderAccountId = 0
   for (const transaction of transactions || []) {
     const raw = transaction?.raw && typeof transaction.raw === 'object' ? transaction.raw : {}
@@ -139,6 +152,7 @@ export function accountDiagnostics({ transactions = [], registry = accountRegist
       const masked = maskAccountId(id)
       accountLast4[masked] = (accountLast4[masked] || 0) + 1
       if (!registry.matchProviderId(id)) unmapped.set(masked, (unmapped.get(masked) || 0) + 1)
+      else mapped.set(masked, (mapped.get(masked) || 0) + 1)
     }
     for (const key of Object.keys(raw)) if (/refund|reversal|original|parent|settle|batch|fee|account/i.test(key)) fieldNames.add(key)
   }
@@ -146,6 +160,11 @@ export function accountDiagnostics({ transactions = [], registry = accountRegist
     transactions_reviewed: (transactions || []).length,
     by_provenance: provenance,
     provider_account_id_types: idTypes,
+    by_ingest_path: ingestPathCounts({ transactions, events }),
+    identifier_supplied_mapped: [...mapped.values()].reduce((total, count) => total + count, 0),
+    identifier_supplied_unmapped: [...unmapped.values()].reduce((total, count) => total + count, 0),
+    identifier_absent: missingProviderAccountId,
+    supplied_mapped_provider_accounts: [...mapped.entries()].map(([last4, count]) => ({ account_last4: last4, transactions: count })),
     missing_provider_account_id: missingProviderAccountId,
     distinct_provider_accounts: accountLast4,
     unmapped_provider_accounts: [...unmapped.entries()].map(([last4, count]) => ({ account_last4: last4, transactions: count })),
