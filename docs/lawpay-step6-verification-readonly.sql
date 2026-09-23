@@ -1,5 +1,9 @@
 -- Step-6 verification, READ-ONLY. Run after creating the two mappings, before the optional step 7.
 --
+-- Verified by CI: this file is executed on the isolated PostgreSQL database by
+-- .github/workflows/finance-review-v314.yml, after the V323 and V324 migrations, so it must parse and
+-- run as well as being read-only.
+--
 -- Confirms: exactly two mapping rows exist, both active, with the expected masked identifiers and the
 -- proposed Mio account keys; no transaction carries a resolution history yet, which is the proof that
 -- creating a mapping wrote nothing to lawpay_transactions; the transaction count and the number of
@@ -14,7 +18,7 @@ with lines as (
                                      || case when a.is_active then '' else ' (stop)' end, ' | ' order by a.provider_account_id)
                    from public.mio_lawpay_accounts a), 'no mapping rows (stop)') as verdict
   union all select 2, 'A. mappings', 'count, and the two expected masked identifiers',
-         coalesce((select count(*)::text || ' row(s); masked ids: ' || coalesce(string_agg('.....' || right(a.provider_account_id, 4), ', ' order by a.provider_account_id), 'none')), '0') 
+         (select count(*)::text || ' row(s); masked ids: ' || coalesce(string_agg('.....' || right(a.provider_account_id, 4), ', ' order by a.provider_account_id), 'none') from public.mio_lawpay_accounts a)
          || case when (select count(*) from public.mio_lawpay_accounts) = 2
                   and (select count(*) from public.mio_lawpay_accounts where right(provider_account_id, 4) in ('PvRA', 'B88Q')) = 2
                   and (select count(*) from public.mio_lawpay_accounts where is_active) = 2
