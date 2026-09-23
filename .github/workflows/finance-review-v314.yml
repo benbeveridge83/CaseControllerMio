@@ -131,6 +131,71 @@ jobs:
                 echo "The step-2 verification verdicts are clean: no (stop), ABSENT, DISABLED or MISSING." | tee -a "$log"
               fi
             fi
+            # V324: a mapping change must never be raced by a re-resolution. Session B deactivates the
+            # mapping and holds that row lock; session A's re-resolution waits on the lock, then must
+            # refuse and write nothing, so no transaction can be named under a stale mapping.
+            psql -q -c "delete from public.lawpay_transactions where account_id='v324-race-acct';" -c "delete from public.mio_lawpay_accounts where provider_account_id='v324-race-acct';" >> "$log" 2>&1 || { status=1; failing_file='V324 race fixture reset'; }
+            psql -q -c "insert into public.lawpay_transactions(gateway_transaction_id,transaction_type,status,account_id,account_key,amount_cents,amount_refunded_cents,currency,occurred_at,reference,payer_name,payment_method_type,last_four,raw) values ('v324-race-a1','CHARGE','COMPLETED','v324-race-acct','',42000,0,'USD','2026-09-20T10:00:00Z','v324-race-r1','V324 Race Payer','eCheck','4242','{}'),('v324-race-a2','CHARGE','COMPLETED','v324-race-acct','',42000,0,'USD','2026-09-21T10:00:00Z','v324-race-r2','V324 Race Payer','eCheck','4242','{}'),('v324-race-a3','CHARGE','COMPLETED','v324-race-acct','',42000,0,'USD','2026-09-22T10:00:00Z','v324-race-r3','V324 Race Payer','eCheck','4242','{}') on conflict (gateway_transaction_id) do nothing;" >> "$log" 2>&1 || { status=1; failing_file='V324 race fixture'; }
+            psql -q -t -A -c "select public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-race-acct','account_key','trust','bank_account_id','','bank_role','trust','label','LawPay trust settlement account','last4','Race','is_active',true),'race-setup@firm');" >> "$log" 2>&1 || { status=1; failing_file='V324 race mapping'; }
+            if [ "$status" = "0" ]; then
+              # Phase 1: session B deactivates the mapping and holds the row lock while it stays open.
+              psql -t -A -c "begin; select public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-race-acct','account_key','trust','is_active',false),'race-session-b@firm'); select pg_advisory_xact_lock(324324); select pg_sleep(8); commit;" > race-b1.txt 2>&1 &
+              race_b1=$!
+              announced=0
+              for i in $(seq 1 40); do
+                if [ "$(psql -t -A -c "select count(*) from pg_locks where locktype='advisory' and granted and objid=324324;")" = "1" ]; then announced=1; break; fi
+                sleep 0.25
+              done
+              [ "$announced" = "1" ] || { echo "race: session B never held its open transaction" >> "$log"; status=1; failing_file='V324 concurrency announce'; }
+              psql -t -A -c "select public.mio_reresolve_lawpay_accounts_v324('v324-race-acct','trust','race-session-a@firm');" > race-a1.txt 2>&1 &
+              race_a1=$!
+              waited=0
+              for i in $(seq 1 40); do
+                if [ "$(psql -t -A -c "select count(*) from pg_locks where not granted and locktype='transactionid';")" != "0" ]; then waited=1; break; fi
+                sleep 0.25
+              done
+              [ "$waited" = "1" ] || { echo "race: the re-resolution never waited on the mapping row lock" >> "$log"; status=1; failing_file='V324 concurrency wait'; }
+              wait "$race_a1" || status=1
+              wait "$race_b1" || status=1
+              cat race-b1.txt race-a1.txt | tee -a "$log"
+              grep -q '"ok": false' race-a1.txt || { echo "race: a re-resolution must refuse a mapping deactivated before it locked" >> "$log"; status=1; failing_file='V324 concurrency refusal'; }
+              grep -q '"updated": 0' race-a1.txt || { echo "race: a refused re-resolution must update zero rows" >> "$log"; status=1; failing_file='V324 concurrency refusal'; }
+              active_after="$(psql -t -A -c "select count(*) from public.mio_lawpay_accounts where provider_account_id='v324-race-acct' and is_active;")"
+              named_after="$(psql -t -A -c "select count(*) from public.lawpay_transactions where account_id='v324-race-acct' and coalesce(account_key,'') <> '';")"
+              echo "race: phase 1 active_mappings=$active_after named_transactions=$named_after" | tee -a "$log"
+              [ "$active_after" = "0" ] || { echo "session B's deactivation must have committed before the refusal" >> "$log"; status=1; failing_file='V324 concurrency deactivation'; }
+              [ "$named_after" = "0" ] || { echo "a refused re-resolution must leave every row unresolved" >> "$log"; status=1; failing_file='V324 concurrency refusal'; }
+              psql -t -A -c "select 'V324 concurrency: a stale mapping is refused and nothing is written' as result;" | tee -a "$log"
+            fi
+            if [ "$status" = "0" ]; then
+              # Phase 2: session A resolves inside an open transaction, so the row lock is held through
+              # the update; session B's re-save of the same active mapping must wait for it to commit.
+              psql -q -t -A -c "select public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-race-acct','account_key','trust','bank_account_id','','bank_role','trust','label','LawPay trust settlement account','last4','Race','is_active',true),'race-setup@firm');" >> "$log" 2>&1 || { status=1; failing_file='V324 race reactivation'; }
+              psql -t -A -c "begin; select pg_advisory_xact_lock(324325); select public.mio_reresolve_lawpay_accounts_v324('v324-race-acct','trust','race-session-a@firm'); select pg_sleep(8); commit;" > race-a2.txt 2>&1 &
+              race_a2=$!
+              announced=0
+              for i in $(seq 1 40); do
+                if [ "$(psql -t -A -c "select count(*) from pg_locks where locktype='advisory' and granted and objid=324325;")" = "1" ]; then announced=1; break; fi
+                sleep 0.25
+              done
+              [ "$announced" = "1" ] || { echo "race: session A never held its open transaction" >> "$log"; status=1; failing_file='V324 concurrency announce'; }
+              psql -t -A -c "begin; select public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-race-acct','account_key','trust','bank_account_id','','bank_role','trust','label','LawPay trust settlement account','last4','Race','is_active',true),'race-session-b@firm'); select pg_sleep(8); commit;" > race-b2.txt 2>&1 &
+              race_b2=$!
+              waited=0
+              for i in $(seq 1 40); do
+                if [ "$(psql -t -A -c "select count(*) from pg_locks where not granted and locktype='transactionid';")" != "0" ]; then waited=1; break; fi
+                sleep 0.25
+              done
+              [ "$waited" = "1" ] || { echo "race: the mapping change never waited on the row lock held through the update" >> "$log"; status=1; failing_file='V324 concurrency wait'; }
+              wait "$race_a2" || status=1
+              wait "$race_b2" || status=1
+              cat race-a2.txt race-b2.txt | tee -a "$log"
+              grep -q '"ok": true' race-a2.txt || { echo "race: the authorized re-resolution must succeed" >> "$log"; status=1; failing_file='V324 concurrency authorized write'; }
+              grep -q '"updated": 3' race-a2.txt || { echo "race: the authorized re-resolution must name the three race rows" >> "$log"; status=1; failing_file='V324 concurrency authorized write'; }
+              psql -v ON_ERROR_STOP=1 -f tests/sql/lawpay-provider-account-resolution-v324-concurrency.sql >> "$log" 2>&1 || { status=1; failing_file='tests/sql/lawpay-provider-account-resolution-v324-concurrency.sql'; }
+              psql -t -A -c "select 'V324 concurrency: the mapping change waits for the lock held through the update' as result;" | tee -a "$log"
+            fi
+
             # Two overlapping sessions posting the same provider transaction: exactly one may post,
             # and a trust posting must leave exactly one ledger entry.
             psql -t -A -c "begin; select public.mio_post_lawpay_classification_v323(jsonb_build_object('gateway_transaction_id','lawpay-refunded-charge','ownership','matter','matter_id','matter-south','actual_account_key','trust','account_source','reported_by_lawpay','category','trust_deposit'),'ben@firm')->>'status'; select pg_sleep(1); commit;" > race-a.txt &

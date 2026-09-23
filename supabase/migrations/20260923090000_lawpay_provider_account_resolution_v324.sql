@@ -23,6 +23,7 @@ declare
   v_unchanged integer := 0;
   v_masked text := '';
   v_actor text := nullif(btrim(coalesce(p_actor, '')), '');
+  v_mapping_key text;
 begin
   if coalesce(p_provider_account_id, '') = '' then
     return jsonb_build_object('ok', false, 'error', 'A provider account identifier is required.', 'updated', 0, 'unchanged', 0);
@@ -37,14 +38,20 @@ begin
   end if;
   v_masked := case when length(p_provider_account_id) > 4 then '••••' || right(p_provider_account_id, 4) else p_provider_account_id end;
 
-  -- The administrator mapping is the only authority for naming an account, so an exact and active row
-  -- must exist for this provider identifier AND this Mio account key. A missing mapping, an inactive
+  -- The administrator mapping is the only authority for naming an account, so the matching row is
+  -- selected FOR SHARE and its lock is held until this transaction ends - through the update below. A
+  -- concurrent mapping change (a deactivation, a re-point) therefore either commits before this
+  -- selection, where it is re-checked and refused, or waits until this transaction finishes: no write
+  -- can name an account under a mapping that had stopped authorising it. A missing mapping, an inactive
   -- mapping, and a mapping that points at a different account are each refused, updating zero rows and
   -- writing no history.
-  if not exists (select 1 from public.mio_lawpay_accounts a
-                 where a.provider_account_id = p_provider_account_id
-                   and a.account_key = p_account_key
-                   and a.is_active) then
+  select a.account_key into v_mapping_key
+  from public.mio_lawpay_accounts a
+  where a.provider_account_id = p_provider_account_id
+    and a.account_key = p_account_key
+    and a.is_active
+  for share;
+  if not found then
     return jsonb_build_object(
       'ok', false,
       'error', case when exists (select 1 from public.mio_lawpay_accounts a
@@ -88,6 +95,7 @@ begin
     'version', 324,
     'provider_account_last4', v_masked,
     'account_key', p_account_key,
+    'mapping_account_key', v_mapping_key,
     'updated', v_updated,
     'unchanged', v_unchanged,
     'posts_money', false,

@@ -30,7 +30,12 @@ test('the re-resolution function writes only the account classification, its pro
 test('the re-resolution refuses unless a named actor and an exactly matching active mapping both exist', () => {
   // The mapping is the only authority for naming an account, so the function must look for an active
   // row matching the provider identifier AND the Mio account key, and refuse everything else.
-  assert.match(body, /if not exists \(select 1 from public\.mio_lawpay_accounts a\s*\n\s*where a\.provider_account_id = p_provider_account_id\s*\n\s*and a\.account_key = p_account_key\s*\n\s*and a\.is_active\)/)
+  // The matching row is locked, not merely read: the lock must outlive the check and cover the update,
+  // so a concurrent mapping change cannot be raced by a stale mapping.
+  assert.match(body, /select a\.account_key into v_mapping_key\s*\n\s*from public\.mio_lawpay_accounts a\s*\n\s*where a\.provider_account_id = p_provider_account_id\s*\n\s*and a\.account_key = p_account_key\s*\n\s*and a\.is_active\s*\n\s*for share;/)
+  assert.match(body, /if not found then/)
+  assert.match(body, /'mapping_account_key', v_mapping_key,/, 'the write reports the audited, locked mapping key')
+  assert.doesNotMatch(body, /if not exists \(select 1 from public\.mio_lawpay_accounts/, 'the authority check must lock the row rather than read it unlocked')
   assert.match(body, /'ok', false,/)
   assert.match(body, /points at a different Mio account, so nothing was written/)
   assert.match(body, /No active mapping exists for this provider account and Mio account, so nothing was written/)
