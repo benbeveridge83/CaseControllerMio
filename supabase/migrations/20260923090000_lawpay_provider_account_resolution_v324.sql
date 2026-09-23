@@ -33,9 +33,22 @@ begin
   from public.lawpay_transactions t
   where t.account_id = p_provider_account_id and coalesce(t.account_key, '') = p_account_key;
 
+  -- The previous account classification and provenance are appended to the row's own history before
+  -- they are replaced, so this update is reversible from the data alone and the audit trail keeps
+  -- both sides of the change.
   update public.lawpay_transactions t
   set account_key = p_account_key,
-      raw = jsonb_set(coalesce(t.raw, '{}'::jsonb), '{mio_account_key_source}', to_jsonb('configured_account'::text), true)
+      raw = jsonb_set(
+              jsonb_set(coalesce(t.raw, '{}'::jsonb), '{mio_account_key_source}', to_jsonb('configured_account'::text), true),
+              '{mio_account_resolution_history}',
+              coalesce(t.raw->'mio_account_resolution_history', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+                'at', now(),
+                'actor', coalesce(p_actor, ''),
+                'from_account_key', coalesce(t.account_key, ''),
+                'from_source', coalesce(t.raw->>'mio_account_key_source', ''),
+                'to_account_key', p_account_key,
+                'reason', 'provider account mapping')),
+              true)
   where t.account_id = p_provider_account_id and coalesce(t.account_key, '') <> p_account_key;
   get diagnostics v_updated = row_count;
 
