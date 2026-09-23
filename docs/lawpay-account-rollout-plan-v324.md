@@ -69,8 +69,12 @@ the existing refund-relationship decision before any money is affected.
   `mio_lawpay_ledger_entries`, `mio_lawpay_refund_resolutions`, and the functions that validate,
   save, post, correct, match and map. It revokes them from `public, anon, authenticated` and grants
   them to `service_role` only.
-* **Verify:** re-run the preflight; rows 10-16 must now read `present`, and row 17 must read `0`
-  mapping rows.
+* **Verify:** run `docs/lawpay-step2-verification-readonly.sql` (read-only, one statement). It must
+  report: all four tables present with row-level security `enabled`; no SELECT, INSERT, UPDATE,
+  DELETE, TRUNCATE, REFERENCES or TRIGGER held by PUBLIC, anon or authenticated; `select=true` for
+  service_role; the mapping, classification, refund and V314 ingest functions present with their exact
+  signatures and service-role only; and `0` rows in all four new tables with `lawpay_transactions`
+  unchanged. Any `(stop)` anywhere means stop and send that grid before continuing.
 * **Rollback:** it is additive. If nothing has been written yet, drop the functions and then the
   tables (reverse order), reviewed first. Once mappings or classifications exist, dropping the
   tables destroys them — so export them read-only first (the row-count and column queries above).
