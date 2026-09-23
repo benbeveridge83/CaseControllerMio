@@ -27,6 +27,23 @@ test('the re-resolution function writes only the account classification, its pro
   assert.doesNotMatch(body, /\bdelete\b|\btruncate\b/, 'it removes nothing')
 })
 
+test('the re-resolution refuses unless a named actor and an exactly matching active mapping both exist', () => {
+  // The mapping is the only authority for naming an account, so the function must look for an active
+  // row matching the provider identifier AND the Mio account key, and refuse everything else.
+  assert.match(body, /if not exists \(select 1 from public\.mio_lawpay_accounts a\s*\n\s*where a\.provider_account_id = p_provider_account_id\s*\n\s*and a\.account_key = p_account_key\s*\n\s*and a\.is_active\)/)
+  assert.match(body, /'ok', false,/)
+  assert.match(body, /points at a different Mio account, so nothing was written/)
+  assert.match(body, /No active mapping exists for this provider account and Mio account, so nothing was written/)
+  assert.match(body, /'updated', 0,/, 'a refusal reports zero updated rows')
+  // No audit history may be written for an anonymous caller.
+  assert.match(body, /v_actor text := nullif\(btrim\(coalesce\(p_actor, ''\)\), ''\)/)
+  assert.match(body, /if v_actor is null then/)
+  assert.match(body, /Mio could not tell who is re-resolving these transactions, so nothing was written/)
+  // The history entry records the actor that was checked, not the raw parameter.
+  assert.match(body, /'actor', v_actor,/)
+  assert.doesNotMatch(body, /'actor', coalesce\(p_actor, ''\)/)
+})
+
 test('the mapping cannot be created by this migration, and the function is service-role only', () => {
   assert.doesNotMatch(body, /insert into public\.mio_lawpay_accounts/, 'this migration creates no mapping')
   assert.doesNotMatch(body, /insert into public\.lawpay_transactions/, 'this migration creates no transaction')

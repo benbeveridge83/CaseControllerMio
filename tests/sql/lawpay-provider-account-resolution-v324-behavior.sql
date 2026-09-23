@@ -49,6 +49,32 @@ begin
     into v_before
   from public.lawpay_transactions where gateway_transaction_id like v_prefix;
 
+  -- Before any mapping exists the function must refuse, and refuse without touching anything.
+  v_unknown := public.mio_reresolve_lawpay_accounts_v324('v324-suite-acct-A','trust',v_actor);
+  if (v_unknown->>'ok')::boolean is not false then raise exception 're-resolution without an active mapping must be refused, got %', v_unknown; end if;
+  if (v_unknown->>'updated')::integer <> 0 then raise exception 'a refusal must update zero rows, got %', v_unknown->>'updated'; end if;
+  v_unknown := public.mio_reresolve_lawpay_accounts_v324('v324-suite-acct-A','trust','');
+  if (v_unknown->>'ok')::boolean is not false then raise exception 'an anonymous caller must be refused, got %', v_unknown; end if;
+
+  -- The administrator mapping is created exactly the way the rollout will create it. It is the only
+  -- thing that makes re-resolution possible, and the only authority for the account it names.
+  v_mapped := public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-suite-acct-A','account_key','trust','bank_account_id','','bank_role','trust','label','LawPay trust settlement account','last4','Suite A','is_active',true), v_actor);
+  if v_mapped->>'status' <> 'mapped' then raise exception 'the mapping RPC must accept the rollout payload shape, got %', v_mapped; end if;
+
+  -- A mapping into a different account must be refused: the active mapping for this identifier is trust.
+  v_unknown := public.mio_reresolve_lawpay_accounts_v324('v324-suite-acct-A','operating',v_actor);
+  if (v_unknown->>'ok')::boolean is not false then raise exception 'a mapping into a different account must be refused, got %', v_unknown; end if;
+  if (v_unknown->>'updated')::integer <> 0 then raise exception 'a different-account refusal must update zero rows, got %', v_unknown->>'updated'; end if;
+
+  -- None of those refusals may have changed a transaction, written history or moved money.
+  select count(*) into v_count from public.lawpay_transactions
+    where (account_id = 'v324-suite-acct-A' and coalesce(account_key, '') <> '') or raw ? 'mio_account_resolution_history';
+  if v_count <> 0 then raise exception 'a refusal must not change any transaction or write history, found %', v_count; end if;
+  select md5(string_agg(concat_ws('|', gateway_transaction_id, amount_cents, amount_refunded_cents, status, reference, payer_name, currency, last_four, payment_method_type, transaction_type, occurred_at::text), ',' order by gateway_transaction_id))
+    into v_after
+  from public.lawpay_transactions where gateway_transaction_id like v_prefix;
+  if v_after <> v_before then raise exception 'a refusal must not change any money column, status, reference or payer field'; end if;
+
   -- Resolving one identifier changes its rows and nothing else.
   v_first := public.mio_reresolve_lawpay_accounts_v324('v324-suite-acct-A','trust',v_actor);
   if (v_first->>'ok')::boolean is not true then raise exception 'the re-resolution must succeed, got %', v_first; end if;
@@ -131,6 +157,14 @@ begin
   perform public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-suite-acct-A','account_key','trust','is_active',false), v_actor);
   select count(*) into v_count from public.mio_lawpay_accounts where provider_account_id = 'v324-suite-acct-A' and is_active;
   if v_count <> 0 then raise exception 'deactivating a mapping must stop it resolving, found % still active', v_count; end if;
+
+  -- An inactive mapping must be refused just as a missing one is, and must write nothing.
+  v_unknown := public.mio_reresolve_lawpay_accounts_v324('v324-suite-acct-A','trust',v_actor);
+  if (v_unknown->>'ok')::boolean is not false then raise exception 'an inactive mapping must be refused, got %', v_unknown; end if;
+  if (v_unknown->>'updated')::integer <> 0 then raise exception 'an inactive-mapping refusal must update zero rows, got %', v_unknown->>'updated'; end if;
+  select count(*) into v_count from public.lawpay_transactions
+    where gateway_transaction_id = 'v324-suite-a1' and jsonb_array_length(coalesce(raw->'mio_account_resolution_history', '[]'::jsonb)) <> 1;
+  if v_count <> 0 then raise exception 'an inactive-mapping refusal must not add history or change a transaction'; end if;
   perform public.mio_map_lawpay_account_v323(jsonb_build_object('provider_account_id','v324-suite-acct-A','account_key','trust','is_active',true), v_actor);
 
   -- Privileges: service_role only, no PUBLIC, anon or authenticated grant.
