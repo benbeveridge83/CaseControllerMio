@@ -21,7 +21,7 @@ export async function findRequest(db,tx,prior,accounts) {
   if(!number&&!reference)return null
   const query=db.from('lawpay_payment_requests').select('*')
   const rows=requireResult(await (number?query.eq('invoice_number',number):query.eq('reference',reference)).order('created_at',{ascending:false}).limit(100),'Match payment request')||[]
-  const occurred=Date.parse(tx.created),configured=Object.entries(accounts).find(([,id])=>id&&id===tx.account_id)?.[0]||''
+  const occurred=Date.parse(tx.created),wantedAccountId=tx.account_id===null||tx.account_id===undefined?'':String(tx.account_id),configured=wantedAccountId?Object.entries(accounts).find(([,id])=>id&&String(id)===wantedAccountId)?.[0]||'':''
   return rows.find(request=>{
     if(Date.parse(request.created_at)>occurred+300000)return false
     if(configured&&request.account_key&&accountKind(configured)!==accountKind(request.account_key))return false
@@ -38,9 +38,14 @@ export async function storeProviderTransaction(db,tx,{event=null,via='poll',acco
   if(!Number.isFinite(Date.parse(tx.created)))throw new Error('LawPay transaction creation date is unavailable.')
   const prior=requireResult(await db.from('lawpay_transactions').select('raw,account_key').eq('gateway_transaction_id',id).maybeSingle(),'Read existing transaction')
   const request=await findRequest(db,tx,prior,accounts)
-  const configured=Object.entries(accounts).find(([,accountId])=>accountId&&accountId===tx.account_id)?.[0]||''
+  // The configured secrets are strings and LawPay may send a number: an exact comparison of the two
+  // shapes silently failed for a supplied account, which is how a payment created directly in
+  // LawPay arrived unresolved. Comparison is a null-safe string comparison and nothing else: the
+  // identifier is never trimmed, lowercased or otherwise rewritten.
+  const wantedAccountId=tx.account_id===null||tx.account_id===undefined?'':String(tx.account_id)
+  const configured=wantedAccountId?Object.entries(accounts).find(([,accountId])=>accountId&&String(accountId)===wantedAccountId)?.[0]||'':''
   const key=configured||request?.account_key||prior?.account_key||''
-  const raw={...tx,mio_payment_request_id:request?.id||'',mio_invoice_number:request?.invoice_number||invoiceNumber(tx),mio_matter_id:request?.matter_id||prior?.raw?.mio_matter_id||'',mio_client_id:request?.client_id||prior?.raw?.mio_client_id||'',mio_account_key_source:configured?'configured_account':request?.account_key?'payment_request':'unresolved'}
+  const raw={...tx,mio_payment_request_id:request?.id||'',mio_invoice_number:request?.invoice_number||invoiceNumber(tx),mio_matter_id:request?.matter_id||prior?.raw?.mio_matter_id||'',mio_client_id:request?.client_id||prior?.raw?.mio_client_id||'',mio_account_key_source:configured?'configured_account':request?.account_key?'payment_request':String(tx.account_id||'')?'provider_account_unmapped':'not_supplied'}
   const row={gateway_transaction_id:id,gateway_event_id:event?.id||null,occurred_at:tx.created,modified_at:tx.modified||event?.created||tx.created,transaction_type:String(tx.type||''),status:String(tx.status||''),account_id:String(tx.account_id||''),account_key:key,amount_cents:Number(tx.amount),amount_refunded_cents:Number(tx.amount_refunded||0),currency:String(tx.currency||'USD'),reference:String(tx.reference||tx.source_id||''),payer_name:String(tx.method?.name||''),payer_email:String(tx.method?.email||''),payment_method_type:String(tx.method?.type||''),last_four:String(tx.method?.number||'').replace(/\D/g,'').slice(-4),raw}
   // The RPC serializes provider ID + invoice and commits receipt, payment event,
   // invoice delta, and request total atomically. Repeated pages cannot double-pay.

@@ -6,7 +6,7 @@
 // shows exactly what the gateway will record before the reviewer asks for it.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { ACCOUNT_KEYS } from './mioLawPayAccounts.js'
+import { ACCOUNT_KEYS, accountFamily, accountProvenanceLabel, providerAccountOutcome } from './mioLawPayAccounts.js'
 import {
   CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, amountBreakdown, categoryById, categoryDirection, correctionPreview,
   duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility,
@@ -31,17 +31,20 @@ const providerIdOf = (transaction) => String(transaction?.gateway_transaction_id
 // against evidence and signed for it. A blank provider account is never guessed from the payer.
 function accountDecision(transaction = {}, manual = null) {
   if (manual?.verification) {
-    return { account_key: manual.verification.account_key, provenance: 'manually_verified', label: 'Manually verified', detail: `${manual.verification.verified_by} · ${manual.verification.evidence_reference}` }
+    return { account_key: manual.verification.account_key, provenance: 'manually_verified', label: accountProvenanceLabel({ state: accountFamily(manual.verification.account_key), provenance: 'manually_verified' }), detail: `${manual.verification.verified_by} · ${manual.verification.evidence_reference}` }
   }
-  const key = String(transaction.resolved_account_key || '')
-  if (!key) return { account_key: '', provenance: '', label: 'Account not reported', detail: 'LawPay did not report which deposit account received this transaction. Verify the actual account, or map this provider account once for all of its transactions.' }
-  const source = String(transaction.resolved_account_source || '')
-  return {
-    account_key: key,
-    provenance: 'reported_by_lawpay',
-    label: source === 'environment' ? 'Reported by LawPay' : 'Reported by LawPay (firm mapping)',
-    detail: `${accountLabel(key)} · ${transaction.resolved_account_label || ''}`.trim(),
+  const outcome = providerAccountOutcome({ transaction })
+  const label = accountProvenanceLabel(outcome)
+  // Two different conditions, said differently. A supplied-but-unmapped account is Mio's own gap
+  // and is fixed once, for every transaction carrying that identifier. A missing identifier is the
+  // provider's, and only a person can establish the account from evidence.
+  if (outcome.state === 'not_supplied') {
+    return { account_key: '', provenance: '', label, detail: 'LawPay supplied no deposit account for this transaction, so Mio cannot tell trust money from operating money. Verify the actual account against evidence.' }
   }
+  if (outcome.state === 'unmapped') {
+    return { account_key: '', provenance: '', label, detail: 'LawPay named this deposit account and Mio has no mapping for it yet. Map this provider account once and every transaction carrying it resolves automatically; the client, matter or PNC is still chosen here.' }
+  }
+  return { account_key: outcome.account_key, provenance: 'reported_by_lawpay', label, detail: `${accountLabel(outcome.account_key)} · ${outcome.label || ''}`.trim() }
 }
 
 async function callGateway(action, body = {}) {

@@ -164,3 +164,128 @@ export function accountDiscrepancy({ storedKey = '', resolved = {} } = {}) {
   if (!before || !after || before === after) return null
   return { stored_account_key: before, resolved_account_key: after, resolved_provenance: resolved.provenance || '', reason: 'The stored deposit account no longer matches the configured LawPay account mapping.' }
 }
+
+// V324: recognizing the deposit account LawPay already supplied.
+//
+// A payment created directly in LawPay carries no Mio payment link, so the only things that can
+// name its Mio account are the provider's own account identifier and the firm's mapping. This
+// separates the two conditions the old screen collapsed into one "Account not reported" message:
+//   * the provider supplied an identifier that has no mapping yet -> unmapped
+//   * the provider supplied no identifier at all                  -> not supplied
+//
+// The identifier stays opaque: it is only ever converted null-safely to a string, exactly as
+// accountIdValue does. It is never trimmed, lowercased, padded or otherwise rewritten, and it is
+// never inferred from a payer name, an amount, a matter or an invoice.
+
+export const PROVIDER_ACCOUNT_STATES = ['trust', 'operating', 'unmapped', 'not_supplied']
+export const ACCOUNT_PROVENANCE_LABELS = {
+  trust: 'LawPay deposit account: Trust',
+  operating: 'LawPay deposit account: Operating',
+  manually_verified: (family) => `Manually verified account: ${family}`,
+  unmapped: (masked) => `Unmapped LawPay account ending ${masked || '••••'}`,
+  not_supplied: 'Account not supplied by LawPay — manual verification required',
+}
+
+// The configured card/eCheck secrets are always strings and the provider may send a number.
+// Comparing those with === silently fails for 91075 against '91075', which is precisely how a
+// supplied account was lost: the transaction stayed unresolved even though LawPay had named the
+// account. Comparison here is null-safe string comparison and nothing else.
+export function configuredAccountKey({ providerAccountId = '', accounts = {} } = {}) {
+  const wanted = accountIdValue(providerAccountId)
+  if (!wanted) return ''
+  for (const [key, value] of Object.entries(accounts || {})) {
+    if (ACCOUNT_KEYS.includes(key) && sameProviderAccountId(value, wanted)) return key
+  }
+  return ''
+}
+
+// The single outcome the screen needs: the account family when it is known, or the precise reason
+// it is not. `state` is one of PROVIDER_ACCOUNT_STATES.
+export function providerAccountOutcome({ transaction = {}, registry = accountRegistry(), manual = null, paymentRequest = null } = {}) {
+  const supplied = accountIdValue(transaction.account_id || transaction.raw?.account_id)
+  const resolved = resolveTransactionAccount({ transaction, registry, manual, paymentRequest })
+  const accountKey = accountIdValue(resolved.account_key)
+  if (accountKey) {
+    return { state: accountFamily(accountKey) || 'unmapped', account_key: accountKey, provenance: resolved.provenance || '', matched_by: resolved.matched_by || '', provider_account_id: supplied, masked: maskAccountId(supplied), registry_source: resolved.registry_source || '', label: resolved.label || '' }
+  }
+  return { state: supplied ? 'unmapped' : 'not_supplied', account_key: '', provenance: 'unresolved', matched_by: '', provider_account_id: supplied, masked: maskAccountId(supplied), registry_source: '', label: '' }
+}
+
+export function accountProvenanceLabel(outcome = {}) {
+  if (outcome.state === 'not_supplied') return ACCOUNT_PROVENANCE_LABELS.not_supplied
+  if (outcome.state === 'unmapped') return ACCOUNT_PROVENANCE_LABELS.unmapped(outcome.masked)
+  const family = outcome.state === 'operating' ? 'Operating' : 'Trust'
+  if (outcome.provenance === 'manually_verified') return ACCOUNT_PROVENANCE_LABELS.manually_verified(family)
+  return family === 'Operating' ? ACCOUNT_PROVENANCE_LABELS.operating : ACCOUNT_PROVENANCE_LABELS.trust
+}
+
+// The ingest vocabulary and the resolution vocabulary describe the same facts with different words.
+// Only the meaning is compared; the stored value itself is preserved in `before` for the audit trail.
+export function accountProvenanceEquivalent(stored = '') {
+  const value = accountIdValue(stored)
+  if (value === 'configured_account' || value === 'provider_account') return 'reported_by_lawpay'
+  if (value === 'payment_request') return 'payment_request'
+  if (value === 'manually_verified') return 'manually_verified'
+  return value
+}
+
+// Updating existing unresolved transactions after a mapping is created. The plan may change the
+// account classification and its provenance, and nothing else: it posts no money, moves no balance,
+// selects no client, matter or PNC, applies nothing to an invoice, issues no refund and creates no
+// financial entry. Everything it must not do is stated explicitly on each update, so a caller
+// cannot quietly widen it.
+export function accountReresolutionPlan({ transactions = [], registry = accountRegistry(), manual = null } = {}) {
+  const updates = [], unchanged = [], skipped = []
+  for (const transaction of transactions || []) {
+    const id = accountIdValue(transaction?.gateway_transaction_id || transaction?.id)
+    if (!id) { skipped.push({ reason: 'This record has no immutable provider transaction id.' }); continue }
+    const outcome = providerAccountOutcome({ transaction, registry, manual })
+    const before = { account_key: accountIdValue(transaction.account_key), provenance: accountIdValue(transaction.raw?.mio_account_key_source) || (accountIdValue(transaction.account_key) ? 'recorded' : 'unresolved') }
+    const beforeProvenance = accountProvenanceEquivalent(before.provenance)
+    if (!outcome.account_key) {
+      skipped.push({ gateway_transaction_id: id, reason: outcome.state === 'not_supplied' ? 'LawPay supplied no deposit account for this transaction.' : 'No mapping exists for this provider account yet.' })
+      continue
+    }
+    if (before.account_key === outcome.account_key && beforeProvenance === outcome.provenance) {
+      unchanged.push({ gateway_transaction_id: id, account_key: outcome.account_key })
+      continue
+    }
+    updates.push({
+      gateway_transaction_id: id,
+      account_key: outcome.account_key,
+      provenance: outcome.provenance,
+      provider_account_id: outcome.provider_account_id,
+      before,
+      after: { account_key: outcome.account_key, provenance: outcome.provenance },
+      posts_money: false,
+      touches_money_fields: [],
+      balances_changed: false,
+      selects_client_or_matter: false,
+      applies_to_invoice: false,
+      issues_refund: false,
+      creates_financial_entry: false,
+    })
+  }
+  return { updates, unchanged, skipped, money_effects: 0, balances_changed: 0, ledger_rows_created: 0 }
+}
+
+// A refund inherits the deposit account of the transaction it reverses only when LawPay supplies a
+// verified immutable relationship between the two. A guessed relationship never names an account:
+// without the link the refund stays unresolved and a person decides it. Nothing here is inferred
+// from a payer, an amount, a matter or an invoice.
+export function refundRelationshipVerified({ refund = {}, charge = {} } = {}) {
+  const refundId = accountIdValue(refund.gateway_transaction_id || refund.id)
+  const chargeId = accountIdValue(charge.gateway_transaction_id || charge.id)
+  if (!refundId || !chargeId) return false
+  const linked = accountIdValue(refund.raw?.refunded_transaction_id || refund.raw?.original_transaction_id || refund.refunded_transaction_id)
+  return !!linked && linked === chargeId
+}
+
+export function refundProviderAccount({ refund = {}, charge = null, registry = accountRegistry(), manual = null } = {}) {
+  const own = providerAccountOutcome({ transaction: refund, registry, manual })
+  if (own.account_key) return { ...own, inherited_from: '', inherited: false }
+  if (!charge || !refundRelationshipVerified({ refund, charge })) return { ...own, inherited_from: '', inherited: false }
+  const parent = providerAccountOutcome({ transaction: charge, registry, manual })
+  if (!parent.account_key) return { ...own, inherited_from: '', inherited: false, relationship_verified: true }
+  return { ...parent, inherited_from: accountIdValue(charge.gateway_transaction_id || charge.id), inherited: true, relationship_verified: true }
+}
