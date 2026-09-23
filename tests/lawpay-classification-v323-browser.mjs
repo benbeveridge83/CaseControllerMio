@@ -210,8 +210,8 @@ try {
   // 1. Every stored charge waiting on a decision is listed, with its reported account or the
   //    plain statement that none was reported.
   assert.match(await panel.getByTestId('lawpay-classification-summary').innerText(), /3 payment\(s\) need a decision/)
-  assert.match(await panel.getByTestId('lawpay-account-provider-a').innerText(), /Reported by LawPay · eCheck IOLTA trust account/)
-  assert.match(await panel.getByTestId('lawpay-account-provider-d').innerText(), /Account not reported/)
+  assert.match(await panel.getByTestId('lawpay-account-provider-a').innerText(), /LawPay deposit account: Trust · eCheck IOLTA trust account/)
+  assert.match(await panel.getByTestId('lawpay-account-provider-d').innerText(), /Unmapped LawPay account ending ••••4471/)
   assert.match(await panel.getByTestId('lawpay-diagnostics-summary').innerText(), /1 with no reported deposit account/)
   // Keep every payment in view for the rest of the flow, so a decision's confirmation stays on
   // screen after the row stops being pending.
