@@ -178,7 +178,10 @@ same for `.....B88Q` with `operating`.
   unchanged.
 * **Rollback:** restore from `raw.mio_account_resolution_history` — for each row write back the newest
   entry's `from_account_key` and `from_source`, and drop that entry. The history is append-only, so
-  the restore is exact; a reviewed restore script can be prepared on request.
+  the restore is exact for every column this function writes; a provenance key that was originally
+  absent returns as an empty string, which every reader already coalesces to the same meaning. The
+  isolated-PostgreSQL suite (`tests/sql/lawpay-provider-account-resolution-v324-behavior.sql`) proves
+  the restore and the re-run from that history alone. A reviewed restore script can be prepared on request.
 
 ## Step 8 — deploy the interface
 

@@ -8,6 +8,7 @@ import {
   ACCOUNT_PROVENANCE_LABELS, accountProvenanceLabel, accountRegistry, accountReresolutionPlan,
   configuredAccountKey, maskAccountId, providerAccountOutcome, refundProviderAccount, refundRelationshipVerified,
 } from '../src/mioLawPayAccounts.js'
+import { postingEligibility } from '../src/mioLawPayClassification.js'
 
 // The firm's configured card/eCheck deposit accounts. Secrets are strings, exactly as they arrive
 // from the environment; the provider may describe the same account with a number.
@@ -136,4 +137,15 @@ test('resolution is a function of stored data plus mapping, so it survives a ref
   const gatewayUnmapped = providerAccountOutcome({ transaction: { gateway_transaction_id: 'direct-charge-2', account_id: '55123', resolved_account_key: '', resolved_account_source: '' } })
   assert.equal(gatewayUnmapped.state, 'unmapped')
   assert.equal(accountProvenanceLabel(gatewayUnmapped), 'Unmapped LawPay account ending ••••5123')
+})
+
+test('a failed, closed or unfinished record can never post, whatever account it carries', () => {
+  const charge = (status) => ({ gateway_transaction_id: 'direct-charge-1', transaction_type: 'CHARGE', status, amount_cents: 100000, amount_refunded_cents: 0, currency: 'USD', occurred_at: '2026-09-20T15:00:00Z', account_id: '91075', raw: {} })
+  const eligible = postingEligibility({ transaction: charge('COMPLETED'), category: 'trust_deposit' })
+  assert.equal(eligible.eligible, true, `a completed charge with an established account should be postable: ${eligible.reason || ''}`)
+  for (const status of ['FAILED', 'closed', 'VOID', 'DECLINED', 'PENDING', 'AUTHORIZED']) {
+    const refused = postingEligibility({ transaction: charge(status), category: 'trust_deposit' })
+    assert.equal(refused.eligible, false, `a ${status} record must never be postable`)
+    assert.ok(String(refused.reason || '').length > 0, `a refusal must say why for ${status}`)
+  }
 })
