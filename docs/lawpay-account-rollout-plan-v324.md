@@ -116,7 +116,7 @@ approval. Paste one reviewed file at a time in the SQL Editor.
   the account classification and provenance of transactions already carrying a mapped identifier,
   writes no money, and now **appends the previous values to the row's own
   `raw.mio_account_resolution_history` before replacing them**, so the change is reversible from the
-  data alone.
+  data alone. It also refuses to write anything unless a named actor and an ACTIVE, exactly matching row in `mio_lawpay_accounts` both exist.
 * **Verify:** run `docs/lawpay-step3-verification-readonly.sql` (read-only, one statement; the file is
   executed by CI, so it is already known to parse and run). It must report: the function present;
   `security definer=true` with a pinned `search_path`; no PUBLIC, anon or authenticated EXECUTE grant;
@@ -124,8 +124,8 @@ approval. Paste one reviewed file at a time in the SQL Editor.
   tables still `0`; **no transaction carrying a resolution history** (must be `0`); and
   `lawpay_transactions` still at 59. Any `(stop)`, `ABSENT`, `DISABLED` or `MISSING` verdict, any
   non-zero table, or any other transaction count means stop and report the grid before continuing.
-* **Fidelity:** the file is 72 lines and begins `-- V324: recognizing the deposit account LawPay already
-  supplied.`; the last statement is the `comment on function` describing what it may write.
+* **Fidelity:** the file is 103 lines, blob 327e275be121486ca119da9e1c5220932678878b at `6f91644`, and begins `-- V324: recognizing the deposit account LawPay already supplied.`; its last statement is the `comment on function` describing what it may write.
+
 * **Rollback:** `drop function public.mio_reresolve_lawpay_accounts_v324(text,text,text);` — nothing
   depends on it, and it changes no data by itself.
 
@@ -235,5 +235,4 @@ no refund relationship is decided, nothing is marked bank-reconciled, the three 
 not created, the two identifier-less records stay unresolved, and no second account system or backfill
 is introduced. The `FAILED` charge and the two `closed` records must never post, which the existing
 eligibility rules already enforce and which this rollout does not change.
-
 
