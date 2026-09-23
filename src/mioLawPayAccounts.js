@@ -203,6 +203,13 @@ export function configuredAccountKey({ providerAccountId = '', accounts = {} } =
 // it is not. `state` is one of PROVIDER_ACCOUNT_STATES.
 export function providerAccountOutcome({ transaction = {}, registry = accountRegistry(), manual = null, paymentRequest = null } = {}) {
   const supplied = accountIdValue(transaction.account_id || transaction.raw?.account_id)
+  // The gateway already resolves every transaction against the firm's mapping while reading it, and
+  // returns what it found. A resolved key is authoritative; the supplied identifier is only used to
+  // distinguish an unmapped account from one the provider never named.
+  const gatewayResolved = accountIdValue(transaction.resolved_account_key)
+  if (gatewayResolved && ACCOUNT_KEYS.includes(gatewayResolved)) {
+    return { state: accountFamily(gatewayResolved) || 'unmapped', account_key: gatewayResolved, provenance: 'reported_by_lawpay', matched_by: 'gateway', provider_account_id: supplied, masked: maskAccountId(supplied), registry_source: accountIdValue(transaction.resolved_account_source), label: accountIdValue(transaction.resolved_account_label) }
+  }
   const resolved = resolveTransactionAccount({ transaction, registry, manual, paymentRequest })
   const accountKey = accountIdValue(resolved.account_key)
   if (accountKey) {

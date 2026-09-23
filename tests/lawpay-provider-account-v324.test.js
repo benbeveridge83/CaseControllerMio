@@ -128,4 +128,12 @@ test('resolution is a function of stored data plus mapping, so it survives a ref
   assert.equal(afterRefresh.state, 'trust')
   const stillUnmapped = providerAccountOutcome({ transaction: { ...stored, account_id: '55123' }, registry: mapped })
   assert.equal(stillUnmapped.state, 'unmapped', 'without a mapping the row stays unmapped after a reload, and says so')
+  // What the gateway returns after it has resolved the row against the firm's mapping: a page that
+  // only ever sees the gateway's answer must still name the account.
+  const fromGateway = providerAccountOutcome({ transaction: { gateway_transaction_id: 'direct-charge-1', account_id: 91075, resolved_account_key: 'trust', resolved_account_source: 'environment', resolved_account_label: 'Trust / IOLTA ••••1075' } })
+  assert.equal(fromGateway.state, 'trust')
+  assert.equal(accountProvenanceLabel(fromGateway), ACCOUNT_PROVENANCE_LABELS.trust)
+  const gatewayUnmapped = providerAccountOutcome({ transaction: { gateway_transaction_id: 'direct-charge-2', account_id: '55123', resolved_account_key: '', resolved_account_source: '' } })
+  assert.equal(gatewayUnmapped.state, 'unmapped')
+  assert.equal(accountProvenanceLabel(gatewayUnmapped), 'Unmapped LawPay account ending ••••5123')
 })

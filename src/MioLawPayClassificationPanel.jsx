@@ -44,7 +44,9 @@ function accountDecision(transaction = {}, manual = null) {
   if (outcome.state === 'unmapped') {
     return { account_key: '', provenance: '', label, detail: 'LawPay named this deposit account and Mio has no mapping for it yet. Map this provider account once and every transaction carrying it resolves automatically; the client, matter or PNC is still chosen here.' }
   }
-  return { account_key: outcome.account_key, provenance: 'reported_by_lawpay', label, detail: `${accountLabel(outcome.account_key)} · ${outcome.label || ''}`.trim() }
+  // The provider's own account name and the Mio account name are often the same words; say it once.
+  const parts = [accountLabel(outcome.account_key), String(outcome.label || '')].filter((part) => part)
+  return { account_key: outcome.account_key, provenance: 'reported_by_lawpay', label, detail: parts.filter((part, index) => parts.indexOf(part) === index).join(' · ') }
 }
 
 async function callGateway(action, body = {}) {
