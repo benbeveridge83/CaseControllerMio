@@ -184,7 +184,8 @@ const revealRow = async (scope, id) => {
 let dashboardRef = null
 fs.mkdirSync('finance-test-results', { recursive: true })
 try {
-  // Reach the matter dashboard the way the firm does: through the billing page's client link.
+  // Reach the matter dashboard the way the firm does (for the trust and accounting checks), then reach
+  // the central LawPay page (for the classification review queue).
   await page.goto(`${origin}/#billing`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).waitFor({ timeout: 60000 })
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
@@ -196,7 +197,8 @@ try {
   dashboardRef = dashboard
   if (dashboard === page) watch(dashboard)
   await dashboard.waitForLoadState('domcontentloaded')
-  const panel = dashboard.locator('section[aria-label="LawPay payment classification"]')
+  await page.goto(`${origin}/#lawpay`, { waitUntil: 'domcontentloaded' })
+  const panel = page.locator('section[aria-label="LawPay payment classification"]')
   await panel.waitFor({ timeout: 60000 }).catch(async () => {
     // The client link may open the dashboard in a second tab, or the first click may land before
     // the link is live: try once more before failing.
@@ -206,7 +208,7 @@ try {
     if (second) { dashboard = second; dashboardRef = second; watch(second); await second.locator('section[aria-label="LawPay payment classification"]').waitFor({ timeout: 60000 }) }
   })
   const trustOnFinancesBefore = await readMoney(dashboard, 'Trust account')
-  assert.ok(await panel.getByRole('heading', { name: 'LawPay payment classification' }).count(), 'the Finances page must carry the classification workflow')
+  assert.ok(await panel.getByRole('heading', { name: 'LawPay payment classification' }).count(), 'the central LawPay page must carry the classification workflow')
   // 1. Every stored charge waiting on a decision is listed, with its reported account or the
   //    plain statement that none was reported.
   assert.match(await panel.getByTestId('lawpay-classification-summary').innerText(), /3 payment\(s\) need a decision/)
@@ -252,11 +254,11 @@ try {
   assert.match(await row.getByTestId('lawpay-message-provider-a').innerText(), /Saved for later\. Nothing posted\./)
   assert.equal(await readMoney(dashboard, 'Trust account'), trustOnFinancesBefore, 'saving for later must not move money')
   // Server persistence: reload the page and the decision comes back from the service.
-  await dashboard.reload({ waitUntil: 'domcontentloaded' })
-  const savedRow = dashboard.locator('[data-testid="lawpay-row-provider-a"]')
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const savedRow = page.locator('[data-testid="lawpay-row-provider-a"]')
   await savedRow.waitFor({ timeout: 60000 })
   await savedRow.getByText('Classified, awaiting verification or posting').waitFor()
-  await dashboard.locator('section[aria-label="LawPay payment classification"]').getByRole('button', { name: 'Show every LawPay payment' }).click()
+  await page.locator('section[aria-label="LawPay payment classification"]').getByRole('button', { name: 'Show every LawPay payment' }).click()
   await savedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
   await savedRow.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
   await savedRow.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
