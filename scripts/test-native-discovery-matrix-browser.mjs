@@ -12,8 +12,8 @@ const session={access_token:`${b64({alg:'HS256',typ:'JWT'})}.${b64({sub:owner,em
 const matter=(id,name,caseStatus,matterStatus,caseType)=>({id,name,case_type:caseType,matter_type:caseType,matter_status:matterStatus,case_status:caseStatus,is_active:true,cause_number:'SYN-'+id,created_at:now,clients:{first_name:'Client',last_name:id,email:'c'+id+'@example.invalid'},courts:{court_name:'Synthetic court',county:'Synthetic'}})
 const matters=[matter('m0','Open Divorce','Open','Served- Need to Finalize','Divorce'),matter('m1','Closed Divorce','Closed','Order- Need to Close','Divorce'),matter('m2','Open Other','Open','Served- Need to Finalize','Other'),matter('m3','Open No Docs','Open','Served- Need to Finalize','Divorce')]
 matters.forEach((m)=>{m.client_id='c'+m.id;m.clients.id=m.client_id})
-const doc=(id,matterId,type,name)=>({id,matter_id:matterId,discovery_side:'ours',discovery_type:type,name,file_name:name+'.pdf',tag_ids:[],document_field_values:{},status:'Ours',is_active:true})
-const docs=[doc('d-rfp-0','m0','rfp','RFP to them'),doc('d-rfp-1','m0','rfp','Amended RFP to them'),doc('d-rfd-0','m0','rfd','RFD to them'),doc('d-rfp-closed','m1','rfp','RFP on closed matter'),doc('d-rfa-2','m2','rfa','RFA to them')]
+const doc=(id,matterId,type,name,side='ours')=>({id,matter_id:matterId,discovery_side:side,discovery_type:type,name,file_name:name+'.pdf',tag_ids:[],document_field_values:{},status:side==='theirs'?'Theirs':'Ours',is_active:true})
+const docs=[doc('d-rfp-0','m0','rfp','RFP to them'),doc('d-rfp-1','m0','rfp','Amended RFP to them'),doc('d-rfd-0','m0','rfd','RFD to them'),doc('d-rfp-closed','m1','rfp','RFP on closed matter'),doc('d-rfa-2','m2','rfa','RFA to them'),doc('d-their-rfp','m0','rfp','Their RFP to us','theirs')]
 const requests=[{id:'doc-d-rfd-0',document_id:'d-rfd-0',matter_id:'m0',side:'our',discovery_type:'rfd',request_served:'2026-08-01',responses:[]}]
 const states=new Map(Object.entries({caseControllerDocuments:docs,caseControllerDiscoveryRequests:requests,caseMioClioMioRosetta:{}}).map(([key,v])=>[key,{key,raw_value:JSON.stringify(v),json_value:v,updated_at:now}]))
 const writes=[],errors=[],blocked=[]
@@ -36,7 +36,7 @@ await context.route('**/*',async route=>{
     const row={key:p.p_key,raw_value:p.p_raw,json_value:null,updated_at:new Date().toISOString()};states.set(p.p_key,row);return reply(row)
   }
   if(table==='case_mio_user_state'){let rows=[...states.values()];const key=url.searchParams.get('key');if(key?.startsWith('eq.'))rows=rows.filter(r=>r.key===key.slice(3));return reply(single?rows[0]||null:rows)}
-  if(table==='setting_options')return reply(Object.entries({matter_status:['Served- Need to Finalize','Order- Need to Close','Closed'],case_status:['Open','Closed'],matter_type:['Divorce','Other']}).flatMap(([category,names])=>names.map((name,i)=>({id:category+i,category,name,is_active:true,sort_order:i}))))
+  if(table==='setting_options')return reply(Object.entries({matter_status:['Served- Need to Finalize','Order- Need to Close','Closed'],case_status:['Open','Closed','On Hold'],matter_type:['Divorce','Other']}).flatMap(([category,names])=>names.map((name,i)=>({id:category+i,category,name,is_active:true,sort_order:i}))))
   if(table==='clients')return reply(matters.map(m=>m.clients))
   if(table==='matters'){const id=url.searchParams.get('id')?.slice(3),record=matters.find(m=>m.id===id)||matters[0];if(req.method()==='PATCH')Object.assign(record,req.postDataJSON());return reply(single?record:matters)}
   if(table==='team_members'){const member={id:'synthetic-member',email,first_name:'Test',last_name:'Attorney',is_active:true,page_access:[]};return reply(single?member:[member])}
@@ -51,8 +51,7 @@ try{
   await page.getByRole('button',{name:'Discovery Table',exact:true}).click()
   await page.getByRole('button',{name:'Our discovery requests',exact:true}).waitFor()
   await matterLinks().first().waitFor({timeout:60000})
-  const linkCount=await matterLinks().count()
-  assert.equal(linkCount,3,'expected 3 matter links, got '+linkCount)
+  assert.equal(await matterLinks().count(),3,'expected 3 matter links (closed hidden by default)')
   assert.equal(await matterLinks().filter({hasText:'Closed Divorce'}).count(),0,'closed matter hidden by default')
   assert.equal(await matterLinks().filter({hasText:'Open Divorce'}).count(),1)
   assert.equal(await matterLinks().filter({hasText:'Open Other'}).count(),1)
@@ -65,9 +64,22 @@ try{
   assert.ok(Object.values(override).some((cell)=>cell?.status),'cycle persisted a status override')
   await page.getByRole('button',{name:'+',exact:true}).first().click()
   await settle(async()=> (await page.getByText('Amended RFP to them',{exact:true}).count())>=1)
-  const caseFilter=page.locator('details').filter({has:page.locator('summary').filter({hasText:/^Case Status/})}).first()
-  await caseFilter.locator('summary').click()
-  await caseFilter.getByRole('button',{name:'None',exact:true}).click()
+  // Filters come from Settings dropdown options and stay open after a selection.
+  await page.getByRole('button',{name:/Case Status/}).click()
+  await settle(async()=> (await page.getByLabel('On Hold',{exact:true}).count())>=1)
+  await page.getByLabel('Closed',{exact:true}).check()
+  await settle(async()=> (await page.getByRole('button',{name:'None',exact:true}).count())>=1,'filter stays open after selection')
+  // Their side uses only Served / Not Served (no Need to Serve).
+  await page.getByRole('button',{name:'Their Discovery Requests',exact:true}).click()
+  await settle(async()=> (await page.getByText('Their RFP to us',{exact:true}).count())>=1)
+  assert.equal(await page.getByText('Need to Serve',{exact:true}).count(),0,'their side has no Need to Serve')
+  assert.ok(await page.getByText('Not Served',{exact:true}).count()>=1,'their side defaults to Not Served')
+  await cycleButtons().first().click()
+  await settle(async()=> (await page.getByText('Served',{exact:true}).count())>=1)
+  // Sticky filters survive reload (shared between both sub-tabs).
+  await page.getByRole('button',{name:'Our discovery requests',exact:true}).click()
+  await settle(async()=> (await page.getByRole('button',{name:'None',exact:true}).count())>=1)
+  await page.getByRole('button',{name:'None',exact:true}).click()
   await settle(()=>JSON.parse(states.get('caseMioStickyFilter:discoveryMatrixCaseStatusFilter')?.raw_value||'{}').value?.length===0)
   assert.equal(await matterLinks().count(),0,'None hides all matters')
   await page.reload({waitUntil:'domcontentloaded'})
@@ -76,7 +88,7 @@ try{
   assert.equal(await matterLinks().count(),0,'None filter survives reload')
   assert.deepEqual(errors,[]);assert.deepEqual(blocked,[])
   await page.screenshot({path:'native-filter-test-results/discovery-matrix.png',fullPage:true})
-  console.log('PASS discovery matrix: matter rows, status cycle, served-date derivation, + expansion, and sticky filters survive reload')
+  console.log('PASS discovery matrix: matter rows, status cycle, + expansion, settings-sourced sticky filters, and their-side Served/Not Served')
 }catch(error){await page.screenshot({path:'native-filter-test-results/discovery-matrix-failure.png',fullPage:true}).catch(()=>{});fs.writeFileSync('native-filter-test-results/discovery-matrix-failure.txt',JSON.stringify({error:error.stack,errors,blocked,body:await page.locator('body').innerText().catch(()=>''),writes},null,2));throw error}finally{await browser.close();await new Promise(resolve=>server.close(resolve))}
 
 

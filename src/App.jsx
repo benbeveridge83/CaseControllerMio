@@ -5807,6 +5807,7 @@ function App() {
   })
   const [discoveryMatrixExpandedCells, setDiscoveryMatrixExpandedCells] = useState({})
   const [discoveryMatrixSubTab, setDiscoveryMatrixSubTab] = useState('our')
+  const [discoveryMatrixPanelOpen, setDiscoveryMatrixPanelOpen] = useState({})
   const [showDiscoveryAgreementWindow, setShowDiscoveryAgreementWindow] = useState(false)
   const [discoveryAgreementForm, setDiscoveryAgreementForm] = useState({ request_id: '', note: '', matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
   const [showDiscoveryWindow, setShowDiscoveryWindow] = useState(false)
@@ -14502,13 +14503,30 @@ function App() {
     return /^closed(?:$|[\s-])/i.test(String(value || '').trim())
   }
 
+  function discoveryMatrixSide() {
+    return discoveryMatrixSubTab === 'their' ? 'their' : 'our'
+  }
+
+  function discoveryMatrixStatusList(side) {
+    return side === 'their' ? ['not_served', 'served'] : ['not_serving', 'need_to_serve', 'served']
+  }
+
+  function discoveryMatrixDocSideMatches(doc, side) {
+    if (side === 'their') return documentHasDiscoveryRequestSide(doc, 'their') || String(doc.discovery_side || '').toLowerCase() === 'theirs'
+    return documentHasDiscoveryRequestSide(doc, 'our') || String(doc.discovery_side || '').toLowerCase() === 'ours'
+  }
+
   function discoveryMatrixStatusOptions(kind) {
+    const category = kind === 'case' ? 'case_status' : kind === 'matter' ? 'matter_status' : 'matter_type'
+    const configured = options(category).map((option) => ({ value: option.name, label: option.name }))
     const fromMatters = Array.from(new Set(matters.map((matter) => {
       if (kind === 'case') return matter?.case_status || ''
       if (kind === 'matter') return matter?.matter_status || ''
       return matter?.matter_type || matter?.case_type || ''
     }).filter(Boolean))).map((value) => ({ value, label: value }))
-    return fromMatters.sort((a, b) => a.label.localeCompare(b.label))
+    const combined = [...configured]
+    fromMatters.forEach((option) => { if (!combined.some((item) => item.value === option.value)) combined.push(option) })
+    return combined.sort((a, b) => a.label.localeCompare(b.label))
   }
 
   function discoveryMatrixStatusFilterValue(kind) {
@@ -14545,22 +14563,28 @@ function App() {
   function DiscoveryMatrixCheckboxFilter({ kind, title }) {
     const opts = discoveryMatrixStatusOptions(kind)
     const selected = discoveryMatrixStatusFilterValues(kind)
+    const open = Boolean(discoveryMatrixPanelOpen[kind])
+    const toggleOpen = () => setDiscoveryMatrixPanelOpen((current) => ({ ...current, [kind]: !current[kind] }))
     return (
-      <details style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 190 }}>
-        <summary style={{ cursor: 'pointer', fontWeight: 'bold' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span></summary>
-        <div style={{ display: 'flex', gap: 6, margin: '8px 0 6px' }}>
-          <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, opts.map((option) => option.value))}>All</button>
-          <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, [])}>None</button>
-        </div>
-        <div style={{ maxHeight: 160, overflowY: 'auto' }}>
-          {opts.map((option) => (
-            <label key={option.value} style={{ display: 'block', fontSize: 12, marginBottom: 3 }}>
-              <input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggleDiscoveryMatrixStatusFilter(kind, option.value)} />{' '}{option.label}
-            </label>
-          ))}
-          {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No values have been set yet.</div>}
-        </div>
-      </details>
+      <div style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 190 }}>
+        <button type="button" onClick={toggleOpen} style={{ cursor: 'pointer', fontWeight: 'bold', border: 0, background: 'transparent', padding: 0, width: '100%', textAlign: 'left' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span>{open ? ' ▴' : ' ▾'}</button>
+        {open && (
+          <div>
+            <div style={{ display: 'flex', gap: 6, margin: '8px 0 6px' }}>
+              <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, opts.map((option) => option.value))}>All</button>
+              <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, [])}>None</button>
+            </div>
+            <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+              {opts.map((option) => (
+                <label key={option.value} style={{ display: 'block', fontSize: 12, marginBottom: 3 }}>
+                  <input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggleDiscoveryMatrixStatusFilter(kind, option.value)} />{' '}{option.label}
+                </label>
+              ))}
+              {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No values have been set yet.</div>}
+            </div>
+          </div>
+        )}
+      </div>
     )
   }
 
@@ -14579,24 +14603,23 @@ function App() {
     return text
   }
 
-  function discoveryMatrixDocsForCell(matter, typeKey) {
+  function discoveryMatrixDocsForCell(matter, typeKey, side = 'our') {
     if (!matter?.id) return []
     return documents.filter((doc) => {
       if (!doc || doc.is_active === false) return false
       if (String(doc.matter_id || '') !== String(matter.id)) return false
       if (typeKey === 'depositions') return discoveryMatrixDocIsDeposition(doc)
-      const ourRequest = documentHasDiscoveryRequestSide(doc, 'our') || String(doc.discovery_side || '').toLowerCase() === 'ours'
-      return ourRequest && discoveryMatrixDocTypeKey(doc) === typeKey
+      return discoveryMatrixDocSideMatches(doc, side) && discoveryMatrixDocTypeKey(doc) === typeKey
     })
   }
 
-  function discoveryMatrixCellKey(matter, typeKey) {
-    return `${matter.id}|${typeKey}`
+  function discoveryMatrixCellKey(matter, typeKey, side = 'our') {
+    return `${side}|${matter.id}|${typeKey}`
   }
 
-  function discoveryMatrixCellState(matter, typeKey) {
-    const key = discoveryMatrixCellKey(matter, typeKey)
-    const docs = discoveryMatrixDocsForCell(matter, typeKey)
+  function discoveryMatrixCellState(matter, typeKey, side = 'our') {
+    const key = discoveryMatrixCellKey(matter, typeKey, side)
+    const docs = discoveryMatrixDocsForCell(matter, typeKey, side)
     const override = discoveryMatrixState[key] || {}
     if (override.status) return { status: override.status, served_date: override.served_date || '', docs }
     const servedDoc = docs.find((doc) => {
@@ -14607,26 +14630,27 @@ function App() {
       const stored = storedDiscoveryRequestForDoc(servedDoc) || {}
       return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs }
     }
-    return { status: 'not_serving', served_date: '', docs }
+    return { status: side === 'their' ? 'not_served' : 'not_serving', served_date: '', docs }
   }
 
-  function discoveryMatrixStatusMeta(status) {
-    if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fee2e2', fg: '#991b1b' }
+  function discoveryMatrixStatusMeta(status, side = 'our') {
     if (status === 'served') return { label: 'Served', bg: '#dcfce7', fg: '#166534' }
+    if (side === 'their') return { label: 'Not Served', bg: '#ffedd5', fg: '#9a3412' }
+    if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fee2e2', fg: '#991b1b' }
     return { label: 'Not Serving', bg: '#ffedd5', fg: '#9a3412' }
   }
 
-  function cycleDiscoveryMatrixStatus(matter, typeKey) {
-    const key = discoveryMatrixCellKey(matter, typeKey)
-    const current = discoveryMatrixCellState(matter, typeKey)
-    const order = ['not_serving', 'need_to_serve', 'served']
+  function cycleDiscoveryMatrixStatus(matter, typeKey, side = 'our') {
+    const key = discoveryMatrixCellKey(matter, typeKey, side)
+    const current = discoveryMatrixCellState(matter, typeKey, side)
+    const order = discoveryMatrixStatusList(side)
     const index = order.indexOf(current.status)
     const next = order[(index + 1) % order.length]
     const patch = { status: next }
     if (next === 'served') {
       const servedDate = current.served_date || dateToInputValue(new Date())
       patch.served_date = servedDate
-      discoveryMatrixDocsForCell(matter, typeKey).forEach((doc) => {
+      discoveryMatrixDocsForCell(matter, typeKey, side).forEach((doc) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
         if (!stored.request_served) upsertDiscoveryDocRequest(doc, { request_served: servedDate })
       })
@@ -14634,10 +14658,10 @@ function App() {
     setDiscoveryMatrixState((state) => ({ ...state, [key]: { ...(state[key] || {}), ...patch } }))
   }
 
-  function setDiscoveryMatrixServedDate(matter, typeKey, value) {
-    const key = discoveryMatrixCellKey(matter, typeKey)
+  function setDiscoveryMatrixServedDate(matter, typeKey, value, side = 'our') {
+    const key = discoveryMatrixCellKey(matter, typeKey, side)
     setDiscoveryMatrixState((state) => ({ ...state, [key]: { ...(state[key] || {}), served_date: value } }))
-    discoveryMatrixDocsForCell(matter, typeKey).forEach((doc) => upsertDiscoveryDocRequest(doc, { request_served: value }))
+    discoveryMatrixDocsForCell(matter, typeKey, side).forEach((doc) => upsertDiscoveryDocRequest(doc, { request_served: value }))
   }
 
   function discoveryMatrixMatters() {
@@ -14654,11 +14678,11 @@ function App() {
     })
   }
 
-  function expandAllDiscoveryMatrixRows() {
+  function expandAllDiscoveryMatrixRows(side = discoveryMatrixSide()) {
     const next = {}
     discoveryMatrixMatters().forEach((matter) => {
       discoveryMatrixColumns().forEach((column) => {
-        if (discoveryMatrixDocsForCell(matter, column.key).length > 1) next[discoveryMatrixCellKey(matter, column.key)] = true
+        if (discoveryMatrixDocsForCell(matter, column.key, side).length > 1) next[discoveryMatrixCellKey(matter, column.key, side)] = true
       })
     })
     setDiscoveryMatrixExpandedCells(next)
@@ -14668,43 +14692,44 @@ function App() {
     setDiscoveryMatrixExpandedCells({})
   }
 
-  function renderDiscoveryMatrixCell(matter, column) {
-    const state = discoveryMatrixCellState(matter, column.key)
-    const visual = discoveryMatrixStatusMeta(state.status)
-    const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key)])
+  function renderDiscoveryMatrixCell(matter, column, side) {
+    const state = discoveryMatrixCellState(matter, column.key, side)
+    const visual = discoveryMatrixStatusMeta(state.status, side)
+    const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key, side)])
     const hasMore = state.docs.length > 1
+    const cycleTitle = side === 'their' ? 'Click to cycle: Not Served → Served' : 'Click to cycle: Not Serving → Need to Serve → Served'
     return (
       <td key={column.key} style={{ background: visual.bg, minWidth: 180, verticalAlign: 'top', padding: 8 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 86 }}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 800, color: visual.fg, fontSize: 12 }}>{visual.label}</span>
             {hasMore && (
-              <button type="button" onClick={() => setDiscoveryMatrixExpandedCells((current) => ({ ...current, [discoveryMatrixCellKey(matter, column.key)]: !expanded }))} title={expanded ? 'Hide amended/supplemental requests' : 'Show amended/supplemental requests'} style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontWeight: 900, color: visual.fg, fontSize: 15, lineHeight: 1 }}>{expanded ? '−' : '+'}</button>
+              <button type="button" onClick={() => setDiscoveryMatrixExpandedCells((current) => ({ ...current, [discoveryMatrixCellKey(matter, column.key, side)]: !expanded }))} title={expanded ? 'Hide amended/supplemental requests' : 'Show amended/supplemental requests'} style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontWeight: 900, color: visual.fg, fontSize: 15, lineHeight: 1 }}>{expanded ? '−' : '+'}</button>
             )}
           </div>
           {state.status === 'served' && (
-            <DiscoveryDateInput value={state.served_date || ''} onChange={(value) => setDiscoveryMatrixServedDate(matter, column.key, value)} />
+            <DiscoveryDateInput value={state.served_date || ''} onChange={(value) => setDiscoveryMatrixServedDate(matter, column.key, value, side)} />
           )}
           {state.docs.length >= 1 && (
             <button type="button" onClick={() => openDocumentEditWindow(state.docs[0])} style={{ textAlign: 'left', fontSize: 11, border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textDecoration: 'underline' }}>{discoveryDocumentTitle(state.docs[0])}</button>
           )}
-          <button type="button" onClick={() => cycleDiscoveryMatrixStatus(matter, column.key)} title="Click to cycle: Not Serving → Need to Serve → Served" style={{ alignSelf: 'flex-start', marginTop: 'auto', fontSize: 10, border: '1px solid rgba(0,0,0,.12)', borderRadius: 4, background: 'rgba(255,255,255,.65)', color: '#334155', padding: '1px 7px', cursor: 'pointer', fontWeight: 700 }}>⭮ cycle</button>
+          <button type="button" onClick={() => cycleDiscoveryMatrixStatus(matter, column.key, side)} title={cycleTitle} style={{ alignSelf: 'flex-start', marginTop: 'auto', fontSize: 10, border: '1px solid rgba(0,0,0,.12)', borderRadius: 4, background: 'rgba(255,255,255,.65)', color: '#334155', padding: '1px 7px', cursor: 'pointer', fontWeight: 700 }}>⭮ cycle</button>
         </div>
       </td>
     )
   }
 
-  function renderDiscoveryMatrixSubRows(matter) {
+  function renderDiscoveryMatrixSubRows(matter, side) {
     const rows = []
     discoveryMatrixColumns().forEach((column) => {
-      if (!discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key)]) return
-      const docs = discoveryMatrixDocsForCell(matter, column.key)
+      if (!discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key, side)]) return
+      const docs = discoveryMatrixDocsForCell(matter, column.key, side)
       if (docs.length <= 1) return
       docs.slice(1).forEach((doc, index) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
         const servedDate = stored.request_served || discoveryDocServiceDate(doc)
         rows.push(
-          <tr key={`${matter.id}-${column.key}-${doc.id}`} style={{ borderTop: '1px solid #eef2f6', background: '#fafbfc' }}>
+          <tr key={`${side}-${matter.id}-${column.key}-${doc.id}`} style={{ borderTop: '1px solid #eef2f6', background: '#fafbfc' }}>
             <td style={{ position: 'sticky', left: 0, background: '#fafbfc', zIndex: 1, color: '#64748b', fontSize: 12, paddingLeft: 22 }}>↳ {index + 1}. {discoveryDocumentTitle(doc)}</td>
             {discoveryMatrixColumns().map((c) => {
               if (c.key !== column.key) return <td key={c.key}></td>
@@ -14727,6 +14752,7 @@ function App() {
   function renderDiscoveryResponseMatrix() {
     const columns = discoveryMatrixColumns()
     const matrixMatters = discoveryMatrixMatters()
+    const side = discoveryMatrixSide()
     const subTabButton = (value, label) => (
       <button type="button" onClick={() => setDiscoveryMatrixSubTab(value)} style={{ padding: '8px 14px', border: '1px solid #cbd5e1', borderRadius: 8, background: discoveryMatrixSubTab === value ? '#2f6584' : 'white', color: discoveryMatrixSubTab === value ? 'white' : '#1f2d3d', fontWeight: 'bold' }}>{label}</button>
     )
@@ -14736,47 +14762,45 @@ function App() {
           {subTabButton('our', 'Our discovery requests')}
           {subTabButton('their', 'Their Discovery Requests')}
         </div>
-        {discoveryMatrixSubTab === 'their' ? (
-          <div style={{ padding: 26, border: '1px dashed #cbd5e1', borderRadius: 10, background: '#f8fafc', color: '#64748b', textAlign: 'center' }}>
-            Their Discovery Requests — coming next.
+        <>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <DiscoveryMatrixCheckboxFilter kind="case" title="Case Status" />
+            <DiscoveryMatrixCheckboxFilter kind="matter" title="Matter Status" />
+            <DiscoveryMatrixCheckboxFilter kind="case_type" title="Case Type" />
+            <button type="button" onClick={() => expandAllDiscoveryMatrixRows(side)}>Expand All Rows</button>
+            <button type="button" onClick={collapseAllDiscoveryMatrixRows}>Collapse All Rows</button>
+            <button type="button" onClick={() => expandAllDiscoveryMatrixRows(side)}>Show All Requests</button>
           </div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <DiscoveryMatrixCheckboxFilter kind="case" title="Case Status" />
-              <DiscoveryMatrixCheckboxFilter kind="matter" title="Matter Status" />
-              <DiscoveryMatrixCheckboxFilter kind="case_type" title="Case Type" />
-              <button type="button" onClick={expandAllDiscoveryMatrixRows}>Expand All Rows</button>
-              <button type="button" onClick={collapseAllDiscoveryMatrixRows}>Collapse All Rows</button>
-              <button type="button" onClick={expandAllDiscoveryMatrixRows}>Show All Requests</button>
-            </div>
-            <p style={{ color: '#475569', margin: 0 }}>Track our discovery requests served on the opposing party. Click a cell's ⭮ to cycle Not Serving → Need to Serve → Served, and use + to reveal amended/supplemental requests.</p>
-            <div style={{ overflow: 'auto', border: '1px solid #d5dce3', borderRadius: 6, maxHeight: '76vh' }}>
-              <table cellPadding="7" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: 1100 }}>
-                <thead>
-                  <tr style={{ background: '#f8fafc', position: 'sticky', top: 0, zIndex: 1 }}>
-                    <th style={{ minWidth: 240, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, textAlign: 'left' }}>Matter</th>
-                    {columns.map((column) => <th key={column.key} style={{ minWidth: 180, textAlign: 'left' }}>{column.label}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {matrixMatters.flatMap((matter) => {
-                    const mainRow = (
-                      <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
-                        <td style={{ position: 'sticky', left: 0, background: '#fff', zIndex: 1, fontWeight: 600 }}>
-                          {matter ? <a href={`#matter_dashboard:${encodeURIComponent(matter.id)}`} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); openMatterTaskTemplates(matter) }}>{formatMatterOption(matter)}</a> : 'N/A'}
-                        </td>
-                        {columns.map((column) => renderDiscoveryMatrixCell(matter, column))}
-                      </tr>
-                    )
-                    return [mainRow, ...renderDiscoveryMatrixSubRows(matter)]
-                  })}
-                  {!matrixMatters.length && <tr><td colSpan={columns.length + 1} style={{ color: '#64748b', padding: 18, textAlign: 'center' }}>No matters match these filters.</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
+          <p style={{ color: '#475569', margin: 0 }}>
+            {side === 'their'
+              ? "Track the opposing party's discovery requests served on us. Click a cell's ⭮ to toggle Not Served → Served, and use + to reveal amended/supplemental requests."
+              : "Track our discovery requests served on the opposing party. Click a cell's ⭮ to cycle Not Serving → Need to Serve → Served, and use + to reveal amended/supplemental requests."}
+          </p>
+          <div style={{ overflow: 'auto', border: '1px solid #d5dce3', borderRadius: 6, maxHeight: '76vh' }}>
+            <table cellPadding="7" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: 1100 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', position: 'sticky', top: 0, zIndex: 1 }}>
+                  <th style={{ minWidth: 240, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, textAlign: 'left' }}>Matter</th>
+                  {columns.map((column) => <th key={column.key} style={{ minWidth: 180, textAlign: 'left' }}>{column.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {matrixMatters.flatMap((matter) => {
+                  const mainRow = (
+                    <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                      <td style={{ position: 'sticky', left: 0, background: '#fff', zIndex: 1, fontWeight: 600 }}>
+                        {matter ? <a href={`#matter_dashboard:${encodeURIComponent(matter.id)}`} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); openMatterTaskTemplates(matter) }}>{formatMatterOption(matter)}</a> : 'N/A'}
+                      </td>
+                      {columns.map((column) => renderDiscoveryMatrixCell(matter, column, side))}
+                    </tr>
+                  )
+                  return [mainRow, ...renderDiscoveryMatrixSubRows(matter, side)]
+                })}
+                {!matrixMatters.length && <tr><td colSpan={columns.length + 1} style={{ color: '#64748b', padding: 18, textAlign: 'center' }}>No matters match these filters.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
       </div>
     )
   }
