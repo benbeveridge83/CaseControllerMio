@@ -49,36 +49,6 @@ function accountDecision(transaction = {}, manual = null) {
   return { account_key: outcome.account_key, provenance: 'reported_by_lawpay', label, detail: parts.filter((part, index) => parts.indexOf(part) === index).join(' · ') }
 }
 
-// Administrator-only and read-only. `lawpay-account-diagnostics` contains no action that records,
-// corrects, matches or maps anything, and it refuses anyone who is not a firm finance
-// administrator. The report is written straight into the panel's own report element, so this
-// control cannot disturb the panel's state machine, and nothing here can move money.
-async function runAccountDiagnosticsFor(container) {
-  if (!container) return
-  const report = container.querySelector('[data-testid="lawpay-diagnostics-report"]')
-  const status = container.querySelector('[data-testid="lawpay-diagnostics-status"]')
-  if (!report || !status) return
-  status.textContent = 'Reading LawPay account diagnostics…'
-  report.hidden = true
-  try {
-    const { data, error } = await supabase.functions.invoke('lawpay-account-diagnostics', { body: { limit: 200 } })
-    if (error) throw new Error(error.message || 'The LawPay diagnostics function could not be reached.')
-    if (data?.error) throw new Error(data.error)
-    if (!data?.diagnostics) throw new Error('The diagnostics function answered without a report. The deployed revision may predate it.')
-    report.textContent = JSON.stringify({ version: data.version, redacted: data.redacted, mapping_table_available: data.mapping_table_available, diagnostics: data.diagnostics }, null, 2)
-    report.hidden = false
-    status.textContent = 'Report ready. Select the text above, or press Copy report.'
-  } catch (failure) {
-    status.textContent = failure?.message || String(failure)
-  }
-}
-function copyAccountDiagnosticsFrom(container) {
-  const report = container?.querySelector('[data-testid="lawpay-diagnostics-report"]')
-  const status = container?.querySelector('[data-testid="lawpay-diagnostics-status"]')
-  if (!report?.textContent) { if (status) status.textContent = 'Run the diagnostics first.'; return }
-  Promise.resolve(navigator.clipboard?.writeText(report.textContent)).then(() => { if (status) status.textContent = 'Report copied.' }).catch(() => { if (status) status.textContent = 'Select the report text and copy it manually.' })
-}
-
 async function callGateway(action, body = {}) {
   const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action, ...body } })
   if (error) throw new Error(error.message || 'The LawPay gateway could not be reached.')
@@ -87,7 +57,7 @@ async function callGateway(action, body = {}) {
 }
 export default function MioLawPayClassificationPanel({
   matter = null, matters = [], transactions = [], classifications = [], invoices = [], existingEntries = [], accounts = [], refundResolutions = [],
-  mappingAvailable = true, diagnostics = null, busy = false, error = '', notice = '', onRefresh, onActed,
+  mappingAvailable = true, busy = false, error = '', notice = '', onRefresh, onActed,
 }) {
   const [openId, setOpenId] = useState('')
   const [drafts, setDrafts] = useState({})
@@ -108,7 +78,7 @@ export default function MioLawPayClassificationPanel({
   // Refunds whose relationship to a charge is not established by a provider identifier are shown
   // as unresolved, never netted against a charge's reported total just because they share an
   // account. The reconciled total is explicitly not final while any remain.
-  const recordedIds = new Set((classifications || []).filter((record) => String(record.matter_id || '') === String(matter?.id || '')).map((record) => String(record.gateway_transaction_id || '')))
+  const recordedIds = new Set((classifications || []).filter((record) => !matter?.id || String(record.matter_id || '') === String(matter.id)).map((record) => String(record.gateway_transaction_id || '')))
   const recordedAccounts = new Set((transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || ''))).map((transaction) => String(transaction.account_id || '')))
   const refundScope = (transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || '')) || (providerMoneyOut(transaction) && recordedAccounts.has(String(transaction.account_id || ''))))
   const resolutionsByRefund = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
@@ -116,7 +86,7 @@ export default function MioLawPayClassificationPanel({
   const openRefunds = refunds.effects.filter((effect) => effect.effect !== 'already_reflected')
   async function resolveRefund(refundId, resolution, evidence) {
     const refund = (transactions || []).find((transaction) => String(transaction.gateway_transaction_id || '') === refundId) || {}
-    const chargeId = resolution === 'same_refund' ? String((classifications || []).find((record) => String(record.matter_id || '') === String(matter?.id || '') && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '') : ''
+    const chargeId = resolution === 'same_refund' ? String((classifications || []).find((record) => (!matter?.id || String(record.matter_id || '') === String(matter.id)) && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '') : ''
     const decision = refundResolutionRecord({
       refund, charge: { gateway_transaction_id: chargeId }, resolution, evidence_reference: evidence,
       actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',
@@ -137,7 +107,7 @@ export default function MioLawPayClassificationPanel({
   // deliberately not a dependency: the parent recreates it each render.
   const matterIdForLoad = String(matter?.id || '')
   useEffect(() => {
-    if (matterIdForLoad && onRefresh) onRefresh()
+    if (onRefresh) onRefresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matterIdForLoad])
   const planFor = (transaction, draft) => ledgerPlan({
@@ -239,7 +209,7 @@ export default function MioLawPayClassificationPanel({
           <h3 style={{ margin: 0 }}>LawPay payment classification</h3>
           <p style={{ margin: '4px 0 0', color: '#475569' }} data-testid="lawpay-classification-summary">
             {outstanding.length ? `${outstanding.length} payment(s) need a decision` : 'Every LawPay payment has a decision'}
-            {` for ${matter?.name || 'this matter'}`}
+            {matter?.name ? ` for ${matter.name}` : ' across the firm'}
             {` · ${posted.length} recorded in Mio by this workflow`}
           </p>
           <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 12 }}>
@@ -254,21 +224,6 @@ export default function MioLawPayClassificationPanel({
       {error ? <p role="alert" style={{ color: '#b91c1c', margin: 0 }}>{error}</p> : null}
       {notice ? <p style={{ color: '#15803d', margin: 0 }}>{notice}</p> : null}
       {!mappingAvailable ? <p style={{ color: '#b45309', margin: 0 }}>The firm LawPay account mapping table is not readable with these credentials yet. Each transaction can still be recorded by verifying its deposit account by hand with evidence; the mapping is only a convenience for provider accounts that recur.</p> : null}
-      {diagnostics ? (
-        <p style={{ color: '#475569', margin: 0 }} data-testid="lawpay-diagnostics-summary">
-          {`Diagnostics: ${diagnostics.transactions_reviewed || 0} transaction(s) reviewed · ${diagnostics.missing_provider_account_id || 0} with no reported deposit account · ${(diagnostics.unmapped_provider_accounts || []).length} provider account(s) not mapped in Mio.`}
-        </p>
-      ) : null}
-      {/* The read-only diagnostics control is deliberately independent of the loader's summary: it is
-          also how an administrator finds out whether the diagnostics function is deployed at all. */}
-      <div data-testid="lawpay-diagnostics-block" style={{ display: 'grid', gap: 6 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" data-testid="lawpay-run-diagnostics" onClick={(event) => runAccountDiagnosticsFor(event.currentTarget.closest('[data-testid="lawpay-diagnostics-block"]'))}>{'Run LawPay account diagnostics'}</button>
-          <button type="button" data-testid="lawpay-copy-diagnostics" onClick={(event) => copyAccountDiagnosticsFrom(event.currentTarget.closest('[data-testid="lawpay-diagnostics-block"]'))}>{'Copy report'}</button>
-          <span style={{ color: '#475569' }} data-testid="lawpay-diagnostics-status">{'Read-only. Masked counts only: no full identifiers, payers, amounts, emails, references or payloads.'}</span>
-        </div>
-        <pre data-testid="lawpay-diagnostics-report" hidden style={{ whiteSpace: 'pre-wrap', background: '#0f172a', color: '#e2e8f0', borderRadius: 8, padding: 10, maxHeight: 340, overflow: 'auto', margin: 0 }}>{''}</pre>
-      </div>
       {openRefunds.length ? (
         <section aria-label="Refund relationship review" data-testid="refund-review" style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: 10 }}>
           <strong>{refunds.label || 'Refund review'}</strong>

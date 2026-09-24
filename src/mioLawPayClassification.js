@@ -473,3 +473,35 @@ export function queueSplit({ records = [], matterId = '' } = {}) {
     },
   }
 }
+
+// The single number the centralized review queue and its persistent notification share: how many
+// provider transactions still genuinely require a decision, plus how many refund relationships are
+// still unresolved. It writes nothing and reuses exactly the rules the panel uses.
+//
+// Excluded, so the count never nags about something that needs no action: pending/authorized
+// transactions (PENDING_STATUSES), failed/voided/closed ones (NON_POSTING_STATUS or a CLOSED status),
+// and any transaction that is already recorded (posted) or already matched (posting_status 'matched',
+// which a match to an existing entry stores and which `reviewStatus` alone does not treat as done).
+// Counted: a transaction with no decision, a transaction saved for later (classified but not posted),
+// and an actionable refund relationship (unresolved in `refundReview`).
+export function actionableReviewCount({ transactions = [], classifications = [], refundResolutions = [] } = {}) {
+  const byId = new Map((classifications || []).map((record) => [String(record.gateway_transaction_id || ''), record]))
+  const needsDecision = []
+  for (const transaction of transactions || []) {
+    const id = String(transaction.gateway_transaction_id || transaction.id || '')
+    if (!id) continue
+    const status = String(transaction.status || '').trim().toUpperCase()
+    if (PENDING_STATUSES.includes(status)) continue
+    if (status === 'CLOSED' || NON_POSTING_STATUS.test(status.toLowerCase())) continue
+    const record = byId.get(id) || null
+    const done = !!(record && (record.posted_at
+      || String(record.posting_status || '') === 'posted'
+      || String(record.posting_status || '') === 'matched'))
+    if (done) continue
+    needsDecision.push(transaction)
+  }
+  const resolutions = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
+  const refunds = refundReview({ transactions: transactions || [], resolutions })
+  const refundRelationships = refunds.effects.filter((effect) => effect.effect === 'unresolved')
+  return { count: needsDecision.length + refundRelationships.length, transactions: needsDecision, refund_relationships: refundRelationships }
+}

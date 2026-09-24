@@ -4,4 +4,5 @@ import './index.css'
 import App from './App.jsx'
 import MioCloudBoundary from './MioCloudBoundary.jsx'
 import MioLeadAlerts from './MioLeadAlerts.jsx'
-createRoot(document.getElementById('root')).render(<StrictMode><MioCloudBoundary><><App /><MioLeadAlerts /></></MioCloudBoundary></StrictMode>)
+import MioLawPayAlerts from './MioLawPayAlerts.jsx'
+createRoot(document.getElementById('root')).render(<StrictMode><MioCloudBoundary><><App /><MioLeadAlerts /><MioLawPayAlerts /></></MioCloudBoundary></StrictMode>)

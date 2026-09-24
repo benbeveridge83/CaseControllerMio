@@ -28,10 +28,11 @@ function editFunction(code, name, edit) {
 }
 
 const imports = `import MioLawPayClassificationPanel from './MioLawPayClassificationPanel.jsx'
+import MioLawPayDiagnostics from './MioLawPayDiagnostics.jsx'
+import { notifyLawPayReviewChanged } from './mioLawPayNotifications.js'
 import { singleCountProviderPayments } from './mioLawPayClassification.js'
 `
 const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState({transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_available:true})
-  const [lawPayV323Diagnostics,setLawPayV323Diagnostics]=useState(null)
   const [lawPayV323Busy,setLawPayV323Busy]=useState(false)
   const [lawPayV323Error,setLawPayV323Error]=useState('')
   const [lawPayV323Notice,setLawPayV323Notice]=useState('')
@@ -45,9 +46,8 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
       if(error)throw new Error(error.message||'The LawPay gateway could not be reached.')
       if(data?.error)throw new Error(data.error)
       setLawPayV323Review({transactions:data.transactions||[],classifications:data.classifications||[],ledger_entries:data.ledger_entries||[],accounts:data.accounts||[],mapping_available:data.mapping_table_available!==false,refund_resolutions:data.refund_resolutions||[],refund_resolutions_available:data.refund_resolutions_available!==false})
-      const diagnostics=await supabase.functions.invoke('lawpay-account-diagnostics',{body:{limit:200}})
-      setLawPayV323Diagnostics(diagnostics?.error?null:(diagnostics?.data?.diagnostics||null))
       setLawPayV323Notice('')
+      notifyLawPayReviewChanged()
     }catch(failure){setLawPayV323Error(failure instanceof Error?failure.message:String(failure))}finally{setLawPayV323Busy(false)}
   }
   // Loaded once per signed-in session, so that every view reading the trust ledger - the matter
@@ -59,8 +59,21 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
     lawPayV323LoadedRef.current=true
     loadLawPayClassification()
   },[session?.user?.id])
+  // The global LawPay review notification opens the centralized queue through the same window-event
+  // pattern the Formspree inbox uses to open itself.
+  useEffect(()=>{
+    const openLawPay=()=>setPage('lawpay')
+    window.addEventListener('mio-open-lawpay',openLawPay)
+    return()=>window.removeEventListener('mio-open-lawpay',openLawPay)
+  },[session?.user?.id])
 `
-const panel = `        <MioLawPayClassificationPanel matter={matter} matters={matters} transactions={lawPayV323Review.transactions} classifications={lawPayV323Review.classifications} invoices={(mioInvoices||[]).filter(row=>String(row.matter_id||'')===String(matter.id))} existingEntries={[...(mioTrustTransactions||[]).filter(row=>String(row.matter_id||'')===String(matter.id)&&!!row.lawpay_transaction_id).map(row=>({id:String(row.id),source:'legacy_attribution',lawpay_transaction_id:String(row.lawpay_transaction_id||''),amount:Math.abs(financeNumber(row.amount)),date:String(row.date||''),label:\`\${row.date||''} · \${row.memo||'Mio trust entry'} · $\${financeNumber(row.amount).toFixed(2)}\`})),...(lawPayV323Review.ledger_entries||[]).filter(entry=>String(entry.matter_id||'')===String(matter.id)).map(entry=>({id:String(entry.id),source:'classification_workflow',lawpay_transaction_id:String((lawPayV323Review.transactions||[]).find(transaction=>String(transaction.gateway_transaction_id||'')===String((lawPayV323Review.classifications||[]).find(record=>String(record.id||'')===String(entry.classification_id||''))?.gateway_transaction_id||''))?.gateway_transaction_id||''),amount:Math.abs(Number(entry.amount_cents||0)/100),date:String(entry.occurred_at||entry.created_at||''),label:\`\${entry.entry_kind} · $\${(Number(entry.amount_cents||0)/100).toFixed(2)}\`}))]} accounts={lawPayV323Review.accounts} mappingAvailable={lawPayV323Review.mapping_available!==false} diagnostics={lawPayV323Diagnostics} busy={lawPayV323Busy} error={lawPayV323Error} notice={lawPayV323Notice} onRefresh={loadLawPayClassification} onActed={loadLawPayClassification} refundResolutions={lawPayV323Review.refund_resolutions} />
+const panel = `        <MioLawPayClassificationPanel matter={null} matters={matters} transactions={lawPayV323Review.transactions} classifications={lawPayV323Review.classifications} invoices={(mioInvoices||[])} existingEntries={[...(mioTrustTransactions||[]).filter(row=>!!row.lawpay_transaction_id).map(row=>({id:String(row.id),source:'legacy_attribution',lawpay_transaction_id:String(row.lawpay_transaction_id||''),amount:Math.abs(financeNumber(row.amount)),date:String(row.date||''),label:\`\${row.date||''} · \${row.memo||'Mio trust entry'} · $\${financeNumber(row.amount).toFixed(2)}\`})),...(lawPayV323Review.ledger_entries||[]).map(entry=>({id:String(entry.id),source:'classification_workflow',lawpay_transaction_id:String((lawPayV323Review.transactions||[]).find(transaction=>String(transaction.gateway_transaction_id||'')===String((lawPayV323Review.classifications||[]).find(record=>String(record.id||'')===String(entry.classification_id||''))?.gateway_transaction_id||''))?.gateway_transaction_id||''),amount:Math.abs(Number(entry.amount_cents||0)/100),date:String(entry.occurred_at||entry.created_at||''),label:\`\${entry.entry_kind} · $\${(Number(entry.amount_cents||0)/100).toFixed(2)}\`}))]} accounts={lawPayV323Review.accounts} mappingAvailable={lawPayV323Review.mapping_available!==false} busy={lawPayV323Busy} error={lawPayV323Error} notice={lawPayV323Notice} onRefresh={loadLawPayClassification} onActed={loadLawPayClassification} refundResolutions={lawPayV323Review.refund_resolutions} />
+`
+const lawpayQueue = `      <section aria-label="LawPay review queue" style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0 }}>LawPay review queue</h2>
+        ${panel}
+        <MioLawPayDiagnostics />
+      </section>
 `
 const postedRows = `    // A transaction recorded through the classification workflow appears exactly once: as the
     // posted ledger entry. A corrected posting keeps its original entry and its reversal, which
@@ -152,7 +165,9 @@ export default function lawPayClassification() {
     const trustNegative = trust < -0.005`, 'trust is never clamped to zero')
       code = once(code, originalRefundSum, refundOnce, 'refund counted once')
       code = once(code, '      trust,\n', '      trust,\n      trustNegative,\n', 'the negative trust balance is reported')
-      code = editFunction(code, 'renderClientDashboardFinances', (part) => once(part, "    return <div style={{ display: 'grid', gap: 14 }}>\n", "    return <div style={{ display: 'grid', gap: 14 }}>\n" + discrepancy + panel, 'classification panel and trust discrepancy mount'))
+      code = editFunction(code, 'renderClientDashboardFinances', (part) => once(part, "    return <div style={{ display: 'grid', gap: 14 }}>\n", "    return <div style={{ display: 'grid', gap: 14 }}>\n" + discrepancy, 'trust discrepancy mount'))
+      code = once(code, "      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Mio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>\n", "      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Mio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>\n" + lawpayQueue, 'centralized LawPay review queue and diagnostics mount')
+      code = once(code, '        return {...result,audit}', '        notifyLawPayReviewChanged()\n        return {...result,audit}', 'the review notification refreshes after a live sync')
       if (code.includes('finishLawPayClassification')) throw Error('V323 transform ran twice')
       return `${code}\n// finishLawPayClassification\n`
     },
