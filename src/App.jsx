@@ -5808,6 +5808,7 @@ function App() {
   const [discoveryMatrixExpandedCells, setDiscoveryMatrixExpandedCells] = useState({})
   const [discoveryMatrixSubTab, setDiscoveryMatrixSubTab] = useState('our')
   const [discoveryMatrixPanelOpen, setDiscoveryMatrixPanelOpen] = useState({})
+  const [discoveryMatrixSort, setDiscoveryMatrixSort] = useState({ key: 'name', direction: 'asc' })
   const [showDiscoveryAgreementWindow, setShowDiscoveryAgreementWindow] = useState(false)
   const [discoveryAgreementForm, setDiscoveryAgreementForm] = useState({ request_id: '', note: '', matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
   const [showDiscoveryWindow, setShowDiscoveryWindow] = useState(false)
@@ -14516,6 +14517,149 @@ function App() {
     return documentHasDiscoveryRequestSide(doc, 'our') || String(doc.discovery_side || '').toLowerCase() === 'ours'
   }
 
+  function discoveryMatrixRequestMeta(status, side = 'our') {
+    if (status === 'served') return { label: '✓ Served', bg: '#ffffff', fg: '#334155' }
+    if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fde68a', fg: '#92400e' }
+    return { label: side === 'their' ? 'Not Served' : 'Not Serving', bg: '#ffffff', fg: '#94a3b8' }
+  }
+
+  function discoveryMatrixResponseMeta(kind) {
+    switch (kind) {
+      case 'overdue': return { bg: '#7f1d1d', fg: '#ffffff' }
+      case 'due_today': return { bg: '#f59e0b', fg: '#7c2d12' }
+      case 'due_soon': return { bg: '#fde68a', fg: '#92400e' }
+      case 'completed_timely': return { bg: '#dcfce7', fg: '#166534' }
+      case 'completed_late': return { bg: '#f3e0e6', fg: '#7f1d1d' }
+      case 'partial': return { bg: '#fff7ed', fg: '#c2410c' }
+      default: return { bg: '#ffffff', fg: '#64748b' }
+    }
+  }
+
+  function discoveryMatrixResponseText(resp) {
+    if (!resp) return ''
+    switch (resp.kind) {
+      case 'overdue': return `${resp.days} day${resp.days === 1 ? '' : 's'} overdue`
+      case 'due_today': return 'Due today'
+      case 'due_soon': return `${resp.days} day${resp.days === 1 ? '' : 's'} left`
+      case 'ok': return `${resp.days} days left`
+      case 'completed_timely': return '✓ Timely'
+      case 'completed_late': return resp.lateDays > 0 ? `✓ ${resp.lateDays} day${resp.lateDays === 1 ? '' : 's'} late` : 'Late'
+      case 'unknown': return 'Timeliness unknown'
+      case 'partial': return 'Partial response'
+      case 'due_needed': return 'Due date needed'
+      default: return ''
+    }
+  }
+
+  function discoveryMatrixDaysUntil(dateValue) {
+    if (!dateValue || String(dateValue).trim().toLowerCase() === 'n/a') return null
+    const due = parseTimelineDate(dateValue) || parseDateInputValue(dateValue)
+    if (!due) return null
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    due.setHours(0, 0, 0, 0)
+    return Math.round((due - today) / 86400000)
+  }
+
+  function discoveryMatrixResponseForDoc(doc) {
+    const stored = storedDiscoveryRequestForDoc(doc) || {}
+    const dueDate = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const responses = Array.isArray(stored.responses) ? stored.responses : []
+    const dated = responses
+      .map((response) => ({ response, served: discoveryResponseServiceDateValue(response) }))
+      .filter((item) => item.served)
+      .sort((a, b) => String(b.served).localeCompare(String(a.served)))
+    if (dated.length) {
+      const latest = dated[0]
+      const servedDate = latest.served
+      const status = latest.response.service_status || ''
+      if (dueDate) {
+        const dueParsed = parseTimelineDate(dueDate) || parseDateInputValue(dueDate)
+        const servedParsed = parseTimelineDate(servedDate) || parseDateInputValue(servedDate)
+        if (dueParsed && servedParsed) {
+          const lateDays = Math.round((servedParsed - dueParsed) / 86400000)
+          if (lateDays <= 0) return { kind: 'completed_timely', dueDate, servedDate, lateDays: 0, responses: dated }
+          return { kind: 'completed_late', dueDate, servedDate, lateDays, responses: dated }
+        }
+      }
+      if (status === 'Late') return { kind: 'completed_late', dueDate, servedDate, lateDays: 0, responses: dated }
+      if (status === 'Timely') return { kind: 'completed_timely', dueDate, servedDate, lateDays: 0, responses: dated }
+      return { kind: 'unknown', dueDate, servedDate, lateDays: 0, responses: dated }
+    }
+    if (responses.length) return { kind: 'partial', dueDate, servedDate: '', lateDays: 0, responses }
+    if (!dueDate) return { kind: 'due_needed', dueDate: '', servedDate: '', lateDays: 0, responses }
+    const days = discoveryMatrixDaysUntil(dueDate)
+    if (days === null) return { kind: 'due_needed', dueDate, servedDate: '', lateDays: 0, responses }
+    if (days < 0) return { kind: 'overdue', dueDate, servedDate: '', lateDays: 0, days: Math.abs(days), responses }
+    if (days === 0) return { kind: 'due_today', dueDate, servedDate: '', lateDays: 0, days: 0, responses }
+    if (days <= 7) return { kind: 'due_soon', dueDate, servedDate: '', lateDays: 0, days, responses }
+    return { kind: 'ok', dueDate, servedDate: '', lateDays: 0, days, responses }
+  }
+
+  function discoveryMatrixResponseSortRank(resp) {
+    if (!resp) return [3, 0]
+    if (resp.kind === 'overdue') return [0, -(resp.days || 0)]
+    if (resp.kind === 'due_today') return [0, 0]
+    if (resp.kind === 'due_soon' || resp.kind === 'ok') return [0, resp.days || 0]
+    if (resp.kind === 'due_needed' || resp.kind === 'partial') return [1, 0]
+    if (['completed_timely', 'completed_late', 'unknown'].includes(resp.kind)) return [2, 0]
+    return [3, 0]
+  }
+
+  function discoveryMatrixResponseForCell(docs) {
+    const states = docs.map((doc) => discoveryMatrixResponseForDoc(doc))
+    const outstanding = states.filter((s) => ['overdue', 'due_today', 'due_soon', 'ok', 'due_needed', 'partial'].includes(s.kind))
+    if (outstanding.length) {
+      return outstanding.sort((a, b) => {
+        const ar = discoveryMatrixResponseSortRank(a)
+        const br = discoveryMatrixResponseSortRank(b)
+        if (ar[0] !== br[0]) return ar[0] - br[0]
+        return ar[1] - br[1]
+      })[0]
+    }
+    const completed = states.filter((s) => ['completed_timely', 'completed_late', 'unknown'].includes(s.kind))
+    if (completed.length) {
+      return completed.find((s) => s.kind === 'completed_late') || completed.find((s) => s.kind === 'unknown') || completed[0]
+    }
+    return { kind: 'due_needed', dueDate: '', servedDate: '', lateDays: 0, days: 0, responses: [] }
+  }
+
+  function discoveryMatrixMatterSortValue(matter, key, side) {
+    if (key === 'earliest') {
+      let best = [3, 0]
+      discoveryMatrixColumns().forEach((column) => {
+        const state = discoveryMatrixCellState(matter, column.key, side)
+        const rank = discoveryMatrixResponseSortRank(state.response)
+        if (rank[0] < best[0] || (rank[0] === best[0] && rank[1] < best[1])) best = rank
+      })
+      return best
+    }
+    const state = discoveryMatrixCellState(matter, key, side)
+    return discoveryMatrixResponseSortRank(state.response)
+  }
+
+  function discoveryMatrixSortMatters(list, side) {
+    const direction = discoveryMatrixSort.direction === 'desc' ? -1 : 1
+    const key = discoveryMatrixSort.key || 'name'
+    return [...list].sort((a, b) => {
+      if (key === 'name') return formatMatterOption(a).localeCompare(formatMatterOption(b)) * direction
+      const av = discoveryMatrixMatterSortValue(a, key, side)
+      const bv = discoveryMatrixMatterSortValue(b, key, side)
+      if (av[0] !== bv[0]) return (av[0] - bv[0]) * direction
+      if (av[1] !== bv[1]) return (av[1] - bv[1]) * direction
+      return String(a.id).localeCompare(String(b.id))
+    })
+  }
+
+  function setDiscoveryMatrixSortColumn(key) {
+    setDiscoveryMatrixSort((current) => current.key === key ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' } : { key, direction: 'asc' })
+  }
+
+  function discoveryMatrixSortArrow(key) {
+    if (discoveryMatrixSort.key !== key) return ' ↕'
+    return discoveryMatrixSort.direction === 'asc' ? ' ▲' : ' ▼'
+  }
+
   function discoveryMatrixStatusOptions(kind) {
     const category = kind === 'case' ? 'case_status' : kind === 'matter' ? 'matter_status' : 'matter_type'
     const configured = options(category).map((option) => ({ value: option.name, label: option.name }))
@@ -14621,23 +14765,17 @@ function App() {
     const key = discoveryMatrixCellKey(matter, typeKey, side)
     const docs = discoveryMatrixDocsForCell(matter, typeKey, side)
     const override = discoveryMatrixState[key] || {}
-    if (override.status) return { status: override.status, served_date: override.served_date || '', docs }
+    const response = discoveryMatrixResponseForCell(docs)
+    if (override.status) return { status: override.status, served_date: override.served_date || '', docs, response }
     const servedDoc = docs.find((doc) => {
       const stored = storedDiscoveryRequestForDoc(doc) || {}
       return Boolean(stored.request_served || discoveryDocServiceDate(doc))
     })
     if (servedDoc) {
       const stored = storedDiscoveryRequestForDoc(servedDoc) || {}
-      return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs }
+      return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs, response }
     }
-    return { status: side === 'their' ? 'not_served' : 'not_serving', served_date: '', docs }
-  }
-
-  function discoveryMatrixStatusMeta(status, side = 'our') {
-    if (status === 'served') return { label: 'Served', bg: '#dcfce7', fg: '#166534' }
-    if (side === 'their') return { label: 'Not Served', bg: '#ffedd5', fg: '#9a3412' }
-    if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fee2e2', fg: '#991b1b' }
-    return { label: 'Not Serving', bg: '#ffedd5', fg: '#9a3412' }
+    return { status: side === 'their' ? 'not_served' : 'not_serving', served_date: '', docs, response }
   }
 
   function cycleDiscoveryMatrixStatus(matter, typeKey, side = 'our') {
@@ -14648,7 +14786,12 @@ function App() {
     const next = order[(index + 1) % order.length]
     const patch = { status: next }
     if (next === 'served') {
-      const servedDate = current.served_date || dateToInputValue(new Date())
+      let servedDate = current.served_date
+      if (!servedDate) {
+        const entered = window.prompt('Enter the request service date (mm/dd/yyyy).', discoveryDateDisplay(dateToInputValue(new Date())))
+        if (entered === null) return
+        servedDate = normalizeDiscoveryDateInputEntry(entered) || dateToInputValue(new Date())
+      }
       patch.served_date = servedDate
       discoveryMatrixDocsForCell(matter, typeKey, side).forEach((doc) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
@@ -14694,26 +14837,33 @@ function App() {
 
   function renderDiscoveryMatrixCell(matter, column, side) {
     const state = discoveryMatrixCellState(matter, column.key, side)
-    const visual = discoveryMatrixStatusMeta(state.status, side)
+    const req = discoveryMatrixRequestMeta(state.status, side)
+    const resp = state.response
+    const respMeta = discoveryMatrixResponseMeta(resp.kind)
     const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key, side)])
     const hasMore = state.docs.length > 1
     const cycleTitle = side === 'their' ? 'Click to cycle: Not Served → Served' : 'Click to cycle: Not Serving → Need to Serve → Served'
     return (
-      <td key={column.key} style={{ background: visual.bg, minWidth: 180, verticalAlign: 'top', padding: 8 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 86 }}>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 800, color: visual.fg, fontSize: 12 }}>{visual.label}</span>
+      <td key={column.key} style={{ border: '1px solid #cbd5e1', padding: 6, verticalAlign: 'top', minWidth: 190, background: `linear-gradient(to bottom right, ${req.bg} 50%, ${respMeta.bg} 50%)` }}>
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: 108, gap: 3 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 4 }}>
+            <span style={{ fontWeight: 800, color: req.fg, fontSize: 11 }}>{req.label}</span>
             {hasMore && (
-              <button type="button" onClick={() => setDiscoveryMatrixExpandedCells((current) => ({ ...current, [discoveryMatrixCellKey(matter, column.key, side)]: !expanded }))} title={expanded ? 'Hide amended/supplemental requests' : 'Show amended/supplemental requests'} style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontWeight: 900, color: visual.fg, fontSize: 15, lineHeight: 1 }}>{expanded ? '−' : '+'}</button>
+              <button type="button" onClick={() => setDiscoveryMatrixExpandedCells((current) => ({ ...current, [discoveryMatrixCellKey(matter, column.key, side)]: !expanded }))} title={expanded ? 'Hide sets' : 'Show sets'} style={{ border: 0, background: 'rgba(255,255,255,.55)', padding: '0 4px', cursor: 'pointer', fontWeight: 900, color: req.fg, fontSize: 14, lineHeight: 1 }}>{expanded ? '−' : '+'}</button>
             )}
           </div>
           {state.status === 'served' && (
             <DiscoveryDateInput value={state.served_date || ''} onChange={(value) => setDiscoveryMatrixServedDate(matter, column.key, value, side)} />
           )}
           {state.docs.length >= 1 && (
-            <button type="button" onClick={() => openDocumentEditWindow(state.docs[0])} style={{ textAlign: 'left', fontSize: 11, border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textDecoration: 'underline' }}>{discoveryDocumentTitle(state.docs[0])}</button>
+            <button type="button" onClick={() => openDocumentEditWindow(state.docs[0])} title={discoveryDocumentTitle(state.docs[0])} style={{ textAlign: 'left', fontSize: 10, border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textDecoration: 'underline', maxWidth: '52%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{discoveryDocumentTitle(state.docs[0])}</button>
           )}
-          <button type="button" onClick={() => cycleDiscoveryMatrixStatus(matter, column.key, side)} title={cycleTitle} style={{ alignSelf: 'flex-start', marginTop: 'auto', fontSize: 10, border: '1px solid rgba(0,0,0,.12)', borderRadius: 4, background: 'rgba(255,255,255,.65)', color: '#334155', padding: '1px 7px', cursor: 'pointer', fontWeight: 700 }}>⭮ cycle</button>
+          <div style={{ alignSelf: 'flex-end', textAlign: 'right', marginTop: 'auto' }}>
+            <div style={{ fontWeight: 800, color: respMeta.fg, fontSize: 11 }}>{discoveryMatrixResponseText(resp)}</div>
+            {resp.dueDate && <div style={{ fontSize: 10, color: respMeta.fg }}>Due {discoveryDateDisplay(resp.dueDate)}</div>}
+            {resp.servedDate && <div style={{ fontSize: 10, color: respMeta.fg }}>Served {discoveryDateDisplay(resp.servedDate)}</div>}
+          </div>
+          <button type="button" aria-label="cycle" onClick={() => cycleDiscoveryMatrixStatus(matter, column.key, side)} title={cycleTitle} style={{ alignSelf: 'flex-start', fontSize: 9, border: '1px solid rgba(0,0,0,.15)', borderRadius: 4, background: 'rgba(255,255,255,.7)', color: '#334155', padding: '0 5px', cursor: 'pointer', fontWeight: 700 }}>⭮</button>
         </div>
       </td>
     )
@@ -14751,8 +14901,8 @@ function App() {
 
   function renderDiscoveryResponseMatrix() {
     const columns = discoveryMatrixColumns()
-    const matrixMatters = discoveryMatrixMatters()
     const side = discoveryMatrixSide()
+    const matrixMatters = discoveryMatrixSortMatters(discoveryMatrixMatters(), side)
     const subTabButton = (value, label) => (
       <button type="button" onClick={() => setDiscoveryMatrixSubTab(value)} style={{ padding: '8px 14px', border: '1px solid #cbd5e1', borderRadius: 8, background: discoveryMatrixSubTab === value ? '#2f6584' : 'white', color: discoveryMatrixSubTab === value ? 'white' : '#1f2d3d', fontWeight: 'bold' }}>{label}</button>
     )
@@ -14770,6 +14920,7 @@ function App() {
             <button type="button" onClick={() => expandAllDiscoveryMatrixRows(side)}>Expand All Rows</button>
             <button type="button" onClick={collapseAllDiscoveryMatrixRows}>Collapse All Rows</button>
             <button type="button" onClick={() => expandAllDiscoveryMatrixRows(side)}>Show All Requests</button>
+            <button type="button" onClick={() => setDiscoveryMatrixSortColumn('earliest')} title="Sort matters by the earliest outstanding response deadline across all discovery types" style={{ background: discoveryMatrixSort.key === 'earliest' ? '#e0f2fe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 10px' }}>Earliest outstanding deadline{discoveryMatrixSortArrow('earliest')}</button>
           </div>
           <p style={{ color: '#475569', margin: 0 }}>
             {side === 'their'
@@ -14780,8 +14931,8 @@ function App() {
             <table cellPadding="7" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: 1100 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', position: 'sticky', top: 0, zIndex: 1 }}>
-                  <th style={{ minWidth: 240, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, textAlign: 'left' }}>Matter</th>
-                  {columns.map((column) => <th key={column.key} style={{ minWidth: 180, textAlign: 'left' }}>{column.label}</th>)}
+                  <th onClick={() => setDiscoveryMatrixSortColumn('name')} title="Sort by matter name" style={{ minWidth: 240, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap' }}>Matter{discoveryMatrixSortArrow('name')}</th>
+                  {columns.map((column) => <th key={column.key} onClick={() => setDiscoveryMatrixSortColumn(column.key)} title="Sort by response due date" style={{ minWidth: 180, textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap' }}>{column.label}{discoveryMatrixSortArrow(column.key)}</th>)}
                 </tr>
               </thead>
               <tbody>
