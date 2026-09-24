@@ -39,7 +39,7 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
   // The stored classifications, the ledger entries they produced and the deposit-account
   // mapping are read from the gateway. Nothing here writes: every write is an explicit review
   // decision made in the panel below.
-  async function loadLawPayClassification(){
+  async function loadLawPayClassification(options={}){
     setLawPayV323Busy(true);setLawPayV323Error('')
     try{
       const {data,error}=await supabase.functions.invoke('lawpay-gateway',{body:{action:'review'}})
@@ -47,7 +47,7 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
       if(data?.error)throw new Error(data.error)
       setLawPayV323Review({transactions:data.transactions||[],classifications:data.classifications||[],ledger_entries:data.ledger_entries||[],accounts:data.accounts||[],mapping_available:data.mapping_table_available!==false,refund_resolutions:data.refund_resolutions||[],refund_resolutions_available:data.refund_resolutions_available!==false})
       setLawPayV323Notice('')
-      notifyLawPayReviewChanged()
+      if(options.notify!==false)notifyLawPayReviewChanged()
     }catch(failure){setLawPayV323Error(failure instanceof Error?failure.message:String(failure))}finally{setLawPayV323Busy(false)}
   }
   // Loaded once per signed-in session, so that every view reading the trust ledger - the matter
@@ -65,6 +65,16 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
     const openLawPay=()=>setPage('lawpay')
     window.addEventListener('mio-open-lawpay',openLawPay)
     return()=>window.removeEventListener('mio-open-lawpay',openLawPay)
+  },[session?.user?.id])
+  // A decision on any other open tab refreshes this tab's review state quietly (without re-broadcasting,
+  // so two tabs cannot ping-pong), keeping the matter trust balance and the review queue in sync.
+  useEffect(()=>{
+    let channel
+    try {
+      channel=new BroadcastChannel('mio-lawpay')
+      channel.onmessage=(event)=>{ if(event.data?.type==='refresh')void loadLawPayClassification({notify:false}) }
+    } catch { /* BroadcastChannel unavailable */ }
+    return()=> { try { channel?.close() } catch { /* nothing to close */ } }
   },[session?.user?.id])
 `
 const panel = `        <MioLawPayClassificationPanel matter={null} matters={matters} transactions={lawPayV323Review.transactions} classifications={lawPayV323Review.classifications} invoices={(mioInvoices||[])} existingEntries={[...(mioTrustTransactions||[]).filter(row=>!!row.lawpay_transaction_id).map(row=>({id:String(row.id),source:'legacy_attribution',lawpay_transaction_id:String(row.lawpay_transaction_id||''),amount:Math.abs(financeNumber(row.amount)),date:String(row.date||''),label:\`\${row.date||''} · \${row.memo||'Mio trust entry'} · $\${financeNumber(row.amount).toFixed(2)}\`})),...(lawPayV323Review.ledger_entries||[]).map(entry=>({id:String(entry.id),source:'classification_workflow',lawpay_transaction_id:String((lawPayV323Review.transactions||[]).find(transaction=>String(transaction.gateway_transaction_id||'')===String((lawPayV323Review.classifications||[]).find(record=>String(record.id||'')===String(entry.classification_id||''))?.gateway_transaction_id||''))?.gateway_transaction_id||''),amount:Math.abs(Number(entry.amount_cents||0)/100),date:String(entry.occurred_at||entry.created_at||''),label:\`\${entry.entry_kind} · $\${(Number(entry.amount_cents||0)/100).toFixed(2)}\`}))]} accounts={lawPayV323Review.accounts} mappingAvailable={lawPayV323Review.mapping_available!==false} busy={lawPayV323Busy} error={lawPayV323Error} notice={lawPayV323Notice} onRefresh={loadLawPayClassification} onActed={loadLawPayClassification} refundResolutions={lawPayV323Review.refund_resolutions} />
