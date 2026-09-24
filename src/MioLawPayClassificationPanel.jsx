@@ -74,6 +74,9 @@ export default function MioLawPayClassificationPanel({
   const anyFor = (transaction) => (classifications || []).find((record) => String(record.gateway_transaction_id || '') === providerIdOf(transaction)) || null
   const decisionsFor = (id) => drafts[id] || { ownership: 'matter', category: '', matter_id: String(matter?.id || ''), pnc_workflow_id: '', other_reason: '', invoice_id: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
   const patch = (id, change) => setDrafts((current) => ({ ...current, [id]: { ...decisionsFor(id), ...change } }))
+  // The reviewer's selected matter, resolved from the full matter list, so the preview names the
+  // matter they chose even when the panel is the firm-wide queue (where the panel-level `matter` is null).
+  const matterNameFor = (draft) => (matters || []).find((row) => String(row.id || '') === String(draft?.matter_id || ''))?.name || matter?.name || ''
   const outstanding = scoped.filter((transaction) => reviewStatus({ record: anyFor(transaction) }) !== 'recorded_in_mio')
   // Refunds whose relationship to a charge is not established by a provider identifier are shown
   // as unresolved, never netted against a charge's reported total just because they share an
@@ -112,7 +115,7 @@ export default function MioLawPayClassificationPanel({
   }, [matterIdForLoad])
   const planFor = (transaction, draft) => ledgerPlan({
     transaction, category: draft.category, resolvedAccount: accountDecision(transaction, draft.manual_key ? { verification: { account_key: draft.manual_key, verified_by: 'you', evidence_reference: draft.manual_evidence } } : null),
-    matter: { id: draft.matter_id, name: String(matter?.name || '') },
+    matter: { id: draft.matter_id, name: matterNameFor(draft) },
     invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
   })
   // A second click, a retry or a replay must not record the same payment twice: the marker is set
@@ -170,7 +173,7 @@ export default function MioLawPayClassificationPanel({
         || corrections.find((entry) => String(entry.posting_status || '') === 'reversed')
       const preview = correctionPreview({
         previous: previousRecording || {}, transaction, resolvedAccount: decision, category: draft.category,
-        matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: String(matter?.name || '') } : null,
+        matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: matterNameFor(draft) } : null,
         invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
         reason: draft.correction_reason,
       })
@@ -281,7 +284,7 @@ export default function MioLawPayClassificationPanel({
             : decision
           const correction = previousRecording ? correctionPreview({
             previous: previousRecording, transaction, resolvedAccount: correctionAccount, category: draft.category,
-            matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: String(matter?.name || '') } : null,
+            matter: draft.ownership === 'matter' ? { id: draft.matter_id, name: matterNameFor(draft) } : null,
             invoice: draft.invoice_id ? { id: draft.invoice_id, invoice_number: draft.invoice_id } : null,
             reason: draft.correction_reason,
           }) : null
@@ -379,7 +382,7 @@ export default function MioLawPayClassificationPanel({
                   <div data-testid={`lawpay-preview-${id}`} aria-label={`Preview for ${payer}`} style={{ background: '#f1f5f9', borderRadius: 8, padding: 8 }}>
                     <strong>{'Preview — nothing has been written yet'}</strong>
                     <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                      {postingPreview({ plan, status: previewStatus, matter: draft.ownership === 'matter' ? { name: String(matter?.name || '') } : null }).map((line, index) => <li key={index}>{line}</li>)}
+                      {postingPreview({ plan, status: previewStatus, matter: draft.ownership === 'matter' ? { name: matterNameFor(draft) } : null }).map((line, index) => <li key={index}>{line}</li>)}
                     </ul>
                     {duplicate?.duplicate ? <p style={{ margin: '6px 0 0', color: '#b45309' }}>{duplicate.reason}</p> : null}
                   </div>

@@ -71,7 +71,7 @@ try {
   await page.getByTestId('lawpay-run-diagnostics').waitFor()
 
   // Matter -> Finances must no longer carry the classification panel.
-  await page.goto(`${origin}/#billing`, { waitUntil: 'domcontentloaded' })
+  await page.getByRole('link', { name: 'Billing', exact: true }).click()
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).waitFor({ timeout: 60000 })
   await page.getByRole('button', { name: 'Bulk Billing', exact: true }).click()
   const dashboardLink = page.locator('a').filter({ hasText: /^Alpha (Synthetic|Matter)$/ }).first()
@@ -96,6 +96,7 @@ try {
   await notification.getByRole('button').click()
   await queue.waitFor({ timeout: 30000 })
   assert.ok(page.url().includes('#lawpay'), 'clicking the notification opens the central review queue')
+  await panel.getByRole('button', { name: 'Show every LawPay payment' }).click()
 
   // Save for later keeps the transaction in the count.
   const providerA = panel.getByTestId('lawpay-row-provider-a')
@@ -111,6 +112,7 @@ try {
 
   // Recording it updates the count down to one.
   await providerA.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
+  await providerA.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
   await providerA.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
   await providerA.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
   await providerA.getByTestId('lawpay-message-provider-a').waitFor()

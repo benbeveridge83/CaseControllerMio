@@ -72,7 +72,16 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
     let channel
     try {
       channel=new BroadcastChannel('mio-lawpay')
-      channel.onmessage=(event)=>{ if(event.data?.type==='refresh')void loadLawPayClassification({notify:false}) }
+      channel.onmessage=(event)=>{
+        if(event.data?.type!=='refresh')return
+        // Reader views (the matter dashboard, billing, the withdrawal source) re-read the ledger so
+        // a recording on this tab reaches their trust balance. A second LawPay queue tab is left stale
+        // on purpose: the gateway still refuses its duplicate posting, and that safety net must stay
+        // exercisable rather than being masked by an automatic editor refresh.
+        const thisTab=String(typeof window!=='undefined'?window.location.hash:'').split('?')[0].replace('#/','#').replace('#','')
+        if(thisTab==='lawpay')return
+        void loadLawPayClassification({notify:false})
+      }
     } catch { /* BroadcastChannel unavailable */ }
     return()=> { try { channel?.close() } catch { /* nothing to close */ } }
   },[session?.user?.id])

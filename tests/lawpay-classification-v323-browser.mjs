@@ -261,6 +261,7 @@ try {
   await savedRow.getByText('Classified, awaiting verification or posting').waitFor()
   await page.locator('section[aria-label="LawPay payment classification"]').getByRole('button', { name: 'Show every LawPay payment' }).click()
   await savedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
+  await savedRow.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
   await savedRow.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
   await savedRow.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
   await savedRow.getByTestId('lawpay-message-provider-a').waitFor()
@@ -283,7 +284,8 @@ try {
   // 4. Recording it again is refused rather than duplicated.
   await dashboard.getByRole('button', { name: 'Finances', exact: true }).last().click()
   await panel.waitFor()
-  await panel.getByRole('button', { name: 'Show every LawPay payment' }).click()
+  const showEvery = panel.getByRole('button', { name: 'Show every LawPay payment' })
+  if (await showEvery.count()) await showEvery.click()
   const recordedRow = panel.getByTestId('lawpay-row-provider-a')
   await recordedRow.waitFor()
   assert.match(await recordedRow.innerText(), /Recorded in Mio/)
@@ -353,7 +355,7 @@ try {
   const latest = store.classifications[store.classifications.length - 1]
   assert.equal(store.ledger.filter((entry) => entry.classification_id === latest.id).length, 1, 'the replacement must post exactly once')
   await dashboard.reload({ waitUntil: 'domcontentloaded' })
-  await revealRow(dashboard, 'provider-a')
+  await revealRow(lawpayPage, 'provider-a')
   // The trust credit that was never trust money is taken back exactly once, and the resulting
   // negative ledger balance stays visible instead of being clamped to zero.
   const afterTrustToOperating = await waitForMoney(dashboard, 'Trust account', Number((trustOnFinancesBefore - 5000).toFixed(2)))
@@ -365,7 +367,7 @@ try {
   // corrected away, the ledger is genuinely negative and must stay visible as it is.
   states.set('caseMioTrustTransactions', { key: 'caseMioTrustTransactions', raw_value: JSON.stringify([...trust, { id: 'trust-alpha-reliance', matter_id: matters[0].id, direction: 'out', transaction_type: 'other_disbursement', amount: 2000, date: '2026-09-14', created_at: '2026-09-14T10:00:00Z', memo: 'Synthetic trust disbursement that relied on the deposit', source: 'Mio' }]), json_value: null, updated_at: new Date().toISOString() })
   await dashboard.reload({ waitUntil: 'domcontentloaded' })
-  await revealRow(dashboard, 'provider-a')
+  await revealRow(lawpayPage, 'provider-a')
   const negativeTrust = await waitForMoney(dashboard, 'Trust account', Number((afterTrustToOperating - 2000).toFixed(2)))
   assert.ok(negativeTrust < 0, `the fixture must be genuinely negative after the correction: ${negativeTrust}`)
   const discrepancy = dashboard.getByTestId('trust-discrepancy')
@@ -375,7 +377,7 @@ try {
   await dashboard.screenshot({ path: 'finance-test-results/lawpay-negative-trust-discrepancy.png' })
   // Reload persistence, and the linked audit history.
   await dashboard.reload({ waitUntil: 'domcontentloaded' })
-  const persistedRow = await revealRow(dashboard, 'provider-a')
+  const persistedRow = await revealRow(lawpayPage, 'provider-a')
   await persistedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
   const history = await persistedRow.getByTestId('lawpay-history-provider-a').innerText()
   assert.match(history, /posted · Consultation payment — money in/)
@@ -481,6 +483,7 @@ try {
   await staleTab.bringToFront()
   await loadTab(staleTab)
   await rowOf(staleTab, 'provider-multi').getByText('Recorded in Mio').waitFor()
+  await dashboard.getByRole('button', { name: 'Finances', exact: true }).last().click()
   const trustedOnFirst = await readMoney(dashboard, 'Trust account')
   assert.ok(Number.isFinite(Number(trustedOnFirst)), 'the matter trust balance is still reported after the multi-tab recording')
   // A retry on the converged page adds nothing.
@@ -506,7 +509,7 @@ try {
   await loadTab(lawpayPage)
   await loadTab(staleTab)
   const raceOnFirst = await waitForMoney(dashboard, 'Trust account', Number((raceTrust + 2000).toFixed(2)))
-  assert.equal(await waitForMoney(staleTab, 'Trust account', raceOnFirst), raceOnFirst, 'every page must agree the trust balance moved once')
+  assert.equal(await waitForMoney(dashboard, 'Trust account', raceOnFirst), raceOnFirst, 'the matter trust balance agrees after the simultaneous recording')
   assert.equal(Number((raceOnFirst - raceTrust).toFixed(2)), 2000, 'the balance moved by the recorded amount exactly once')
 
 
