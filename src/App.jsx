@@ -5789,6 +5789,24 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioDiscoveryCaseStatusFilter') || 'null') || null }
     catch { return null }
   })
+  const [discoveryMatrixState, setDiscoveryMatrixState] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioDiscoveryMatrixState') || '{}') }
+    catch { return {} }
+  })
+  const [discoveryMatrixCaseStatusFilter, setDiscoveryMatrixCaseStatusFilter] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioDiscoveryMatrixCaseStatusFilter') || 'null') || null }
+    catch { return null }
+  })
+  const [discoveryMatrixMatterStatusFilter, setDiscoveryMatrixMatterStatusFilter] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioDiscoveryMatrixMatterStatusFilter') || 'null') || null }
+    catch { return null }
+  })
+  const [discoveryMatrixCaseTypeFilter, setDiscoveryMatrixCaseTypeFilter] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioDiscoveryMatrixCaseTypeFilter') || 'null') || null }
+    catch { return null }
+  })
+  const [discoveryMatrixExpandedCells, setDiscoveryMatrixExpandedCells] = useState({})
+  const [discoveryMatrixSubTab, setDiscoveryMatrixSubTab] = useState('our')
   const [showDiscoveryAgreementWindow, setShowDiscoveryAgreementWindow] = useState(false)
   const [discoveryAgreementForm, setDiscoveryAgreementForm] = useState({ request_id: '', note: '', matter_id: '', name: '', date: '', description: '', status: 'Neither', tag_ids: [], document_field_values: {}, file: null })
   const [showDiscoveryWindow, setShowDiscoveryWindow] = useState(false)
@@ -7205,6 +7223,7 @@ function App() {
       caseMioDiscoveryMatterStatusFilter: { setter: setDiscoveryMatterStatusFilter, kind: 'object', fallback: null },
       caseMioDiscoveryCaseStatusFilter: { setter: setDiscoveryCaseStatusFilter, kind: 'object', fallback: null },
       caseMioDiscoveryPageMode: { setter: setDiscoveryPageMode, kind: 'string', fallback: 'tracking' },
+      caseMioDiscoveryMatrixState: { setter: (value) => setDiscoveryMatrixState(value && typeof value === 'object' && !Array.isArray(value) ? value : {}), kind: 'object', fallback: {} },
       caseMioRespondingDiscoverySets: { setter: (value) => setRespondingDiscoverySets((current) => {
         const merged = new Map()
         ;[...(Array.isArray(value) ? value : []), ...(Array.isArray(current) ? current : [])].forEach((set) => {
@@ -9791,6 +9810,26 @@ function App() {
     safeSetLocalStorage('caseMioDiscoveryCaseStatusFilter', JSON.stringify(discoveryCaseStatusFilter))
     try { saveMioStateKey('caseMioDiscoveryCaseStatusFilter', JSON.stringify(discoveryCaseStatusFilter)) } catch {}
   }, [discoveryCaseStatusFilter])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioDiscoveryMatrixState', JSON.stringify(discoveryMatrixState))
+    try { saveMioStateKey('caseMioDiscoveryMatrixState', JSON.stringify(discoveryMatrixState)) } catch {}
+  }, [discoveryMatrixState])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioDiscoveryMatrixCaseStatusFilter', JSON.stringify(discoveryMatrixCaseStatusFilter))
+    try { saveMioStateKey('caseMioDiscoveryMatrixCaseStatusFilter', JSON.stringify(discoveryMatrixCaseStatusFilter)) } catch {}
+  }, [discoveryMatrixCaseStatusFilter])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioDiscoveryMatrixMatterStatusFilter', JSON.stringify(discoveryMatrixMatterStatusFilter))
+    try { saveMioStateKey('caseMioDiscoveryMatrixMatterStatusFilter', JSON.stringify(discoveryMatrixMatterStatusFilter)) } catch {}
+  }, [discoveryMatrixMatterStatusFilter])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioDiscoveryMatrixCaseTypeFilter', JSON.stringify(discoveryMatrixCaseTypeFilter))
+    try { saveMioStateKey('caseMioDiscoveryMatrixCaseTypeFilter', JSON.stringify(discoveryMatrixCaseTypeFilter)) } catch {}
+  }, [discoveryMatrixCaseTypeFilter])
 
   useEffect(() => {
     safeSetLocalStorage('caseMioChecklistCaseStatusFilter', JSON.stringify(checklistCaseStatusFilter))
@@ -14446,6 +14485,299 @@ function App() {
           {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No statuses have been set yet.</div>}
         </div>
       </details>
+    )
+  }
+
+  function discoveryMatrixColumns() {
+    return [
+      { key: 'rfd', label: 'Request for Disclosures' },
+      { key: 'rfp', label: 'Request for Production' },
+      { key: 'roggs', label: 'Interrogatories' },
+      { key: 'rfa', label: 'Request for Admissions' },
+      { key: 'depositions', label: 'Depositions' }
+    ]
+  }
+
+  function discoveryMatrixClosedStatus(value) {
+    return /^closed(?:$|[\s-])/i.test(String(value || '').trim())
+  }
+
+  function discoveryMatrixStatusOptions(kind) {
+    const fromMatters = Array.from(new Set(matters.map((matter) => {
+      if (kind === 'case') return matter?.case_status || ''
+      if (kind === 'matter') return matter?.matter_status || ''
+      return matter?.matter_type || matter?.case_type || ''
+    }).filter(Boolean))).map((value) => ({ value, label: value }))
+    return fromMatters.sort((a, b) => a.label.localeCompare(b.label))
+  }
+
+  function discoveryMatrixStatusFilterValue(kind) {
+    if (kind === 'case') return discoveryMatrixCaseStatusFilter
+    if (kind === 'matter') return discoveryMatrixMatterStatusFilter
+    return discoveryMatrixCaseTypeFilter
+  }
+
+  function discoveryMatrixStatusFilterValues(kind) {
+    const allValues = discoveryMatrixStatusOptions(kind).map((option) => option.value)
+    const current = discoveryMatrixStatusFilterValue(kind)
+    if (kind === 'case') {
+      if (!Array.isArray(current)) return allValues.filter((value) => !discoveryMatrixClosedStatus(value))
+      return current.filter((value) => allValues.includes(value))
+    }
+    if (!Array.isArray(current)) return allValues
+    return current.filter((value) => allValues.includes(value))
+  }
+
+  function setDiscoveryMatrixStatusFilter(kind, values) {
+    const allValues = discoveryMatrixStatusOptions(kind).map((option) => option.value)
+    const clean = Array.from(new Set((values || []).filter((value) => allValues.includes(value))))
+    if (kind === 'case') setDiscoveryMatrixCaseStatusFilter(clean)
+    else if (kind === 'matter') setDiscoveryMatrixMatterStatusFilter(clean)
+    else setDiscoveryMatrixCaseTypeFilter(clean)
+  }
+
+  function toggleDiscoveryMatrixStatusFilter(kind, value) {
+    const current = discoveryMatrixStatusFilterValues(kind)
+    const next = current.includes(value) ? current.filter((item) => item !== value) : [...current, value]
+    setDiscoveryMatrixStatusFilter(kind, next)
+  }
+
+  function DiscoveryMatrixCheckboxFilter({ kind, title }) {
+    const opts = discoveryMatrixStatusOptions(kind)
+    const selected = discoveryMatrixStatusFilterValues(kind)
+    return (
+      <details style={{ border: '1px solid #d5dce3', borderRadius: 6, padding: 8, background: '#fff', minWidth: 190 }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 'bold' }}>{title} <span style={{ fontWeight: 'normal', color: '#666', fontSize: 12 }}>({selected.length} of {opts.length})</span></summary>
+        <div style={{ display: 'flex', gap: 6, margin: '8px 0 6px' }}>
+          <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, opts.map((option) => option.value))}>All</button>
+          <button type="button" onClick={() => setDiscoveryMatrixStatusFilter(kind, [])}>None</button>
+        </div>
+        <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+          {opts.map((option) => (
+            <label key={option.value} style={{ display: 'block', fontSize: 12, marginBottom: 3 }}>
+              <input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggleDiscoveryMatrixStatusFilter(kind, option.value)} />{' '}{option.label}
+            </label>
+          ))}
+          {!opts.length && <div style={{ fontSize: 12, color: '#666' }}>No values have been set yet.</div>}
+        </div>
+      </details>
+    )
+  }
+
+  function discoveryMatrixDocIsDeposition(doc) {
+    if (!doc) return false
+    const paths = (doc.tag_ids || []).map((tagId) => normalizeDiscoveryTagPath(tagFullName(tagId))).filter(Boolean)
+    return paths.some((path) => /deposition/.test(path))
+  }
+
+  function discoveryMatrixDocTypeKey(doc) {
+    const text = String(discoveryTypeForDoc(doc) || doc?.discovery_type || '').toLowerCase()
+    if (text.includes('disclosure')) return 'rfd'
+    if (text.includes('production') || text.includes('rfp')) return 'rfp'
+    if (text.includes('interrog') || text.includes('rogg')) return 'roggs'
+    if (text.includes('admission') || text.includes('rfa')) return 'rfa'
+    return text
+  }
+
+  function discoveryMatrixDocsForCell(matter, typeKey) {
+    if (!matter?.id) return []
+    return documents.filter((doc) => {
+      if (!doc || doc.is_active === false) return false
+      if (String(doc.matter_id || '') !== String(matter.id)) return false
+      if (typeKey === 'depositions') return discoveryMatrixDocIsDeposition(doc)
+      const ourRequest = documentHasDiscoveryRequestSide(doc, 'our') || String(doc.discovery_side || '').toLowerCase() === 'ours'
+      return ourRequest && discoveryMatrixDocTypeKey(doc) === typeKey
+    })
+  }
+
+  function discoveryMatrixCellKey(matter, typeKey) {
+    return `${matter.id}|${typeKey}`
+  }
+
+  function discoveryMatrixCellState(matter, typeKey) {
+    const key = discoveryMatrixCellKey(matter, typeKey)
+    const docs = discoveryMatrixDocsForCell(matter, typeKey)
+    const override = discoveryMatrixState[key] || {}
+    if (override.status) return { status: override.status, served_date: override.served_date || '', docs }
+    const servedDoc = docs.find((doc) => {
+      const stored = storedDiscoveryRequestForDoc(doc) || {}
+      return Boolean(stored.request_served || discoveryDocServiceDate(doc))
+    })
+    if (servedDoc) {
+      const stored = storedDiscoveryRequestForDoc(servedDoc) || {}
+      return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs }
+    }
+    return { status: 'not_serving', served_date: '', docs }
+  }
+
+  function discoveryMatrixStatusMeta(status) {
+    if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fee2e2', fg: '#991b1b' }
+    if (status === 'served') return { label: 'Served', bg: '#dcfce7', fg: '#166534' }
+    return { label: 'Not Serving', bg: '#ffedd5', fg: '#9a3412' }
+  }
+
+  function cycleDiscoveryMatrixStatus(matter, typeKey) {
+    const key = discoveryMatrixCellKey(matter, typeKey)
+    const current = discoveryMatrixCellState(matter, typeKey)
+    const order = ['not_serving', 'need_to_serve', 'served']
+    const index = order.indexOf(current.status)
+    const next = order[(index + 1) % order.length]
+    const patch = { status: next }
+    if (next === 'served') {
+      const servedDate = current.served_date || dateToInputValue(new Date())
+      patch.served_date = servedDate
+      discoveryMatrixDocsForCell(matter, typeKey).forEach((doc) => {
+        const stored = storedDiscoveryRequestForDoc(doc) || {}
+        if (!stored.request_served) upsertDiscoveryDocRequest(doc, { request_served: servedDate })
+      })
+    }
+    setDiscoveryMatrixState((state) => ({ ...state, [key]: { ...(state[key] || {}), ...patch } }))
+  }
+
+  function setDiscoveryMatrixServedDate(matter, typeKey, value) {
+    const key = discoveryMatrixCellKey(matter, typeKey)
+    setDiscoveryMatrixState((state) => ({ ...state, [key]: { ...(state[key] || {}), served_date: value } }))
+    discoveryMatrixDocsForCell(matter, typeKey).forEach((doc) => upsertDiscoveryDocRequest(doc, { request_served: value }))
+  }
+
+  function discoveryMatrixMatters() {
+    const caseValues = discoveryMatrixStatusFilterValues('case')
+    const matterValues = discoveryMatrixStatusFilterValues('matter')
+    const caseTypeValues = discoveryMatrixStatusFilterValues('case_type')
+    return matters.filter((matter) => {
+      if (!matter || matter.is_active === false) return false
+      if (!caseValues.includes(matter.case_status || '')) return false
+      if (!matterValues.includes(matter.matter_status || '')) return false
+      const caseType = String(matter.matter_type || matter.case_type || '')
+      if (!caseTypeValues.includes(caseType)) return false
+      return true
+    })
+  }
+
+  function expandAllDiscoveryMatrixRows() {
+    const next = {}
+    discoveryMatrixMatters().forEach((matter) => {
+      discoveryMatrixColumns().forEach((column) => {
+        if (discoveryMatrixDocsForCell(matter, column.key).length > 1) next[discoveryMatrixCellKey(matter, column.key)] = true
+      })
+    })
+    setDiscoveryMatrixExpandedCells(next)
+  }
+
+  function collapseAllDiscoveryMatrixRows() {
+    setDiscoveryMatrixExpandedCells({})
+  }
+
+  function renderDiscoveryMatrixCell(matter, column) {
+    const state = discoveryMatrixCellState(matter, column.key)
+    const visual = discoveryMatrixStatusMeta(state.status)
+    const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key)])
+    const hasMore = state.docs.length > 1
+    return (
+      <td key={column.key} style={{ background: visual.bg, minWidth: 180, verticalAlign: 'top', padding: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 86 }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 800, color: visual.fg, fontSize: 12 }}>{visual.label}</span>
+            {hasMore && (
+              <button type="button" onClick={() => setDiscoveryMatrixExpandedCells((current) => ({ ...current, [discoveryMatrixCellKey(matter, column.key)]: !expanded }))} title={expanded ? 'Hide amended/supplemental requests' : 'Show amended/supplemental requests'} style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontWeight: 900, color: visual.fg, fontSize: 15, lineHeight: 1 }}>{expanded ? '−' : '+'}</button>
+            )}
+          </div>
+          {state.status === 'served' && (
+            <DiscoveryDateInput value={state.served_date || ''} onChange={(value) => setDiscoveryMatrixServedDate(matter, column.key, value)} />
+          )}
+          {state.docs.length >= 1 && (
+            <button type="button" onClick={() => openDocumentEditWindow(state.docs[0])} style={{ textAlign: 'left', fontSize: 11, border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textDecoration: 'underline' }}>{discoveryDocumentTitle(state.docs[0])}</button>
+          )}
+          <button type="button" onClick={() => cycleDiscoveryMatrixStatus(matter, column.key)} title="Click to cycle: Not Serving → Need to Serve → Served" style={{ alignSelf: 'flex-start', marginTop: 'auto', fontSize: 10, border: '1px solid rgba(0,0,0,.12)', borderRadius: 4, background: 'rgba(255,255,255,.65)', color: '#334155', padding: '1px 7px', cursor: 'pointer', fontWeight: 700 }}>⭮ cycle</button>
+        </div>
+      </td>
+    )
+  }
+
+  function renderDiscoveryMatrixSubRows(matter) {
+    const rows = []
+    discoveryMatrixColumns().forEach((column) => {
+      if (!discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key)]) return
+      const docs = discoveryMatrixDocsForCell(matter, column.key)
+      if (docs.length <= 1) return
+      docs.slice(1).forEach((doc, index) => {
+        const stored = storedDiscoveryRequestForDoc(doc) || {}
+        const servedDate = stored.request_served || discoveryDocServiceDate(doc)
+        rows.push(
+          <tr key={`${matter.id}-${column.key}-${doc.id}`} style={{ borderTop: '1px solid #eef2f6', background: '#fafbfc' }}>
+            <td style={{ position: 'sticky', left: 0, background: '#fafbfc', zIndex: 1, color: '#64748b', fontSize: 12, paddingLeft: 22 }}>↳ {index + 1}. {discoveryDocumentTitle(doc)}</td>
+            {discoveryMatrixColumns().map((c) => {
+              if (c.key !== column.key) return <td key={c.key}></td>
+              return (
+                <td key={c.key} style={{ fontSize: 12 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button type="button" onClick={() => openDocumentEditWindow(doc)} style={{ textAlign: 'left', fontSize: 11, border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textDecoration: 'underline' }}>{discoveryDocumentTitle(doc)}</button>
+                    {servedDate && <span style={{ color: '#166534', fontWeight: 700 }}>{discoveryDateDisplay(servedDate)}</span>}
+                  </div>
+                </td>
+              )
+            })}
+          </tr>
+        )
+      })
+    })
+    return rows
+  }
+
+  function renderDiscoveryResponseMatrix() {
+    const columns = discoveryMatrixColumns()
+    const matrixMatters = discoveryMatrixMatters()
+    const subTabButton = (value, label) => (
+      <button type="button" onClick={() => setDiscoveryMatrixSubTab(value)} style={{ padding: '8px 14px', border: '1px solid #cbd5e1', borderRadius: 8, background: discoveryMatrixSubTab === value ? '#2f6584' : 'white', color: discoveryMatrixSubTab === value ? 'white' : '#1f2d3d', fontWeight: 'bold' }}>{label}</button>
+    )
+    return (
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {subTabButton('our', 'Our discovery requests')}
+          {subTabButton('their', 'Their Discovery Requests')}
+        </div>
+        {discoveryMatrixSubTab === 'their' ? (
+          <div style={{ padding: 26, border: '1px dashed #cbd5e1', borderRadius: 10, background: '#f8fafc', color: '#64748b', textAlign: 'center' }}>
+            Their Discovery Requests — coming next.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <DiscoveryMatrixCheckboxFilter kind="case" title="Case Status" />
+              <DiscoveryMatrixCheckboxFilter kind="matter" title="Matter Status" />
+              <DiscoveryMatrixCheckboxFilter kind="case_type" title="Case Type" />
+              <button type="button" onClick={expandAllDiscoveryMatrixRows}>Expand All Rows</button>
+              <button type="button" onClick={collapseAllDiscoveryMatrixRows}>Collapse All Rows</button>
+              <button type="button" onClick={expandAllDiscoveryMatrixRows}>Show All Requests</button>
+            </div>
+            <p style={{ color: '#475569', margin: 0 }}>Track our discovery requests served on the opposing party. Click a cell's ⭮ to cycle Not Serving → Need to Serve → Served, and use + to reveal amended/supplemental requests.</p>
+            <div style={{ overflow: 'auto', border: '1px solid #d5dce3', borderRadius: 6, maxHeight: '76vh' }}>
+              <table cellPadding="7" style={{ borderCollapse: 'collapse', width: 'max-content', minWidth: 1100 }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc', position: 'sticky', top: 0, zIndex: 1 }}>
+                    <th style={{ minWidth: 240, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, textAlign: 'left' }}>Matter</th>
+                    {columns.map((column) => <th key={column.key} style={{ minWidth: 180, textAlign: 'left' }}>{column.label}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {matrixMatters.flatMap((matter) => {
+                    const mainRow = (
+                      <tr key={matter.id} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        <td style={{ position: 'sticky', left: 0, background: '#fff', zIndex: 1, fontWeight: 600 }}>
+                          {matter ? <a href={`#matter_dashboard:${encodeURIComponent(matter.id)}`} onClick={(event) => { if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); openMatterTaskTemplates(matter) }}>{formatMatterOption(matter)}</a> : 'N/A'}
+                        </td>
+                        {columns.map((column) => renderDiscoveryMatrixCell(matter, column))}
+                      </tr>
+                    )
+                    return [mainRow, ...renderDiscoveryMatrixSubRows(matter)]
+                  })}
+                  {!matrixMatters.length && <tr><td colSpan={columns.length + 1} style={{ color: '#64748b', padding: 18, textAlign: 'center' }}>No matters match these filters.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
     )
   }
 
@@ -60186,9 +60518,16 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               >
                 Responding to Discovery
               </button>
+              <button
+                type="button"
+                onClick={() => setDiscoveryPageMode('matrix')}
+                style={{ padding: '9px 14px', border: '1px solid #cbd5e1', borderRadius: 8, background: discoveryPageMode === 'matrix' ? '#2f6584' : 'white', color: discoveryPageMode === 'matrix' ? 'white' : '#1f2d3d', fontWeight: 'bold' }}
+              >
+                Discovery Table
+              </button>
             </div>
 
-            {discoveryPageMode === 'responding' ? renderRespondingDiscoveryDashboard() : (
+            {discoveryPageMode === 'responding' ? renderRespondingDiscoveryDashboard() : discoveryPageMode === 'matrix' ? renderDiscoveryResponseMatrix() : (
               <>
                 <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
                   <label>

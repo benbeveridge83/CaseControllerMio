@@ -30,6 +30,8 @@ jobs:
         run: node scripts/test-withdrawal-release-browser.mjs
       - name: Actual production browser native matters and Discovery filters
         run: node scripts/test-native-discovery-browser.mjs
+      - name: Actual production browser Discovery Table matrix
+        run: node scripts/test-native-discovery-matrix-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
