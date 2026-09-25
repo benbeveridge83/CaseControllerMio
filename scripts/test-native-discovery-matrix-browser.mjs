@@ -13,9 +13,9 @@ const matter=(id,name,caseStatus,matterStatus,caseType)=>({id,name,case_type:cas
 const matters=[matter('m0','Open Divorce','Open','Served- Need to Finalize','Divorce'),matter('m1','Closed Divorce','Closed','Order- Need to Close','Divorce'),matter('m2','Open Other','Open','Served- Need to Finalize','Other'),matter('m3','Open No Docs','Open','Served- Need to Finalize','Divorce')]
 matters.forEach((m)=>{m.client_id='c'+m.id;m.clients.id=m.client_id})
 const doc=(id,matterId,type,name,side='ours')=>({id,matter_id:matterId,discovery_side:side,discovery_type:type,name,file_name:name+'.pdf',tag_ids:[],document_field_values:{},status:side==='theirs'?'Theirs':'Ours',is_active:true})
-const docs=[doc('d-rfp-0','m0','rfp','RFP to them'),doc('d-rfp-1','m0','rfp','Amended RFP to them'),doc('d-rfd-0','m0','rfd','RFD to them'),doc('d-rfp-closed','m1','rfp','RFP on closed matter'),doc('d-rfa-2','m2','rfa','RFA to them'),doc('d-their-rfp','m0','rfp','Their RFP to us','theirs')]
+const docs=[doc('d-rfp-0','m0','rfp','RFP to them'),doc('d-rfp-1','m0','rfp','Amended RFP to them'),doc('d-rfd-0','m0','rfd','RFD to them'),doc('d-roggs-0','m0','roggs','Interrogatories to them'),doc('d-rfp-closed','m1','rfp','RFP on closed matter'),doc('d-rfa-2','m2','rfa','RFA to them'),doc('d-their-rfp','m0','rfp','Their RFP to us','theirs')]
 const daysFromNow=(n)=>{const d=new Date();d.setDate(d.getDate()+n);const pad=x=>String(x).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`}
-const requests=[{id:'doc-d-rfd-0',document_id:'d-rfd-0',matter_id:'m0',side:'our',discovery_type:'rfd',request_served:'2026-08-01',response_due:daysFromNow(10),responses:[]},{id:'doc-d-rfa-2',document_id:'d-rfa-2',matter_id:'m2',side:'our',discovery_type:'rfa',response_due:daysFromNow(-3),responses:[{id:'r1',served_date:daysFromNow(-1),service_status:'Late',filing_type:'Original Response'}]},{id:'doc-d-rfp-0',document_id:'d-rfp-0',matter_id:'m0',side:'our',discovery_type:'rfp',responses:[{id:'r-partial',filing_type:'Original Response'}]}]
+const requests=[{id:'doc-d-rfd-0',document_id:'d-rfd-0',matter_id:'m0',side:'our',discovery_type:'rfd',request_served:'2026-08-01',response_due:daysFromNow(10),responses:[]},{id:'doc-d-roggs-0',document_id:'d-roggs-0',matter_id:'m0',side:'our',discovery_type:'roggs',request_served:daysFromNow(3),responses:[]},{id:'doc-d-rfa-2',document_id:'d-rfa-2',matter_id:'m2',side:'our',discovery_type:'rfa',response_due:daysFromNow(-3),responses:[{id:'r1',served_date:daysFromNow(-1),service_status:'Late',filing_type:'Original Response'}]},{id:'doc-d-rfp-0',document_id:'d-rfp-0',matter_id:'m0',side:'our',discovery_type:'rfp',responses:[{id:'r-partial',filing_type:'Original Response'}]}]
 const states=new Map(Object.entries({caseControllerDocuments:docs,caseControllerDiscoveryRequests:requests,caseMioClioMioRosetta:{}}).map(([key,v])=>[key,{key,raw_value:JSON.stringify(v),json_value:v,updated_at:now}]))
 const writes=[],errors=[],blocked=[]
 const server=http.createServer((req,res)=>{const p=path.resolve(root,'.'+new URL(req.url,'http://localhost').pathname);if(!p.startsWith(root+path.sep)&&p!==root){res.writeHead(403);return res.end()};const file=fs.existsSync(p)&&fs.statSync(p).isFile()?p:path.join(root,'index.html');res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.svg')?'image/svg+xml':'text/html');res.end(fs.readFileSync(file))})
@@ -59,6 +59,8 @@ try{
   assert.equal(await matterLinks().filter({hasText:'Open No Docs'}).count(),1)
   assert.ok(await page.getByText('✓ Served',{exact:true}).count()>=1,'served cell derived from tracking request_served')
   assert.ok(await page.getByText('10 days left',{exact:true}).count()>=1,'response due date shown in cell')
+  const roggsCellText=await page.getByRole('button',{name:'Interrogatories to them',exact:true}).locator('xpath=ancestor::td[1]').innerText()
+  assert.match(roggsCellText,/days left/,'served request with no explicit due date derives due date (served + 30 business days)')
   assert.ok(await page.getByText(/days late/).count()>=1,'late response shown in cell')
   assert.ok(await page.getByText('Due date needed',{exact:true}).count()>=1,'missing due date shown as Due date needed')
   assert.ok(await page.getByText('Partial response',{exact:true}).count()>=1,'partial response shown distinctly')
@@ -74,11 +76,13 @@ try{
   await settle(async()=> (await page.getByLabel('On Hold',{exact:true}).count())>=1)
   await page.getByLabel('Closed',{exact:true}).check()
   await settle(async()=> (await page.getByRole('button',{name:'None',exact:true}).count())>=1,'filter stays open after selection')
-  // Their side uses only Served / Not Served (no Need to Serve).
+  // Their side cycles Needs Setting! -> Not Served -> Served (no Need to Serve).
   await page.getByRole('button',{name:'Their Discovery Requests',exact:true}).click()
   await settle(async()=> (await page.getByText('Their RFP to us',{exact:true}).count())>=1)
   assert.equal(await page.getByText('Need to Serve',{exact:true}).count(),0,'their side has no Need to Serve')
-  assert.ok(await page.getByText('Not Served',{exact:true}).count()>=1,'their side defaults to Not Served')
+  assert.ok(await page.getByText('Needs Setting!',{exact:true}).count()>=1,'their side defaults to Needs Setting!')
+  await cycleButtons().first().click()
+  await settle(async()=> (await page.getByText('Not Served',{exact:true}).count())>=1)
   await cycleButtons().first().click()
   await settle(async()=> (await page.getByText('✓ Served',{exact:true}).count())>=1)
   // Sticky filters survive reload (shared between both sub-tabs).

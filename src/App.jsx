@@ -14509,7 +14509,7 @@ function App() {
   }
 
   function discoveryMatrixStatusList(side) {
-    return side === 'their' ? ['not_served', 'served'] : ['not_serving', 'need_to_serve', 'served']
+    return side === 'their' ? ['needs_setting', 'not_served', 'served'] : ['needs_setting', 'not_serving', 'need_to_serve', 'served']
   }
 
   function discoveryMatrixDocSideMatches(doc, side) {
@@ -14518,6 +14518,7 @@ function App() {
   }
 
   function discoveryMatrixRequestMeta(status, side = 'our') {
+    if (status === 'needs_setting') return { label: 'Needs Setting!', bg: '#ffffff', fg: '#dc2626' }
     if (status === 'served') return { label: '✓ Served', bg: '#ffffff', fg: '#334155' }
     if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fde68a', fg: '#92400e' }
     return { label: side === 'their' ? 'Not Served' : 'Not Serving', bg: '#ffffff', fg: '#94a3b8' }
@@ -14561,9 +14562,18 @@ function App() {
     return Math.round((due - today) / 86400000)
   }
 
+  function discoveryMatrixDefaultDueDate(servedDate) {
+    const served = parseTimelineDate(servedDate) || parseDateInputValue(servedDate)
+    if (!served) return ''
+    const due = nextNonWeekendHolidayDate(addTimelineDays(served, 30))
+    return due ? dateToInputValue(due) : ''
+  }
+
   function discoveryMatrixResponseForDoc(doc) {
     const stored = storedDiscoveryRequestForDoc(doc) || {}
-    const dueDate = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const explicitDue = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const requestServed = stored.request_served || discoveryDocServiceDate(doc) || ''
+    const dueDate = explicitDue || (requestServed ? discoveryMatrixDefaultDueDate(requestServed) : '')
     const responses = Array.isArray(stored.responses) ? stored.responses : []
     const dated = responses
       .map((response) => ({ response, served: discoveryResponseServiceDateValue(response) }))
@@ -14775,7 +14785,7 @@ function App() {
       const stored = storedDiscoveryRequestForDoc(servedDoc) || {}
       return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs, response }
     }
-    return { status: side === 'their' ? 'not_served' : 'not_serving', served_date: '', docs, response }
+    return { status: 'needs_setting', served_date: '', docs, response }
   }
 
   function cycleDiscoveryMatrixStatus(matter, typeKey, side = 'our') {
@@ -14786,12 +14796,7 @@ function App() {
     const next = order[(index + 1) % order.length]
     const patch = { status: next }
     if (next === 'served') {
-      let servedDate = current.served_date
-      if (!servedDate) {
-        const entered = window.prompt('Enter the request service date (mm/dd/yyyy).', discoveryDateDisplay(dateToInputValue(new Date())))
-        if (entered === null) return
-        servedDate = normalizeDiscoveryDateInputEntry(entered) || dateToInputValue(new Date())
-      }
+      const servedDate = current.served_date || dateToInputValue(new Date())
       patch.served_date = servedDate
       discoveryMatrixDocsForCell(matter, typeKey, side).forEach((doc) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
@@ -14842,7 +14847,7 @@ function App() {
     const respMeta = discoveryMatrixResponseMeta(resp.kind)
     const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key, side)])
     const hasMore = state.docs.length > 1
-    const cycleTitle = side === 'their' ? 'Click to cycle: Not Served → Served' : 'Click to cycle: Not Serving → Need to Serve → Served'
+    const cycleTitle = side === 'their' ? 'Click to cycle: Needs Setting! → Not Served → Served' : 'Click to cycle: Needs Setting! → Not Serving → Need to Serve → Served'
     return (
       <td key={column.key} style={{ border: '1px solid #cbd5e1', padding: 6, verticalAlign: 'top', minWidth: 190, background: `linear-gradient(to bottom right, ${req.bg} 50%, ${respMeta.bg} 50%)` }}>
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: 108, gap: 3 }}>
