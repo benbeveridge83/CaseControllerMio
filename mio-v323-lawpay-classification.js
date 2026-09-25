@@ -1,8 +1,8 @@
-// V323: connect the LawPay classification workflow to the Matter Dashboard -> Finances page.
+// V323/V325: connect the LawPay classification workflow to the firm-wide LawPay review queue.
 //
 // What this transform does, and nothing more:
 //   * loads the stored classifications, ledger entries, account mapping and redacted
-//     diagnostics from the gateway while a matter's Finances view is on screen;
+//     linkage evidence from the gateway for the signed-in finance administrator;
 //   * mounts the review panel that records the three decisions, previews them, and asks the
 //     gateway to save, record, correct, match or map;
 //   * lets a posted entry reach the trust ledger that the matter dashboard, the withdrawal
@@ -32,7 +32,7 @@ import MioLawPayDiagnostics from './MioLawPayDiagnostics.jsx'
 import { notifyLawPayReviewChanged } from './mioLawPayNotifications.js'
 import { singleCountProviderPayments } from './mioLawPayClassification.js'
 `
-const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState({transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_available:true})
+const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState({transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_available:true,review_cutover_date:'',legacy_recorded_transaction_ids:[],legacy_attributed_transaction_ids:[]})
   const [lawPayV323Busy,setLawPayV323Busy]=useState(false)
   const [lawPayV323Error,setLawPayV323Error]=useState('')
   const [lawPayV323Notice,setLawPayV323Notice]=useState('')
@@ -45,7 +45,7 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
       const {data,error}=await supabase.functions.invoke('lawpay-gateway',{body:{action:'review'}})
       if(error)throw new Error(error.message||'The LawPay gateway could not be reached.')
       if(data?.error)throw new Error(data.error)
-      setLawPayV323Review({transactions:data.transactions||[],classifications:data.classifications||[],ledger_entries:data.ledger_entries||[],accounts:data.accounts||[],mapping_available:data.mapping_table_available!==false,refund_resolutions:data.refund_resolutions||[],refund_resolutions_available:data.refund_resolutions_available!==false})
+      setLawPayV323Review({transactions:data.transactions||[],classifications:data.classifications||[],ledger_entries:data.ledger_entries||[],accounts:data.accounts||[],mapping_available:data.mapping_table_available!==false,refund_resolutions:data.refund_resolutions||[],refund_resolutions_available:data.refund_resolutions_available!==false,review_cutover_date:data.review_cutover_date||activeMioBillingCutoverDate,legacy_recorded_transaction_ids:data.legacy_recorded_transaction_ids||[],legacy_attributed_transaction_ids:data.legacy_attributed_transaction_ids||[]})
       setLawPayV323Notice('')
       if(options.notify!==false)notifyLawPayReviewChanged()
     }catch(failure){setLawPayV323Error(failure instanceof Error?failure.message:String(failure))}finally{setLawPayV323Busy(false)}
@@ -86,7 +86,7 @@ const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState(
     return()=> { try { channel?.close() } catch { /* nothing to close */ } }
   },[session?.user?.id])
 `
-const panel = `        <MioLawPayClassificationPanel matter={null} matters={matters} transactions={lawPayV323Review.transactions} classifications={lawPayV323Review.classifications} invoices={(mioInvoices||[])} existingEntries={[...(mioTrustTransactions||[]).filter(row=>!!row.lawpay_transaction_id).map(row=>({id:String(row.id),source:'legacy_attribution',lawpay_transaction_id:String(row.lawpay_transaction_id||''),amount:Math.abs(financeNumber(row.amount)),date:String(row.date||''),label:\`\${row.date||''} · \${row.memo||'Mio trust entry'} · $\${financeNumber(row.amount).toFixed(2)}\`})),...(lawPayV323Review.ledger_entries||[]).map(entry=>({id:String(entry.id),source:'classification_workflow',lawpay_transaction_id:String((lawPayV323Review.transactions||[]).find(transaction=>String(transaction.gateway_transaction_id||'')===String((lawPayV323Review.classifications||[]).find(record=>String(record.id||'')===String(entry.classification_id||''))?.gateway_transaction_id||''))?.gateway_transaction_id||''),amount:Math.abs(Number(entry.amount_cents||0)/100),date:String(entry.occurred_at||entry.created_at||''),label:\`\${entry.entry_kind} · $\${(Number(entry.amount_cents||0)/100).toFixed(2)}\`}))]} accounts={lawPayV323Review.accounts} mappingAvailable={lawPayV323Review.mapping_available!==false} busy={lawPayV323Busy} error={lawPayV323Error} notice={lawPayV323Notice} onRefresh={loadLawPayClassification} onActed={loadLawPayClassification} refundResolutions={lawPayV323Review.refund_resolutions} />
+const panel = `        <MioLawPayClassificationPanel matter={null} matters={matters} pncOptions={(matters||[]).filter(option=>pncStage(option)).map(option=>({id:String(option.id),label:[matterClientName(option),option.name,option.cause_number].filter(Boolean).join(' — ')}))} transactions={lawPayV323Review.transactions} classifications={lawPayV323Review.classifications} invoices={(mioInvoices||[])} existingEntries={[...(mioTrustTransactions||[]).filter(row=>!!row.lawpay_transaction_id).map(row=>({id:String(row.id),source:'legacy_attribution',lawpay_transaction_id:String(row.lawpay_transaction_id||''),amount:Math.abs(financeNumber(row.amount)),date:String(row.date||''),label:\`\${row.date||''} · \${row.memo||'Mio trust entry'} · $\${financeNumber(row.amount).toFixed(2)}\`})),...(lawPayV323Review.ledger_entries||[]).map(entry=>({id:String(entry.id),source:'classification_workflow',lawpay_transaction_id:String((lawPayV323Review.transactions||[]).find(transaction=>String(transaction.gateway_transaction_id||'')===String((lawPayV323Review.classifications||[]).find(record=>String(record.id||'')===String(entry.classification_id||''))?.gateway_transaction_id||''))?.gateway_transaction_id||''),amount:Math.abs(Number(entry.amount_cents||0)/100),date:String(entry.occurred_at||entry.created_at||''),label:\`\${entry.entry_kind} · $\${(Number(entry.amount_cents||0)/100).toFixed(2)}\`}))]} accounts={lawPayV323Review.accounts} mappingAvailable={lawPayV323Review.mapping_available!==false} busy={lawPayV323Busy} error={lawPayV323Error} notice={lawPayV323Notice} onRefresh={loadLawPayClassification} onActed={loadLawPayClassification} refundResolutions={lawPayV323Review.refund_resolutions} reviewCutoverDate={lawPayV323Review.review_cutover_date||activeMioBillingCutoverDate} legacyRecordedTransactionIds={lawPayV323Review.legacy_recorded_transaction_ids||[]} legacyAttributedTransactionIds={lawPayV323Review.legacy_attributed_transaction_ids||[]} />
 `
 const lawpayQueue = `      <section aria-label="LawPay review queue" style={{ border: '1px solid #cbd5e1', borderRadius: 10, padding: 14, marginBottom: 14 }}>
         <h2 style={{ marginTop: 0 }}>LawPay review queue</h2>

@@ -51,7 +51,7 @@ function gateway(body) {
   store.actions.push(body.action)
   if (!['review', 'map_account', 'save', 'post', 'match', 'correct'].includes(body.action)) return { ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }
   if (body.action === 'review') {
-    return { ok: true, version: 323, mapping_table_available: true, accounts: store.mapping, classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })) }
+    return { ok: true, version: 325, mapping_table_available: true, accounts: store.mapping, classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })), review_cutover_date: '2026-08-09', legacy_recorded_transaction_ids: [], legacy_attributed_transaction_ids: [] }
   }
   if (body.action === 'map_account') {
     const row = body.mapping
@@ -212,7 +212,7 @@ try {
   assert.ok(await panel.getByRole('heading', { name: 'LawPay payment classification' }).count(), 'the central LawPay page must carry the classification workflow')
   // 1. Every stored charge waiting on a decision is listed, with its reported account or the
   //    plain statement that none was reported.
-  assert.match(await panel.getByTestId('lawpay-classification-summary').innerText(), /3 payment\(s\) need a decision/)
+  assert.match(await panel.getByTestId('lawpay-classification-summary').innerText(), /2 item\(s\) need a decision/)
   assert.match(await panel.getByTestId('lawpay-account-provider-a').innerText(), /LawPay deposit account: Trust · eCheck IOLTA trust account/)
   assert.match(await panel.getByTestId('lawpay-account-provider-d').innerText(), /Unmapped LawPay account ending ••••4471/)
   await lawpayPage.getByTestId('lawpay-run-diagnostics').waitFor()
@@ -225,7 +225,7 @@ try {
   const blockedRow = panel.getByTestId('lawpay-row-provider-d')
   await panel.getByRole('button', { name: 'Decide Yasmine Said' }).click()
   await blockedRow.getByLabel('Ownership for Yasmine Said').selectOption('matter')
-  await blockedRow.getByLabel('Matter for Yasmine Said').selectOption({ label: 'Alpha Matter' })
+  await blockedRow.getByLabel('Matter for Yasmine Said').selectOption(matters[0].id)
   await blockedRow.getByLabel('Transaction type for Yasmine Said').selectOption('trust_deposit')
   assert.match(await blockedRow.getByTestId('lawpay-preview-provider-d').innerText(), /The deposit account is not established yet/)
   assert.equal(await blockedRow.getByRole('button', { name: 'Confirm and record Yasmine Said' }).isDisabled(), true, 'an unverified account must not be recordable')
@@ -243,8 +243,8 @@ try {
   const row = panel.getByTestId('lawpay-row-provider-a')
   await panel.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
   await row.getByLabel('Ownership for Alpha Synthetic').selectOption('matter')
-  await row.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
-  await row.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
+  await row.getByLabel('Matter for Alpha Synthetic').selectOption(matters[0].id)
+  assert.match(await row.getByTestId('lawpay-derived-category-provider-a').innerText(), /Trust deposit — money in.*set automatically/)
   const preview = await row.getByTestId('lawpay-preview-provider-a').innerText()
   assert.match(preview, /Money in \$5,?000\.00 for Alpha Matter/)
   assert.match(preview, /Trust balance change: \+\$5,?000\.00/)
@@ -261,8 +261,8 @@ try {
   await savedRow.getByText('Classified, awaiting verification or posting').waitFor()
   await page.locator('section[aria-label="LawPay payment classification"]').getByRole('button', { name: 'Show every LawPay payment' }).click()
   await savedRow.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
-  await savedRow.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
-  await savedRow.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
+  await savedRow.getByLabel('Matter for Alpha Synthetic').selectOption(matters[0].id)
+  assert.match(await savedRow.getByTestId('lawpay-derived-category-provider-a').innerText(), /Trust deposit — money in.*set automatically/)
   await savedRow.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
   await savedRow.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await savedRow.getByTestId('lawpay-message-provider-a').innerText(), /Recorded in Mio\. \$5,000\.00 is now in this client’s trust balance\./)
@@ -452,8 +452,8 @@ try {
     const row = rowOf(tab, provider)
     await row.waitFor()
     await row.getByLabel(`Ownership for ${payer}`).selectOption('matter')
-    await row.getByLabel(`Matter for ${payer}`).selectOption({ label: 'Alpha Matter' })
-    await row.getByLabel(`Transaction type for ${payer}`).selectOption('trust_deposit')
+    await row.getByLabel(`Matter for ${payer}`).selectOption(matters[0].id)
+    assert.match(await row.getByTestId(`lawpay-derived-category-${provider}`).innerText(), /Trust deposit — money in.*set automatically/)
     return row
   }
   const postedFor = (provider) => store.classifications.filter((record) => String(record.gateway_transaction_id) === provider && record.posting_status === 'posted').length
@@ -488,7 +488,7 @@ try {
   assert.ok(Number.isFinite(Number(trustedOnFirst)), 'the matter trust balance is still reported after the multi-tab recording')
   // A retry on the converged page adds nothing.
   const retryRow = rowOf(staleTab, 'provider-multi')
-  if (!(await retryRow.getByLabel('Transaction type for Multi Payer').count())) await retryRow.getByRole('button', { name: 'Decide Multi Payer' }).click()
+  if (!(await retryRow.getByTestId('lawpay-decisions-provider-multi').count())) await retryRow.getByRole('button', { name: 'Decide Multi Payer' }).click()
   assert.equal(await retryRow.getByRole('button', { name: 'Confirm and record Multi Payer' }).isDisabled(), true, 'a recorded charge must not be recordable again')
   assert.equal(postedFor('provider-multi'), 1)
   assert.equal(effectsFor('provider-multi'), 1)

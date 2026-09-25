@@ -66,6 +66,46 @@ export function suggestions({ transaction = {}, accountKey = '' } = {}) {
   if (account.includes('operating')) return ['consultation_payment', 'earned_fee_payment', 'other']
   return ['trust_deposit', 'consultation_payment', 'earned_fee_payment', 'client_refund', 'other']
 }
+
+// When ownership and the provider account leave only one honest interpretation, Mio fills it in
+// instead of asking the reviewer to repeat the same decision in a second dropdown. A trust-funded
+// consultation remains deliberately unresolved: trust money cannot silently become a fee.
+export function derivedClassificationCategory({ transaction = {}, ownership = '', accountKey = '' } = {}) {
+  const type = providerType(transaction)
+  if (type === 'REFUND') return 'client_refund'
+  if (['REVERSAL', 'CHARGEBACK', 'CREDIT'].includes(type)) return 'chargeback'
+  if (NON_POSTING_STATUS.test(String(transaction.status || '').toLowerCase())) return 'void'
+  const family = accountFamily(accountKey)
+  if (ownership === 'pnc') return family === 'operating' ? 'consultation_payment' : ''
+  if (ownership === 'matter') {
+    if (family === 'trust') return 'trust_deposit'
+    if (family === 'operating') return 'earned_fee_payment'
+  }
+  if (ownership === 'other_unresolved') return 'other'
+  return ''
+}
+
+// The editor starts from immutable linkage that Mio stored when it created the LawPay request.
+// The returned shape contains only the decisions that can be established without user input.
+export function defaultClassificationDraft({ transaction = {}, matter = null } = {}) {
+  const linkage = transaction.review_linkage || {}
+  const matterId = String(linkage.matter_id || transaction.raw?.mio_matter_id || matter?.id || '')
+  const invoiceId = String(linkage.invoice_id || '')
+  const ownership = 'matter'
+  const accountKey = String(transaction.resolved_account_key || transaction.account_key || '')
+  return {
+    ownership,
+    matter_id: matterId,
+    pnc_workflow_id: '',
+    category: derivedClassificationCategory({ transaction, ownership, accountKey }),
+    invoice_id: invoiceId,
+  }
+}
+
+export function matterChoiceLabel(matter = {}) {
+  const client = String(matter.client_name || [matter.clients?.first_name, matter.clients?.last_name].filter(Boolean).join(' ') || '').trim()
+  return [client, String(matter.name || matter.id || '').trim(), String(matter.cause_number || '').trim()].filter(Boolean).join(' — ')
+}
 export function postingEligibility({ transaction = {}, category = '' } = {}) {
   const status = String(transaction.status || '').trim().toUpperCase()
   const chosen = categoryById(category)
@@ -102,13 +142,15 @@ export function manualAccountVerification({ account_key = '', bank_account_id = 
 }
 
 // `mode:'save'` keeps an unresolved account as a saved review item; `mode:'post'` refuses it.
-export function validateClassification({ mode = 'save', record = {}, transaction = {}, resolvedAccount = {}, matter = null, pnc = null, invoice = null } = {}) {
+export function validateClassification({ mode = 'save', record = {}, transaction = {}, resolvedAccount = {}, matter = null, invoice = null } = {}) {
   const errors = [], warnings = []
   const ownership = String(record.ownership || '')
   const category = categoryById(record.category)
   if (!OWNERSHIP.includes(ownership)) errors.push('Choose whether this transaction belongs to a matter, to a PNC consultation, or to neither.')
   if (ownership === 'matter' && !matter?.id) errors.push('Select the matter this transaction belongs to.')
-  if (ownership === 'pnc' && !pnc?.id) errors.push('Select the PNC this transaction belongs to.')
+  // A consultation may be associated with an existing PNC workflow, but that association is
+  // optional. Ownership plus the operating-account evidence is sufficient to record a
+  // consultation without making the reviewer type the payer's name back into Mio.
   if (ownership === 'other_unresolved' && !String(record.other_reason || '').trim()) errors.push('Say why this transaction belongs to neither, so the decision stays reviewable later.')
   if (!category) errors.push('Choose the transaction type.')
   if (category?.explanation === 'required' && !String(record.explanation || '').trim()) errors.push('Explain this “Other” transaction type.')
@@ -484,24 +526,126 @@ export function queueSplit({ records = [], matterId = '' } = {}) {
 // which a match to an existing entry stores and which `reviewStatus` alone does not treat as done).
 // Counted: a transaction with no decision, a transaction saved for later (classified but not posted),
 // and an actionable refund relationship (unresolved in `refundReview`).
-export function actionableReviewCount({ transactions = [], classifications = [], refundResolutions = [] } = {}) {
-  const byId = new Map((classifications || []).map((record) => [String(record.gateway_transaction_id || ''), record]))
-  const needsDecision = []
-  for (const transaction of transactions || []) {
-    const id = String(transaction.gateway_transaction_id || transaction.id || '')
-    if (!id) continue
-    const status = String(transaction.status || '').trim().toUpperCase()
-    if (PENDING_STATUSES.includes(status)) continue
-    if (status === 'CLOSED' || NON_POSTING_STATUS.test(status.toLowerCase())) continue
-    const record = byId.get(id) || null
-    const done = !!(record && (record.posted_at
-      || String(record.posting_status || '') === 'posted'
-      || String(record.posting_status || '') === 'matched'))
-    if (done) continue
-    needsDecision.push(transaction)
+function providerTransactionId(transaction = {}) {
+  return String(transaction.gateway_transaction_id || transaction.id || '')
+}
+
+function beforeReviewCutover(transaction = {}, reviewCutoverDate = '') {
+  const cutover = String(reviewCutoverDate || '').slice(0, 10)
+  const occurred = String(transaction.occurred_at || transaction.created_at || '').slice(0, 10)
+  return !!(cutover && occurred && occurred < cutover)
+}
+
+function classificationFinished(record = null) {
+  return !!(record && (record.posted_at
+    || String(record.posting_status || '') === 'posted'
+    || String(record.posting_status || '') === 'matched'))
+}
+
+// A single, evidence-based disposition is shared by the queue and the persistent alert. It never
+// infers ownership from a payer name or amount. A Mio-created request is recognized only from its
+// immutable stored request id and the gateway's hydrated database evidence.
+export function lawPayReviewDisposition({
+  transaction = {}, classification = null, reviewCutoverDate = '', legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [],
+} = {}) {
+  const id = providerTransactionId(transaction)
+  const status = String(transaction.status || '').trim().toUpperCase()
+  const linkage = transaction.review_linkage || {}
+  const paymentRequestId = String(linkage.payment_request_id || transaction.raw?.mio_payment_request_id || '')
+  const matterId = String(linkage.matter_id || transaction.raw?.mio_matter_id || '')
+  const base = { transaction_id: id, matter_id: matterId, actionable: false, classification_queue: false }
+  if (!id) return { ...base, state: 'ineligible', reason: 'The provider transaction has no immutable identifier.' }
+  if (beforeReviewCutover(transaction, reviewCutoverDate)) {
+    return { ...base, state: 'historical_out_of_scope', reason: `This transaction predates Mio's finance opening date (${String(reviewCutoverDate).slice(0, 10)}).` }
   }
+  if (PENDING_STATUSES.includes(status) || status === 'CLOSED' || NON_POSTING_STATUS.test(status.toLowerCase())) {
+    return { ...base, state: 'ineligible', reason: `LawPay reports ${status || 'an unverified status'}, so no classification can post.` }
+  }
+  const legacyRecorded = new Set((legacyRecordedTransactionIds || []).map(String))
+  const legacyAttributed = new Set((legacyAttributedTransactionIds || []).map(String))
+  if (classificationFinished(classification) || legacyRecorded.has(id)) {
+    return { ...base, state: 'already_recorded', reason: 'An exact Mio financial record already accounts for this provider transaction.' }
+  }
+  if (legacyAttributed.has(id)) {
+    return { ...base, state: 'already_decided', reason: 'Mio already has an exact attribution decision for this provider transaction.' }
+  }
+  if (linkage.reconciled === true && (matterId || linkage.invoice_id)) {
+    return { ...base, state: 'linked_and_complete', reason: 'An exact Mio invoice event already records this provider transaction.' }
+  }
+  if (paymentRequestId) {
+    if (linkage.conflict) {
+      return { ...base, state: 'linked_incomplete', reason: String(linkage.conflict) }
+    }
+    const requestFound = linkage.request_found === true
+    const invoiceNumber = String(linkage.invoice_number || transaction.raw?.mio_invoice_number || '')
+    const invoiceComplete = !invoiceNumber || linkage.reconciled === true
+    if (requestFound && matterId && invoiceComplete) {
+      return { ...base, state: 'linked_and_complete', reason: 'This payment is already linked to the Mio request and matter that created it.' }
+    }
+    return {
+      ...base,
+      state: 'linked_incomplete',
+      reason: 'This payment carries a Mio request link, but its stored reconciliation evidence is incomplete. Review the technical linkage; do not classify it again.',
+    }
+  }
+  const accountKey = String(transaction.resolved_account_key || transaction.account_key || '')
+  if (!accountKey) {
+    return { ...base, state: 'needs_account_mapping', actionable: true, classification_queue: true, reason: 'The provider account must be mapped or manually verified.' }
+  }
+  return { ...base, state: 'needs_ownership', actionable: true, classification_queue: true, reason: 'Choose whether this direct LawPay payment belongs to a matter or is a consultation.' }
+}
+
+export function actionableReviewCount({
+  transactions = [], classifications = [], refundResolutions = [], reviewCutoverDate = '', legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [],
+} = {}) {
+  const byId = new Map()
+  for (const record of classifications || []) {
+    const id = String(record.gateway_transaction_id || '')
+    if (!id) continue
+    const prior = byId.get(id)
+    // Gateway history is newest-first, but an active posted/matched row is authoritative even if
+    // an older saved row is also present. Never let iteration order revive an accounted payment.
+    if (!prior || (!classificationFinished(prior) && classificationFinished(record))) byId.set(id, record)
+  }
+  const dispositions = {}
+  const needsDecision = [], technicalExceptions = [], historical = [], ineligible = [], handled = []
+  for (const transaction of transactions || []) {
+    const id = providerTransactionId(transaction)
+    if (!id) continue
+    const disposition = lawPayReviewDisposition({
+      transaction,
+      classification: byId.get(id) || null,
+      reviewCutoverDate,
+      legacyRecordedTransactionIds,
+      legacyAttributedTransactionIds,
+    })
+    dispositions[id] = disposition
+    if (disposition.actionable) needsDecision.push(transaction)
+    else if (disposition.state === 'linked_incomplete') technicalExceptions.push(transaction)
+    else if (disposition.state === 'historical_out_of_scope') historical.push(transaction)
+    else if (disposition.state === 'ineligible') ineligible.push(transaction)
+    else handled.push(transaction)
+  }
+  const refundTransactions = (transactions || []).filter((transaction) => {
+    if (beforeReviewCutover(transaction, reviewCutoverDate)) return false
+    const status = String(transaction.status || '').trim().toUpperCase()
+    return !PENDING_STATUSES.includes(status) && status !== 'CLOSED' && !NON_POSTING_STATUS.test(status.toLowerCase())
+  })
   const resolutions = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
-  const refunds = refundReview({ transactions: transactions || [], resolutions })
+  const refunds = refundReview({ transactions: refundTransactions, resolutions })
   const refundRelationships = refunds.effects.filter((effect) => effect.effect === 'unresolved')
-  return { count: needsDecision.length + refundRelationships.length, transactions: needsDecision, refund_relationships: refundRelationships }
+  const transactionDecisionIds = new Set(needsDecision.map(providerTransactionId))
+  const additionalRefundRelationships = refundRelationships.filter((effect) => !transactionDecisionIds.has(String(effect.refund_id || '')))
+  return {
+    // The notification counts review transactions, not clicks. An unclassified refund may need
+    // both a classification and a relationship decision, but it remains one provider transaction.
+    count: needsDecision.length + additionalRefundRelationships.length,
+    transactions: needsDecision,
+    refund_relationships: refundRelationships,
+    technical_exceptions: technicalExceptions,
+    historical,
+    ineligible,
+    handled,
+    dispositions,
+  }
 }

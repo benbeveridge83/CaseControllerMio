@@ -9,12 +9,18 @@ const now = new Date().toISOString(), owner = '00000000-0000-4000-8000-000000004
 const user = { id: owner, email, aud: 'authenticated', role: 'authenticated', email_confirmed_at: now, app_metadata: { provider: 'email' }, user_metadata: {}, identities: [], created_at: now }
 const b64 = (x) => Buffer.from(JSON.stringify(x)).toString('base64url'), exp = Math.floor(Date.now() / 1000) + 3600
 const session = { access_token: `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: owner, email, role: 'authenticated', exp, aud: 'authenticated' })}.test`, refresh_token: 'test-only', expires_at: exp, expires_in: 3600, token_type: 'bearer', user }
-const matters = [{ id: '00000000-0000-4000-8000-000000004241', client_id: 'client-alpha', name: 'Alpha Matter', matter_type: 'Modification', matter_status: 'Active Client', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-alpha', first_name: 'Alpha', last_name: 'Synthetic', email: 'alpha@example.invalid' } }]
+const matters = [
+  { id: '00000000-0000-4000-8000-000000004241', client_id: 'client-alpha', name: 'Alpha Matter', cause_number: 'DF-26-100', matter_type: 'Modification', matter_status: 'Active Client', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-alpha', first_name: 'Alpha', last_name: 'Synthetic', email: 'alpha@example.invalid' } },
+  { id: '00000000-0000-4000-8000-000000004242', client_id: 'client-yasmine', name: 'Consultation', cause_number: '', matter_type: 'Consultation', matter_status: 'PNC- Need to Consult', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-yasmine', first_name: 'Yasmine', last_name: 'Said', email: 'yasmine@example.invalid' } },
+]
 const opening = Object.fromEntries(matters.map((m) => [m.id, { snapshot_date: '2026-08-09', matter_trust_funds: 1000, outstanding_balance: 0, work_in_progress: 0, minimum_balance: 2000 }]))
 const transactions = [
   { id: 'tx-a', gateway_transaction_id: 'provider-a', occurred_at: '2026-09-12T15:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 500000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Alpha Synthetic', payer_email: 'alpha@example.invalid', raw: { mio_matter_id: matters[0].id } },
   { id: 'tx-p', gateway_transaction_id: 'provider-p', occurred_at: '2026-09-13T09:00:00Z', transaction_type: 'CHARGE', status: 'AUTHORIZED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 25000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Pending Payer', payer_email: 'pending@example.invalid', raw: {} },
-  { id: 'tx-d', gateway_transaction_id: 'provider-d', occurred_at: '2026-09-12T17:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: '', account_id: 'acct-4471', amount_cents: 112000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Yasmine Said', payer_email: 'yasmine@example.invalid', raw: { mio_account_key_source: 'unresolved' } },
+  { id: 'tx-d', gateway_transaction_id: 'provider-d', occurred_at: '2026-09-12T17:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'operating', account_id: 'acct-operating', amount_cents: 12500, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Yasmine Said', payer_email: 'yasmine@example.invalid', raw: { mio_account_key_source: 'configured_account' } },
+  { id: 'tx-kevin', gateway_transaction_id: 'provider-kevin', occurred_at: '2026-09-21T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 140000, amount_refunded_cents: 0, currency: 'USD', reference: 'MIO-2026-1400', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { mio_payment_request_id: 'request-kevin', mio_invoice_number: 'MIO-2026-1400', mio_matter_id: matters[0].id, mio_client_id: matters[0].client_id }, review_linkage: { payment_request_id: 'request-kevin', request_found: true, invoice_number: 'MIO-2026-1400', invoice_id: 'invoice-kevin', invoice_event_id: 'event-kevin', matter_id: matters[0].id, client_id: matters[0].client_id, reconciled: true, conflict: '' } },
+  { id: 'tx-linked-incomplete', gateway_transaction_id: 'provider-linked-incomplete', occurred_at: '2026-09-20T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'operating', account_id: 'acct-operating', amount_cents: 20000, amount_refunded_cents: 0, currency: 'USD', reference: 'MIO-2026-TECH', payer_name: 'Linked Technical', payer_email: 'linked@example.invalid', raw: { mio_payment_request_id: 'request-technical', mio_invoice_number: 'MIO-2026-TECH', mio_matter_id: matters[0].id }, review_linkage: { payment_request_id: 'request-technical', request_found: true, invoice_number: 'MIO-2026-TECH', invoice_id: 'invoice-technical', matter_id: matters[0].id, reconciled: false, conflict: '' } },
+  { id: 'tx-historical', gateway_transaction_id: 'provider-historical', occurred_at: '2026-08-08T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 9900, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Historical Payer', payer_email: 'historical@example.invalid', raw: {} },
 ]
 const store = { classifications: [], ledger: [], actions: [], seq: 0 }
 const identityOf = (record) => `${String(record.provider_account_id || '')}:${String(record.gateway_transaction_id || '')}`
@@ -22,7 +28,7 @@ function resolvedFor(transaction) { if (transaction.account_key) return { resolv
 function gateway(body) {
   store.actions.push(body.action)
   if (!['review', 'save', 'post'].includes(body.action)) return { ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }
-  if (body.action === 'review') return { ok: true, version: 323, mapping_table_available: true, accounts: [], classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })) }
+  if (body.action === 'review') return { ok: true, version: 325, mapping_table_available: true, accounts: [], classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })), review_cutover_date: '2026-08-09', legacy_recorded_transaction_ids: [], legacy_attributed_transaction_ids: [] }
   const record = body.classification || {}
   const transaction = transactions.find((tx) => tx.gateway_transaction_id === record.gateway_transaction_id)
   if (!transaction) return { ok: false, error: 'unknown transaction' }
@@ -55,7 +61,7 @@ await context.route('**/*', async (route) => {
   if (table === 'mio_cloud_state_read_chunks_v297') return reply(chunkRows([...states.values()].map((x) => ({ ...x, user_id: owner })), req.postDataJSON()))
   if (table === 'case_mio_user_state') { let rows = [...states.values()]; const key = url.searchParams.get('key'); if (key?.startsWith('eq.')) rows = rows.filter((r) => r.key === key.slice(3)); return reply(single ? rows[0] || null : rows) }
   if (table === 'team_members') { const m = { id: 'synthetic-member', email, first_name: 'Test', last_name: 'Attorney', is_active: true, page_access: [] }; return reply(single ? m : [m]) }
-  if (table === 'setting_options') return reply(Object.entries({ matter_status: ['Active Client', 'Closed'], case_status: ['Open', 'Closed'], matter_type: ['Modification', 'Divorce'] }).flatMap(([category, names]) => names.map((name, i) => ({ id: category + i, category, name, is_active: true, sort_order: i }))))
+  if (table === 'setting_options') return reply(Object.entries({ matter_status: ['Active Client', 'PNC- Need to Consult', 'Closed'], case_status: ['Open', 'Closed'], matter_type: ['Modification', 'Consultation', 'Divorce'] }).flatMap(([category, names]) => names.map((name, i) => ({ id: category + i, category, name, is_active: true, sort_order: i }))))
   const tables = { matters, clients: matters.map((m) => m.clients), mio_invoices: [], mio_invoice_events: [], lawpay_transactions: transactions, lawpay_payment_requests: [], mio_billing_entries: [] }
   if (tables[table]) { if (req.method() !== 'GET') { writes.push({ table, method: req.method() }); return reply({ error: 'No direct financial writes are allowed in this browser fixture' }, 403) } let rows = tables[table]; for (const [key, filter] of url.searchParams) if (filter.startsWith('eq.')) rows = rows.filter((r) => String(r[key]) === filter.slice(3)); return reply(single ? rows[0] || null : rows) }
   return reply(single ? null : [])
@@ -102,12 +108,31 @@ try {
   assert.ok(page.url().includes('#lawpay'), 'clicking the notification opens the central review queue')
   await panel.getByRole('button', { name: 'Show every LawPay payment' }).click()
 
+  // A Mio-created invoice payment is handled by its immutable request/invoice/matter linkage. It
+  // never asks the reviewer to choose Kevin's matter or records the same money a second time.
+  const kevin = panel.getByTestId('lawpay-row-provider-kevin')
+  assert.match(await kevin.innerText(), /Handled automatically from its Mio payment link/)
+  assert.equal(await kevin.getByRole('button', { name: 'Decide Kevin Dobbins' }).count(), 0)
+  assert.match(await panel.locator('details[aria-label="Mio-linked payments needing reconciliation"]').textContent(), /Linked Technical.*technical linkage/i)
+
+  // A direct operating-account consultation asks only whether it is a consultation and offers an
+  // optional existing PNC. The payer's name is never retyped and the transaction type is derived.
+  const yasmine = panel.getByTestId('lawpay-row-provider-d')
+  await yasmine.getByRole('button', { name: 'Decide Yasmine Said' }).click()
+  await yasmine.getByLabel('Ownership for Yasmine Said').selectOption('pnc')
+  const pncPicker = yasmine.getByLabel('PNC for Yasmine Said')
+  assert.equal(await pncPicker.evaluate((element) => element.tagName), 'SELECT')
+  assert.equal(await pncPicker.inputValue(), '', 'selecting an existing PNC is optional')
+  assert.match((await pncPicker.locator('option').allInnerTexts()).join(' | '), /Yasmine Said — Consultation/)
+  assert.match(await yasmine.getByTestId('lawpay-derived-category-provider-d').innerText(), /Consultation payment — money in.*set automatically/)
+  assert.equal(await yasmine.getByLabel('Transaction type for Yasmine Said').count(), 0)
+
   // Save for later keeps the transaction in the count.
   const providerA = panel.getByTestId('lawpay-row-provider-a')
   await providerA.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
   await providerA.getByLabel('Ownership for Alpha Synthetic').selectOption('matter')
-  await providerA.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
-  await providerA.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
+  await providerA.getByLabel('Matter for Alpha Synthetic').selectOption(matters[0].id)
+  assert.match(await providerA.getByTestId('lawpay-derived-category-provider-a').innerText(), /Trust deposit — money in.*set automatically/)
   await providerA.getByRole('button', { name: 'Save for later Alpha Synthetic' }).click()
   await providerA.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await providerA.getByTestId('lawpay-message-provider-a').innerText(), /Saved for later/)
@@ -116,8 +141,7 @@ try {
 
   // Recording it updates the count down to one.
   await providerA.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
-  await providerA.getByLabel('Matter for Alpha Synthetic').selectOption({ label: 'Alpha Matter' })
-  await providerA.getByLabel('Transaction type for Alpha Synthetic').selectOption('trust_deposit')
+  await providerA.getByLabel('Matter for Alpha Synthetic').selectOption(matters[0].id)
   await providerA.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
   await providerA.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await providerA.getByTestId('lawpay-message-provider-a').innerText(), /Recorded in Mio/)

@@ -2,7 +2,14 @@
 // Synthetic records only; no network and no writes.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { actionableReviewCount } from '../src/mioLawPayClassification.js'
+import {
+  actionableReviewCount,
+  defaultClassificationDraft,
+  derivedClassificationCategory,
+  lawPayReviewDisposition,
+  matterChoiceLabel,
+  validateClassification,
+} from '../src/mioLawPayClassification.js'
 
 const tx = (over = {}) => ({ gateway_transaction_id: 't', transaction_type: 'CHARGE', status: 'COMPLETED', amount_cents: 10000, amount_refunded_cents: 0, account_id: 'acct-1', ...over })
 const record = (id, posting_status, posted = false) => ({ gateway_transaction_id: id, ownership: 'matter', category: 'trust_deposit', posting_status, posted_at: posted ? '2026-09-10T00:00:00Z' : undefined })
@@ -27,6 +34,12 @@ test('excludes already-recorded and already-matched transactions, including a ma
   const result = actionableReviewCount({ transactions, classifications })
   assert.equal(result.count, 1)
   assert.deepEqual(result.transactions.map((row) => row.gateway_transaction_id), ['fresh'])
+})
+
+test('a newer posted record wins over an older saved history row', () => {
+  const transaction = tx({ gateway_transaction_id: 'history' })
+  const classifications = [record('history', 'posted', true), record('history', 'saved')]
+  assert.equal(actionableReviewCount({ transactions: [transaction], classifications }).count, 0)
 })
 
 test('a transaction saved for later stays counted', () => {
@@ -61,6 +74,105 @@ test('a resolved refund relationship stops counting', () => {
   assert.equal(result.count, 1) // only the unclassified charge remains
 })
 
+test('one unclassified refund is one review transaction even when its relationship is unresolved', () => {
+  const refund = tx({ gateway_transaction_id: 'refund-only', transaction_type: 'REFUND', amount_cents: 10000 })
+  const result = actionableReviewCount({ transactions: [refund] })
+  assert.equal(result.transactions.length, 1)
+  assert.equal(result.refund_relationships.length, 1)
+  assert.equal(result.count, 1)
+})
+
 test('an empty queue reports zero', () => {
   assert.equal(actionableReviewCount({}).count, 0)
+})
+
+test('historical transactions before the Mio finance opening are visible but never called uncategorized', () => {
+  const transactions = [
+    tx({ gateway_transaction_id: 'historical', occurred_at: '2026-08-08T23:59:59Z' }),
+    tx({ gateway_transaction_id: 'current', occurred_at: '2026-08-09T00:00:00Z' }),
+  ]
+  const result = actionableReviewCount({ transactions, reviewCutoverDate: '2026-08-09' })
+  assert.equal(result.count, 1)
+  assert.deepEqual(result.transactions.map((row) => row.gateway_transaction_id), ['current'])
+  assert.deepEqual(result.historical.map((row) => row.gateway_transaction_id), ['historical'])
+  assert.equal(result.dispositions.historical.state, 'historical_out_of_scope')
+})
+
+test('a Mio invoice payment with its immutable reconciliation event is already handled', () => {
+  const transaction = tx({
+    gateway_transaction_id: 'kevin-1400',
+    occurred_at: '2026-09-21T12:00:00Z',
+    resolved_account_key: 'trust',
+    raw: { mio_payment_request_id: 'request-kevin', mio_matter_id: 'matter-kevin', mio_invoice_number: 'MIO-2026-1400' },
+    review_linkage: {
+      payment_request_id: 'request-kevin', request_found: true, matter_id: 'matter-kevin',
+      invoice_number: 'MIO-2026-1400', invoice_id: 'invoice-kevin', invoice_event_id: 'event-kevin', reconciled: true,
+    },
+  })
+  const disposition = lawPayReviewDisposition({ transaction, reviewCutoverDate: '2026-08-09' })
+  assert.equal(disposition.state, 'linked_and_complete')
+  assert.equal(disposition.actionable, false)
+  assert.equal(disposition.matter_id, 'matter-kevin')
+  assert.equal(actionableReviewCount({ transactions: [transaction], reviewCutoverDate: '2026-08-09' }).count, 0)
+})
+
+test('a linked payment with missing reconciliation evidence is a technical exception, not an uncategorized payment', () => {
+  const transaction = tx({
+    gateway_transaction_id: 'linked-incomplete',
+    occurred_at: '2026-09-21T12:00:00Z',
+    resolved_account_key: 'operating',
+    raw: { mio_payment_request_id: 'request-1', mio_matter_id: 'matter-1', mio_invoice_number: 'MIO-2026-1' },
+    review_linkage: { payment_request_id: 'request-1', request_found: true, matter_id: 'matter-1', invoice_number: 'MIO-2026-1', reconciled: false },
+  })
+  const result = actionableReviewCount({ transactions: [transaction], reviewCutoverDate: '2026-08-09' })
+  assert.equal(result.count, 0)
+  assert.equal(result.technical_exceptions.length, 1)
+  assert.equal(result.dispositions['linked-incomplete'].state, 'linked_incomplete')
+  assert.equal(result.dispositions['linked-incomplete'].matter_id, 'matter-1')
+})
+
+test('an exact legacy financial entry excludes the provider transaction without hiding unrelated rows', () => {
+  const transactions = [tx({ gateway_transaction_id: 'legacy' }), tx({ gateway_transaction_id: 'fresh' })]
+  const result = actionableReviewCount({ transactions, legacyRecordedTransactionIds: ['legacy'] })
+  assert.equal(result.count, 1)
+  assert.deepEqual(result.transactions.map((row) => row.gateway_transaction_id), ['fresh'])
+  assert.equal(result.dispositions.legacy.state, 'already_recorded')
+})
+
+test('stored Mio linkage seeds the matter, invoice and deterministic transaction type', () => {
+  const transaction = tx({
+    gateway_transaction_id: 'kevin-1400',
+    resolved_account_key: 'operating',
+    raw: { mio_matter_id: 'matter-kevin', mio_invoice_number: 'MIO-2026-1400' },
+    review_linkage: { matter_id: 'matter-kevin', invoice_id: 'invoice-kevin', invoice_number: 'MIO-2026-1400' },
+  })
+  assert.deepEqual(defaultClassificationDraft({ transaction }), {
+    ownership: 'matter', matter_id: 'matter-kevin', pnc_workflow_id: '', category: 'earned_fee_payment', invoice_id: 'invoice-kevin',
+  })
+})
+
+test('matter and consultation choices derive the only sensible incoming transaction type', () => {
+  assert.equal(derivedClassificationCategory({ transaction: tx(), ownership: 'matter', accountKey: 'trust' }), 'trust_deposit')
+  assert.equal(derivedClassificationCategory({ transaction: tx(), ownership: 'matter', accountKey: 'operating' }), 'earned_fee_payment')
+  assert.equal(derivedClassificationCategory({ transaction: tx(), ownership: 'pnc', accountKey: 'operating' }), 'consultation_payment')
+  assert.equal(derivedClassificationCategory({ transaction: tx(), ownership: 'pnc', accountKey: 'trust' }), '')
+})
+
+test('a consultation may be recorded without retyping a PNC name or choosing a workflow', () => {
+  const result = validateClassification({
+    mode: 'post',
+    record: { ownership: 'pnc', category: 'consultation_payment' },
+    transaction: tx(),
+    resolvedAccount: { account_key: 'operating', provenance: 'reported_by_lawpay' },
+    pnc: null,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.errors.some((message) => /Select the PNC/.test(message)), false)
+})
+
+test('matter choices identify the client, matter and cause number', () => {
+  assert.equal(matterChoiceLabel({
+    id: 'matter-1', name: 'Enforcement', cause_number: 'DF-24-100',
+    clients: { first_name: 'Kevin', last_name: 'Dobbins' },
+  }), 'Kevin Dobbins — Enforcement — DF-24-100')
 })

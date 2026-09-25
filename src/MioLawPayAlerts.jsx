@@ -17,7 +17,14 @@ export default function MioLawPayAlerts() {
       const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'review' } })
       if (error) throw new Error(error.message || 'The LawPay gateway could not be reached.')
       if (data?.error) throw new Error(data.error)
-      const review = actionableReviewCount({ transactions: data?.transactions || [], classifications: data?.classifications || [], refundResolutions: data?.refund_resolutions || [] })
+      const review = actionableReviewCount({
+        transactions: data?.transactions || [],
+        classifications: data?.classifications || [],
+        refundResolutions: data?.refund_resolutions || [],
+        reviewCutoverDate: data?.review_cutover_date || '',
+        legacyRecordedTransactionIds: data?.legacy_recorded_transaction_ids || [],
+        legacyAttributedTransactionIds: data?.legacy_attributed_transaction_ids || [],
+      })
       setCount(review.count)
     } catch (failure) {
       console.warn('The LawPay review count could not be refreshed; keeping the last figure.', failure?.message || failure)

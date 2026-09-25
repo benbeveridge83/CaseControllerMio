@@ -1,4 +1,4 @@
-// Matter Dashboard -> Finances: LawPay payment classification (V323).
+// Firm-wide LawPay review queue.
 //
 // The three decisions are separate controls because they are separate questions: ownership,
 // the actual deposit account, and what the transaction was. Nothing here derives an account
@@ -8,8 +8,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { ACCOUNT_KEYS, accountFamily, accountProvenanceLabel, providerAccountOutcome } from './mioLawPayAccounts.js'
 import {
-  CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, amountBreakdown, categoryById, categoryDirection, correctionPreview,
-  duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility,
+  CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, actionableReviewCount, amountBreakdown, categoryById, categoryDirection, correctionPreview,
+  defaultClassificationDraft, derivedClassificationCategory, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, matterChoiceLabel, postingEligibility,
   postingPreview, providerMoneyOut, refundResolutionRecord, refundReview, reviewStatus, suggestions, validateClassification,
 } from './mioLawPayClassification.js'
 
@@ -56,7 +56,8 @@ async function callGateway(action, body = {}) {
   return data
 }
 export default function MioLawPayClassificationPanel({
-  matter = null, matters = [], transactions = [], classifications = [], invoices = [], existingEntries = [], accounts = [], refundResolutions = [],
+  matter = null, matters = [], transactions = [], classifications = [], existingEntries = [], accounts = [], refundResolutions = [],
+  pncOptions = [], reviewCutoverDate = '', legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [],
   mappingAvailable = true, busy = false, error = '', notice = '', onRefresh, onActed,
 }) {
   const [openId, setOpenId] = useState('')
@@ -72,12 +73,39 @@ export default function MioLawPayClassificationPanel({
   const scoped = useMemo(() => (transactions || []).filter((transaction) => providerIdOf(transaction)), [transactions])
   const posted = useMemo(() => (classifications || []).filter((record) => String(record.posting_status || '') === 'posted'), [classifications])
   const anyFor = (transaction) => (classifications || []).find((record) => String(record.gateway_transaction_id || '') === providerIdOf(transaction)) || null
-  const decisionsFor = (id) => drafts[id] || { ownership: 'matter', category: '', matter_id: String(matter?.id || ''), pnc_workflow_id: '', other_reason: '', invoice_id: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
-  const patch = (id, change) => setDrafts((current) => ({ ...current, [id]: { ...decisionsFor(id), ...change } }))
+  const localLegacyIds = useMemo(() => (existingEntries || []).filter((entry) => String(entry.source || '') === 'legacy_attribution').map((entry) => String(entry.lawpay_transaction_id || '')).filter(Boolean), [existingEntries])
+  const review = useMemo(() => actionableReviewCount({
+    transactions: scoped,
+    classifications,
+    refundResolutions,
+    reviewCutoverDate,
+    legacyRecordedTransactionIds: [...(legacyRecordedTransactionIds || []), ...localLegacyIds],
+    legacyAttributedTransactionIds,
+  }), [scoped, classifications, refundResolutions, reviewCutoverDate, legacyRecordedTransactionIds, legacyAttributedTransactionIds, localLegacyIds])
+  const transactionFor = (value) => typeof value === 'object' ? value : scoped.find((transaction) => providerIdOf(transaction) === String(value || '')) || {}
+  const decisionsFor = (value) => {
+    const transaction = transactionFor(value), id = providerIdOf(transaction)
+    const linked = defaultClassificationDraft({ transaction, matter })
+    return drafts[id] || { ...linked, other_reason: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', matter_query: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
+  }
+  const patch = (value, change) => {
+    const transaction = transactionFor(value), id = providerIdOf(transaction)
+    setDrafts((current) => {
+      const linked = defaultClassificationDraft({ transaction, matter })
+      const currentDraft = current[id] || { ...linked, other_reason: '', explanation: '', manual_key: '', manual_evidence: '', manual_explanation: '', matter_query: '', entry_id: '', correction_reason: '', correction_key: '', correction_evidence: '', correction_explanation: '' }
+      const next = { ...currentDraft, ...change }
+      if (Object.prototype.hasOwnProperty.call(change, 'ownership') || Object.prototype.hasOwnProperty.call(change, 'manual_key')) {
+        const accountKey = String(next.manual_key || transaction.resolved_account_key || transaction.account_key || '')
+        next.category = derivedClassificationCategory({ transaction, ownership: next.ownership, accountKey })
+      }
+      return { ...current, [id]: next }
+    })
+  }
   // The reviewer's selected matter, resolved from the full matter list, so the preview names the
   // matter they chose even when the panel is the firm-wide queue (where the panel-level `matter` is null).
   const matterNameFor = (draft) => (matters || []).find((row) => String(row.id || '') === String(draft?.matter_id || ''))?.name || matter?.name || ''
-  const outstanding = scoped.filter((transaction) => reviewStatus({ record: anyFor(transaction) }) !== 'recorded_in_mio')
+  const outstanding = review.transactions
+  const technicalExceptions = review.technical_exceptions
   // Refunds whose relationship to a charge is not established by a provider identifier are shown
   // as unresolved, never netted against a charge's reported total just because they share an
   // account. The reconciled total is explicitly not final while any remain.
@@ -135,7 +163,7 @@ export default function MioLawPayClassificationPanel({
   }
   async function submitDecision(action, transaction, mode) {
     const id = providerIdOf(transaction)
-    const draft = decisionsFor(id)
+    const draft = decisionsFor(transaction)
     // A correction uses the account chosen for the correction when the money actually reached a
     // different account, and that account is verified with evidence exactly like a first posting.
     const correcting = action === 'correct'
@@ -211,12 +239,12 @@ export default function MioLawPayClassificationPanel({
         <div>
           <h3 style={{ margin: 0 }}>LawPay payment classification</h3>
           <p style={{ margin: '4px 0 0', color: '#475569' }} data-testid="lawpay-classification-summary">
-            {outstanding.length ? `${outstanding.length} payment(s) need a decision` : 'Every LawPay payment has a decision'}
+            {review.count ? `${review.count} item(s) need a decision` : 'Every LawPay payment has a decision'}
             {matter?.name ? ` for ${matter.name}` : ' across the firm'}
             {` · ${posted.length} recorded in Mio by this workflow`}
           </p>
           <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 12 }}>
-            Ownership, the actual deposit account and the transaction type are decided separately. Nothing posts until you confirm it, and a payment that is already recorded is never recorded twice.
+            Mio-linked payments are handled from their stored request and matter. For a direct LawPay payment, choose only matter or consultation; the LawPay account mapping supplies Trust or Operating and Mio fills the transaction type when it is unambiguous.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -227,6 +255,19 @@ export default function MioLawPayClassificationPanel({
       {error ? <p role="alert" style={{ color: '#b91c1c', margin: 0 }}>{error}</p> : null}
       {notice ? <p style={{ color: '#15803d', margin: 0 }}>{notice}</p> : null}
       {!mappingAvailable ? <p style={{ color: '#b45309', margin: 0 }}>The firm LawPay account mapping table is not readable with these credentials yet. Each transaction can still be recorded by verifying its deposit account by hand with evidence; the mapping is only a convenience for provider accounts that recur.</p> : null}
+      {technicalExceptions.length ? (
+        <details aria-label="Mio-linked payments needing reconciliation" style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: 10 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>{`${technicalExceptions.length} Mio-linked payment(s) need technical reconciliation — not classification`}</summary>
+          <p style={{ margin: '6px 0' }}>Mio already knows the payment request and matter. These payments are kept out of the uncategorized count so you are not asked to choose that information again; no money is posted or retried from this screen.</p>
+          <ul style={{ margin: 0 }}>
+            {technicalExceptions.map((transaction) => {
+              const id = providerIdOf(transaction), disposition = review.dispositions[id]
+              const linkedMatter = (matters || []).find((row) => String(row.id || '') === String(disposition?.matter_id || ''))
+              return <li key={id}>{`${transaction.payer_name || transaction.payer_email || id}${linkedMatter ? ` — ${matterChoiceLabel(linkedMatter)}` : ''}: ${disposition?.reason || 'The stored linkage needs review.'}`}</li>
+            })}
+          </ul>
+        </details>
+      ) : null}
       {openRefunds.length ? (
         <section aria-label="Refund relationship review" data-testid="refund-review" style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: 10 }}>
           <strong>{refunds.label || 'Refund review'}</strong>
@@ -249,7 +290,7 @@ export default function MioLawPayClassificationPanel({
       <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 10 }}>
         {rows.map((transaction) => {
           const id = providerIdOf(transaction)
-          const draft = decisionsFor(id)
+          const draft = decisionsFor(transaction)
           const payer = String(transaction.payer_name || transaction.payer_email || `payment ${id}`)
           const manual = draft.manual_key ? { verification: { account_key: draft.manual_key, verified_by: 'you', evidence_reference: draft.manual_evidence } } : null
           const decision = accountDecision(transaction, manual)
@@ -263,6 +304,7 @@ export default function MioLawPayClassificationPanel({
             : status
           const record = anyFor(transaction)
           const state = reviewStatus({ record })
+          const disposition = review.dispositions[id] || { state: 'needs_ownership', actionable: true }
           const open = openId === id
           const duplicate = duplicateClassification({ existing: classifications, identity: `${String(transaction.account_id || '')}:${id}`, category: draft.category })
           // A legacy attribution already put this immutable provider transaction in Mio's ledger
@@ -270,7 +312,15 @@ export default function MioLawPayClassificationPanel({
           // to that exact entry: posting again would move the same money twice.
           const legacyEntry = (existingEntries || []).find((entry) => String(entry.source || '') === 'legacy_attribution' && String(entry.lawpay_transaction_id || '') === id) || null
           const legacyAmountMismatch = !!legacyEntry && Math.abs(Number(legacyEntry.amount || 0) - amountBreakdown(transaction).gross_cents / 100) > 0.005
-          const statusLabel = legacyEntry && state === 'needs_classification' ? 'Recorded in Mio — legacy attribution needs matching' : REVIEW_STATUS_LABELS[state]
+          const dispositionLabel = {
+            historical_out_of_scope: 'Historical — before Mio finance opening',
+            ineligible: 'Not eligible to record',
+            already_recorded: 'Recorded in Mio',
+            already_decided: 'Decision already recorded',
+            linked_and_complete: 'Handled automatically from its Mio payment link',
+            linked_incomplete: 'Mio-linked reconciliation exception',
+          }[disposition.state]
+          const statusLabel = dispositionLabel || (legacyEntry && state === 'needs_classification' ? 'Recorded in Mio — legacy attribution needs matching' : REVIEW_STATUS_LABELS[state])
           // Corrections: the recorded posting is preserved, its effect is reversed once and the
           // replacement posts once. The history keeps every record, newest first.
           const history = (classifications || []).filter((entry) => String(entry.gateway_transaction_id || '') === id)
@@ -299,29 +349,37 @@ export default function MioLawPayClassificationPanel({
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 700 }}>{statusLabel}</div>
-                  <button type="button" aria-label={`Decide ${payer}`} onClick={() => setOpenId(open ? '' : id)}>{open ? 'Close' : 'Choose what this payment is'}</button>
+                  {disposition.actionable || ['posted', 'reversed'].includes(String(record?.posting_status || '')) ? <button type="button" aria-label={`Decide ${payer}`} onClick={() => setOpenId(open ? '' : id)}>{open ? 'Close' : 'Choose what this payment is'}</button> : null}
                 </div>
               </div>
               {open ? (
                 <div style={{ display: 'grid', gap: 8, marginTop: 10 }} data-testid={`lawpay-decisions-${id}`}>
                   <label>Ownership for {payer}
-                    <select aria-label={`Ownership for ${payer}`} value={draft.ownership} onChange={(event) => patch(id, { ownership: event.target.value })}>
+                    <select aria-label={`Ownership for ${payer}`} value={draft.ownership} onChange={(event) => patch(transaction, { ownership: event.target.value, pnc_workflow_id: event.target.value === 'pnc' ? draft.pnc_workflow_id : '' })}>
                       <option value="matter">This matter — a client payment</option>
                       <option value="pnc">A PNC consultation</option>
                       <option value="other_unresolved">Neither matter nor PNC — keep it out of matter finances</option>
                     </select>
                   </label>
                   {draft.ownership === 'matter' ? (
-                    <label>Matter for {payer}
-                      <select aria-label={`Matter for ${payer}`} value={draft.matter_id} onChange={(event) => patch(id, { matter_id: event.target.value })}>
-                        <option value="">Choose the matter</option>
-                        {(matters || []).map((option) => <option key={option.id} value={option.id}>{String(option.name || option.id)}</option>)}
-                      </select>
-                    </label>
+                    <>
+                      <label>Search matters for {payer}
+                        <input aria-label={`Search matters for ${payer}`} value={draft.matter_query || ''} onChange={(event) => patch(transaction, { matter_query: event.target.value })} placeholder="Client, matter, or cause number" />
+                      </label>
+                      <label>Matter for {payer}
+                        <select aria-label={`Matter for ${payer}`} value={draft.matter_id} onChange={(event) => patch(transaction, { matter_id: event.target.value })}>
+                          <option value="">Choose the matter</option>
+                          {(matters || []).filter((option) => !String(draft.matter_query || '').trim() || matterChoiceLabel(option).toLowerCase().includes(String(draft.matter_query).trim().toLowerCase())).map((option) => <option key={option.id} value={option.id}>{matterChoiceLabel(option)}</option>)}
+                        </select>
+                      </label>
+                    </>
                   ) : null}
                   {draft.ownership === 'pnc' ? (
                     <label>PNC for {payer}
-                      <input aria-label={`PNC for ${payer}`} value={draft.pnc_workflow_id} onChange={(event) => patch(id, { pnc_workflow_id: event.target.value })} placeholder="PNC consultation or workflow name" />
+                      <select aria-label={`PNC for ${payer}`} value={draft.pnc_workflow_id} onChange={(event) => patch(transaction, { pnc_workflow_id: event.target.value })}>
+                        <option value="">No PNC selected (optional)</option>
+                        {(pncOptions || []).map((option) => <option key={option.id} value={option.id}>{String(option.label || option.name || option.id)}</option>)}
+                      </select>
                     </label>
                   ) : null}
                   {draft.ownership === 'other_unresolved' ? (
@@ -359,24 +417,22 @@ export default function MioLawPayClassificationPanel({
                       </div>
                     ) : <p style={{ margin: 0, color: '#15803d' }}>The deposit account is established for this transaction, so nothing has to be verified by hand. A wrong classification is changed later with a linked correction rather than by editing this record.</p>}
                   </fieldset>
-                  <label>Transaction type for {payer}
-                    <select aria-label={`Transaction type for ${payer}`} value={draft.category} onChange={(event) => patch(id, { category: event.target.value })}>
-                      <option value="">Choose the transaction type</option>
-                      {CATEGORIES.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                    </select>
-                  </label>
-                  <p style={{ margin: 0, color: '#64748b', fontSize: 12 }}>{`Suggested from the stored provider record: ${suggestions({ transaction, accountKey: decision.account_key }).map((value) => categoryById(value)?.label || value).join(' · ')}`}</p>
+                  {derivedClassificationCategory({ transaction, ownership: draft.ownership, accountKey: decision.account_key }) && !canCorrect ? (
+                    <p style={{ margin: 0 }} data-testid={`lawpay-derived-category-${id}`}><strong>Transaction type: </strong>{`${categoryById(draft.category)?.label || draft.category} (set automatically from your ownership choice and LawPay deposit account)`}</p>
+                  ) : (
+                    <>
+                      <label>Transaction type for {payer}
+                        <select aria-label={`Transaction type for ${payer}`} value={draft.category} onChange={(event) => patch(transaction, { category: event.target.value })}>
+                          <option value="">Choose the transaction type</option>
+                          {CATEGORIES.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                        </select>
+                      </label>
+                      <p style={{ margin: 0, color: '#64748b', fontSize: 12 }}>{`Suggested from the stored provider record: ${suggestions({ transaction, accountKey: decision.account_key }).map((value) => categoryById(value)?.label || value).join(' · ')}`}</p>
+                    </>
+                  )}
                   {categoryById(draft.category)?.explanation === 'required' ? (
                     <label>Explanation for {payer}
                       <input aria-label={`Explanation for ${payer}`} value={draft.explanation} onChange={(event) => patch(id, { explanation: event.target.value })} placeholder="What this transaction was, in words that will still make sense next year" />
-                    </label>
-                  ) : null}
-                  {draft.ownership === 'matter' && draft.category === 'earned_fee_payment' ? (
-                    <label>Invoice for {payer}
-                      <select aria-label={`Invoice for ${payer}`} value={draft.invoice_id} onChange={(event) => patch(id, { invoice_id: event.target.value })}>
-                        <option value="">No invoice — record it without applying it to one</option>
-                        {(invoices || []).map((option) => <option key={option.id} value={option.id}>{String(option.invoice_number || option.id)}</option>)}
-                      </select>
                     </label>
                   ) : null}
                   <div data-testid={`lawpay-preview-${id}`} aria-label={`Preview for ${payer}`} style={{ background: '#f1f5f9', borderRadius: 8, padding: 8 }}>

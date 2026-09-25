@@ -36,7 +36,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Verify finance models and composed production callbacks
-        run: timeout 120s node --test tests/finance-v314.test.js tests/lawpay-attribution.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js tests/lawpay-classification-v323.test.js tests/lawpay-accounts-v323-shared.test.js tests/lawpay-provider-account-v324.test.js tests/lawpay-provider-account-migration-v324.test.js
+        run: timeout 120s node --test tests/finance-v314.test.js tests/lawpay-attribution.test.js tests/finance-v314-integration.test.js tests/daily-billing-finance-refresh.test.js tests/pnc-daily-trust.test.js tests/lawpay-classification-v323.test.js tests/lawpay-accounts-v323-shared.test.js tests/lawpay-provider-account-v324.test.js tests/lawpay-provider-account-migration-v324.test.js tests/lawpay-review-count.test.js tests/lawpay-review-gateway-v325.test.js tests/lawpay-review-ui-v325.test.js tests/lawpay-review-migration-v325.test.js
       - name: Test atomic SQL on isolated synthetic PostgreSQL
         run: |
           psql -v ON_ERROR_STOP=1 -f tests/sql/finance-v314-schema.sql
@@ -105,6 +105,8 @@ jobs:
             tests/sql/lawpay-refund-resolution-v323-behavior.sql \
               supabase/migrations/20260923090000_lawpay_provider_account_resolution_v324.sql \
               tests/sql/lawpay-provider-account-resolution-v324-behavior.sql \
+              supabase/migrations/20260925150000_lawpay_review_queue_v325.sql \
+              tests/sql/lawpay-review-queue-v325-behavior.sql \
               docs/lawpay-step2-verification-readonly.sql \
               docs/lawpay-step3-verification-readonly.sql \
               docs/lawpay-step6-verification-readonly.sql \
