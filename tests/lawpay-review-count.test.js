@@ -74,6 +74,45 @@ test('a resolved refund relationship stops counting', () => {
   assert.equal(result.count, 1) // only the unclassified charge remains
 })
 
+test('a provider-linked refund inherits its original Mio matter and is not an uncategorized transaction', () => {
+  const charge = tx({
+    gateway_transaction_id: 'charge-dobbins', amount_cents: 140000, amount_refunded_cents: 140000,
+    account_key: 'trust', resolved_account_key: 'trust', raw: { mio_matter_id: 'matter-dobbins' },
+    review_linkage: { matter_id: 'matter-dobbins', reconciled: true, invoice_id: 'invoice-dobbins' },
+  })
+  const refund = tx({
+    gateway_transaction_id: 'refund-dobbins', transaction_type: 'REFUND', amount_cents: 140000,
+    account_key: '', resolved_account_key: '', occurred_at: '2026-09-10T16:00:00Z', raw: { charge_id: 'charge-dobbins' },
+  })
+  const existingRefundEntries = [{ id: 'mio-refund', matter_id: 'matter-dobbins', direction: 'out', transaction_type: 'client_refund', amount: 1400, date: '2026-09-10' }]
+  const result = actionableReviewCount({ transactions: [charge, refund], existingRefundEntries, reviewCutoverDate: '2026-08-09' })
+  assert.equal(result.count, 0)
+  assert.equal(result.dispositions['refund-dobbins'].state, 'linked_and_complete')
+  assert.equal(result.dispositions['refund-dobbins'].matter_id, 'matter-dobbins')
+})
+
+test('refund alert counts one completed Mio-versus-LawPay discrepancy but not authorized or historical refunds', () => {
+  const charge = tx({
+    gateway_transaction_id: 'charge-dobbins', amount_cents: 140000, amount_refunded_cents: 140000,
+    account_key: 'trust', resolved_account_key: 'trust', occurred_at: '2026-09-21T15:59:36Z',
+    raw: { mio_matter_id: 'matter-dobbins' }, review_linkage: { matter_id: 'matter-dobbins', reconciled: true, invoice_id: 'invoice-dobbins' },
+  })
+  const refund = tx({
+    gateway_transaction_id: 'refund-dobbins', transaction_type: 'REFUND', amount_cents: 140000,
+    status: 'COMPLETED', occurred_at: '2026-09-25T16:46:02Z', raw: { charge_id: 'charge-dobbins' },
+  })
+  const existingRefundEntries = [{ id: 'mio-refund', matter_id: 'matter-dobbins', direction: 'out', transaction_type: 'client_refund', amount: 1399.73, date: '2026-09-25' }]
+  const mismatch = actionableReviewCount({ transactions: [charge, refund], existingRefundEntries, reviewCutoverDate: '2026-08-09' })
+  assert.equal(mismatch.count, 1)
+  assert.equal(mismatch.refund_ledger_issues.length, 1)
+  assert.equal(mismatch.refund_ledger_issues[0].difference_cents, 27)
+
+  const authorized = actionableReviewCount({ transactions: [charge, { ...refund, status: 'AUTHORIZED' }], existingRefundEntries, reviewCutoverDate: '2026-08-09' })
+  assert.equal(authorized.count, 0)
+  const historical = actionableReviewCount({ transactions: [{ ...charge, occurred_at: '2026-06-01T00:00:00Z' }, { ...refund, occurred_at: '2026-06-02T00:00:00Z' }], existingRefundEntries, reviewCutoverDate: '2026-08-09' })
+  assert.equal(historical.count, 0)
+})
+
 test('one unclassified refund is one review transaction even when its relationship is unresolved', () => {
   const refund = tx({ gateway_transaction_id: 'refund-only', transaction_type: 'REFUND', amount_cents: 10000 })
   const result = actionableReviewCount({ transactions: [refund] })

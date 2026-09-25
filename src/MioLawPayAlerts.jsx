@@ -17,13 +17,25 @@ export default function MioLawPayAlerts() {
       const { data, error } = await supabase.functions.invoke('lawpay-gateway', { body: { action: 'review' } })
       if (error) throw new Error(error.message || 'The LawPay gateway could not be reached.')
       if (data?.error) throw new Error(data.error)
+      const classifications = data?.classifications || []
+      const classificationById = new Map(classifications.map((row) => [String(row.id || ''), row]))
+      const ledgerRefundEntries = (data?.ledger_entries || []).map((entry) => {
+        const classification = classificationById.get(String(entry.classification_id || '')) || {}
+        return {
+          id: String(entry.id || ''), matter_id: String(entry.matter_id || classification.matter_id || ''),
+          date: String(entry.occurred_at || entry.created_at || '').slice(0, 10), direction: String(entry.direction || ''),
+          transaction_type: String(entry.entry_kind || '') === 'refund_effect' || String(classification.category || '') === 'client_refund' ? 'client_refund' : '',
+          amount_cents: Number(entry.amount_cents || 0), lawpay_transaction_id: String(classification.gateway_transaction_id || ''), source: 'classification_workflow',
+        }
+      })
       const review = actionableReviewCount({
         transactions: data?.transactions || [],
-        classifications: data?.classifications || [],
+        classifications,
         refundResolutions: data?.refund_resolutions || [],
         reviewCutoverDate: data?.review_cutover_date || '',
         legacyRecordedTransactionIds: data?.legacy_recorded_transaction_ids || [],
         legacyAttributedTransactionIds: data?.legacy_attributed_transaction_ids || [],
+        existingRefundEntries: [...(data?.legacy_refund_entries || []), ...ledgerRefundEntries],
       })
       setCount(review.count)
     } catch (failure) {

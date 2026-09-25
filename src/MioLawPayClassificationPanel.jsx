@@ -10,7 +10,7 @@ import { ACCOUNT_KEYS, accountFamily, accountProvenanceLabel, providerAccountOut
 import {
   CATEGORIES, OTHER_REASONS, REVIEW_STATUS_LABELS, actionableReviewCount, amountBreakdown, categoryById, categoryDirection, correctionPreview,
   defaultClassificationDraft, derivedClassificationCategory, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, matterChoiceLabel, postingEligibility,
-  postingPreview, providerMoneyOut, refundResolutionRecord, refundReview, reviewStatus, suggestions, validateClassification,
+  postingPreview, providerMoneyOut, refundResolutionRecord, reviewStatus, suggestions, validateClassification,
 } from './mioLawPayClassification.js'
 
 const ACCOUNT_LABELS = {
@@ -67,6 +67,7 @@ export default function MioLawPayClassificationPanel({
   const [refundBusy, setRefundBusy] = useState('')
   const [refundMessage, setRefundMessage] = useState('')
   const [refundEvidence, setRefundEvidence] = useState({})
+  const [refundChargeIds, setRefundChargeIds] = useState({})
   // Guards a decision that is already in flight for a payment, so a double click cannot record it twice.
   const inFlightRef = useRef('')
   const [expanded, setExpanded] = useState(false)
@@ -81,7 +82,8 @@ export default function MioLawPayClassificationPanel({
     reviewCutoverDate,
     legacyRecordedTransactionIds: [...(legacyRecordedTransactionIds || []), ...localLegacyIds],
     legacyAttributedTransactionIds,
-  }), [scoped, classifications, refundResolutions, reviewCutoverDate, legacyRecordedTransactionIds, legacyAttributedTransactionIds, localLegacyIds])
+    existingRefundEntries: existingEntries,
+  }), [scoped, classifications, refundResolutions, reviewCutoverDate, legacyRecordedTransactionIds, legacyAttributedTransactionIds, localLegacyIds, existingEntries])
   const transactionFor = (value) => typeof value === 'object' ? value : scoped.find((transaction) => providerIdOf(transaction) === String(value || '')) || {}
   const decisionsFor = (value) => {
     const transaction = transactionFor(value), id = providerIdOf(transaction)
@@ -106,18 +108,23 @@ export default function MioLawPayClassificationPanel({
   const matterNameFor = (draft) => (matters || []).find((row) => String(row.id || '') === String(draft?.matter_id || ''))?.name || matter?.name || ''
   const outstanding = review.transactions
   const technicalExceptions = review.technical_exceptions
-  // Refunds whose relationship to a charge is not established by a provider identifier are shown
-  // as unresolved, never netted against a charge's reported total just because they share an
-  // account. The reconciled total is explicitly not final while any remain.
-  const recordedIds = new Set((classifications || []).filter((record) => !matter?.id || String(record.matter_id || '') === String(matter.id)).map((record) => String(record.gateway_transaction_id || '')))
-  const recordedAccounts = new Set((transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || ''))).map((transaction) => String(transaction.account_id || '')))
-  const refundScope = (transactions || []).filter((transaction) => recordedIds.has(String(transaction.gateway_transaction_id || '')) || (providerMoneyOut(transaction) && recordedAccounts.has(String(transaction.account_id || ''))))
+  // Provider-linked refunds are resolved from LawPay's immutable charge id. Only genuinely
+  // unlinked completed refunds appear in relationship review. A separate, read-only ledger check
+  // compares completed refunds with Mio's existing client-refund entries and never posts money.
   const resolutionsByRefund = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
-  const refunds = refundReview({ transactions: refundScope, resolutions: resolutionsByRefund })
-  const openRefunds = refunds.effects.filter((effect) => effect.effect !== 'already_reflected')
-  async function resolveRefund(refundId, resolution, evidence) {
+  const refunds = review.refund_review || { effects: [], separate_refund_total_cents: 0 }
+  const openRefunds = refunds.effects.filter((effect) => effect.effect === 'unresolved')
+  const refundLedgerIssues = review.refund_ledger_issues || []
+  const refundableCharges = useMemo(() => {
+    const recordedIds = new Set((classifications || [])
+      .filter((record) => ['posted', 'reversed'].includes(String(record.posting_status || '')))
+      .map((record) => String(record.gateway_transaction_id || ''))
+      .filter(Boolean))
+    return scoped.filter((transaction) => !providerMoneyOut(transaction) && recordedIds.has(providerIdOf(transaction)))
+  }, [classifications, scoped])
+  async function resolveRefund(refundId, resolution, evidence, selectedChargeId = '') {
     const refund = (transactions || []).find((transaction) => String(transaction.gateway_transaction_id || '') === refundId) || {}
-    const chargeId = resolution === 'same_refund' ? String((classifications || []).find((record) => (!matter?.id || String(record.matter_id || '') === String(matter.id)) && ['posted', 'reversed'].includes(String(record.posting_status || '')))?.gateway_transaction_id || '') : ''
+    const chargeId = resolution === 'same_refund' ? String(selectedChargeId || '') : ''
     const decision = refundResolutionRecord({
       refund, charge: { gateway_transaction_id: chargeId }, resolution, evidence_reference: evidence,
       actor: (await supabase.auth.getUser()).data?.user?.email || 'unknown reviewer',
@@ -268,6 +275,24 @@ export default function MioLawPayClassificationPanel({
           </ul>
         </details>
       ) : null}
+      {refundLedgerIssues.length ? (
+        <section aria-label="Refund reconciliation discrepancy" data-testid="refund-ledger-review" style={{ border: '1px solid #dc2626', background: '#fef2f2', borderRadius: 8, padding: 10 }}>
+          <strong>Refund reconciliation needs attention</strong>
+          {refundLedgerIssues.map((issue) => {
+            const linkedMatter = (matters || []).find((row) => String(row.id || '') === String(issue.matter_id || ''))
+            const who = issue.payer_name || (linkedMatter ? matterChoiceLabel(linkedMatter) : 'the linked matter')
+            return (
+              <div key={issue.key} style={{ borderTop: '1px solid #fecaca', paddingTop: 6, marginTop: 6 }}>
+                {issue.state === 'amount_mismatch' ? (
+                  <p style={{ margin: 0 }}>{`${who}: LawPay reports ${money(issue.provider_total_cents)} refunded, while Mio already records ${money(issue.mio_total_cents)}. The difference is ${money(Math.abs(issue.difference_cents))}. Do not record another refund; reconcile only this difference in the matter trust ledger.`}</p>
+                ) : (
+                  <p style={{ margin: 0 }}>{`${who}: LawPay reports ${money(issue.provider_total_cents)} refunded, but Mio has no matching client-refund entry for ${issue.date}. Record or match the refund from the matter trust ledger; do not post it again from this queue.`}</p>
+                )}
+              </div>
+            )
+          })}
+        </section>
+      ) : null}
       {openRefunds.length ? (
         <section aria-label="Refund relationship review" data-testid="refund-review" style={{ border: '1px solid #f59e0b', background: '#fffbeb', borderRadius: 8, padding: 10 }}>
           <strong>{refunds.label || 'Refund review'}</strong>
@@ -275,11 +300,17 @@ export default function MioLawPayClassificationPanel({
           {openRefunds.map((effect) => (
             <div key={effect.refund_id} style={{ borderTop: '1px solid #fcd34d', paddingTop: 6, marginTop: 6 }}>
               <div>{`Refund ${effect.refund_id} · ${money(effect.amount_cents)} · ${effect.effect === 'unresolved' ? 'Refund relationship unresolved' : 'recorded as a separate refund'}`}</div>
+              <label>{`Original charge for refund ${effect.refund_id}`}
+                <select aria-label={`Original charge for refund ${effect.refund_id}`} value={refundChargeIds[effect.refund_id] || ''} onChange={(event) => setRefundChargeIds((current) => ({ ...current, [effect.refund_id]: event.target.value }))}>
+                  <option value="">Choose the original recorded charge</option>
+                  {refundableCharges.map((charge) => <option key={providerIdOf(charge)} value={providerIdOf(charge)}>{`${charge.payer_name || charge.payer_email || 'Payment'} · ${money(amountBreakdown(charge).gross_cents)} · ${String(charge.occurred_at || '').slice(0, 10)}`}</option>)}
+                </select>
+              </label>
               <label>{`What establishes this refund’s relationship (${effect.refund_id})?`}
                 <input aria-label={`Refund evidence for ${effect.refund_id}`} value={refundEvidence[effect.refund_id] || ''} onChange={(event) => setRefundEvidence((current) => ({ ...current, [effect.refund_id]: event.target.value }))} placeholder="Provider reference or report that shows whether this is the same refund" />
               </label>
               <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-                <button type="button" aria-label={`Same refund as the charge ${effect.refund_id}`} disabled={refundBusy === effect.refund_id} onClick={() => resolveRefund(effect.refund_id, 'same_refund', refundEvidence[effect.refund_id] || '')}>Same refund already reflected on this charge</button>
+                <button type="button" aria-label={`Same refund as the charge ${effect.refund_id}`} disabled={refundBusy === effect.refund_id || !refundChargeIds[effect.refund_id]} onClick={() => resolveRefund(effect.refund_id, 'same_refund', refundEvidence[effect.refund_id] || '', refundChargeIds[effect.refund_id] || '')}>Same refund already reflected on this charge</button>
                 <button type="button" aria-label={`Separate refund ${effect.refund_id}`} disabled={refundBusy === effect.refund_id} onClick={() => resolveRefund(effect.refund_id, 'separate_refund', refundEvidence[effect.refund_id] || '')}>Separate refund</button>
               </div>
             </div>

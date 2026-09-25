@@ -9,6 +9,41 @@ export function storedStateValue(row = null, fallback = null) {
 
 const text = (value) => String(value ?? '').trim()
 
+export function providerRefundChargeId(row = {}) {
+  const raw = row?.raw && typeof row.raw === 'object' ? row.raw : {}
+  return text(row.original_transaction_id || raw.mio_original_transaction_id || raw.charge_id || raw.refunded_transaction_id)
+}
+
+export function inheritRefundEvidence(refund = {}, charge = null) {
+  const chargeId = providerRefundChargeId(refund)
+  if (!chargeId || !charge) return refund
+  const own = refund.review_linkage || {}, inherited = charge.review_linkage || {}
+  const choose = (key) => {
+    const value = own[key]
+    return value !== undefined && value !== null && value !== '' ? value : inherited[key]
+  }
+  return {
+    ...refund,
+    refund_charge_id: chargeId,
+    resolved_account_key: text(refund.resolved_account_key || refund.account_key || charge.resolved_account_key || charge.account_key),
+    resolved_account_source: text(refund.resolved_account_source || charge.resolved_account_source),
+    review_linkage: {
+      payment_request_id: text(choose('payment_request_id')),
+      request_found: own.request_found === true || inherited.request_found === true,
+      payment_request_status: text(choose('payment_request_status')),
+      invoice_number: text(choose('invoice_number')),
+      invoice_id: text(choose('invoice_id')),
+      invoice_status: text(choose('invoice_status')),
+      invoice_event_id: text(choose('invoice_event_id')),
+      matter_id: text(choose('matter_id')),
+      client_id: text(choose('client_id')),
+      reconciled: own.reconciled === true || inherited.reconciled === true,
+      conflict: text(choose('conflict')),
+      inherited_from_charge_id: chargeId,
+    },
+  }
+}
+
 export function transactionLinkage(row = {}, requests = [], invoices = [], events = []) {
   const raw = row?.raw && typeof row.raw === 'object' ? row.raw : {}
   const paymentRequestId = text(raw.mio_payment_request_id)

@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { accountRegistry, resolveTransactionAccount, accountDiagnostics, maskAccountId, sameProviderAccountId, accountDiscrepancy } from '../src/mioLawPayAccounts.js'
-import { amountBreakdown, classificationIdentity, correctionPreview, correctionRecord, refundResolutionRecord, refundReview, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
+import { amountBreakdown, classificationIdentity, correctionPreview, correctionRecord, refundLedgerReview, refundResolutionRecord, refundReview, duplicateClassification, existingEntryMatch, ledgerPlan, manualAccountVerification, postingEligibility, postingPreview, queueSplit, refundReconciliation, reviewStatus, singleCountProviderPayments, validateClassification } from '../src/mioLawPayClassification.js'
 
 const trustAccount = { provider_account_id: 'acct-91075', account_key: 'trust', bank_account_id: 'plaid-trust', bank_role: 'trust', label: 'Trust / IOLTA ••••1075', is_active: true }
 const operatingAccount = { provider_account_id: 'acct-91077', account_key: 'operating', bank_account_id: 'plaid-operating', bank_role: 'operating', label: 'Operating ••••1077', is_active: true }
@@ -244,6 +244,87 @@ test('two equal unlinked refunds are resolved independently, by identity rather 
   const voided = refundReview({ transactions: [charge, { ...first, status: 'VOID' }] })
   assert.equal(voided.reconciled, true)
   assert.equal(voided.resolved_total_cents, 490000)
+})
+
+test('LawPay charge_id resolves a refund to its original charge without a manual decision', () => {
+  const original = charge({ gateway_transaction_id: 'charge-dobbins', amount_cents: 140000, amount_refunded_cents: 140000 })
+  const refund = charge({
+    gateway_transaction_id: 'refund-dobbins', transaction_type: 'REFUND', amount_cents: 140000,
+    raw: { charge_id: 'charge-dobbins' },
+  })
+  const review = refundReview({ transactions: [original, refund], reviewCutoverDate: '2026-08-09' })
+  assert.equal(review.reconciled, true)
+  assert.equal(review.unresolved_refund_cents, 0)
+  assert.equal(review.effects.length, 1)
+  assert.equal(review.effects[0].effect, 'already_reflected')
+  assert.equal(review.effects[0].source, 'provider_identifier')
+  assert.equal(review.effects[0].charge_id, 'charge-dobbins')
+})
+
+test('refund review excludes unfinished and pre-opening refunds', () => {
+  const currentCharge = charge({ gateway_transaction_id: 'charge-current', occurred_at: '2026-09-25T16:00:00Z' })
+  const historical = charge({ gateway_transaction_id: 'refund-old', transaction_type: 'REFUND', occurred_at: '2026-06-26T16:00:00Z', amount_cents: 197500 })
+  const authorized = charge({ gateway_transaction_id: 'refund-pending', transaction_type: 'REFUND', status: 'AUTHORIZED', occurred_at: '2026-09-25T16:46:00Z', amount_cents: 140000 })
+  const review = refundReview({ transactions: [currentCharge, historical, authorized], reviewCutoverDate: '2026-08-09' })
+  assert.deepEqual(review.effects, [])
+  assert.equal(review.unresolved_refund_cents, 0)
+  assert.equal(review.reconciled, true)
+})
+
+test('completed provider refunds reconcile to one existing Mio refund and surface only the difference', () => {
+  const firstCharge = charge({
+    gateway_transaction_id: 'charge-1400', amount_cents: 140000, amount_refunded_cents: 140000,
+    account_key: 'trust', resolved_account_key: 'trust', payer_name: 'Kevin Dobbins', occurred_at: '2026-09-21T15:59:36Z', review_linkage: { matter_id: 'matter-dobbins' },
+  })
+  const secondCharge = charge({
+    gateway_transaction_id: 'charge-2100', amount_cents: 210000, amount_refunded_cents: 8000,
+    account_key: 'trust', resolved_account_key: 'trust', payer_name: 'Kevin Dobbins', occurred_at: '2026-09-16T13:35:33Z', review_linkage: { matter_id: 'matter-dobbins' },
+  })
+  const refunds = [
+    charge({ gateway_transaction_id: 'refund-1400', transaction_type: 'REFUND', amount_cents: 140000, occurred_at: '2026-09-25T16:46:02Z', raw: { charge_id: 'charge-1400' } }),
+    charge({ gateway_transaction_id: 'refund-80', transaction_type: 'REFUND', amount_cents: 8000, occurred_at: '2026-09-25T16:47:41Z', raw: { charge_id: 'charge-2100' } }),
+  ]
+  const existing = [{
+    id: 'mio-refund', matter_id: 'matter-dobbins', direction: 'out', transaction_type: 'client_refund',
+    amount: 1479.73, date: '2026-09-25', payer_payee: 'Kevin Dobbins', source: 'Mio manual trust entry',
+  }]
+  const review = refundLedgerReview({ transactions: [firstCharge, secondCharge, ...refunds], existingEntries: existing, reviewCutoverDate: '2026-08-09' })
+  assert.equal(review.groups.length, 1)
+  assert.equal(review.issues.length, 1)
+  assert.equal(review.matched.length, 0)
+  assert.deepEqual(review.issues[0], {
+    key: 'matter-dobbins:2026-09-25', state: 'amount_mismatch', matter_id: 'matter-dobbins', date: '2026-09-25',
+    refund_ids: ['refund-1400', 'refund-80'], provider_total_cents: 148000, mio_total_cents: 147973,
+    difference_cents: 27, entry_ids: ['mio-refund'], payer_name: 'Kevin Dobbins', account_key: 'trust',
+  })
+})
+
+test('an exact existing Mio refund is recognized without another financial entry', () => {
+  const original = charge({
+    gateway_transaction_id: 'charge-1', amount_cents: 140000, amount_refunded_cents: 140000,
+    review_linkage: { matter_id: 'matter-1' },
+  })
+  const refund = charge({
+    gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', amount_cents: 140000,
+    occurred_at: '2026-09-25T16:46:02Z', raw: { charge_id: 'charge-1' },
+  })
+  const existingEntries = [{ id: 'existing-1', matter_id: 'matter-1', direction: 'out', transaction_type: 'client_refund', amount: 1400, date: '2026-09-25', payer_payee: 'Synthetic Client' }]
+  original.payer_name = 'Synthetic Client'
+  const review = refundLedgerReview({ transactions: [original, refund], existingEntries, reviewCutoverDate: '2026-08-09' })
+  assert.equal(review.issues.length, 0)
+  assert.equal(review.matched.length, 1)
+  assert.equal(review.matched[0].state, 'matched_existing_refund')
+  assert.equal(review.matched[0].difference_cents, 0)
+})
+
+test('a same-day refund for a different payer is never treated as the existing client refund', () => {
+  const original = charge({ gateway_transaction_id: 'charge-1', payer_name: 'Kevin Dobbins', review_linkage: { matter_id: 'matter-1' } })
+  const refund = charge({ gateway_transaction_id: 'refund-1', transaction_type: 'REFUND', amount_cents: 140000, occurred_at: '2026-09-25T16:46:02Z', raw: { charge_id: 'charge-1' } })
+  const otherClient = [{ id: 'other-refund', matter_id: 'matter-1', direction: 'out', transaction_type: 'client_refund', amount: 1400, date: '2026-09-25', payer_payee: 'Someone Else' }]
+  const review = refundLedgerReview({ transactions: [original, refund], existingEntries: otherClient, reviewCutoverDate: '2026-08-09' })
+  assert.equal(review.matched.length, 0)
+  assert.equal(review.issues[0].state, 'missing_mio_refund')
+  assert.deepEqual(review.issues[0].entry_ids, [])
 })
 
 test('a refund resolution records who, when, the evidence and the immutable ids, and a correction links rather than overwrites', () => {

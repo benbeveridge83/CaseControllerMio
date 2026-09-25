@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { storedStateValue, transactionLinkage } from '../supabase/functions/_shared/lawpay-review-v325.js'
+import { inheritRefundEvidence, providerRefundChargeId, storedStateValue, transactionLinkage } from '../supabase/functions/_shared/lawpay-review-v325.js'
 
 const gateway = fs.readFileSync(new URL('../supabase/functions/lawpay-gateway/index.ts', import.meta.url), 'utf8')
 const shared = fs.readFileSync(new URL('../supabase/functions/_shared/lawpay-review-v325.js', import.meta.url), 'utf8')
@@ -58,4 +58,25 @@ test('linkage never treats an event for a different invoice as reconciliation', 
 test('state values preserve JSON arrays and the fixed finance opening date', () => {
   assert.deepEqual(storedStateValue({ raw_value: '[{"lawpay_transaction_id":"provider-1"}]' }, []), [{ lawpay_transaction_id: 'provider-1' }])
   assert.equal(storedStateValue({ json_value: '2026-08-09' }, ''), '2026-08-09')
+})
+
+test('a LawPay refund inherits immutable matter and account evidence from its charge', () => {
+  const charge = {
+    gateway_transaction_id: 'charge-dobbins', resolved_account_key: 'trust', resolved_account_source: 'registry',
+    review_linkage: { payment_request_id: 'request-dobbins', matter_id: 'matter-dobbins', client_id: 'client-dobbins', invoice_id: 'invoice-dobbins', reconciled: true, conflict: '' },
+  }
+  const refund = { gateway_transaction_id: 'refund-dobbins', transaction_type: 'REFUND', account_key: '', resolved_account_key: '', raw: { charge_id: 'charge-dobbins' }, review_linkage: {} }
+  assert.equal(providerRefundChargeId(refund), 'charge-dobbins')
+  const hydrated = inheritRefundEvidence(refund, charge)
+  assert.equal(hydrated.refund_charge_id, 'charge-dobbins')
+  assert.equal(hydrated.resolved_account_key, 'trust')
+  assert.equal(hydrated.review_linkage.matter_id, 'matter-dobbins')
+  assert.equal(hydrated.review_linkage.payment_request_id, 'request-dobbins')
+  assert.equal(hydrated.review_linkage.reconciled, true)
+})
+
+test('gateway returns only the normalized refund entries needed for reconciliation', () => {
+  assert.match(gateway, /legacy_refund_entries/)
+  assert.match(gateway, /transaction_type.*client_refund/)
+  assert.match(gateway, /inheritRefundEvidence/)
 })

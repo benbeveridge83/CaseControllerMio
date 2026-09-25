@@ -33,3 +33,19 @@ test('matter selection offers a client-or-cause search and descriptive labels', 
   assert.match(panel, /matterChoiceLabel/)
   assert.doesNotMatch(panel, /Invoice for \{payer\}/)
 })
+
+test('refund review compares LawPay with existing Mio refunds and never offers a duplicate post for a discrepancy', () => {
+  assert.match(panel, /refund_ledger_issues/)
+  assert.match(panel, /Do not record another refund/)
+  assert.match(panel, /difference/)
+  assert.match(alert, /legacy_refund_entries/)
+  assert.match(transform, /legacy_refund_entries/)
+  assert.match(transform, /transaction_type\|\|''\)\.toLowerCase\(\)===\s*'client_refund'/)
+})
+
+test('a genuinely unlinked refund cannot be matched to an arbitrary first charge', () => {
+  assert.match(panel, /Original charge for refund/)
+  assert.match(panel, /refundChargeIds/)
+  assert.match(panel, /resolveRefund\(effect\.refund_id, 'same_refund',[^)]*refundChargeIds\[effect\.refund_id\]/)
+  assert.doesNotMatch(panel, /classifications \|\| \[\]\)\.find\(\(record\).*\?\.gateway_transaction_id/)
+})

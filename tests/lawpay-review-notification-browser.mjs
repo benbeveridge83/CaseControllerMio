@@ -18,17 +18,21 @@ const transactions = [
   { id: 'tx-a', gateway_transaction_id: 'provider-a', occurred_at: '2026-09-12T15:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 500000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Alpha Synthetic', payer_email: 'alpha@example.invalid', raw: { mio_matter_id: matters[0].id } },
   { id: 'tx-p', gateway_transaction_id: 'provider-p', occurred_at: '2026-09-13T09:00:00Z', transaction_type: 'CHARGE', status: 'AUTHORIZED', account_key: 'echeck_trust', account_id: 'acct-7788', amount_cents: 25000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Pending Payer', payer_email: 'pending@example.invalid', raw: {} },
   { id: 'tx-d', gateway_transaction_id: 'provider-d', occurred_at: '2026-09-12T17:13:36Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'operating', account_id: 'acct-operating', amount_cents: 12500, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Yasmine Said', payer_email: 'yasmine@example.invalid', raw: { mio_account_key_source: 'configured_account' } },
-  { id: 'tx-kevin', gateway_transaction_id: 'provider-kevin', occurred_at: '2026-09-21T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 140000, amount_refunded_cents: 0, currency: 'USD', reference: 'MIO-2026-1400', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { mio_payment_request_id: 'request-kevin', mio_invoice_number: 'MIO-2026-1400', mio_matter_id: matters[0].id, mio_client_id: matters[0].client_id }, review_linkage: { payment_request_id: 'request-kevin', request_found: true, invoice_number: 'MIO-2026-1400', invoice_id: 'invoice-kevin', invoice_event_id: 'event-kevin', matter_id: matters[0].id, client_id: matters[0].client_id, reconciled: true, conflict: '' } },
+  { id: 'tx-kevin', gateway_transaction_id: 'provider-kevin', occurred_at: '2026-09-21T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 140000, amount_refunded_cents: 140000, currency: 'USD', reference: 'MIO-2026-1400', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { mio_payment_request_id: 'request-kevin', mio_invoice_number: 'MIO-2026-1400', mio_matter_id: matters[0].id, mio_client_id: matters[0].client_id }, review_linkage: { payment_request_id: 'request-kevin', request_found: true, invoice_number: 'MIO-2026-1400', invoice_id: 'invoice-kevin', invoice_event_id: 'event-kevin', matter_id: matters[0].id, client_id: matters[0].client_id, reconciled: true, conflict: '' } },
+  { id: 'tx-kevin-second', gateway_transaction_id: 'provider-kevin-second', occurred_at: '2026-09-22T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 210000, amount_refunded_cents: 8000, currency: 'USD', reference: 'MIO-2026-2100', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { mio_payment_request_id: 'request-kevin-second', mio_invoice_number: 'MIO-2026-2100', mio_matter_id: matters[0].id, mio_client_id: matters[0].client_id }, review_linkage: { payment_request_id: 'request-kevin-second', request_found: true, invoice_number: 'MIO-2026-2100', invoice_id: 'invoice-kevin-second', invoice_event_id: 'event-kevin-second', matter_id: matters[0].id, client_id: matters[0].client_id, reconciled: true, conflict: '' } },
+  { id: 'tx-kevin-refund-a', gateway_transaction_id: 'provider-kevin-refund-a', occurred_at: '2026-09-25T16:46:00Z', transaction_type: 'REFUND', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 140000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { charge_id: 'provider-kevin' } },
+  { id: 'tx-kevin-refund-b', gateway_transaction_id: 'provider-kevin-refund-b', occurred_at: '2026-09-25T16:47:00Z', transaction_type: 'REFUND', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 8000, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Kevin Dobbins', payer_email: 'kevin@example.invalid', raw: { charge_id: 'provider-kevin-second' } },
   { id: 'tx-linked-incomplete', gateway_transaction_id: 'provider-linked-incomplete', occurred_at: '2026-09-20T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'operating', account_id: 'acct-operating', amount_cents: 20000, amount_refunded_cents: 0, currency: 'USD', reference: 'MIO-2026-TECH', payer_name: 'Linked Technical', payer_email: 'linked@example.invalid', raw: { mio_payment_request_id: 'request-technical', mio_invoice_number: 'MIO-2026-TECH', mio_matter_id: matters[0].id }, review_linkage: { payment_request_id: 'request-technical', request_found: true, invoice_number: 'MIO-2026-TECH', invoice_id: 'invoice-technical', matter_id: matters[0].id, reconciled: false, conflict: '' } },
   { id: 'tx-historical', gateway_transaction_id: 'provider-historical', occurred_at: '2026-08-08T12:00:00Z', transaction_type: 'CHARGE', status: 'COMPLETED', account_key: 'trust', account_id: 'acct-trust', amount_cents: 9900, amount_refunded_cents: 0, currency: 'USD', reference: '', payer_name: 'Historical Payer', payer_email: 'historical@example.invalid', raw: {} },
 ]
 const store = { classifications: [], ledger: [], actions: [], seq: 0 }
+const legacyRefundEntries = [{ id: 'manual-refund-kevin', matter_id: matters[0].id, date: '2026-09-25', direction: 'out', transaction_type: 'client_refund', amount: 1479.73, payer_payee: 'Kevin Dobbins', source: 'Mio manual trust entry', lawpay_transaction_id: '' }]
 const identityOf = (record) => `${String(record.provider_account_id || '')}:${String(record.gateway_transaction_id || '')}`
 function resolvedFor(transaction) { if (transaction.account_key) return { resolved_account_key: transaction.account_key, resolved_account_source: 'environment', resolved_account_label: transaction.account_key }; return { resolved_account_key: '', resolved_account_source: '', resolved_account_label: '' } }
 function gateway(body) {
   store.actions.push(body.action)
   if (!['review', 'save', 'post'].includes(body.action)) return { ok: true, page: 1, processed: 0, total_entries: 0, has_more: false, next_page: null, warnings: [] }
-  if (body.action === 'review') return { ok: true, version: 325, mapping_table_available: true, accounts: [], classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })), review_cutover_date: '2026-08-09', legacy_recorded_transaction_ids: [], legacy_attributed_transaction_ids: [] }
+  if (body.action === 'review') return { ok: true, version: 326, mapping_table_available: true, accounts: [], classifications: store.classifications, ledger_entries: store.ledger, transactions: transactions.map((transaction) => ({ ...transaction, ...resolvedFor(transaction) })), review_cutover_date: '2026-08-09', legacy_recorded_transaction_ids: [], legacy_attributed_transaction_ids: [], legacy_refund_entries: legacyRefundEntries }
   const record = body.classification || {}
   const transaction = transactions.find((tx) => tx.gateway_transaction_id === record.gateway_transaction_id)
   if (!transaction) return { ok: false, error: 'unknown transaction' }
@@ -39,7 +43,7 @@ function gateway(body) {
   store.ledger = [...store.ledger, { id: 'e' + (++store.seq), identity, classification_id: 'c' + store.seq, entry_kind: String(record.actual_account_key).includes('trust') ? 'trust_entry' : 'operating_association', direction: 'in', account_key: record.actual_account_key, matter_id: record.matter_id || '', amount_cents: transaction.amount_cents, currency: 'USD', occurred_at: transaction.occurred_at, created_at: new Date().toISOString() }]
   return { ok: true, result: { status: 'posted' } }
 }
-const states = new Map(Object.entries({ caseMioFinanceOpeningBalances: opening, caseMioTrustTransactions: [], caseMioInvoices: [], caseMioBillingCutoverDate: '2026-08-09' }).map(([key, v]) => [key, { key, raw_value: typeof v === 'string' ? v : JSON.stringify(v), json_value: v, updated_at: now }]))
+const states = new Map(Object.entries({ caseMioFinanceOpeningBalances: opening, caseMioTrustTransactions: legacyRefundEntries, caseMioInvoices: [], caseMioBillingCutoverDate: '2026-08-09' }).map(([key, v]) => [key, { key, raw_value: typeof v === 'string' ? v : JSON.stringify(v), json_value: v, updated_at: now }]))
 const errors = [], blocked = [], writes = []
 const root = path.resolve('dist'), port = 4183
 const server = http.createServer((req, res) => { const p = path.resolve(root, '.' + new URL(req.url, 'http://localhost').pathname); if (!p.startsWith(root + path.sep) && p !== root) { res.writeHead(403); return res.end() } const f = fs.existsSync(p) && fs.statSync(p).isFile() ? p : path.join(root, 'index.html'); res.setHeader('Content-Type', f.endsWith('.js') ? 'text/javascript' : f.endsWith('.css') ? 'text/css' : 'text/html'); res.end(fs.readFileSync(f)) })
@@ -97,11 +101,12 @@ try {
   assert.equal(matterFinancesBody.includes('Categorize this payment'), false, 'no legacy attribution picker on Matter -> Finances')
   assert.equal(await matter.locator('details summary').filter({ hasText: 'LawPay reconciliation' }).count(), 0, 'no unlinked LawPay transaction rows on Matter -> Finances')
 
-  // One consolidated notification on the main tab: provider-a + provider-d need a decision, provider-p
-  // is pending and excluded, so the count is 2 and there is exactly one notification.
+  // One consolidated notification on the main tab: provider-a + provider-d need a decision and
+  // Kevin's completed provider refunds differ from Mio's one existing refund entry by 27 cents.
+  // Pending, historical and fully linked rows are excluded, so the count is 3.
   const notification = page.locator('[data-testid="lawpay-review-notification"]')
   await notification.waitFor({ timeout: 30000 })
-  assert.match(await notification.innerText(), /2 LawPay transactions need review/)
+  assert.match(await notification.innerText(), /3 LawPay transactions need review/)
   assert.equal(await notification.count(), 1, 'one consolidated notification, never one per transaction')
   await notification.getByRole('button').click()
   await queue.waitFor({ timeout: 30000 })
@@ -114,6 +119,17 @@ try {
   assert.match(await kevin.innerText(), /Handled automatically from its Mio payment link/)
   assert.equal(await kevin.getByRole('button', { name: 'Decide Kevin Dobbins' }).count(), 0)
   assert.match(await panel.locator('details[aria-label="Mio-linked payments needing reconciliation"]').textContent(), /Linked Technical.*technical linkage/i)
+
+  // LawPay split Kevin's one refund across two original charges. Mio already has the one manual
+  // client-refund entry, so the queue must never offer to record another withdrawal. It groups the
+  // provider rows and surfaces only the 27-cent reconciliation difference.
+  const refundReview = panel.getByTestId('refund-ledger-review')
+  assert.match(await refundReview.innerText(), /Kevin Dobbins/)
+  assert.match(await refundReview.innerText(), /LawPay: \$1,480\.00/)
+  assert.match(await refundReview.innerText(), /Mio: \$1,479\.73/)
+  assert.match(await refundReview.innerText(), /Difference: \$0\.27/)
+  assert.match(await refundReview.innerText(), /Do not record another refund/)
+  assert.equal(await panel.getByText('Refund relationship unresolved', { exact: true }).count(), 0, 'provider charge ids resolve both refund relationships automatically')
 
   // A direct operating-account consultation asks only whether it is a consultation and offers an
   // optional existing PNC. The payer's name is never retyped and the transaction type is derived.
@@ -137,16 +153,16 @@ try {
   await providerA.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await providerA.getByTestId('lawpay-message-provider-a').innerText(), /Saved for later/)
   await notification.waitFor({ timeout: 30000 })
-  assert.match(await notification.innerText(), /2 LawPay transactions need review/, 'saved for later stays counted')
+  assert.match(await notification.innerText(), /3 LawPay transactions need review/, 'saved for later stays counted')
 
-  // Recording it updates the count down to one.
+  // Recording it updates the count down to two: Yasmine plus the one 27-cent refund discrepancy.
   await providerA.getByRole('button', { name: 'Decide Alpha Synthetic' }).click()
   await providerA.getByLabel('Matter for Alpha Synthetic').selectOption(matters[0].id)
   await providerA.getByRole('button', { name: 'Confirm and record Alpha Synthetic' }).click()
   await providerA.getByTestId('lawpay-message-provider-a').waitFor()
   assert.match(await providerA.getByTestId('lawpay-message-provider-a').innerText(), /Recorded in Mio/)
-  for (let attempt = 0; attempt < 60; attempt += 1) { if (/1 LawPay transaction needs review/.test(await notification.innerText())) break; await page.waitForTimeout(250) }
-  assert.match(await notification.innerText(), /1 LawPay transaction needs review/, 'the count updates after a decision')
+  for (let attempt = 0; attempt < 60; attempt += 1) { if (/2 LawPay transactions need review/.test(await notification.innerText())) break; await page.waitForTimeout(250) }
+  assert.match(await notification.innerText(), /2 LawPay transactions need review/, 'the count updates after a decision')
 
   console.log(JSON.stringify({ ok: true, actions: store.actions, notification_text: await notification.innerText(), tests: ['no classification panel on Matter -> Finances', 'the central LawPay review queue carries the panel and diagnostics', 'the consolidated notification shows the correct count once', 'clicking the notification opens the queue', 'saved for later stays counted', 'the count updates after a decision'] }, null, 2))
 } catch (error) {

@@ -1,7 +1,7 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.112.2'
 import {syncProviderPage} from '../_shared/lawpay-v314.js'
 import {accountRegistry,financeAdminAllowed} from '../_shared/lawpay-accounts-v323.js'
-import {storedStateValue,transactionLinkage} from '../_shared/lawpay-review-v325.js'
+import {inheritRefundEvidence,providerRefundChargeId,storedStateValue,transactionLinkage} from '../_shared/lawpay-review-v325.js'
 const cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, x-client-info, apikey, content-type','Access-Control-Allow-Methods':'POST, OPTIONS'}
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{...cors,'Content-Type':'application/json'}})
 const env=(name:string,fallback='')=>Deno.env.get(name)||fallback
@@ -42,14 +42,21 @@ Deno.serve(async(req:Request)=>{
       const requestRows=requests.error?[]:(requests.data||[]),invoiceRows=invoices.error?[]:(invoices.data||[]),eventRows=invoiceEvents.error?[]:(invoiceEvents.data||[])
       const stateRows=userState.error?[]:(userState.data||[]),state=(key:string,fallback:any)=>storedStateValue(stateRows.find((row:any)=>row.key===key),fallback)
       const reviewCutoverDate=text(state('caseMioBillingCutoverDate','2026-08-09')).slice(0,10)||'2026-08-09'
-      const legacyRecordedTransactionIds=(Array.isArray(state('caseMioTrustTransactions',[]))?state('caseMioTrustTransactions',[]):[]).map((row:any)=>text(row?.lawpay_transaction_id)).filter(Boolean)
+      const trustRows=Array.isArray(state('caseMioTrustTransactions',[]))?state('caseMioTrustTransactions',[]):[]
+      const legacyRecordedTransactionIds=trustRows.map((row:any)=>text(row?.lawpay_transaction_id)).filter(Boolean)
+      const legacyRefundEntries=trustRows.filter((row:any)=>text(row?.direction).toLowerCase()==='out'&&text(row?.transaction_type).toLowerCase()==='client_refund').map((row:any)=>({
+        id:text(row?.id),matter_id:text(row?.matter_id),date:text(row?.date||row?.created_at).slice(0,10),direction:'out',transaction_type:'client_refund',
+        amount:Number(row?.amount||0),payer_payee:text(row?.payer_payee),source:text(row?.source),lawpay_transaction_id:text(row?.lawpay_transaction_id),
+      }))
       const legacyAttributedTransactionIds=(Array.isArray(state('caseMioLawPayAttribution',[]))?state('caseMioLawPayAttribution',[]):[]).map((row:any)=>text(row?.gateway_transaction_id)).filter(Boolean)
       const registry=accountRegistry({rows:mapping.error?[]:(mapping.data||[]),environment:accounts()})
-      const resolved=(txs.data||[]).map((row:any)=>{const matched=registry.matchProviderId(row.account_id);return {...row,resolved_account_key:matched?matched.account_key:'',resolved_account_source:matched?(matched.source==='environment'?'environment':'registry'):'',resolved_account_label:matched?(matched.label||matched.account_key):'',provider_account_last4:String(row.account_id||'').slice(-4),review_linkage:transactionLinkage(row,requestRows,invoiceRows,eventRows)}})
-      return reply({ok:true,version:325,mapping_table_available:!mapping.error,refund_resolutions_available:!resolutions.error,transactions:resolved,
+      const resolvedBase=(txs.data||[]).map((row:any)=>{const matched=registry.matchProviderId(row.account_id);return {...row,resolved_account_key:matched?matched.account_key:'',resolved_account_source:matched?(matched.source==='environment'?'environment':'registry'):'',resolved_account_label:matched?(matched.label||matched.account_key):'',provider_account_last4:String(row.account_id||'').slice(-4),review_linkage:transactionLinkage(row,requestRows,invoiceRows,eventRows)}})
+      const resolvedById=new Map(resolvedBase.map((row:any)=>[text(row.gateway_transaction_id),row]))
+      const resolved=resolvedBase.map((row:any)=>{const chargeId=providerRefundChargeId(row);return chargeId?inheritRefundEvidence(row,resolvedById.get(chargeId)||null):row})
+      return reply({ok:true,version:326,mapping_table_available:!mapping.error,refund_resolutions_available:!resolutions.error,transactions:resolved,
         classifications:classes.error?[]:(classes.data||[]),ledger_entries:entries.error?[]:(entries.data||[]),
         refund_resolutions:resolutions.error?[]:(resolutions.data||[]),
-        review_cutover_date:reviewCutoverDate,legacy_recorded_transaction_ids:legacyRecordedTransactionIds,legacy_attributed_transaction_ids:legacyAttributedTransactionIds,
+        review_cutover_date:reviewCutoverDate,legacy_recorded_transaction_ids:legacyRecordedTransactionIds,legacy_attributed_transaction_ids:legacyAttributedTransactionIds,legacy_refund_entries:legacyRefundEntries,
         linkage_evidence_available:!requests.error&&!invoices.error&&!invoiceEvents.error,
         accounts:(mapping.error?[]:(mapping.data||[])).map((row:any)=>({provider_account_id:row.provider_account_id,account_key:row.account_key,bank_account_id:row.bank_account_id,bank_role:row.bank_role,label:row.label,last4:row.last4,is_active:row.is_active}))})
     }

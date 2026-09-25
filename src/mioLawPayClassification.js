@@ -46,6 +46,10 @@ export function providerType(transaction = {}) {
 export function providerMoneyOut(transaction = {}) {
   return MONEY_OUT_TYPES.has(providerType(transaction))
 }
+export function providerRefundChargeId(transaction = {}) {
+  const raw = transaction?.raw && typeof transaction.raw === 'object' ? transaction.raw : {}
+  return String(transaction.original_transaction_id || raw.mio_original_transaction_id || raw.charge_id || raw.refunded_transaction_id || '').trim()
+}
 export function amountCents(transaction = {}) {
   const value = Number(transaction.amount_cents ?? Math.round(Number(transaction.amount || 0) * 100))
   return Number.isFinite(value) ? Math.round(Math.abs(value)) : 0
@@ -369,9 +373,46 @@ export function refundResolutionRecord({ refund = {}, charge = {}, resolution = 
 // immutable provider identifier, or a match a person expressly confirmed, says the two describe
 // the same refund. While that is unknown the refund is neither counted nor offset — it is excluded
 // from the reconciled balance, which is therefore not final, and its possible effect is shown.
-export function refundReview({ transactions = [], resolutions = {} } = {}) {
+function completedProviderTransaction(transaction = {}) {
+  return POSTABLE_CHARGE_STATUSES.includes(String(transaction.status || '').trim().toUpperCase())
+}
+
+function refundWithInheritedEvidence(transaction = {}, chargeById = new Map()) {
+  if (!providerMoneyOut(transaction)) return transaction
+  const chargeId = providerRefundChargeId(transaction)
+  const charge = chargeId ? chargeById.get(chargeId) || null : null
+  if (!charge) return transaction
+  const own = transaction.review_linkage || {}, inherited = charge.review_linkage || {}
+  const choose = (key) => {
+    const value = own[key]
+    return value !== undefined && value !== null && value !== '' ? value : inherited[key]
+  }
+  return {
+    ...transaction,
+    refund_charge_id: chargeId,
+    resolved_account_key: String(transaction.resolved_account_key || transaction.account_key || charge.resolved_account_key || charge.account_key || ''),
+    resolved_account_source: String(transaction.resolved_account_source || charge.resolved_account_source || ''),
+    review_linkage: {
+      payment_request_id: choose('payment_request_id') || '',
+      request_found: own.request_found === true || inherited.request_found === true,
+      payment_request_status: choose('payment_request_status') || '',
+      invoice_number: choose('invoice_number') || '',
+      invoice_id: choose('invoice_id') || '',
+      invoice_status: choose('invoice_status') || '',
+      invoice_event_id: choose('invoice_event_id') || '',
+      matter_id: choose('matter_id') || '',
+      client_id: choose('client_id') || '',
+      reconciled: own.reconciled === true || inherited.reconciled === true,
+      conflict: choose('conflict') || '',
+      inherited_from_charge_id: chargeId,
+    },
+  }
+}
+
+export function refundReview({ transactions = [], resolutions = {}, reviewCutoverDate = '' } = {}) {
   const charges = [], refundRows = []
   for (const transaction of transactions || []) {
+    if (beforeReviewCutover(transaction, reviewCutoverDate)) continue
     if (providerMoneyOut(transaction)) refundRows.push(transaction)
     else charges.push(transaction)
   }
@@ -380,10 +421,10 @@ export function refundReview({ transactions = [], resolutions = {} } = {}) {
   const effects = []
   let unresolvedTotal = 0, separateTotal = 0
   for (const refund of refundRows) {
-    if (NON_POSTING_STATUS.test(String(refund.status || '').toLowerCase())) continue
+    if (!completedProviderTransaction(refund)) continue
     const refundId = idOf(refund)
     const amount = amountCents(refund)
-    const linkedId = String(refund.original_transaction_id || refund.raw?.mio_original_transaction_id || '')
+    const linkedId = providerRefundChargeId(refund)
     const confirmed = resolutions[refundId] || null
     const providerLinked = linkedId && refund.original_link_verified !== false ? chargeById.get(linkedId) || null : null
     const confirmedLinked = confirmed && String(confirmed.resolution) === 'same_refund' ? chargeById.get(String(confirmed.charge_transaction_id || '')) || null : null
@@ -595,8 +636,75 @@ export function lawPayReviewDisposition({
   return { ...base, state: 'needs_ownership', actionable: true, classification_queue: true, reason: 'Choose whether this direct LawPay payment belongs to a matter or is a consultation.' }
 }
 
+// Reconcile completed, provider-linked refunds with Mio's existing client-refund entries. This is
+// deliberately read-only: an exact entry is recognized, a difference is surfaced, and no second
+// withdrawal is manufactured. Multiple provider refund rows for one matter on one day are grouped
+// because LawPay may split a single client refund across the original charges that funded it.
+export function refundLedgerReview({ transactions = [], existingEntries = [], reviewCutoverDate = '' } = {}) {
+  const normalizedName = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ')
+  const rows = (transactions || []).filter((transaction) => !beforeReviewCutover(transaction, reviewCutoverDate))
+  const idOf = (row) => String(row?.gateway_transaction_id || row?.id || '')
+  const charges = rows.filter((row) => !providerMoneyOut(row))
+  const chargeById = new Map(charges.map((row) => [idOf(row), row]))
+  const groupsByKey = new Map()
+  for (const refund of rows) {
+    if (!providerMoneyOut(refund) || !completedProviderTransaction(refund)) continue
+    const chargeId = providerRefundChargeId(refund), charge = chargeId ? chargeById.get(chargeId) || null : null
+    if (!charge) continue
+    const matterId = String(refund.review_linkage?.matter_id || charge.review_linkage?.matter_id || charge.raw?.mio_matter_id || '')
+    const date = String(refund.occurred_at || refund.created_at || '').slice(0, 10)
+    if (!matterId || !date) continue
+    const key = `${matterId}:${date}`
+    const prior = groupsByKey.get(key) || {
+      key, matter_id: matterId, date, refund_ids: [], provider_total_cents: 0,
+      payer_name: String(refund.payer_name || charge.payer_name || ''),
+      account_key: String(refund.resolved_account_key || refund.account_key || charge.resolved_account_key || charge.account_key || ''),
+    }
+    prior.refund_ids.push(idOf(refund))
+    prior.provider_total_cents += amountCents(refund)
+    if (!prior.payer_name) prior.payer_name = String(charge.payer_name || '')
+    if (!prior.account_key) prior.account_key = String(charge.resolved_account_key || charge.account_key || '')
+    groupsByKey.set(key, prior)
+  }
+  const normalizedEntries = (existingEntries || []).map((entry) => ({
+    ...entry,
+    id: String(entry.id || ''),
+    matter_id: String(entry.matter_id || ''),
+    date: String(entry.date || entry.occurred_at || entry.created_at || '').slice(0, 10),
+    direction: String(entry.direction || '').toLowerCase(),
+    transaction_type: String(entry.transaction_type || '').toLowerCase(),
+    lawpay_transaction_id: String(entry.lawpay_transaction_id || ''),
+    payer_name: String(entry.payer_payee || entry.payer_name || ''),
+    amount_cents: amountCents(entry),
+  }))
+  const groups = [], issues = [], matched = []
+  for (const base of groupsByKey.values()) {
+    const refundIds = new Set(base.refund_ids)
+    const direct = normalizedEntries.filter((entry) => entry.lawpay_transaction_id && refundIds.has(entry.lawpay_transaction_id))
+    const candidates = direct.length ? direct : normalizedEntries.filter((entry) => (
+      entry.matter_id === base.matter_id && entry.date === base.date && entry.direction === 'out'
+      && ['client_refund', 'refund'].includes(entry.transaction_type)
+      && (!normalizedName(base.payer_name) || (normalizedName(entry.payer_name) && normalizedName(entry.payer_name) === normalizedName(base.payer_name)))
+    ))
+    const mioTotal = candidates.reduce((sum, entry) => sum + entry.amount_cents, 0)
+    const difference = base.provider_total_cents - mioTotal
+    const state = candidates.length ? (difference === 0 ? 'matched_existing_refund' : 'amount_mismatch') : 'missing_mio_refund'
+    const group = {
+      ...base,
+      state,
+      mio_total_cents: mioTotal,
+      difference_cents: difference,
+      entry_ids: candidates.map((entry) => entry.id),
+    }
+    groups.push(group)
+    if (state === 'matched_existing_refund') matched.push(group)
+    else issues.push(group)
+  }
+  return { groups, issues, matched }
+}
+
 export function actionableReviewCount({
-  transactions = [], classifications = [], refundResolutions = [], reviewCutoverDate = '', legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [],
+  transactions = [], classifications = [], refundResolutions = [], reviewCutoverDate = '', legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [], existingRefundEntries = [],
 } = {}) {
   const byId = new Map()
   for (const record of classifications || []) {
@@ -607,9 +715,11 @@ export function actionableReviewCount({
     // an older saved row is also present. Never let iteration order revive an accounted payment.
     if (!prior || (!classificationFinished(prior) && classificationFinished(record))) byId.set(id, record)
   }
+  const chargeById = new Map((transactions || []).filter((row) => !providerMoneyOut(row)).map((row) => [providerTransactionId(row), row]))
+  const effectiveTransactions = (transactions || []).map((row) => refundWithInheritedEvidence(row, chargeById))
   const dispositions = {}
   const needsDecision = [], technicalExceptions = [], historical = [], ineligible = [], handled = []
-  for (const transaction of transactions || []) {
+  for (const transaction of effectiveTransactions) {
     const id = providerTransactionId(transaction)
     if (!id) continue
     const disposition = lawPayReviewDisposition({
@@ -626,22 +736,26 @@ export function actionableReviewCount({
     else if (disposition.state === 'ineligible') ineligible.push(transaction)
     else handled.push(transaction)
   }
-  const refundTransactions = (transactions || []).filter((transaction) => {
+  const refundTransactions = effectiveTransactions.filter((transaction) => {
     if (beforeReviewCutover(transaction, reviewCutoverDate)) return false
     const status = String(transaction.status || '').trim().toUpperCase()
     return !PENDING_STATUSES.includes(status) && status !== 'CLOSED' && !NON_POSTING_STATUS.test(status.toLowerCase())
   })
   const resolutions = Object.fromEntries((refundResolutions || []).map((row) => [String(row.refund_transaction_id || ''), row]))
-  const refunds = refundReview({ transactions: refundTransactions, resolutions })
+  const refunds = refundReview({ transactions: refundTransactions, resolutions, reviewCutoverDate })
   const refundRelationships = refunds.effects.filter((effect) => effect.effect === 'unresolved')
+  const refundLedger = refundLedgerReview({ transactions: effectiveTransactions, existingEntries: existingRefundEntries, reviewCutoverDate })
   const transactionDecisionIds = new Set(needsDecision.map(providerTransactionId))
   const additionalRefundRelationships = refundRelationships.filter((effect) => !transactionDecisionIds.has(String(effect.refund_id || '')))
   return {
     // The notification counts review transactions, not clicks. An unclassified refund may need
     // both a classification and a relationship decision, but it remains one provider transaction.
-    count: needsDecision.length + additionalRefundRelationships.length,
+    count: needsDecision.length + additionalRefundRelationships.length + refundLedger.issues.length,
     transactions: needsDecision,
     refund_relationships: refundRelationships,
+    refund_ledger_issues: refundLedger.issues,
+    refund_ledger_matches: refundLedger.matched,
+    refund_review: refunds,
     technical_exceptions: technicalExceptions,
     historical,
     ineligible,
