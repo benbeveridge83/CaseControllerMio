@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 const app=fs.readFileSync(new URL('./src/mioFinanceReviewApp.inc',import.meta.url),'utf8')
 function once(code,from,to,label){if(code.split(from).length!==2)throw Error(`V314 ${label}: source anchor not unique`);return code.replace(from,to)}
-function editFunction(code,name,edit){const re=new RegExp('  (?:async )?function '+name+'\\('),match=re.exec(code);if(!match)throw Error(`V314 missing ${name}`);const start=match.index,next=/\n  (?:async )?function /.exec(code.slice(start+match[0].length));if(!next)throw Error(`V314 missing end ${name}`);const end=start+match[0].length+next.index;return code.slice(0,start)+edit(code.slice(start,end))+code.slice(end)}
+function editFunction(code,name,edit){const re=new RegExp('  (?:async )?function '+name+'\\('),match=re.exec(code);if(!match)throw Error(`V314 missing ${name}`);const start=match.index,next=/\n {2}(?:async )?function /.exec(code.slice(start+match[0].length));if(!next)throw Error(`V314 missing end ${name}`);const end=start+match[0].length+next.index;return code.slice(0,start)+edit(code.slice(start,end))+code.slice(end)}
 export default function financeReview(){return {name:'mio-v314-finance-review',enforce:'pre',transform(source,id){if(!id.split('?')[0].replaceAll('\\','/').endsWith('/src/App.jsx'))return null
  let code="import MioReplenishmentReview from './MioReplenishmentReview.jsx'\nimport {passesTrustMinimum,compareInvoiceRows,replenishmentCandidate,operatingPaymentMarkers,scanLawPayPages,auditLawPayRecords,bulkInvoiceActionEligibility,lawPayAccountLabel} from './mioFinanceReview.js'\nimport {lawPayAttributionEntry,lawPayAttributionState,lawPayAttributionSummary,duplicateLawPayAttribution,lawPayTransactionId,accountKind,transactionMoneyOut} from './mioLawPayAttribution.js'\n"+source
  code=once(code,'  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)','  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)\n  const [bulkInvoiceSelectedIds,setBulkInvoiceSelectedIds]=useState([])','invoice selection state')
@@ -16,7 +16,7 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
    const pendingStart=part.indexOf('      {!!pendingLawPayPayments.length'),pendingEnd=part.indexOf('\n',pendingStart)
    if(pendingStart<0)throw Error('V314 missing pending notice')
    const pending=part.slice(pendingStart,pendingEnd)
-   return part.slice(0,pendingStart)+`      <details key={matter.id} style={{border:'1px solid #cbd5e1',borderRadius:10,padding:12}}><summary style={{cursor:'pointer',fontWeight:800}}>Finances settings</summary><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:12,marginTop:12}}>\n${cards.join('\n')}\n</div>\n${pending}\n</details>\n      {renderFinanceSyncStatus()}`+part.slice(pendingEnd)
+   return part.slice(0,pendingStart)+`      <details key={matter.id} style={{border:'1px solid #cbd5e1',borderRadius:10,padding:12}}><summary style={{cursor:'pointer',fontWeight:800}}>Finances settings</summary><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:12,marginTop:12}}>\n${cards.join('\n')}\n</div>\n${pending}\n</details>`+part.slice(pendingEnd)
  })
  code=editFunction(code,'accountingLedgerRows',part=>once(part,'    return [...historicalRows, ...openingRow, ...currentRows]',`    // Operating payments are display rows, never inputs to the trust calculation.
     const markers=operatingPaymentMarkers({matterId:String(matter.id),invoices:finance.invoices,events:mioInvoiceEvents,openingDate})
@@ -37,7 +37,7 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
    const needle="{row.direction === 'in' || row.direction === 'opening' ? money(row.amount) : '—'}</td>"
    part=once(part,needle,needle+`<td style={{padding:9,textAlign:'right',fontWeight:800}}>{row.operating_payment!==undefined?new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(row.operating_payment):'—'}</td>`,'operating amount')
    part=part.replaceAll('colSpan="9"','colSpan="10"').replaceAll('colSpan="7"','colSpan="8"')
-   return once(part,'      <div style={{ overflowX:', '      {renderFinanceSyncStatus()}\n      <div style={{ overflowX:','ledger sync status')
+   return part
  })
  code=editFunction(code,'renderBulkInvoiceLedger',part=>{
    const start=part.indexOf('    })).sort((left, right) => {'),end=part.indexOf('\n    const renderFilter',start)

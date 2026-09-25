@@ -90,18 +90,9 @@ try{
  let all=await ids();assert.ok(all.indexOf('MIO-2026-000077')<all.indexOf('MIO-2026-000082'));assert.ok(all.indexOf('MIO-2026-000033')<all.indexOf('MIO-2026-000100'))
  await ledger.getByLabel('Invoice secondary order').selectOption('desc');all=await ids();assert.ok(all.indexOf('MIO-2026-000077')>all.indexOf('MIO-2026-000082'))
  await page.screenshot({path:'finance-test-results/invoice-sorting.png'})
- // Exercise the actual target=_blank matter link rather than dismissing an
- // unrelated unsaved-state beforeunload prompt with a forced reload.
  await ledger.getByRole('button',{name:'Close',exact:true}).click()
- const opened=context.waitForEvent('page')
- const ledgerPage=page;await page.getByRole('link',{name:'Alpha Synthetic',exact:true}).click()
- page=await opened
- page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.dismiss())
- await page.waitForLoadState('domcontentloaded')
- await page.getByText('Finances settings',{exact:true}).waitFor({timeout:60000}).catch(async()=>{const second=context.waitForEvent('page',{timeout:20000}).catch(()=>null);await ledgerPage.getByRole('link',{name:'Alpha Synthetic',exact:true}).first().click();const openedAgain=await second;if(openedAgain){page=openedAgain;page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));await page.waitForLoadState('domcontentloaded')}await page.getByText('Finances settings',{exact:true}).waitFor({timeout:60000})})
- const settings=page.locator('details').filter({has:page.locator('summary').filter({hasText:'Finances settings'})})
- assert.equal(await settings.getAttribute('open'),null);assert.equal(await settings.getByText('Retainer replenishment target',{exact:true}).isVisible(),false)
- await settings.locator('summary').click();assert.equal(await settings.getByText('Retainer replenishment target',{exact:true}).isVisible(),true)
+  // The reconciliation list now lives on Bulk Billing: the matter dashboard no longer
+  // carries any LawPay review or reconciliation UI.
  // The reconciliation list must name the LawPay deposit account each charge was taken
  // into, and say so plainly when Mio could not resolve it instead of guessing. The
  // matter dashboard only sees transactions after this verified full scan.
@@ -177,6 +168,24 @@ try{
  assert.equal(serverEffect('provider-d').length,0,'an unresolved deposit account must produce no ledger effect')
  assert.equal(decisions().some(record=>record.gateway_transaction_id==='provider-d'),false,'an unresolved deposit account is never attributed locally, only recorded for review through the shared workflow')
  await page.screenshot({path:'finance-test-results/lawpay-attribution-picker.png'})
+ // Exercise the actual target=_blank matter link rather than dismissing an
+ // unrelated unsaved-state beforeunload prompt with a forced reload.
+ const opened=context.waitForEvent('page')
+ const ledgerPage=page;await page.getByRole('link',{name:'Alpha Synthetic',exact:true}).click()
+ page=await opened
+ page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.dismiss())
+ await page.waitForLoadState('domcontentloaded')
+ await page.getByText('Finances settings',{exact:true}).waitFor({timeout:60000}).catch(async()=>{const second=context.waitForEvent('page',{timeout:20000}).catch(()=>null);await ledgerPage.getByRole('link',{name:'Alpha Synthetic',exact:true}).first().click();const openedAgain=await second;if(openedAgain){page=openedAgain;page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));await page.waitForLoadState('domcontentloaded')}await page.getByText('Finances settings',{exact:true}).waitFor({timeout:60000})})
+ const settings=page.locator('details').filter({has:page.locator('summary').filter({hasText:'Finances settings'})})
+ assert.equal(await settings.getAttribute('open'),null);assert.equal(await settings.getByText('Retainer replenishment target',{exact:true}).isVisible(),false)
+ await settings.locator('summary').click();assert.equal(await settings.getByText('Retainer replenishment target',{exact:true}).isVisible(),true)
+  // Matter -> Finances must not carry any LawPay review or reconciliation UI: the
+  // review queue is centralized on the LawPay page, reached through the consolidated notification.
+  const matterBody=await page.locator('body').innerText()
+  assert.equal(matterBody.includes('LawPay reconciliation'),false,'Matter -> Finances must not show the LawPay reconciliation list')
+  assert.equal(matterBody.includes('Categorize this payment'),false,'Matter -> Finances must not show the legacy attribution picker')
+  assert.equal(matterBody.includes('LawPay payment classification'),false,'Matter -> Finances must not show the classification panel')
+  assert.equal(await page.locator('details summary').filter({hasText:'LawPay reconciliation'}).count(),0,'no reconciliation details block on Matter -> Finances')
  await page.getByRole('button',{name:'Accounting',exact:true}).last().click()
  await page.getByRole('columnheader',{name:'Operating payment',exact:true}).waitFor()
  const op=page.locator('tr').filter({hasText:'Payment received into Operating; no trust movement'});await op.waitFor();assert.match(await op.innerText(),/1,012/)

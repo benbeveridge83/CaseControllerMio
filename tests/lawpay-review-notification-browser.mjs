@@ -86,6 +86,10 @@ try {
   await finances.click()
   await matter.getByRole('heading', { name: 'Client finances' }).waitFor({ timeout: 60000 })
   assert.equal(await matter.locator('section[aria-label="LawPay payment classification"]').count(), 0, 'no classification panel may appear on Matter -> Finances')
+  const matterFinancesBody = await matter.locator('body').innerText()
+  assert.equal(matterFinancesBody.includes('LawPay reconciliation'), false, 'no LawPay reconciliation list on Matter -> Finances')
+  assert.equal(matterFinancesBody.includes('Categorize this payment'), false, 'no legacy attribution picker on Matter -> Finances')
+  assert.equal(await matter.locator('details summary').filter({ hasText: 'LawPay reconciliation' }).count(), 0, 'no unlinked LawPay transaction rows on Matter -> Finances')
 
   // One consolidated notification on the main tab: provider-a + provider-d need a decision, provider-p
   // is pending and excluded, so the count is 2 and there is exactly one notification.
