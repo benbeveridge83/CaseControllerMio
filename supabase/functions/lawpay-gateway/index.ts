@@ -1,6 +1,7 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.112.2'
 import {syncProviderPage} from '../_shared/lawpay-v314.js'
 import {accountRegistry,financeAdminAllowed} from '../_shared/lawpay-accounts-v323.js'
+import {storedStateValue,transactionLinkage} from '../_shared/lawpay-review-v325.js'
 const cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization, x-client-info, apikey, content-type','Access-Control-Allow-Methods':'POST, OPTIONS'}
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{...cors,'Content-Type':'application/json'}})
 const env=(name:string,fallback='')=>Deno.env.get(name)||fallback
@@ -18,6 +19,7 @@ function paymentUrl(body:any){
   const locked=[];if(body.lock_amount!==false)locked.push('amount');if(body.lock_reference!==false&&reference)locked.push('reference');if(invoice)locked.push('Invoice');if(locked.length)url.searchParams.set('readOnlyFields',locked.join(','))
   return {url:url.toString(),amountCents,reference}
 }
+const text=(value:any)=>String(value??'').trim()
 Deno.serve(async(req:Request)=>{
   if(req.method==='OPTIONS')return new Response('ok',{headers:cors});if(req.method!=='POST')return reply({error:'Method not allowed.'},405)
   try {
@@ -27,15 +29,28 @@ Deno.serve(async(req:Request)=>{
       if(!financeAdminAllowed(user?.email,env('MIO_FINANCE_ADMIN_EMAILS')))return reply({ok:false,error:'A firm finance administrator must be signed in to review LawPay transactions.'},403)
       const txs=await db.from('lawpay_transactions').select('gateway_transaction_id,occurred_at,transaction_type,status,account_id,account_key,amount_cents,amount_refunded_cents,currency,reference,payer_name,payer_email,raw').order('occurred_at',{ascending:false}).limit(300)
       if(txs.error)throw txs.error
-      const classes=await db.from('mio_lawpay_classifications').select('*').order('created_at',{ascending:false}).limit(300)
-      const entries=await db.from('mio_lawpay_ledger_entries').select('*').order('created_at',{ascending:false}).limit(300)
-      const mapping=await db.from('mio_lawpay_accounts').select('provider_account_id,account_key,bank_account_id,bank_role,label,last4,is_active')
-      const resolutions=await db.from('mio_lawpay_refund_resolutions').select('id,refund_transaction_id,charge_transaction_id,resolution,amount_cents,evidence_reference,resolved_by,resolved_at,superseded_at,corrects_resolution_id').is('superseded_at',null)
+      const [classes,entries,mapping,resolutions,requests,invoices,invoiceEvents,userState]=await Promise.all([
+        db.from('mio_lawpay_classifications').select('*').order('created_at',{ascending:false}).limit(300),
+        db.from('mio_lawpay_ledger_entries').select('*').order('created_at',{ascending:false}).limit(300),
+        db.from('mio_lawpay_accounts').select('provider_account_id,account_key,bank_account_id,bank_role,label,last4,is_active'),
+        db.from('mio_lawpay_refund_resolutions').select('id,refund_transaction_id,charge_transaction_id,resolution,amount_cents,evidence_reference,resolved_by,resolved_at,superseded_at,corrects_resolution_id').is('superseded_at',null),
+        db.from('lawpay_payment_requests').select('*').order('created_at',{ascending:false}).limit(1000),
+        db.from('mio_invoices').select('*').order('updated_at',{ascending:false}).limit(1000),
+        db.from('mio_invoice_events').select('id,invoice_id,event_type,provider_event_id,details,occurred_at').order('occurred_at',{ascending:false}).limit(2000),
+        db.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id',user.id).in('key',['caseMioBillingCutoverDate','caseMioTrustTransactions','caseMioLawPayAttribution']),
+      ])
+      const requestRows=requests.error?[]:(requests.data||[]),invoiceRows=invoices.error?[]:(invoices.data||[]),eventRows=invoiceEvents.error?[]:(invoiceEvents.data||[])
+      const stateRows=userState.error?[]:(userState.data||[]),state=(key:string,fallback:any)=>storedStateValue(stateRows.find((row:any)=>row.key===key),fallback)
+      const reviewCutoverDate=text(state('caseMioBillingCutoverDate','2026-08-09')).slice(0,10)||'2026-08-09'
+      const legacyRecordedTransactionIds=(Array.isArray(state('caseMioTrustTransactions',[]))?state('caseMioTrustTransactions',[]):[]).map((row:any)=>text(row?.lawpay_transaction_id)).filter(Boolean)
+      const legacyAttributedTransactionIds=(Array.isArray(state('caseMioLawPayAttribution',[]))?state('caseMioLawPayAttribution',[]):[]).map((row:any)=>text(row?.gateway_transaction_id)).filter(Boolean)
       const registry=accountRegistry({rows:mapping.error?[]:(mapping.data||[]),environment:accounts()})
-      const resolved=(txs.data||[]).map((row:any)=>{const matched=registry.matchProviderId(row.account_id);return {...row,resolved_account_key:matched?matched.account_key:'',resolved_account_source:matched?(matched.source==='environment'?'environment':'registry'):'',resolved_account_label:matched?(matched.label||matched.account_key):'',provider_account_last4:String(row.account_id||'').slice(-4)}})
-      return reply({ok:true,version:323,mapping_table_available:!mapping.error,refund_resolutions_available:!resolutions.error,transactions:resolved,
+      const resolved=(txs.data||[]).map((row:any)=>{const matched=registry.matchProviderId(row.account_id);return {...row,resolved_account_key:matched?matched.account_key:'',resolved_account_source:matched?(matched.source==='environment'?'environment':'registry'):'',resolved_account_label:matched?(matched.label||matched.account_key):'',provider_account_last4:String(row.account_id||'').slice(-4),review_linkage:transactionLinkage(row,requestRows,invoiceRows,eventRows)}})
+      return reply({ok:true,version:325,mapping_table_available:!mapping.error,refund_resolutions_available:!resolutions.error,transactions:resolved,
         classifications:classes.error?[]:(classes.data||[]),ledger_entries:entries.error?[]:(entries.data||[]),
         refund_resolutions:resolutions.error?[]:(resolutions.data||[]),
+        review_cutover_date:reviewCutoverDate,legacy_recorded_transaction_ids:legacyRecordedTransactionIds,legacy_attributed_transaction_ids:legacyAttributedTransactionIds,
+        linkage_evidence_available:!requests.error&&!invoices.error&&!invoiceEvents.error,
         accounts:(mapping.error?[]:(mapping.data||[])).map((row:any)=>({provider_account_id:row.provider_account_id,account_key:row.account_key,bank_account_id:row.bank_account_id,bank_role:row.bank_role,label:row.label,last4:row.last4,is_active:row.is_active}))})
     }
     // Recording money. Every one of these requires a recognised firm finance administrator as
