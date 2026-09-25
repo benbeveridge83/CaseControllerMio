@@ -76,11 +76,13 @@ try{
   await settle(async()=> (await page.getByLabel('On Hold',{exact:true}).count())>=1)
   await page.getByLabel('Closed',{exact:true}).check()
   await settle(async()=> (await page.getByRole('button',{name:'None',exact:true}).count())>=1,'filter stays open after selection')
-  // Their side uses only Served / Not Served (no Need to Serve).
+  // Their side cycles Needs Setting! -> Not Served -> Served (no Need to Serve).
   await page.getByRole('button',{name:'Their Discovery Requests',exact:true}).click()
   await settle(async()=> (await page.getByText('Their RFP to us',{exact:true}).count())>=1)
   assert.equal(await page.getByText('Need to Serve',{exact:true}).count(),0,'their side has no Need to Serve')
-  assert.ok(await page.getByText('Not Served',{exact:true}).count()>=1,'their side defaults to Not Served')
+  assert.ok(await page.getByText('Needs Setting!',{exact:true}).count()>=1,'their side defaults to Needs Setting!')
+  await cycleButtons().first().click()
+  await settle(async()=> (await page.getByText('Not Served',{exact:true}).count())>=1)
   await cycleButtons().first().click()
   await settle(async()=> (await page.getByText('✓ Served',{exact:true}).count())>=1)
   // Sticky filters survive reload (shared between both sub-tabs).

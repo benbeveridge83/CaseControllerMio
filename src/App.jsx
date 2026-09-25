@@ -14509,7 +14509,7 @@ function App() {
   }
 
   function discoveryMatrixStatusList(side) {
-    return side === 'their' ? ['not_served', 'served'] : ['not_serving', 'need_to_serve', 'served']
+    return side === 'their' ? ['needs_setting', 'not_served', 'served'] : ['needs_setting', 'not_serving', 'need_to_serve', 'served']
   }
 
   function discoveryMatrixDocSideMatches(doc, side) {
@@ -14518,6 +14518,7 @@ function App() {
   }
 
   function discoveryMatrixRequestMeta(status, side = 'our') {
+    if (status === 'needs_setting') return { label: 'Needs Setting!', bg: '#ffffff', fg: '#dc2626' }
     if (status === 'served') return { label: '✓ Served', bg: '#ffffff', fg: '#334155' }
     if (status === 'need_to_serve') return { label: 'Need to Serve', bg: '#fde68a', fg: '#92400e' }
     return { label: side === 'their' ? 'Not Served' : 'Not Serving', bg: '#ffffff', fg: '#94a3b8' }
@@ -14784,7 +14785,7 @@ function App() {
       const stored = storedDiscoveryRequestForDoc(servedDoc) || {}
       return { status: 'served', served_date: stored.request_served || discoveryDocServiceDate(servedDoc), docs, response }
     }
-    return { status: side === 'their' ? 'not_served' : 'not_serving', served_date: '', docs, response }
+    return { status: 'needs_setting', served_date: '', docs, response }
   }
 
   function cycleDiscoveryMatrixStatus(matter, typeKey, side = 'our') {
@@ -14846,7 +14847,7 @@ function App() {
     const respMeta = discoveryMatrixResponseMeta(resp.kind)
     const expanded = Boolean(discoveryMatrixExpandedCells[discoveryMatrixCellKey(matter, column.key, side)])
     const hasMore = state.docs.length > 1
-    const cycleTitle = side === 'their' ? 'Click to cycle: Not Served → Served' : 'Click to cycle: Not Serving → Need to Serve → Served'
+    const cycleTitle = side === 'their' ? 'Click to cycle: Needs Setting! → Not Served → Served' : 'Click to cycle: Needs Setting! → Not Serving → Need to Serve → Served'
     return (
       <td key={column.key} style={{ border: '1px solid #cbd5e1', padding: 6, verticalAlign: 'top', minWidth: 190, background: `linear-gradient(to bottom right, ${req.bg} 50%, ${respMeta.bg} 50%)` }}>
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: 108, gap: 3 }}>
