@@ -14561,9 +14561,18 @@ function App() {
     return Math.round((due - today) / 86400000)
   }
 
+  function discoveryMatrixDefaultDueDate(servedDate) {
+    const served = parseTimelineDate(servedDate) || parseDateInputValue(servedDate)
+    if (!served) return ''
+    const due = nextNonWeekendHolidayDate(addTimelineDays(served, 30))
+    return due ? dateToInputValue(due) : ''
+  }
+
   function discoveryMatrixResponseForDoc(doc) {
     const stored = storedDiscoveryRequestForDoc(doc) || {}
-    const dueDate = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const explicitDue = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const requestServed = stored.request_served || discoveryDocServiceDate(doc) || ''
+    const dueDate = explicitDue || (requestServed ? discoveryMatrixDefaultDueDate(requestServed) : '')
     const responses = Array.isArray(stored.responses) ? stored.responses : []
     const dated = responses
       .map((response) => ({ response, served: discoveryResponseServiceDateValue(response) }))
@@ -14786,12 +14795,7 @@ function App() {
     const next = order[(index + 1) % order.length]
     const patch = { status: next }
     if (next === 'served') {
-      let servedDate = current.served_date
-      if (!servedDate) {
-        const entered = window.prompt('Enter the request service date (mm/dd/yyyy).', discoveryDateDisplay(dateToInputValue(new Date())))
-        if (entered === null) return
-        servedDate = normalizeDiscoveryDateInputEntry(entered) || dateToInputValue(new Date())
-      }
+      const servedDate = current.served_date || dateToInputValue(new Date())
       patch.served_date = servedDate
       discoveryMatrixDocsForCell(matter, typeKey, side).forEach((doc) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
