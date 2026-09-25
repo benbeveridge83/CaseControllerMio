@@ -125,9 +125,9 @@ try {
   // provider rows and surfaces only the 27-cent reconciliation difference.
   const refundReview = panel.getByTestId('refund-ledger-review')
   assert.match(await refundReview.innerText(), /Kevin Dobbins/)
-  assert.match(await refundReview.innerText(), /LawPay: \$1,480\.00/)
-  assert.match(await refundReview.innerText(), /Mio: \$1,479\.73/)
-  assert.match(await refundReview.innerText(), /Difference: \$0\.27/)
+  assert.match(await refundReview.innerText(), /LawPay reports \$1,480\.00 refunded/)
+  assert.match(await refundReview.innerText(), /Mio already records \$1,479\.73/)
+  assert.match(await refundReview.innerText(), /difference is \$0\.27/i)
   assert.match(await refundReview.innerText(), /Do not record another refund/)
   assert.equal(await panel.getByText('Refund relationship unresolved', { exact: true }).count(), 0, 'provider charge ids resolve both refund relationships automatically')
 
