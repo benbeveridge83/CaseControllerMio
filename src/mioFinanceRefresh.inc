@@ -22,9 +22,10 @@
           loadAllSupabasePages(()=>supabase.from('mio_invoice_events').select('*').eq('user_id',session.user.id).order('occurred_at',{ascending:false}).order('id',{ascending:true}))
         ])
         setMioInvoices(invoices);setLawPayTransactions(transactions);setLawPayPaymentRequests(requests);setMioInvoiceEvents(events)
-        const audit=auditLawPayRecords(transactions.filter(tx=>String(tx.occurred_at||'')>=start),invoices,events)
-        const message=`Checked ${result.processed} LawPay transaction(s) across ${result.pages} page(s), from ${activeMioBillingCutoverDate} through ${new Date(end).toLocaleString()}. ${audit.issues.length} invoice issue(s); ${audit.unlinked.length} unlinked transaction(s) require review. No trust funds were transferred.`
-        setFinanceSyncReport({state:audit.issues.length?'attention':'checked',message,checked_at:end});setLawPayMessage(message)
+        const audit=auditLawPayRecords(transactions.filter(tx=>String(tx.occurred_at||'')>=start),invoices,events,requests)
+        const report={processed:result.processed,pages:result.pages,opening_date:activeMioBillingCutoverDate,checked_at:end}
+        const message=lawPayReconciliationMessage({processed:report.processed,pages:report.pages,openingDate:report.opening_date,checkedAtLabel:new Date(report.checked_at).toLocaleString()},audit)
+        setFinanceSyncReport({state:audit.issues.length?'attention':'checked',message,...report});setLawPayMessage(message)
         return {...result,audit}
       } catch(error) {
         const message=`LawPay check incomplete: ${error?.message||error}. Previously recorded balances are retained; this is not confirmation that every payment is present.`

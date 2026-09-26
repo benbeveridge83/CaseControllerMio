@@ -198,10 +198,11 @@
     </div>
   }
   function renderFinanceSyncStatus() {
-    const audit=auditLawPayRecords(lawPayTransactions.filter(tx=>String(tx.occurred_at||'')>=`${activeMioBillingCutoverDate}T00:00:00`),mioInvoices,mioInvoiceEvents)
+    const audit=auditLawPayRecords(lawPayTransactions.filter(tx=>String(tx.occurred_at||'')>=`${activeMioBillingCutoverDate}T00:00:00`),mioInvoices,mioInvoiceEvents,lawPayPaymentRequests)
+    const syncMessage=financeSyncReport.checked_at?lawPayReconciliationMessage({processed:financeSyncReport.processed,pages:financeSyncReport.pages,openingDate:financeSyncReport.opening_date||activeMioBillingCutoverDate,checkedAtLabel:new Date(financeSyncReport.checked_at).toLocaleString()},audit):financeSyncReport.message
     return <details style={{border:'1px solid #cbd5e1',borderRadius:8,padding:10,margin:'10px 0'}}>
       <summary style={{cursor:'pointer',fontWeight:700}}>LawPay reconciliation - {financeSyncReport.state==='checking'?'checking...':financeSyncReport.state==='error'?'check incomplete':`${audit.issues.length} invoice issue(s), ${audit.unlinked.length} unlinked transaction(s)`}</summary>
-      <p role="status">{financeSyncReport.message}</p>
+      <p role="status">{syncMessage}</p>
       <button type="button" onClick={()=>refreshLawPayFinancialData({silent:false})} disabled={lawPayBusy||financeSyncReport.state==='checking'}>Check all LawPay payments since Mio opening</button>
       <p>{audit.matched} matched completed transaction(s) in the loaded records. Unlinked consultations and refunds require attribution, not automatic posting to a matter. The LawPay deposit account recorded for each charge is shown below.</p>
       {audit.issues.map(issue=><p key={issue.id}><strong>{issue.invoiceNumber||issue.payer||'Unlinked transaction'}: {money(issue.amount)}</strong> - <strong>{issue.account_label||lawPayAccountLabel(issue.account)}</strong> - {issue.reason}</p>)}

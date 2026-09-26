@@ -61,7 +61,7 @@ export function operatingPaymentMarkers({matterId,invoices=[],events=[],openingD
   return [...unique.values()].sort((a,b)=>a.accounting_at.localeCompare(b.accounting_at)||a.id.localeCompare(b.id))
 }
 export async function scanLawPayPages(invoke,options={},onProgress=()=>{}) {
-  let page=1,processed=0,total=null;const warnings=[]
+  let page=1,processed=0,total;const warnings=[]
   for(let iteration=0;iteration<10000;iteration++) {
     const data=await invoke({...options,page,page_size:options.page_size||50})
     if(!data?.ok)throw new Error(data?.error||'LawPay scan failed.')
@@ -99,7 +99,31 @@ export function transactionInvoiceNumber(tx={}) {
   const fields=raw.data?.custom_fields||raw.custom_fields||{}
   return String(tx.invoice_number||raw.mio_invoice_number||raw.invoice_number||fields.Invoice||fields.invoice||'').trim().toUpperCase()||String(tx.reference||raw.reference||'').match(/MIO-\d{4}-\d+/i)?.[0]?.toUpperCase()||''
 }
-export function auditLawPayRecords(transactions=[],invoices=[],events=[]) {
+function transactionPaymentRequestId(tx={}) {
+  const raw=tx.raw&&typeof tx.raw==='object'?tx.raw:{}
+  return String(tx.payment_request_id||tx.request_id||raw.mio_payment_request_id||raw.payment_request_id||raw.data?.mio_payment_request_id||'').trim()
+}
+function transactionReference(tx={}) {
+  const raw=tx.raw&&typeof tx.raw==='object'?tx.raw:{}
+  return String(tx.reference||raw.reference||raw.mio_invoice_number||'').trim()
+}
+function requestForTransaction(tx={},requests=[]) {
+  const requestId=transactionPaymentRequestId(tx)
+  if(requestId)return (requests||[]).find(request=>String(request?.id||'')===requestId)||null
+  const reference=transactionReference(tx)
+  if(!reference)return null
+  const matches=(requests||[]).filter(request=>String(request?.reference||'').trim()===reference)
+  return matches.length===1?matches[0]:null
+}
+function isConsultationReference(tx={},request=null) {
+  const raw=tx.raw&&typeof tx.raw==='object'?tx.raw:{}
+  return [tx.reference,raw.reference,raw.mio_invoice_number,request?.reference,request?.invoice_number]
+    .some(value=>/^PNC-CONSULT-/i.test(String(value||'').trim()))
+}
+export function lawPayReconciliationMessage(report={},audit={}) {
+  return `Checked ${Number(report.processed||0)} LawPay transaction(s) across ${Number(report.pages||0)} page(s), from ${String(report.openingDate||'')} through ${String(report.checkedAtLabel||'')}. ${(audit.issues||[]).length} invoice issue(s); ${(audit.unlinked||[]).length} unlinked transaction(s) require review. No trust funds were transferred.`
+}
+export function auditLawPayRecords(transactions=[],invoices=[],events=[],requests=[]) {
   const byNumber=new Map(invoices.map(i=>[String(i.invoice_number||'').toUpperCase(),i]))
   const issues=[],unlinked=[];let matched=0,completed=0
   const seen=new Set()
@@ -110,8 +134,14 @@ export function auditLawPayRecords(transactions=[],invoices=[],events=[]) {
     const type=String(tx.transaction_type||tx.type||'').toUpperCase()
     if(!['CHARGE','REFUND','REVERSAL','CHARGEBACK'].includes(type))continue
     completed++
+    const request=requestForTransaction(tx,requests),consultation=isConsultationReference(tx,request)
     const invoiceNumber=transactionInvoiceNumber(tx),invoice=byNumber.get(invoiceNumber)
     const detail={id,invoiceNumber,payer:tx.payer_name||tx.payer_email||'',amount:number(tx.amount_cents)/100,type,account:transactionAccountKey(tx),account_label:lawPayAccountLabel(tx)}
+    if(consultation){
+      if(type==='CHARGE'&&request){matched++;continue}
+      const refund=type!=='CHARGE'
+      unlinked.push({...detail,invoiceNumber:'',kind:refund?'unlinked_refund':'unlinked_consultation',reason:refund?'This consultation refund requires review; no invoice is required.':'The consultation payment request could not be matched. Review its attribution; no invoice is required.'});continue
+    }
     if(!invoiceNumber){unlinked.push({...detail,kind:'unlinked',reason:'No Mio invoice reference. Review attribution; this may be a consultation or refund.'});continue}
     if(!invoice){issues.push({...detail,kind:'missing_invoice',reason:'The referenced Mio invoice was not found.'});continue}
     const paymentEvents=events.filter(e=>String(e.invoice_id)===String(invoice.id)&&e.event_type==='lawpay_payment_recorded'&&String(e.provider_event_id)===id)

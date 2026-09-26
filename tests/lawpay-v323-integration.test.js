@@ -34,6 +34,8 @@ test('the reconciliation drops recorded transactions from the unlinked list and 
   assert.match(reconciliation, /legacyRecordedTransactionIds:lawPayV323Review\.legacy_recorded_transaction_ids/)
   assert.match(reconciliation, /legacyAttributedTransactionIds:lawPayV323Review\.legacy_attributed_transaction_ids/)
   assert.match(reconciliation, /audit\.unlinked=audit\.unlinked\.filter\(issue=>!recordedIds\.has\(String\(issue\.id\)\)\)/)
+  assert.match(reconciliation, /auditLawPayRecords\([^\n]+mioInvoiceEvents,lawPayPaymentRequests\)/, 'the audit receives payment requests so consultation references are not treated as invoices')
+  assert.ok(reconciliation.indexOf('audit.unlinked=audit.unlinked.filter') < reconciliation.indexOf('lawPayReconciliationMessage'), 'the visible scan message must use the filtered unlinked count')
   // The legacy "Categorize this payment" path still exists for genuinely-unrecorded transactions.
   assert.match(reconciliation, /Categorize this payment/)
 })

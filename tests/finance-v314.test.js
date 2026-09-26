@@ -26,6 +26,33 @@ test('gateway page traversal cannot claim completion after page one or a failed 
 test('audit distinguishes unmatched consults, unapplied invoice payments, and amount discrepancies', async () => {
   const {auditLawPayRecords}=await load(); const tx={id:'local',gateway_transaction_id:'gateway',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:101250,reference:'Case | MIO-2026-123456'}; const invoice={id:'i',invoice_number:'MIO-2026-123456',amount_paid:2562.5,invoice_type:'services'}; const event={invoice_id:'i',event_type:'lawpay_payment_recorded',provider_event_id:'gateway',amount:1012.5}; assert.equal(auditLawPayRecords([tx],[invoice],[event]).issues.length,0); assert.equal(auditLawPayRecords([tx],[invoice],[]).issues[0].kind,'unapplied')
 })
+test('a linked PNC consultation payment needs no invoice while an unresolved one stays actionable', async () => {
+  const {auditLawPayRecords}=await load()
+  const reference='PNC-CONSULT-F0689380-FF9F-46C5-9489-6D5FB306B1DD-15000'
+  const linked={id:'local-consult',gateway_transaction_id:'provider-consult',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:15000,reference,account_key:'operating',raw:{mio_payment_request_id:'request-consult',mio_invoice_number:reference}}
+  const request={id:'request-consult',reference,invoice_number:reference,account_key:'operating',amount_cents:15000}
+  const recorded=auditLawPayRecords([linked],[],[],[request])
+  assert.equal(recorded.matched,1)
+  assert.deepEqual(recorded.issues,[])
+  assert.deepEqual(recorded.unlinked,[])
+
+  const refund=auditLawPayRecords([{...linked,gateway_transaction_id:'provider-consult-refund',transaction_type:'REFUND'}],[],[],[request])
+  assert.equal(refund.matched,0,'a consultation refund is not hidden as the linked charge')
+  assert.equal(refund.unlinked[0].kind,'unlinked_refund')
+
+  const unresolved=auditLawPayRecords([{...linked,raw:{mio_invoice_number:reference}}],[],[],[])
+  assert.deepEqual(unresolved.issues,[],'a consultation reference is never reported as a missing invoice')
+  assert.equal(unresolved.unlinked.length,1)
+  assert.equal(unresolved.unlinked[0].kind,'unlinked_consultation')
+
+  const missingInvoice=auditLawPayRecords([{...linked,reference:'MIO-2026-999999',raw:{mio_invoice_number:'MIO-2026-999999'}}],[],[],[])
+  assert.equal(missingInvoice.issues[0].kind,'missing_invoice','a genuine missing Mio invoice remains an invoice issue')
+})
+test('the reconciliation status message uses the audit counts supplied at render time', async () => {
+  const {lawPayReconciliationMessage}=await load()
+  const message=lawPayReconciliationMessage({processed:24,pages:1,openingDate:'2026-08-09',checkedAtLabel:'9/25/2026, 9:06:01 PM'},{issues:[{id:'invoice'}],unlinked:[]})
+  assert.equal(message,'Checked 24 LawPay transaction(s) across 1 page(s), from 2026-08-09 through 9/25/2026, 9:06:01 PM. 1 invoice issue(s); 0 unlinked transaction(s) require review. No trust funds were transferred.')
+})
 test('every reviewed transaction reports its LawPay deposit account without guessing', async () => {
   const {auditLawPayRecords,lawPayAccountLabel,transactionAccountKey}=await load()
   const rows=[{id:'a',gateway_transaction_id:'a',transaction_type:'CHARGE',status:'COMPLETED',amount_cents:500000,account_key:'trust'},
