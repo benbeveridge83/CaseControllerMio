@@ -583,6 +583,28 @@ function classificationFinished(record = null) {
     || String(record.posting_status || '') === 'matched'))
 }
 
+// The provider transaction ids that are already recorded in Mio, across the classification
+// review (posted/matched), its ledger entries, Mio's current trust transactions and legacy
+// attribution records, and the gateway's legacy trust/attribution evidence. The Bulk Billing
+// reconciliation uses this so a connected payment is never shown as "unlinked" again, while a
+// saved-but-not-recorded classification stays in the list.
+export function recordedProviderIds({ classifications = [], ledgerEntries = [], trustTransactions = [], attributions = [], legacyRecordedTransactionIds = [], legacyAttributedTransactionIds = [] } = {}) {
+  const ids = []
+  for (const record of classifications || []) {
+    if (classificationFinished(record)) ids.push(String(record.gateway_transaction_id || ''))
+  }
+  for (const entry of ledgerEntries || []) {
+    if (entry?.gateway_transaction_id) ids.push(String(entry.gateway_transaction_id))
+    const id = String(entry.identity || '').split(':').pop()
+    if (id) ids.push(id)
+  }
+  for (const row of trustTransactions || []) if (row?.lawpay_transaction_id) ids.push(String(row.lawpay_transaction_id))
+  for (const row of attributions || []) if (row?.gateway_transaction_id) ids.push(String(row.gateway_transaction_id))
+  for (const id of legacyRecordedTransactionIds || []) if (id) ids.push(String(id))
+  for (const id of legacyAttributedTransactionIds || []) if (id) ids.push(String(id))
+  return new Set(ids.filter(Boolean))
+}
+
 // A single, evidence-based disposition is shared by the queue and the persistent alert. It never
 // infers ownership from a payer name or amount. A Mio-created request is recognized only from its
 // immutable stored request id and the gateway's hydrated database evidence.
