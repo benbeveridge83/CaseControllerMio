@@ -196,7 +196,7 @@ export default function lawPayClassification() {
         `    // V327: a transaction already recorded through the classification review (posted/matched),
     // or a legacy trust/attribution decision, is no longer "unlinked" - it has been connected, so
     // it is removed from the reconciliation list and its count.
-    const recordedIds=recordedProviderIds({classifications:lawPayV323Review.classifications,legacyRecordedTransactionIds:lawPayV323Review.legacy_recorded_transaction_ids,legacyAttributedTransactionIds:lawPayV323Review.legacy_attributed_transaction_ids})
+    const recordedIds=recordedProviderIds({classifications:lawPayV323Review.classifications,ledgerEntries:lawPayV323Review.ledger_entries,trustTransactions:mioTrustTransactions,attributions:lawPayAttribution,legacyRecordedTransactionIds:lawPayV323Review.legacy_recorded_transaction_ids,legacyAttributedTransactionIds:lawPayV323Review.legacy_attributed_transaction_ids})
     audit.unlinked=audit.unlinked.filter(issue=>!recordedIds.has(String(issue.id)))
     return <details style={{border:'1px solid #cbd5e1',borderRadius:8,padding:10,margin:'10px 0'}}>`,
         'recorded transactions are no longer unlinked'))

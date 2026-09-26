@@ -28,7 +28,11 @@ test('the reconciliation drops recorded transactions from the unlinked list and 
   const reconciliation = fn('renderFinanceSyncStatus')
   assert.match(source, /recordedProviderIds/, 'the recorded-id helper is imported')
   assert.match(reconciliation, /recordedProviderIds\(\{classifications:lawPayV323Review\.classifications/)
+  assert.match(reconciliation, /ledgerEntries:lawPayV323Review\.ledger_entries/)
+  assert.match(reconciliation, /trustTransactions:mioTrustTransactions/)
+  assert.match(reconciliation, /attributions:lawPayAttribution/)
   assert.match(reconciliation, /legacyRecordedTransactionIds:lawPayV323Review\.legacy_recorded_transaction_ids/)
+  assert.match(reconciliation, /legacyAttributedTransactionIds:lawPayV323Review\.legacy_attributed_transaction_ids/)
   assert.match(reconciliation, /audit\.unlinked=audit\.unlinked\.filter\(issue=>!recordedIds\.has\(String\(issue\.id\)\)\)/)
   // The legacy "Categorize this payment" path still exists for genuinely-unrecorded transactions.
   assert.match(reconciliation, /Categorize this payment/)
