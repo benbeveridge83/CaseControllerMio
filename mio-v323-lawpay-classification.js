@@ -30,7 +30,7 @@ function editFunction(code, name, edit) {
 const imports = `import MioLawPayClassificationPanel from './MioLawPayClassificationPanel.jsx'
 import MioLawPayDiagnostics from './MioLawPayDiagnostics.jsx'
 import { notifyLawPayReviewChanged } from './mioLawPayNotifications.js'
-import { singleCountProviderPayments } from './mioLawPayClassification.js'
+import { singleCountProviderPayments, recordedProviderIds } from './mioLawPayClassification.js'
 `
 const stateAndLoader = `  const [lawPayV323Review,setLawPayV323Review]=useState({transactions:[],classifications:[],ledger_entries:[],accounts:[],mapping_available:true,review_cutover_date:'',legacy_recorded_transaction_ids:[],legacy_attributed_transaction_ids:[],legacy_refund_entries:[]})
   const [lawPayV323Busy,setLawPayV323Busy]=useState(false)
@@ -191,6 +191,15 @@ export default function lawPayClassification() {
       code = editFunction(code, 'renderClientDashboardFinances', (part) => once(part, "    return <div style={{ display: 'grid', gap: 14 }}>\n", "    return <div style={{ display: 'grid', gap: 14 }}>\n" + discrepancy, 'trust discrepancy mount'))
       code = once(code, "      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Mio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>\n", "      <p style={{ color: '#475569', marginTop: -6 }}>Create secure LawPay payment links, associate them with Mio matters and Mio invoices, and synchronize gateway transaction events. Card and bank details remain on LawPay's hosted pages.</p>\n" + lawpayQueue, 'centralized LawPay review queue and diagnostics mount')
       code = once(code, '        return {...result,audit}', '        notifyLawPayReviewChanged()\n        return {...result,audit}', 'the review notification refreshes after a live sync')
+      code = editFunction(code, 'renderFinanceSyncStatus', (part) => once(part,
+        `    return <details style={{border:'1px solid #cbd5e1',borderRadius:8,padding:10,margin:'10px 0'}}>`,
+        `    // V327: a transaction already recorded through the classification review (posted/matched),
+    // or a legacy trust/attribution decision, is no longer "unlinked" - it has been connected, so
+    // it is removed from the reconciliation list and its count.
+    const recordedIds=recordedProviderIds({classifications:lawPayV323Review.classifications,legacyRecordedTransactionIds:lawPayV323Review.legacy_recorded_transaction_ids,legacyAttributedTransactionIds:lawPayV323Review.legacy_attributed_transaction_ids})
+    audit.unlinked=audit.unlinked.filter(issue=>!recordedIds.has(String(issue.id)))
+    return <details style={{border:'1px solid #cbd5e1',borderRadius:8,padding:10,margin:'10px 0'}}>`,
+        'recorded transactions are no longer unlinked'))
       if (code.includes('finishLawPayClassification')) throw Error('V323 transform ran twice')
       return `${code}\n// finishLawPayClassification\n`
     },
