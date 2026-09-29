@@ -10,7 +10,7 @@ const user = { id: owner, email, aud: 'authenticated', role: 'authenticated', em
 const b64 = (x) => Buffer.from(JSON.stringify(x)).toString('base64url'), exp = Math.floor(Date.now() / 1000) + 3600
 const session = { access_token: `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: owner, email, role: 'authenticated', exp, aud: 'authenticated' })}.test`, refresh_token: 'test-only', expires_at: exp, expires_in: 3600, token_type: 'bearer', user }
 const matters = [
-  { id: '00000000-0000-4000-8000-000000004241', client_id: 'client-alpha', name: 'Alpha Matter', cause_number: 'DF-26-100', matter_type: 'Modification', matter_status: 'Active Client', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-alpha', first_name: 'Alpha', last_name: 'Synthetic', email: 'alpha@example.invalid' } },
+  { id: '00000000-0000-4000-8000-000000004241', client_id: 'client-alpha', name: 'Alpha Matter', cause_number: 'DF-26-100', matter_type: 'Modification', matter_status: 'Active Client', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-alpha', first_name: 'Alpha', last_name: 'Synthetic', email: 'alpha@example.invalid', phone: '(281) 555-0100', address: '123 Test Street', city: 'Alvin', state: 'TX', zip: '77511' } },
   { id: '00000000-0000-4000-8000-000000004242', client_id: 'client-yasmine', name: 'Consultation', cause_number: '', matter_type: 'Consultation', matter_status: 'PNC- Need to Consult', case_status: 'Open', is_active: true, created_at: now, clients: { id: 'client-yasmine', first_name: 'Yasmine', last_name: 'Said', email: 'yasmine@example.invalid' } },
 ]
 const opening = Object.fromEntries(matters.map((m) => [m.id, { snapshot_date: '2026-08-09', matter_trust_funds: 1000, outstanding_balance: 0, work_in_progress: 0, minimum_balance: 2000 }]))
@@ -91,6 +91,14 @@ try {
   const matter = (await opened) || page
   if (matter === page) watch(matter)
   await matter.waitForLoadState('domcontentloaded')
+  await matter.getByRole('button', { name: 'Matter Information', exact: true }).click()
+  const contact = matter.getByRole('region', { name: 'Client Contact Information' })
+  await contact.waitFor({ timeout: 30000 })
+  assert.match(await contact.innerText(), /123 Test Street[\s\S]*Alvin, TX 77511/)
+  assert.equal(await contact.getByRole('link', { name: '(281) 555-0100' }).getAttribute('href'), 'tel:2815550100')
+  assert.equal(await contact.getByRole('link', { name: 'alpha@example.invalid' }).getAttribute('href'), 'mailto:alpha@example.invalid')
+  await matter.screenshot({ path: 'finance-test-results/matter-front-contact.png', fullPage: false })
+
   const finances = matter.getByRole('button', { name: 'Finances', exact: true }).last()
   await finances.waitFor({ timeout: 60000 })
   await finances.click()
@@ -108,6 +116,20 @@ try {
   await notification.waitFor({ timeout: 30000 })
   assert.match(await notification.innerText(), /3 LawPay transactions need review/)
   assert.equal(await notification.count(), 1, 'one consolidated notification, never one per transaction')
+  for (const width of [1920, 1280, 650, 390]) {
+    await page.setViewportSize({ width, height: 1100 })
+    const alertBox = await notification.boundingBox()
+    const clock = page.getByTitle("Add time or an expense and review today's billing entries", { exact: true })
+    const clockBox = await clock.boundingBox()
+    assert.ok(alertBox && clockBox)
+    assert.ok(alertBox.x + alertBox.width <= clockBox.x || alertBox.y >= clockBox.y + clockBox.height, `alert leaves the clock clear at ${width}px`)
+    assert.ok(alertBox.x >= 0 && alertBox.x + alertBox.width <= width, `alert fits at ${width}px`)
+    await clock.click()
+    await page.getByRole('heading', { name: /^Daily Billing/ }).waitFor()
+    await page.getByRole('button', { name: 'Close', exact: true }).last().click()
+  }
+  await page.setViewportSize({ width: 1500, height: 1100 })
+  await page.screenshot({ path: 'finance-test-results/alert-clock-clear.png', fullPage: false })
   await notification.getByRole('button').click()
   await queue.waitFor({ timeout: 30000 })
   assert.ok(page.url().includes('#lawpay'), 'clicking the notification opens the central review queue')

@@ -13904,7 +13904,10 @@ function App() {
 
     const extra = matterExtraFor(matter.id)
     const court = matter.courts || courts.find((item) => item.id === matter.court_id) || {}
-    const clientDisplay = `${matter.clients?.first_name || ''} ${matter.clients?.last_name || ''}`.trim() || matter.matter_client_name || clientName(matter.client_id)
+    const client = clients.find((item) => item.id === matter.client_id) || matter.clients || {}
+    const clientDisplay = `${client.first_name || ''} ${client.last_name || ''}`.trim() || matter.matter_client_name || clientName(matter.client_id)
+    const clientPhone = client.phone || client.mobile_phone || ''
+    const clientAddress = [client.address, [client.city, client.state].filter(Boolean).join(', ') + (client.zip ? ` ${client.zip}` : '')].filter((part) => part?.trim()).join('\n')
     const assignedAttorney = teamMemberName(extra.assigned_attorney_id)
 
     return (
@@ -13913,6 +13916,19 @@ function App() {
           <h3 style={{ margin: 0 }}>Matter Information</h3>
           <button type="button" onClick={() => { editMatter(matter); setPage('matters') }}>Edit Matter</button>
         </div>
+
+        <section aria-label="Client Contact Information" style={{ border: '1px solid #e0e6ed', borderRadius: 6, padding: 12, background: 'white', marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <h4 style={{ margin: 0 }}>Client Contact Information</h4>
+            {client.id && !isClientPortalMember() && <button type="button" onClick={() => editClient(client)}>Edit Client</button>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginTop: 8, overflowWrap: 'anywhere' }}>
+            <MatterInfoLine label="Client" value={clientDisplay} />
+            <MatterInfoLine label="Phone" value={clientPhone ? <a href={`tel:${clientPhone.replace(/[^+0-9]/g, '')}`}>{clientPhone}</a> : 'Not provided'} />
+            <MatterInfoLine label="Email" value={client.email ? <a href={`mailto:${client.email}`}>{client.email}</a> : 'Not provided'} />
+            <MatterInfoLine label="Address" value={clientAddress ? <span style={{ whiteSpace: 'pre-line' }}>{clientAddress}</span> : 'Not provided'} />
+          </div>
+        </section>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
           <section style={{ border: '1px solid #e0e6ed', borderRadius: 6, padding: 12, background: 'white' }}>
