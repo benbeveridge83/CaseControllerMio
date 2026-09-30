@@ -1,0 +1,35 @@
+name: Ask Mio marketing verification
+on:
+  push:
+    branches: [feat/ask-mio-marketing]
+  pull_request:
+    branches: [main]
+    paths: ['src/MioAgentPanel.jsx', 'src/mioAgent*', 'src/App.jsx', 'lib/marketing-agent.js', 'api/marketing-audit.js', 'api/google-ads.js', 'api/meta-ads.js', 'tests/marketing-agent*', '.github/workflows/marketing-agent.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/marketing-agent.test.js tests/google-ads-*.test.js
+      - run: npx eslint src/MioAgentPanel.jsx src/mioAgentHistory.js
+      - run: npm run build
+      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Browser conversation, history, period and failure checks
+        run: |
+          npm run preview -- --host 127.0.0.1 > /tmp/mio-agent-preview.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ >/dev/null && break; sleep 1; done
+          node tests/marketing-agent-browser.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: marketing-agent-browser-results
+          path: test-results/marketing-agent-*.png
+          retention-days: 3

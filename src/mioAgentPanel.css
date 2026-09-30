@@ -1,0 +1,75 @@
+.mio-agent { color: #172b3a; font-family: inherit; text-align: left; overflow-wrap: anywhere; }
+.mio-agent * { box-sizing: border-box; }
+.mio-agent button, .mio-agent select, .mio-agent textarea { font: inherit; }
+.mio-agent button { cursor: pointer; }
+.mio-agent button:disabled { opacity: .55; cursor: default; }
+.mio-agent button:focus-visible, .mio-agent select:focus-visible, .mio-agent textarea:focus-visible { outline: 3px solid #4c9fa5; outline-offset: 3px; }
+.mio-agent-header { display: flex; justify-content: space-between; gap: 24px; align-items: center; margin: 18px 0 24px; flex-wrap: wrap; }
+.mio-agent-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; color: #597c80; }
+.mio-agent-header h1 { margin: 7px 0; font-size: 32px; letter-spacing: -.025em; }
+.mio-agent-header h1 span { display: inline-block; margin-left: 10px; padding: 5px 9px; vertical-align: middle; border-radius: 6px; background: #e6efec; color: #36625b; font-size: 12px; letter-spacing: normal; font-weight: 700; }
+.mio-agent-header p { margin: 0; color: #5b6d79; }
+.mio-agent-controls { display: flex; align-items: flex-end; gap: 10px; }
+.mio-agent-controls label { display: grid; gap: 5px; font-size: 11px; font-weight: 700; color: #526875; }
+.mio-agent-controls select, .mio-agent-controls button { border: 1px solid #cbdad8; background: white; color: #23433f; border-radius: 8px; padding: 10px 12px; font-size: 13px; min-height: 40px; }
+.mio-agent-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.mio-agent-conversation { min-width: 0; border: 1px solid #ccdbd8; border-radius: 14px; background: #fff; overflow: hidden; box-shadow: 0 5px 18px #20383b08; }
+.mio-agent-conversation-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 20px; border-bottom: 1px solid #e5eceb; font-size: 13px; font-weight: 700; }
+.mio-agent-dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; background: #438579; border-radius: 50%; vertical-align: middle; }
+.mio-agent-conversation-top button { background: none; border: 0; font-size: 12px; color: #54716d; padding: 5px; }
+.mio-agent-prompts { padding: 16px 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; border-bottom: 1px solid #e8eeed; background: #f8faf9; }
+.mio-agent-prompts button { text-align: left; border: 1px solid #d9e3e0; border-radius: 8px; background: white; padding: 13px 12px; font-size: 13px; font-weight: 600; color: #304f4a; display: flex; justify-content: space-between; gap: 6px; }
+.mio-agent-prompts button:hover:not(:disabled) { background: #eef5f2; border-color: #78a89c; }
+.mio-agent-prompts button span { color: #69948a; }
+.mio-agent-messages { min-height: 360px; max-height: 640px; overflow-y: auto; padding: 24px 24px 18px; scroll-behavior: smooth; }
+.mio-agent-welcome { max-width: 470px; margin: 45px auto 55px; text-align: center; color: #57706c; }
+.mio-agent-mark { width: 50px; height: 50px; background: #eaf3ef; color: #438c76; display: grid; place-items: center; border-radius: 14px; margin: auto; font-size: 26px; }
+.mio-agent-welcome h2 { color: #274740; font-size: 23px; line-height: 1.3; font-weight: 650; margin: 22px 0 12px; }
+.mio-agent-welcome p { line-height: 1.6; font-size: 14px; }
+.mio-agent-welcome > div:last-child { font-size: 12px; color: #77918a; margin-top: 26px; }
+.mio-agent-message { max-width: 94%; margin: 0 0 22px; padding: 16px 18px; border-radius: 12px; }
+.mio-agent-message-user { margin-left: auto; background: #eaf1ee; border: 1px solid #dbe7e1; }
+.mio-agent-message-assistant { padding-left: 0; }
+.mio-agent-message-label { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; font-weight: 800; color: #345e53; margin-bottom: 8px; }
+.mio-agent-message-label span { font-weight: 400; font-size: 10px; color: #71847e; }
+.mio-agent-message-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; }
+.mio-agent-message > small { display: block; color: #7b8e86; font-size: 10px; margin-top: 12px; }
+.mio-agent-thinking { color: #5a776d; font-size: 12px; padding: 10px 0; }
+.mio-agent-composer { border-top: 1px solid #e2ebe7; padding: 16px 20px 14px; background: #fcfdfc; }
+.mio-agent-composer textarea { display: block; width: 100%; min-height: 76px; border: 0; background: transparent; resize: vertical; padding: 3px 0; color: #233a32; font-size: 14px; line-height: 1.5; }
+.mio-agent-composer textarea::placeholder { color: #93a49a; }
+.mio-agent-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; }
+.mio-agent-composer small { color: #8a9b93; font-size: 10px; }
+.mio-agent-composer button { border: 0; border-radius: 8px; background: #2e6555; color: white; font-weight: 700; padding: 10px 15px; min-width: 108px; font-size: 13px; }
+.mio-agent-composer button span { margin-left: 12px; }
+.mio-agent-history-note { padding: 9px 20px 12px; font-size: 10px; color: #8c9a95; border-top: 1px solid #edf2ef; }
+.mio-agent-error { margin: 0 20px 12px; border: 1px solid #ebcebc; background: #fff6ed; color: #885332; border-radius: 8px; padding: 12px; font-size: 13px; }
+.mio-agent-evidence { min-width: 0; background: #f8faf8; border: 1px solid #dce5df; border-radius: 14px; padding: 20px; }
+.mio-agent-evidence-heading h2 { font-size: 16px; margin: 0 0 6px; }
+.mio-agent-evidence-heading > span { display: block; font-size: 11px; color: #7b8e82; }
+.mio-agent-period { font-size: 11px; color: #7b8e82; margin: 6px 0 0; }
+.mio-agent-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 18px 0; }
+.mio-agent-metric { border: 1px solid #dde7e0; border-radius: 9px; padding: 11px 10px; background: #fff; min-height: 110px; }
+.mio-agent-metric span, .mio-agent-metric strong, .mio-agent-metric small { display: block; }
+.mio-agent-metric span { font-size: 10px; line-height: 1.35; color: #71857a; }
+.mio-agent-metric strong { font-size: 22px; margin: 8px 0; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.mio-agent-metric small { font-size: 9px; color: #8e9e93; line-height: 1.4; }
+.mio-agent-practices { border-top: 1px solid #dfe8e1; border-bottom: 1px solid #dfe8e1; padding: 13px 0; font-size: 12px; }
+.mio-agent-practices > strong { font-size: 11px; }
+.mio-agent-practices > div { display: flex; justify-content: space-between; margin-top: 9px; color: #678074; }
+.mio-agent-check { padding: 14px 0; border-bottom: 1px solid #e2eae4; }
+.mio-agent-check > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.mio-agent-check strong { font-size: 11px; }
+.mio-agent-check p { color: #73877b; font-size: 11px; line-height: 1.5; margin: 7px 0 0; overflow-wrap: anywhere; }
+.mio-agent-badge { font-size: 9px; border-radius: 4px; padding: 3px 5px; background: #edf1ee; color: #748577; white-space: nowrap; }
+.mio-agent-badge-available { background: #e5f1e9; color: #45785b; }
+.mio-agent-badge-unverified, .mio-agent-badge-partial { background: #f9efdc; color: #9b783b; }
+.mio-agent-badge-unavailable { background: #f5e6df; color: #986e59; }
+.mio-agent-scope-note { padding-top: 18px; color: #708879; font-size: 11px; line-height: 1.5; }
+.mio-agent-scope-note p { margin: 6px 0 0; }
+.mio-agent-empty-evidence { font-size: 12px; color: #71877a; line-height: 1.5; }
+.mio-agent-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 1000px) { .mio-agent-layout { grid-template-columns: minmax(0, 1fr); } .mio-agent-evidence { order: 2; } .mio-agent-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } .mio-agent-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; } }
+@media (max-width: 580px) { .mio-agent-header h1 { font-size: 28px; } .mio-agent-controls { width: 100%; flex-wrap: wrap; } .mio-agent-controls label { flex: 1; min-width: 0; } .mio-agent-controls select { width: 100%; } .mio-agent-conversation-top { flex-wrap: wrap; padding: 12px; } .mio-agent-prompts { grid-template-columns: minmax(0, 1fr); padding: 12px; } .mio-agent-messages { padding: 18px 14px; } .mio-agent-message { max-width: 100%; } .mio-agent-composer { padding: 12px; } .mio-agent-composer > div { flex-wrap: wrap; } .mio-agent-composer button { margin-left: auto; } .mio-agent-metrics, .mio-agent-checks { grid-template-columns: repeat(2, minmax(0, 1fr)); } .mio-agent-checks { grid-template-columns: minmax(0, 1fr); } .mio-agent-composer small { max-width: 145px; } }
+/* Give the conversation the full screen on phones. Platform tabs provide the way back. */
+@media (max-width: 580px) { .mio-agent-page { position: fixed; inset: 0; z-index: 11010; overflow-y: auto; background: #f6f9f7; padding: 16px; } .mio-agent-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; } }

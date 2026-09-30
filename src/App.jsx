@@ -13,6 +13,7 @@ import {
 import { CALENDAR_SHOW_ALL, calendarEventMatchesStatusFilters, calendarStatusHiddenEventCount } from './mioCalendarEventFilters.js'
 import { mioCalendarEventChannel } from './mioCalendarEventChannel.js'
 import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
+import MioAgentPanel from './MioAgentPanel.jsx'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -56601,7 +56602,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     const options = [
       ['overview', 'All Marketing'],
       ['google', 'Google Ads'],
-      ['meta', 'Facebook / Instagram']
+      ['meta', 'Facebook / Instagram'],
+      ['agent', '✦ Ask Mio']
     ]
     return <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
       {options.map(([value, label]) => <button key={value} type="button" onClick={() => setMarketingPlatform(value)} style={{ border: '1px solid #cbd5e1', borderRadius: 999, padding: '9px 14px', fontWeight: 900, background: marketingPlatform === value ? '#0f172a' : '#fff', color: marketingPlatform === value ? '#fff' : '#334155' }}>{label}</button>)}
@@ -56867,6 +56869,10 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
     // accidentally dropped when the V263 Drafting Studio changes were merged.
     if (marketingPlatform === 'overview') return renderMarketingOverviewPage()
     if (marketingPlatform === 'meta') return renderMetaAdsPage()
+    if (marketingPlatform === 'agent') return <div className="mio-agent-page" style={{ maxWidth: 1500, margin: '0 auto', paddingBottom: 50 }}>
+      {renderMarketingPlatformSwitch()}
+      <MioAgentPanel key={session?.user?.id || 'signed-out'} session={session} initialDays={googleAdsDays} />
+    </div>
 
     const report = googleAdsReport || {}
     const overview = report.overview || {}
