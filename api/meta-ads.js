@@ -174,10 +174,10 @@ async function accountInfo() {
   }
 }
 
-async function buildReport(days) {
+async function buildReport(days, requestedRange = null) {
   const accountId = cleanAdAccountId(process.env.META_AD_ACCOUNT_ID || '')
   if (!accountId) throw new Error('META_AD_ACCOUNT_ID is not configured.')
-  const range = dateRange(days)
+  const range = requestedRange || dateRange(days)
   const timeRange = { since: range.start, until: range.end }
   const warnings = []
   const account = await accountInfo()
@@ -284,6 +284,11 @@ function connectionMissing() {
   if (!cleanAdAccountId(process.env.META_AD_ACCOUNT_ID || '')) missing.push('META_AD_ACCOUNT_ID')
   if (!process.env.META_ACCESS_TOKEN) missing.push('META_ACCESS_TOKEN')
   return missing
+}
+
+export async function readMetaMarketingEvidence(days, range) {
+  if (connectionMissing().length) throw new Error('Facebook / Instagram reporting is not connected.')
+  return buildReport(days, range)
 }
 
 async function runAiAudit(report) {

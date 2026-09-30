@@ -200,9 +200,9 @@ async function accountInfo(accessToken) {
   }
 }
 
-async function buildReport(days) {
+async function buildReport(days, requestedRange = null) {
   const accessToken = await googleAccessToken()
-  const range = dateRange(days)
+  const range = requestedRange || dateRange(days)
   const warnings = []
   const account = await accountInfo(accessToken)
 
@@ -461,6 +461,41 @@ function connectionMissing() {
   if (!process.env.GOOGLE_ADS_DEVELOPER_TOKEN) missing.push('GOOGLE_ADS_DEVELOPER_TOKEN')
   if (!process.env.GOOGLE_ADS_SERVICE_ACCOUNT_JSON) missing.push('GOOGLE_ADS_SERVICE_ACCOUNT_JSON')
   return missing
+}
+
+// Internal read-only entrypoint for Ask Mio. No approval or mutation path is exposed.
+export async function readGoogleMarketingEvidence(days, range) {
+  if (connectionMissing().length) throw new Error('Google Ads connection setup is incomplete.')
+  const report = await buildReport(days, range)
+  const accessToken = await googleAccessToken()
+  const warnings = []
+  const [settings, rows] = await Promise.all([
+    safeQuery(accessToken, 'call settings', `
+      SELECT customer.call_reporting_setting.call_reporting_enabled,
+             customer.call_reporting_setting.call_conversion_reporting_enabled,
+             customer.call_reporting_setting.call_conversion_action
+      FROM customer LIMIT 1
+    `, warnings),
+    safeQuery(accessToken, 'call records', `
+      SELECT call_view.call_status, call_view.call_duration_seconds,
+             call_view.start_call_date_time, call_view.call_tracking_display_location
+      FROM call_view
+      WHERE call_view.start_call_date_time >= '${range.start} 00:00:00'
+        AND call_view.start_call_date_time <= '${range.end} 23:59:59'
+      ORDER BY call_view.start_call_date_time DESC
+      LIMIT 1000
+    `, warnings)
+  ])
+  report.callEvidence = {
+    settings: settings[0]?.customer?.callReportingSetting || null,
+    records: rows.map(({ callView = {} }) => ({
+      status: callView.callStatus || 'UNKNOWN', durationSeconds: number(callView.callDurationSeconds),
+      startedAt: callView.startCallDateTime || '', location: callView.callTrackingDisplayLocation || 'UNKNOWN'
+    })),
+    truncated: rows.length >= 1000, warnings,
+    limitation: 'Google call records do not verify PBX routing, staff answering, website number replacement, or qualified clients.'
+  }
+  return report
 }
 
 async function runAiAudit(report) {

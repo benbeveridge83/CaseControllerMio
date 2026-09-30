@@ -1,3 +1,7 @@
+import { answerMarketingQuestion, gatherMarketingEvidence, validateMarketingMessages } from '../lib/marketing-agent.js'
+
+export const config = { maxDuration: 120 }
+
 function json(res, status, body) {
   res.status(status).setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
@@ -56,6 +60,17 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Use POST.' })
   try {
     await requireFirmUser(req)
+    const action = req.body?.action || 'audit'
+    if (['context', 'chat'].includes(action)) {
+      if (req.body?.scope && req.body.scope !== 'marketing') return json(res, 400, { ok: false, error: 'Ask Mio currently supports the marketing page.' })
+      const messages = action === 'chat' ? validateMarketingMessages(req.body?.messages) : null
+      if (action === 'chat' && !process.env.OPENAI_API_KEY) return json(res, 503, { ok: false, error: 'Mio’s AI service is not configured. You can still refresh the marketing evidence.' })
+      const evidence = await gatherMarketingEvidence(req, req.body?.days)
+      if (action === 'context') return json(res, 200, { ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), evidence })
+      const result = await answerMarketingQuestion(messages, evidence)
+      return json(res, 200, { ok: true, ...result, evidence })
+    }
+    if (action !== 'audit') return json(res, 400, { ok: false, error: 'Unknown marketing action.' })
     const google = trimReport(req.body?.google, 'google')
     const meta = trimReport(req.body?.meta, 'meta')
     if (!google && !meta) return json(res, 400, { ok: false, error: 'At least one advertising report is required.' })
