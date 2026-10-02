@@ -294,7 +294,7 @@ export async function readMetaMarketingEvidence(days, range) {
 async function runAiAudit(report) {
   const apiKey = process.env.OPENAI_API_KEY || ''
   if (!apiKey) throw Object.assign(new Error('OPENAI_API_KEY is not configured on the server.'), { statusCode: 400 })
-  const model = process.env.OPENAI_META_ADS_MODEL || process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-5.6-luna'
+  const model = process.env.OPENAI_META_ADS_MODEL || process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-6-luna'
   const instructions = `You are the Meta Ads auditor for a small Texas law firm. Analyze only the supplied Facebook/Instagram advertising report. The firm cares about qualified phone calls, successful lead forms, consultations, signed clients, and minimizing wasted spend. Treat Meta-reported lead actions as platform-reported outcomes, not proof of a qualified client. Examine campaigns, ad sets, ads, placements/platforms, devices, regions, frequency, click costs, and conversion signals. Flag tracking ambiguity, audience/creative fatigue, expensive non-converting spend, and weak traffic. Do not recommend raising budget unless tracking and lead quality justify it. Distinguish facts from inferences. Give a concise executive summary, prioritized findings, and exact next actions. Never claim you changed the account; this route is read-only.`
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',

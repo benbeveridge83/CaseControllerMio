@@ -501,7 +501,7 @@ export async function readGoogleMarketingEvidence(days, range) {
 async function runAiAudit(report) {
   const apiKey = process.env.OPENAI_API_KEY || ''
   if (!apiKey) throw Object.assign(new Error('OPENAI_API_KEY is not configured on the server.'), { statusCode: 400 })
-  const model = process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-5.6-luna'
+  const model = process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-6-luna'
   const instructions = `You are the Google Ads auditor for a small Texas law firm. Analyze only the supplied Google Ads report. The firm cares about actual phone calls, successful web forms, qualified consultations, signed clients, and minimizing wasted spend. Be skeptical of reported zero conversions when tracking may be broken. Do not recommend raising budget unless the current traffic and conversion tracking justify it. Identify concrete campaign, keyword, search-term, device, and conversion-tracking issues. Distinguish facts from inferences. Give a concise executive summary, then prioritized findings, then exact recommended next actions. This audit route cannot itself change the account; proposed changes still require the separate Mio approval flow.`
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',

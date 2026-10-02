@@ -42,7 +42,7 @@ function trimReport(report = {}, provider = '') {
 async function runAiAudit(input) {
   const apiKey = process.env.OPENAI_API_KEY || ''
   if (!apiKey) throw Object.assign(new Error('OPENAI_API_KEY is not configured on the server.'), { statusCode: 400 })
-  const model = process.env.OPENAI_MARKETING_AUDIT_MODEL || process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-5.6-luna'
+  const model = process.env.OPENAI_MARKETING_AUDIT_MODEL || process.env.OPENAI_GOOGLE_ADS_MODEL || 'gpt-6-luna'
   const instructions = `You are the cross-channel paid advertising auditor for a small Texas law firm. Compare the supplied Google Ads and Meta Ads reports. The firm cares about actual qualified calls, successful forms, consultations, signed clients, and cost per qualified outcome. Platform conversions and Meta lead actions are signals, not proof of a retained client. Identify exactly where money is going, which platform/campaigns are efficient or wasteful, whether conversion tracking may be broken, and what should be changed first. Do not recommend increasing budget until tracking and current traffic quality justify it. Distinguish facts from inferences. Give: (1) executive summary, (2) spend/outcome comparison, (3) highest-priority problems, (4) exact recommended actions for Google and Meta separately, and (5) what additional lead-quality data from Mio would improve the decision. Never claim you changed either ad account; all integrations are read-only.`
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },

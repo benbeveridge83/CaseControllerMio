@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import handler from '../api/marketing-audit.js'
-import { marketingRange, validateMarketingMessages, summarizeLeads, gatherMarketingEvidence, answerMarketingQuestion } from '../lib/marketing-agent.js'
+import { marketingRange, validateMarketingMessages, summarizeLeads, gatherMarketingEvidence, answerMarketingQuestion, classifyOpenAiFailure } from '../lib/marketing-agent.js'
 import { agentHistoryKey, readAgentHistory, saveAgentHistory } from '../src/mioAgentHistory.js'
 
 test('report boundaries use Central time across midnight and daylight saving changes', () => {
@@ -98,6 +98,21 @@ test('the AI receives current evidence and prior turns, with no write tools or p
     assert.match(body.input[0].content, /"inquiries":3/)
     assert.match(body.instructions, /unavailable\/partial source is not zero/)
   } finally { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old }
+})
+
+test('provider failures are classified into distinct, secret-free messages', () => {
+  const cases = [
+    { error: { name: 'TimeoutError' }, status: 0, payload: {}, match: /timed out/ },
+    { error: null, status: 401, payload: {}, match: /rejected the provider credentials/ },
+    { error: null, status: 404, payload: { error: { message: 'The model `gpt-5.6-luna` does not exist' } }, match: /not available to this OpenAI project/ },
+    { error: null, status: 429, payload: {}, match: /usage or rate limit/ },
+    { error: null, status: 500, payload: {}, match: /temporarily unavailable/ }
+  ]
+  for (const item of cases) {
+    const text = classifyOpenAiFailure(item.error, item.status, item.payload)
+    assert.match(text, item.match)
+    assert.ok(!text.includes('gpt-5.6-luna') && !text.includes('sk-') && !text.includes('test-server-key'), 'must not echo the model or secret in a user-facing message')
+  }
 })
 
 test('conversation history is account-scoped and survives storage failure without throwing', () => {
