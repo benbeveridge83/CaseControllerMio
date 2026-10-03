@@ -1,0 +1,163 @@
+.mio-efiling-panel {
+  font-family: inherit;
+  color: #0f172a;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 12px;
+  max-width: 960px;
+}
+.mio-efiling-panel h2,
+.mio-efiling-panel h3 {
+  margin: 0;
+}
+.mio-efiling-panel h2 {
+  font-size: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mio-efiling-panel h3 {
+  font-size: 14px;
+  margin-top: 4px;
+}
+.mio-efiling-badge {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.mio-efiling-badge--mock {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+.mio-efiling-badge--blocked {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.mio-efiling-badge--valid {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+.mio-efiling-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 9px;
+}
+.mio-efiling-field {
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+.mio-efiling-field strong {
+  font-weight: 800;
+  color: #334155;
+}
+.mio-efiling-field input,
+.mio-efiling-field select,
+.mio-efiling-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+.mio-efiling-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mio-efiling-mode {
+  padding: 7px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 700;
+}
+.mio-efiling-mode[aria-pressed='true'] {
+  background: #eff6ff;
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+.mio-efiling-issues {
+  display: grid;
+  gap: 6px;
+}
+.mio-efiling-issue {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.mio-efiling-issue--blocking {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+.mio-efiling-issue--warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+.mio-efiling-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mio-efiling-actions button {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mio-efiling-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mio-efiling-actions .mio-efiling-primary {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+.mio-efiling-actions .mio-efiling-danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #fff;
+}
+.mio-efiling-notice {
+  font-size: 13px;
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.mio-efiling-error {
+  font-size: 13px;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.mio-efiling-muted {
+  color: #64748b;
+  font-size: 12px;
+}
