@@ -6098,7 +6098,7 @@ function App() {
   const [showPriorBillingWindow, setShowPriorBillingWindow] = useState(false)
   const [priorBillingMatterId, setPriorBillingMatterId] = useState('')
   const [billingTableSort, setBillingTableSort] = useState({ field: 'date', direction: 'desc' })
-  const [billingForm, setBillingForm] = useState({ entry_type: 'time', matter_id: '', task_id: '', user_id: '', date: new Date().toISOString().slice(0, 10), description: '', rate: '', billing_time: '', expense_category: 'Service fee', expense_amount: '', matter_status: '', matter_step: '', private_note: '', do_not_bill: false })
+  const [billingForm, setBillingForm] = useState({ entry_type: 'time', matter_id: '', task_id: '', user_id: '', date: new Date().toISOString().slice(0, 10), description: '', rate: '', billing_time: '', expense_category: 'Service fee', expense_amount: '', matter_status: '', matter_step: '', private_note: '', do_not_bill: false, always_use_rate: false })
   const [billingFilters, setBillingFilters] = useState({ matter_id: 'all', client_id: 'all', client_search: '', user_id: 'all', date_from: '', date_to: '' })
   const [matterBillingReviewId, setMatterBillingReviewId] = useState('')
   const [billingSettingsDraft, setBillingSettingsDraft] = useState({ user_id: '', rate: '' })
@@ -6692,7 +6692,7 @@ function App() {
   const [courtsSort, setCourtsSort] = useState({ field: 'court_name', direction: 'asc' })
   const [mattersSort, setMattersSort] = useState({ field: 'name', direction: 'asc' })
   const [settingsMatterTableSort, setSettingsMatterTableSort] = useState({ field: 'matter_client_name', direction: 'asc' })
-  const [settingsMatterTableFilters, setSettingsMatterTableFilters] = useState({ case_status: 'all', matter_status: 'all' })
+  const [settingsMatterTableFilters, setSettingsMatterTableFilters] = useState({ case_status: 'all', matter_status: 'all', matter_type: 'all' })
   const [selectedTemplateMatterId, setSelectedTemplateMatterId] = useState(() => {
     try {
       const hashPage = typeof window !== 'undefined' ? window.location.hash.replace(/^#\/?/, '') : ''
@@ -31676,7 +31676,8 @@ async function updateTeamCell(memberId, field, value) {
       const matterMatches = settingsMatterTableFilters.matter_status === 'all' ||
         (settingsMatterTableFilters.matter_status === '__blank__' && !normalizeMatterStatus(matter.matter_status)) ||
         normalizeMatterStatus(matter.matter_status) === normalizeMatterStatus(settingsMatterTableFilters.matter_status)
-      return caseMatches && matterMatches
+      const typeMatches = settingsMatterTableFilters.matter_type === 'all' || String(matter.matter_type || '').trim() === settingsMatterTableFilters.matter_type
+      return caseMatches && matterMatches && typeMatches
     }),
     settingsMatterTableSort
   )
@@ -42064,7 +42065,7 @@ Ben`) : (row.draft_response || '') })
         const nextMatter = field === 'matter_id' ? value : next.matter_id
         const nextUser = field === 'user_id' ? value : next.user_id
         if (next.entry_type !== 'expense') next.rate = String(rateForBilling(nextUser, nextMatter))
-        if (field === 'matter_id') next.matter_status = billingMatterStatus(nextMatter)
+        if (field === 'matter_id') { next.matter_status = billingMatterStatus(nextMatter); next.always_use_rate = false }
       }
       return next
     })
@@ -42089,13 +42090,14 @@ Ben`) : (row.draft_response || '') })
       matter_status: matterStatus || '',
       matter_step: context.matter_step || '',
       private_note: context.private_note || '',
-      do_not_bill: Boolean(context.do_not_bill || context.non_billable)
+      do_not_bill: Boolean(context.do_not_bill || context.non_billable),
+      always_use_rate: false
     })
     setShowBillingWindow(true)
   }
 
-  function saveBillingEntry(e) {
-    e.preventDefault()
+  function saveBillingEntry(e, mode = 'close') {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault()
     if (!billingForm.matter_id) return alert('Please select a matter for this billing entry.')
     const isExpense = billingForm.entry_type === 'expense'
     const hours = isExpense ? 0 : parseBillingTimeToHours(billingForm.billing_time)
@@ -42127,12 +42129,23 @@ Ben`) : (row.draft_response || '') })
       amount: isExpense ? Number(expenseAmount.toFixed(2)) : (doNotBill ? 0 : Number((hours * rate).toFixed(2))),
       created_at: new Date().toISOString()
     }
+    if (!isExpense && billingForm.always_use_rate && billingForm.matter_id && Number.isFinite(rate)) {
+      updateMatterCustomBillingRate(billingForm.matter_id, String(rate))
+    }
     setBillingEntries((current) => [entry, ...current])
     if (String(billingForm.private_note || '').trim()) {
       setBillingPrivateNotes((current) => ({ ...current, [entry.id]: billingForm.private_note }))
     }
     saveBillingEntryToRelational(entry, String(billingForm.private_note || '').trim())
-    setShowBillingWindow(false)
+    if (mode === 'close') {
+      setShowBillingWindow(false)
+      setShowDailyBillingWindow(false)
+    } else if (mode === 'same_client') {
+      setBillingForm((current) => ({ ...current, billing_time: '', description: '', private_note: '' }))
+    } else if (mode === 'new_matter') {
+      const userId = billingForm.user_id || currentBillingUserId()
+      setBillingForm((current) => ({ ...current, matter_id: '', task_id: '', matter_status: '', matter_step: '', billing_time: '', description: '', private_note: '', always_use_rate: false, rate: current.entry_type === 'expense' ? current.rate : String(rateForBilling(userId, '')) }))
+    }
   }
 
   function deleteBillingEntry(entryId) {
@@ -42929,7 +42942,8 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
       matter_status: '',
       matter_step: '',
       private_note: '',
-      do_not_bill: false
+      do_not_bill: false,
+      always_use_rate: false
     })
     setShowBillingWindow(false)
     setShowDailyBillingWindow(true)
@@ -47125,6 +47139,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <section style={{ border: '3px solid #111827', borderRadius: 10, padding: 12, marginBottom: 14, background: '#f8fafc' }}>
           <h3 style={{ margin: '0 0 10px 0' }}>Add billing entry</h3>
           <form onSubmit={saveBillingEntry}>
+            <div style={{ marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => { setShowDailyBillingWindow(false); setPage('settings'); setSettingsTab('billing_rates') }} style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Billing Rates settings</button>
+              <button type="button" onClick={() => { setShowDailyBillingWindow(false); setPage('settings'); setSettingsTab('matter_table') }} style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Matter Table</button>
+            </div>
             <div role="tablist" aria-label="Billing entry type" style={{ display: 'inline-flex', gap: 4, padding: 4, marginBottom: 12, border: '1px solid #cbd5e1', borderRadius: 10, background: '#fff' }}>
               <button type="button" role="tab" aria-selected={!isExpense} onClick={() => updateBillingForm('entry_type', 'time')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: !isExpense ? '#1d4ed8' : 'transparent', color: !isExpense ? '#fff' : '#334155', fontWeight: 800 }}>◷ Time</button>
               <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
@@ -47146,7 +47164,12 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <LabeledField label="Expense amount *"><input type="number" step="0.01" min="0.01" value={billingForm.expense_amount || ''} onChange={(e) => updateBillingForm('expense_amount', e.target.value)} placeholder="0.00" style={billingImportantFieldStyle} /></LabeledField>
               </Fragment> : <Fragment>
                 <LabeledField label="Billing time / hours *"><input type="text" placeholder=".1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} /></LabeledField>
-                <LabeledField label="Hourly rate"><input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} /></LabeledField>
+                <LabeledField label="Hourly rate">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 'normal' }}><input type="checkbox" checked={Boolean(billingForm.always_use_rate)} onChange={(e) => updateBillingForm('always_use_rate', e.target.checked)} /> Always use this rate for this matter</label>
+                  </div>
+                </LabeledField>
                 <LabeledField label="Do not bill"><label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time, but charge $0</label></LabeledField>
               </Fragment>}
               <LabeledField label="Linked task">
@@ -47160,7 +47183,17 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <LabeledField label={isExpense ? 'Expense description' : 'Description'}><textarea value={billingForm.description} onChange={(e) => updateBillingForm('description', e.target.value)} placeholder={isExpense ? 'What the expense was for' : 'Work performed'} style={{ ...billingImportantFieldStyle, minHeight: 70 }} /></LabeledField>
               <LabeledField label="Private notes (internal only)"><textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 70 }} /></LabeledField>
             </div>
-            <div style={{ marginTop: 12 }}><button type="submit" className="btnPrimary">{isExpense ? 'Add Expense to WIP' : 'Save Time Entry'}</button></div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {isExpense ? (
+                <button type="submit" className="btnPrimary">Add Expense to WIP</button>
+              ) : (
+                <>
+                  <button type="submit" className="btnPrimary">Save time entry and close window</button>
+                  <button type="button" onClick={() => saveBillingEntry(null, 'same_client')}>Save time entry and add another for this client</button>
+                  <button type="button" onClick={() => saveBillingEntry(null, 'new_matter')}>Save and add entry for new matter</button>
+                </>
+              )}
+            </div>
           </form>
         </section>
         <h3 style={{ margin: '0 0 8px 0' }}>Billing entries for this day</h3>
@@ -47191,6 +47224,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     return (
       <Modal title="Add Billing Entry" onClose={() => setShowBillingWindow(false)}>
         <form onSubmit={saveBillingEntry}>
+          <div style={{ marginBottom: 10, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => { setShowBillingWindow(false); setPage('settings'); setSettingsTab('billing_rates') }} style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Billing Rates settings</button>
+            <button type="button" onClick={() => { setShowBillingWindow(false); setPage('settings'); setSettingsTab('matter_table') }} style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>Matter Table</button>
+          </div>
           <div role="tablist" aria-label="Billing entry type" style={{ display: 'inline-flex', gap: 4, padding: 4, marginBottom: 14, border: '1px solid #cbd5e1', borderRadius: 10, background: '#f8fafc' }}>
             <button type="button" role="tab" aria-selected={!isExpense} onClick={() => updateBillingForm('entry_type', 'time')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: !isExpense ? '#1d4ed8' : 'transparent', color: !isExpense ? '#fff' : '#334155', fontWeight: 800 }}>◷ Time</button>
             <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
@@ -47218,7 +47255,10 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
                 <input type="text" placeholder="Examples: .1, 6m, 66 min, 1h 6 min, 1.1" value={billingForm.billing_time} onChange={(e) => updateBillingForm('billing_time', e.target.value)} style={billingImportantFieldStyle} />
               </LabeledField>
               <LabeledField label="Hourly rate">
-                <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <input type="number" step="0.01" min="0" value={billingForm.rate} onChange={(e) => updateBillingForm('rate', e.target.value)} />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 'normal' }}><input type="checkbox" checked={Boolean(billingForm.always_use_rate)} onChange={(e) => updateBillingForm('always_use_rate', e.target.checked)} /> Always use this rate for this matter</label>
+                </div>
               </LabeledField>
               <LabeledField label="Do not bill">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="checkbox" checked={Boolean(billingForm.do_not_bill)} onChange={(e) => updateBillingForm('do_not_bill', e.target.checked)} /> Show time on bill, but charge $0</label>
@@ -47246,8 +47286,16 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <textarea value={billingForm.private_note || ''} onChange={(e) => updateBillingForm('private_note', e.target.value)} placeholder="Not included in billing exports or invoices" style={{ minHeight: 90 }} />
             </LabeledField>
           </div>
-          <div style={{ marginTop: 18 }}>
-            <button type="submit" className="btnPrimary">{isExpense ? 'Add Expense to WIP' : 'Save Time Entry'}</button>
+          <div style={{ marginTop: 18, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {isExpense ? (
+              <button type="submit" className="btnPrimary">Add Expense to WIP</button>
+            ) : (
+              <>
+                <button type="submit" className="btnPrimary">Save time entry and close window</button>
+                <button type="button" onClick={() => saveBillingEntry(null, 'same_client')}>Save time entry and add another for this client</button>
+                <button type="button" onClick={() => saveBillingEntry(null, 'new_matter')}>Save and add entry for new matter</button>
+              </>
+            )}
             <button type="button" onClick={() => setShowBillingWindow(false)} style={{ marginLeft: 8 }}>Cancel</button>
           </div>
         </form>
@@ -62346,7 +62394,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       {options('matter_status').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
                     </select>
                   </label>
-                  <button type="button" onClick={() => setSettingsMatterTableFilters({ case_status: 'all', matter_status: 'all' })}>Clear Filters</button>
+                  <label>
+                    Case Type:{' '}
+                    <select value={settingsMatterTableFilters.matter_type} onChange={(e) => setSettingsMatterTableFilters({ ...settingsMatterTableFilters, matter_type: e.target.value })}>
+                      <option value="all">All</option>
+                      {options('matter_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
+                    </select>
+                  </label>
+                  <button type="button" onClick={() => setSettingsMatterTableFilters({ case_status: 'all', matter_status: 'all', matter_type: 'all' })}>Clear Filters</button>
                   <span style={{ fontSize: 13, color: '#64748b' }}>Showing {settingsMatterTableRows.length} of {matters.length} matters</span>
                 </div>
 

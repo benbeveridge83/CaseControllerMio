@@ -4,6 +4,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  const hook=`  const mioPnc = useMioPnc({session,enabled:page==='matters'||page==='settings',matters,clients,refreshMatters:fetchMatters,refreshClients:fetchClients,graphFetch,supabase,onFinanceRefresh:()=>loadLawPayWorkspace({force:true}),onCalendarSaved:row=>setEvents(old=>[...old.filter(e=>e.id!==row.id),row]),intakeTemplates:draftingIntakeTemplates})
   const [dailyCoverageFinanceReady,setDailyCoverageFinanceReady]=useState(false)
   const [dailyCoverageFinanceError,setDailyCoverageFinanceError]=useState('')
+  const [dailyCoverageScope,setDailyCoverageScope]=useState('me')
   async function refreshDailyCoverageFinanceState(){
     const {data,error}=await supabase.from('case_mio_user_state').select('key,raw_value,json_value').eq('user_id',session.user.id).in('key',['caseMioFinanceOpeningBalances','caseMioTrustTransactions'])
     if(error) throw error
@@ -31,7 +32,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
     })().catch(error=>{if(!cancelled){setDailyCoverageFinanceReady(false);setDailyCoverageFinanceError(error?.message||String(error))}})
     return()=>{cancelled=true}
   },[showDailyBillingWindow,session?.user?.id])
-  function mioDailyCoverage() { return dailyTrustSummary({date:dailyBillingDate,entries:billingEntries,matters,pendingFor:pendingLawPayAmountForMatter,financeFor: matter => {
+  function mioDailyCoverage() { return dailyTrustSummary({date:dailyBillingDate,entries:(dailyCoverageScope==='me'?billingEntries.filter((entry)=>String(entry.user_id||'')===String(currentBillingUserId())):billingEntries),matters,pendingFor:pendingLawPayAmountForMatter,financeFor: matter => {
     const f=clientFinanceNumbers(matter)
     const normalized=f.serviceInvoices.map(i=>({...i,balance:invoiceBalanceAmount(i),amount_paid:invoicePaidAmount(i)}))
     const unsettledManual=f.currentLedgerRows.filter(r=>r.source!=='LawPay'&&r.direction!=='out'&&/pending|processing|submitted|authorized/i.test(String(r.status||''))).reduce((v,r)=>v+Number(r.amount||0),0)
@@ -46,7 +47,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  const start=code.indexOf('  function renderDailyBillingModal() {'),end=code.indexOf('\n  function ',start+10);let part=code.slice(start,end)
  part=once(part,'    const totals = billingTotals(entries)','    const coverage = mioDailyCoverage()\n    const totals = {...billingTotals(entries),amount:coverage.total/100}','total same definition')
  part=part.replace('new Date(current || new Date().toISOString().slice(0, 10))',"new Date((current || firmDate())+'T12:00:00Z')").replace('d.setDate(d.getDate() + amount)','d.setUTCDate(d.getUTCDate() + amount)').replace('setDailyDateAndForm(new Date().toISOString().slice(0, 10))','setDailyDateAndForm(firmDate())')
- part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} loading={!dailyCoverageFinanceReady&&!dailyCoverageFinanceError} error={dailyCoverageFinanceError} />\n        <section style={{ border:','coverage card')
+ part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} loading={!dailyCoverageFinanceReady&&!dailyCoverageFinanceError} error={dailyCoverageFinanceError} scope={dailyCoverageScope} onScopeChange={setDailyCoverageScope} />\n        <section style={{ border:','coverage card')
  code=code.slice(0,start)+part+code.slice(end)
  code=once(code,'        {renderDailyBillingModal()}','        {renderDailyBillingModal()}\n        <MioPncModal control={mioPnc} caseTypes={options(\'matter_type\')} />','global modal')
  code=once(code,'            <h1>Matters</h1>',`            <h1>Matters</h1>
