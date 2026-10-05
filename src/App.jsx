@@ -11223,6 +11223,12 @@ function App() {
     return matter.client_phone || client.phone || ''
   }
 
+  function clientAddressForMatter(matter) {
+    if (!matter) return ''
+    const client = matter.clients || clients.find((item) => String(item.id) === String(matter.client_id)) || {}
+    return [client.address, [client.city, client.state].filter(Boolean).join(', ') + (client.zip ? ` ${client.zip}` : '')].filter((part) => part?.trim()).join('\n')
+  }
+
   function eventClientName(event) {
     return matterClientName(event.matters) || event.matters?.name || ''
   }
@@ -47113,6 +47119,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const entries = billingEntriesForDate(dailyBillingDate)
     const totals = billingTotals(entries)
     const isExpense = billingForm.entry_type === 'expense'
+    const billingContactMatter = billingForm.matter_id ? matters.find((m) => String(m.id) === String(billingForm.matter_id)) : null
+    const billingClientPhone = clientPhoneForMatter(billingContactMatter)
+    const billingClientEmail = clientEmailForMatter(billingContactMatter)
+    const billingClientAddress = clientAddressForMatter(billingContactMatter)
+    const showBillingClientContact = !!(billingClientPhone || billingClientEmail || billingClientAddress)
     const shiftDailyBillingDate = (amount) => {
       setDailyBillingDate((current) => {
         const d = new Date(current || new Date().toISOString().slice(0, 10))
@@ -47148,6 +47159,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
             </div>
             {isExpense && <div style={{ marginBottom: 12, padding: 9, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>The expense will remain in WIP until it is included on an invoice.</div>}
+            {showBillingClientContact && (
+              <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
+                {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
+                {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
+                {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
               <LabeledField label="Matter *">
                 <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Search open matters only" style={billingImportantFieldStyle} />
@@ -47221,6 +47239,11 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function renderBillingModal() {
     if (!showBillingWindow) return null
     const isExpense = billingForm.entry_type === 'expense'
+    const billingContactMatter = billingForm.matter_id ? matters.find((m) => String(m.id) === String(billingForm.matter_id)) : null
+    const billingClientPhone = clientPhoneForMatter(billingContactMatter)
+    const billingClientEmail = clientEmailForMatter(billingContactMatter)
+    const billingClientAddress = clientAddressForMatter(billingContactMatter)
+    const showBillingClientContact = !!(billingClientPhone || billingClientEmail || billingClientAddress)
     return (
       <Modal title="Add Billing Entry" onClose={() => setShowBillingWindow(false)}>
         <form onSubmit={saveBillingEntry}>
@@ -47233,6 +47256,13 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
           </div>
           {isExpense && <div style={{ marginBottom: 14, padding: 10, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>This expense will be added to the matter’s WIP now and included on its next invoice.</div>}
+          {showBillingClientContact && (
+            <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
+              {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
+              {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
+              {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
             <LabeledField label="Matter *">
               <SmartMatterSelect activeOnly value={billingForm.matter_id} onChange={(value) => updateBillingForm('matter_id', value)} placeholder="Select open matter" style={billingImportantFieldStyle} />
