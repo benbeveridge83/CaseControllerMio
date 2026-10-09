@@ -3,6 +3,7 @@ import {mioCloudStore,mioStorage} from './mioCloudRuntime.js'
 import {PNC_DEFAULTS,DEFAULT_INTAKES,pncStage,readyToClient,retainerAmountLocked,templateText,emailOK,zonedDateTime} from './mioPncModel.js'
 import './mioPnc.css'
 import {FeeAgreementPdfMapper} from './FeeAgreementPdfMapper.jsx'
+import {FeeAgreementPdfPreview} from './FeeAgreementPdfPreview.jsx'
 const money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n||0))
 const label=s=>String(s||'not_sent').replaceAll('_',' ')
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
@@ -139,7 +140,7 @@ function AgreementEditor({ctrl,matter:m,initial}){
   <p>Client name, email, and date pre-fill from Mio and remain editable. The client receives the fee agreement by email from Dropbox Sign.</p>
   {s.signature_sending&&<p className="mio-pnc-error">Dropbox Sign send needs reconciliation. <button onClick={()=>action(async()=>{const id=window.prompt('Paste the existing Dropbox Sign request ID after checking its status:');return id?ctrl.run('link_signature',{matter_id:m.id,signature_request_id:id}):null})}>Link existing signature request</button></p>}
   {notice&&<p role="status">{notice}</p>}{error&&<p role="alert" className="mio-pnc-error">{error}</p>}
-  {previewing&&<div className="mio-pnc-preview"><p><b>Fee agreement preview</b></p><p>Client: {clientName} ({clientEmail})</p><p>Date: {agreementDate}</p><p>Retainer amount: {money(c.retainer)}</p><p>Hourly rate: {money(c.hourly_rate)}</p><p>Evergreen minimum balance: {money(c.evergreen_minimum_balance)}</p></div>}
+  {previewing&&<FeeAgreementPdfPreview supabase={ctrl.supabase} path={c.signature_pdf_path||''} fieldsJson={c.signature_pdf_fields||'[]'} values={{client_name:clientName,client_email:clientEmail,date:agreementDate,retainer_amount:money(c.retainer),hourly_rate:money(c.hourly_rate),evergreen_minimum_balance:money(c.evergreen_minimum_balance)}}/>}
   <div className="mio-pnc-actions"><button disabled={busy} onClick={()=>action(save)}>Save draft</button><button disabled={busy} onClick={()=>setPreviewing(v=>!v)}>{previewing?'Hide preview':'Preview Agreement'}</button><button disabled={busy||!!s.signature?.id||!!s.signature_sending} onClick={()=>action(send)}>Send for Signature</button><button disabled={busy} onClick={()=>action(()=>ctrl.run('refresh',{matter_id:m.id,sync:true}))}>Refresh status</button></div>
   </Dialog>
 }
