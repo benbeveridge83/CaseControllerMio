@@ -1,6 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react'
 import {mioCloudStore,mioStorage} from './mioCloudRuntime.js'
-import {PNC_DEFAULTS,DEFAULT_INTAKES,pncStage,readyToClient,retainerAmountLocked,templateText,emailOK,zonedDateTime} from './mioPncModel.js'
+import {PNC_DEFAULTS,DEFAULT_INTAKES,pncStage,readyToClient,retainerAmountLocked,templateText,emailOK,zonedDateTime,feeAgreementCustomFields,humanizeFieldName} from './mioPncModel.js'
 import './mioPnc.css'
 import {FeeAgreementPdfMapper} from './FeeAgreementPdfMapper.jsx'
 import {FeeAgreementPdfPreview} from './FeeAgreementPdfPreview.jsx'
@@ -124,6 +124,7 @@ function AgreementEditor({ctrl,matter:m,initial}){
   const [c,setC]=useState(()=>({...ctrl.defaults,...initial.config})),[revision,setRevision]=useState(initial.revision),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
   const [clientName,setClientName]=useState([m.clients?.first_name,m.clients?.last_name].filter(Boolean).join(' ')),[clientEmail,setClientEmail]=useState(m.clients?.email||''),[agreementDate,setAgreementDate]=useState(()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Chicago'}).format(new Date())),[previewing,setPreviewing]=useState(false)
   useEffect(()=>{let cancelled=false;(async()=>{try{const r=await ctrl.run('minimum_balance',{matter_id:m.id});if(!cancelled&&r.minimum_balance!=null)setC(x=>x.evergreen_minimum_balance?x:{...x,evergreen_minimum_balance:String(r.minimum_balance)})}catch{}})();return()=>{cancelled=true}},[m.id])
+  const customValues=(()=>{try{return JSON.parse(c.agreement_custom_fields||'{}')||{}}catch{return {}}})();const setCustomValue=(k,v)=>setC(x=>{let cur={};try{cur=JSON.parse(x.agreement_custom_fields||'{}')||{}}catch{};return {...x,agreement_custom_fields:JSON.stringify({...cur,[k]:v})}})
   const w=ctrl.rows[m.id]||initial,s=w.state||{}
   const set=(k,v)=>setC(x=>({...x,[k]:v}));const input=(key,name,type='text',disabled=false)=><Field name={name}><input type={type} value={c[key]??''} disabled={disabled} onChange={e=>set(key,e.target.value)}/></Field>
   async function action(fn){if(busy)return;setBusy(true);setError('');setNotice('');try{const r=await fn();if(r?.workflow)setRevision(r.workflow.revision);return r}catch(e){setError(e.message);await ctrl.load()}finally{setBusy(false)}}
@@ -135,12 +136,13 @@ function AgreementEditor({ctrl,matter:m,initial}){
   <Field name="Client name"><input value={clientName} onChange={e=>setClientName(e.target.value)}/></Field>
   <Field name="Client email"><input type="email" value={clientEmail} onChange={e=>setClientEmail(e.target.value)}/></Field>
   <Field name="Date"><input type="date" value={agreementDate} onChange={e=>setAgreementDate(e.target.value)}/></Field>
+  {feeAgreementCustomFields(c.signature_pdf_fields).map(f=><Field key={f.semantic} name={humanizeFieldName(f.semantic)}><textarea rows={3} value={customValues[f.semantic]||''} onChange={e=>setCustomValue(f.semantic,e.target.value)}/></Field>)}
   </div></fieldset>
   <div className="mio-pnc-actions"><Status title="Agreement" value={s.signature?.status}/></div>
   <p>Client name, email, and date pre-fill from Mio and remain editable. The client receives the fee agreement by email from Dropbox Sign.</p>
   {s.signature_sending&&<p className="mio-pnc-error">Dropbox Sign send needs reconciliation. <button onClick={()=>action(async()=>{const id=window.prompt('Paste the existing Dropbox Sign request ID after checking its status:');return id?ctrl.run('link_signature',{matter_id:m.id,signature_request_id:id}):null})}>Link existing signature request</button></p>}
   {notice&&<p role="status">{notice}</p>}{error&&<p role="alert" className="mio-pnc-error">{error}</p>}
-  {previewing&&<FeeAgreementPdfPreview supabase={ctrl.supabase} path={c.signature_pdf_path||''} fieldsJson={c.signature_pdf_fields||'[]'} values={{client_name:clientName,client_email:clientEmail,date:agreementDate,retainer_amount:money(c.retainer),hourly_rate:money(c.hourly_rate),evergreen_minimum_balance:money(c.evergreen_minimum_balance)}}/>}
+  {previewing&&<FeeAgreementPdfPreview supabase={ctrl.supabase} path={c.signature_pdf_path||''} fieldsJson={c.signature_pdf_fields||'[]'} values={{client_name:clientName,client_email:clientEmail,date:agreementDate,retainer_amount:money(c.retainer),hourly_rate:money(c.hourly_rate),evergreen_minimum_balance:money(c.evergreen_minimum_balance),...customValues}}/>}
   <div className="mio-pnc-actions"><button disabled={busy} onClick={()=>action(save)}>Save draft</button><button disabled={busy} onClick={()=>setPreviewing(v=>!v)}>{previewing?'Hide preview':'Preview Agreement'}</button><button disabled={busy||!!s.signature?.id||!!s.signature_sending} onClick={()=>action(send)}>Send for Signature</button><button disabled={busy} onClick={()=>action(()=>ctrl.run('refresh',{matter_id:m.id,sync:true}))}>Refresh status</button></div>
   </Dialog>
 }

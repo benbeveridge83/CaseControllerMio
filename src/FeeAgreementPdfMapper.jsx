@@ -15,6 +15,7 @@ const SEMANTIC_OPTIONS = [
   {value:'client_signature',label:'Client Signature'},
 ]
 
+const FIXED=new Set(SEMANTIC_OPTIONS.map(o=>o.value))
 export function FeeAgreementPdfMapper({supabase,path,fieldsJson,onChange}){
   const [fields,setFields]=useState(()=>{try{const v=JSON.parse(fieldsJson||'[]');return Array.isArray(v)?v:[]}catch{return []}})
   const [pages,setPages]=useState([])
@@ -116,7 +117,7 @@ export function FeeAgreementPdfMapper({supabase,path,fieldsJson,onChange}){
     <p className="hint">Click the page to add a field. Click a box to select it and set its type below. Drag a box to move it; drag its bottom-right corner to resize.</p>
     {error&&<p role="alert" className="mio-pnc-error">{error}</p>}
     {pages.length===0&&!busy&&!error&&<p>Upload a PDF to begin mapping fields.</p>}
-    {sel&&<div className="mio-pnc-preview"><h4>Selected field</h4><label className="mio-pnc-field"><span>Field type</span><select value={sel.semantic} onChange={e=>update(sel.id,{semantic:e.target.value,type:e.target.value==='client_signature'?'signature':'text'})}>{SEMANTIC_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></label><button onClick={()=>remove(sel.id)}>Remove field</button></div>}
+    {sel&&<div className="mio-pnc-preview"><h4>Selected field</h4><label className="mio-pnc-field"><span>Field type</span><select value={FIXED.has(sel.semantic)?sel.semantic:'__custom__'} onChange={e=>{if(e.target.value==='__custom__'){update(sel.id,{semantic:'',type:'text'})}else{update(sel.id,{semantic:e.target.value,type:e.target.value==='client_signature'?'signature':'text'})}}}>{SEMANTIC_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}<option value="__custom__">Custom field...</option></select></label>{!FIXED.has(sel.semantic)&&<label className="mio-pnc-field"><span>Custom field name</span><input value={sel.semantic} placeholder="e.g. purposes_of_representation" onChange={e=>update(sel.id,{semantic:e.target.value,type:'text'})}/></label>}<button onClick={()=>remove(sel.id)}>Remove field</button></div>}
     {pages.map(pg=><div key={pg.page} style={{position:'relative',width:pg.width,height:pg.height,margin:'8px 0',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}>
       <img src={pg.dataUrl} width={pg.width} height={pg.height} alt={`Page ${pg.page+1}`} style={{display:'block'}} onClick={e=>placeField(e,pg.page)}/>
       {fields.filter(f=>f.page===pg.page).map(f=>{const label=SEMANTIC_OPTIONS.find(o=>o.value===f.semantic)?.label||f.semantic;return <div key={f.id} onMouseDown={e=>onBoxDown(e,f.id)} onClick={e=>{e.stopPropagation();setSelected(f.id)}} style={{position:'absolute',left:f.x*SCALE,top:f.y*SCALE,width:f.width*SCALE,height:f.height*SCALE,border:f.type==='signature'?'2px solid #dc2626':'2px solid #2563eb',background:f.type==='signature'?'rgba(220,38,38,.15)':'rgba(37,99,235,.15)',cursor:'move',boxSizing:'border-box',overflow:'hidden'}}><span style={{fontSize:11,color:'#0f172a',background:'#fff',padding:'0 3px',whiteSpace:'nowrap'}}>{label}</span><span onMouseDown={e=>onResizeDown(e,f.id)} style={{position:'absolute',right:0,bottom:0,width:12,height:12,background:'#2563eb',border:'1px solid #fff',cursor:'nwse-resize',borderRadius:'0 0 0 3px'}}/></div>})}

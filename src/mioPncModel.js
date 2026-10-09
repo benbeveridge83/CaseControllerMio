@@ -50,3 +50,7 @@ export function zonedDateTime(local,zone='America/Chicago'){
  if(matches.length!==1)throw Error(matches.length?'This time is ambiguous during the daylight-saving change. Choose a different time.':'This time does not exist in the selected time zone.')
  return matches[0]
 }
+export const FEE_AGREEMENT_FIXED_FIELDS=['client_name','client_email','date','retainer_amount','hourly_rate','evergreen_minimum_balance','client_signature']
+export function feeAgreementCustomFields(fieldsJson){try{const fields=JSON.parse(fieldsJson||'[]');if(!Array.isArray(fields))return [];const seen=new Set(),out=[];for(const f of fields){if(f&&f.semantic&&!FEE_AGREEMENT_FIXED_FIELDS.includes(f.semantic)&&!seen.has(f.semantic)){seen.add(f.semantic);out.push(f)}}return out}catch{return []}}
+export function humanizeFieldName(s){return String(s||'').replace(/[_-]+/g,' ').replace(/^\s+|\s+$/g,'').replace(/\b\w/g,c=>c.toUpperCase())}
+
