@@ -29,7 +29,7 @@ export function FeeAgreementPdfPreview({supabase,path,fieldsJson,values}){
         const {data,error:urlErr}=await supabase.storage.from(BUCKET).createSignedUrl(path,3600)
         if(cancelled)return
         if(urlErr||!data)throw urlErr||new Error('Could not load the agreement PDF.')
-        const doc=await pdfjsLib.getDocument(data.signedUrl).promise
+        const doc=await pdfjsLib.getDocument({url:data.signedUrl}).promise
         const first=await doc.getPage(1)
         const naturalWidth=first.getViewport({scale:1}).width
         const avail=Math.max(280,(wrapRef.current?.clientWidth||660)-24)

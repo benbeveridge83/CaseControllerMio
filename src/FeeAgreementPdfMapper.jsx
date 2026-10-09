@@ -29,7 +29,7 @@ export function FeeAgreementPdfMapper({supabase,path,fieldsJson,onChange}){
   async function loadPdf(url){
     setBusy(true);setError('')
     try{
-      const doc=await pdfjsLib.getDocument(url).promise
+      const doc=await pdfjsLib.getDocument({url}).promise
       const loaded=[]
       for(let i=1;i<=doc.numPages;i++){
         const page=await doc.getPage(i)
