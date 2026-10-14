@@ -16,7 +16,8 @@ const b64 = value => Buffer.from(JSON.stringify(value)).toString('base64url'), e
 const session = { access_token: `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: id, email, role: 'authenticated', exp, aud: 'authenticated' })}.test-signature`, refresh_token: 'synthetic-test-token', expires_at: exp, expires_in: 3600, token_type: 'bearer', user }
 const context = await browser.newContext({ viewport: { width: 1440, height: 1050 }, acceptDownloads: true }), page = await context.newPage()
 const errors = [], calls = [], states = new Map()
-let failSecondBatch = true, analysisCount = 0
+let failSecondBatch = true, analysisCount = 0, failChat = true, failProfileWrite = false, failChatWrite = false, holdProfileSave = true, releaseProfileSave, notifyProfileSave
+const profileSaveStarted = new Promise(resolve=>{notifyProfileSave=resolve})
 page.on('pageerror', error => errors.push(error.message))
 await page.route('**/*', async route => {
   const request = route.request(), url = new URL(request.url())
@@ -26,15 +27,26 @@ await page.route('**/*', async route => {
       const body = request.postDataJSON(); calls.push(body)
       assert.match(request.headers().authorization, /^Bearer /)
       if (body.action === 'status') return respond({ ok: true, aiConfigured: true })
+      if (body.action === 'chat') {
+        assert.equal(body.personal.styleInstructions,'Use concise, request-specific language.')
+        assert.equal(body.personal.rules[0].title,'Attorney communications')
+        assert.equal(body.requests,undefined,'Chat does not silently transmit the uploaded set')
+        if(failChat){failChat=false;return respond({ok:false,error:'Synthetic chat retry.'},502)}
+        return respond({ok:true,answer:'The limit depends on the discovery level. Level 2 ordinarily permits 25 interrogatories, counting discrete subparts, with an identification/authentication exception.',authorities:['trcp190'],factsNeeded:['Confirm the discovery control order.'],appliedRuleIds:[]})
+      }
       if (body.action === 'analyze') {
         analysisCount++
         if (analysisCount === 2 && failSecondBatch) return respond({ ok: false, error: 'Synthetic temporary provider failure.' }, 502)
         assert.equal(body.regime, 'family_current')
+        assert.equal(body.personal.rules[0].title,'Attorney communications')
+        assert.equal(body.strategy,2)
         return respond({ ok: true, results: body.requests.map(r => {
           const privileged = /attorney/i.test(r.request), broad = /all material/i.test(r.request)
           return { id: r.id, assessment: privileged || broad ? 'partial' : 'proper',
             reason: privileged ? 'Confidential legal advice may be privileged; ordinary underlying facts remain discoverable.' : broad ? 'The request has no subject or time limit.' : 'This request seeks a defined set of relevant records.',
-            objection: privileged ? 'Confidential communications made to obtain legal advice are withheld, limited to [confirm privileged scope].' : broad ? 'The phrase “all material” is not limited to the disputed possession issues or a relevant time period.' : '',
+            privilege: privileged ? 'Confidential communications made to obtain legal advice are withheld, limited to [confirm privileged scope].' : '',
+            privilegeAuthorities:privileged?['tre503','trcp193-privilege']:[],privilegeStrength:privileged?75:null,privilegeStrengthReason:privileged?'Legal basis is strong; confirm the confidential scope.':'',objectionStrength:broad?70:null,objectionStrengthReason:broad?'The request lacks subject and time limits.':'',appliedRuleIds:privileged?[body.personal.rules[0].id]:[],screenedOut:[],
+            objection: broad ? 'The phrase “all material” is not limited to the disputed possession issues or a relevant time period.' : '',
             authorities: privileged ? ['tre503', 'trcp193-privilege'] : ['trcp192-scope'], factsNeeded: privileged ? ['Confirm confidentiality and legal-advice purpose.'] : [],
             responseGuidance: 'Produce responsive nonprivileged material within the proper scope.', withholding: privileged ? 'Provide the required privilege withholding statement.' : '' }
         }) })
@@ -49,6 +61,8 @@ await page.route('**/*', async route => {
   if (table === 'mio_cloud_state_read_chunks_v297') return respond(chunkRows([...states.values()].map(row => ({ ...row, user_id: id })), request.postDataJSON()))
   if (table === 'mio_cloud_state_write_v277') {
     const data = request.postDataJSON(), row = { key: data.p_key, raw_value: data.p_raw, updated_at: new Date().toISOString() }
+    if((row.key==='caseMioDiscoveryPersonalV1'&&failProfileWrite)||(row.key==='caseMioDiscoveryChatV1'&&failChatWrite))return respond({message:'Synthetic unacknowledged discovery save.'},500)
+    if(row.key==='caseMioDiscoveryPersonalV1'&&holdProfileSave){holdProfileSave=false;await new Promise(resolve=>{releaseProfileSave=resolve;notifyProfileSave()})}
     states.set(row.key, row); return respond(row)
   }
   if (table === 'case_mio_user_state') {
@@ -80,6 +94,68 @@ try {
   await page.getByLabel('Search request examples').fill('attorney')
   assert.ok(await page.locator('.disco-example-list button').count() > 0)
   await page.screenshot({ path: 'test-results/discovery-examples-desktop.png', fullPage: true })
+  await page.getByRole('button', { name: /My rules & examples/ }).click()
+  await page.getByLabel('General objection and privilege style').fill('Use concise, request-specific language.')
+  await page.getByRole('button', {name:'Add rule or example',exact:true}).click()
+  await page.getByLabel('Rule title',{exact:true}).fill('Attorney communications')
+  await page.getByLabel('Example discovery request',{exact:true}).fill('Produce attorney communications.')
+  await page.getByLabel('Preferred privilege assertion',{exact:true}).fill('Confidential legal advice is withheld.')
+  await page.getByLabel('How to identify this request',{exact:true}).fill('Separate underlying facts from confidential legal advice.')
+  await page.getByRole('button',{name:'Save my rules & style',exact:true}).click()
+  await profileSaveStarted
+  await page.getByRole('button',{name:/Analyze & draft/}).click()
+  assert.equal(await page.getByLabel('Case context').isDisabled(),true,'A pending guidance save must lock analysis settings and actions')
+  await page.getByRole('button',{name:/Discovery chat/}).click()
+  assert.equal(await page.getByLabel('Ask about discovery',{exact:true}).isDisabled(),true,'Chat must not use the old guidance while a save is pending')
+  releaseProfileSave()
+  await page.getByRole('button',{name:/My rules & examples/}).click()
+  await page.getByText('Saved to your account. Enabled guidance will be used in new analysis and chat.',{exact:true}).waitFor()
+  assert.equal(JSON.parse(states.get('caseMioDiscoveryPersonalV1').raw_value).rules.length,1)
+  await page.screenshot({path:'test-results/discovery-personal-desktop.png',fullPage:true})
+  await page.reload()
+  await page.getByRole('heading', { name: 'Discovery objection walkthrough', exact: true }).waitFor({timeout:45000})
+  await page.getByRole('button', {name:/My rules & examples/}).click()
+  assert.equal(await page.getByLabel('General objection and privilege style').inputValue(),'Use concise, request-specific language.')
+  assert.equal(await page.getByLabel('Rule title',{exact:true}).inputValue(),'Attorney communications')
+  failProfileWrite=true
+  await page.getByLabel('General objection and privilege style').fill('Unacknowledged personal style.')
+  await page.getByRole('button',{name:'Save my rules & style',exact:true}).click()
+  await page.locator('.disco-personal .disco-error').filter({hasText:'Synthetic unacknowledged discovery save.'}).waitFor()
+  await page.getByRole('link',{name:'Discovery',exact:true}).click()
+  await page.getByRole('heading',{name:'Discovery',exact:true}).waitFor()
+  await page.getByRole('link',{name:'Discovery Objections',exact:true}).click()
+  await page.getByRole('heading',{name:'Discovery objection walkthrough',exact:true}).waitFor()
+  await page.getByRole('button',{name:/My rules & examples/}).click()
+  assert.equal(await page.getByLabel('General objection and privilege style').inputValue(),'Unacknowledged personal style.')
+  await page.getByText('A previous save has not been confirmed.',{exact:false}).waitFor()
+  assert.equal(await page.getByRole('button',{name:'Save my rules & style',exact:true}).isEnabled(),true)
+  failProfileWrite=false
+  await page.getByLabel('General objection and privilege style').fill('Use concise, request-specific language.')
+  await page.getByRole('button',{name:'Save my rules & style',exact:true}).click()
+  await page.getByText('Saved to your account. Enabled guidance will be used in new analysis and chat.',{exact:true}).waitFor()
+  failChatWrite=true
+  await page.getByRole('button', {name:/Discovery chat/}).click()
+  await page.getByLabel('Ask about discovery',{exact:true}).fill('What is the interrogatory limit?')
+  await page.getByRole('button', {name:'Send question',exact:true}).click()
+  await page.locator('.disco-chat .disco-error').filter({hasText:'Synthetic chat retry.'}).waitFor()
+  await page.getByRole('link',{name:'Discovery',exact:true}).click()
+  await page.getByRole('heading',{name:'Discovery',exact:true}).waitFor()
+  await page.getByRole('link',{name:'Discovery Objections',exact:true}).click()
+  await page.getByRole('heading',{name:'Discovery objection walkthrough',exact:true}).waitFor()
+  await page.getByRole('button',{name:/Discovery chat/}).click()
+  await page.locator('.disco-chat .disco-error').filter({hasText:'A previous chat save is still pending.'}).waitFor()
+  failChatWrite=false
+  await page.getByRole('button',{name:'Retry question',exact:true}).click()
+  await page.locator('.disco-chat-message.assistant').waitFor()
+  await page.getByLabel('Ask about discovery',{exact:true}).fill('What about discrete subparts?')
+  await page.getByRole('button', {name:'Send question',exact:true}).click()
+  await page.waitForFunction(()=>document.querySelectorAll('.disco-chat-message.assistant').length===2)
+  await page.getByRole('button',{name:'Send question',exact:true}).isDisabled()
+  await page.waitForFunction(()=>!document.querySelector('#disco-chat-question').disabled)
+  assert.equal(calls.filter(c=>c.action==='chat').at(-1).messages.length,3)
+  assert.equal(JSON.parse(states.get('caseMioDiscoveryChatV1').raw_value).messages.length,4)
+  assert.ok(await page.locator('.disco-chat .disco-authority').filter({hasText:'25 interrogatories'}).count()>0)
+  await page.screenshot({path:'test-results/discovery-chat-desktop.png',fullPage:true})
   await page.getByRole('button', { name: /Analyze & draft/ }).click()
   const source = 'REQUEST FOR PRODUCTION NO. 1: Produce confidential communications with your attorney.\nRESPONSE: Privileged communications withheld.\nREQUEST FOR PRODUCTION NO. 2: Produce pay stubs for June 2026.\nRESPONSE: See Exhibit A.\nREQUEST FOR PRODUCTION NO. 3: Produce all material in your possession.\nRESPONSE: Responsive materials will be produced.\nREQUEST FOR PRODUCTION NO. 4: Produce the signed agreement.\nRESPONSE: See Exhibit B.'
   const parsed = parseDiscoveryText(source)
@@ -89,6 +165,14 @@ try {
   await page.getByText('4 requests recognized.', { exact: false }).waitFor()
   assert.equal(await page.locator('.disco-request').count(), 4)
   await page.getByLabel('Case context').fill('Synthetic possession modification, disputed conduct during June 2026.')
+  const second=page.locator('.disco-request').nth(1)
+  await second.getByRole('button',{name:'+ Add objection',exact:true}).click()
+  await second.getByLabel('Objection for RFP 2',{exact:true}).fill('Manual objection text for this specific request.')
+  await second.getByLabel('Objection strength for RFP 2',{exact:true}).fill('78')
+  await second.getByLabel('Include this objection between the request and response in Word').check()
+  await second.getByRole('button',{name:'+ Add privilege',exact:true}).click()
+  await second.getByLabel('Privilege for RFP 2',{exact:true}).fill('Manual privilege text for a confidential subset.')
+  await second.getByLabel('Include this privilege before the request in Word').check()
   await page.getByRole('button', { name: 'Analyze 4 requests', exact: true }).click()
   await page.getByRole('alert').filter({ hasText: 'Synthetic temporary provider failure' }).waitFor()
   assert.equal(await page.locator('.disco-result').count(), 3)
@@ -97,31 +181,51 @@ try {
   await page.getByRole('button', { name: 'All requests analyzed', exact: true }).waitFor()
   assert.equal(await page.locator('.disco-result').count(), 4)
   assert.equal(await page.locator('.disco-proper').count(), 2)
-  assert.equal(await page.getByLabel('Include this objection below the response in Word').count(), 2)
-  await page.getByLabel('Include this objection below the response in Word').first().check()
+  assert.equal(await second.getByLabel('Objection for RFP 2',{exact:true}).inputValue(),'Manual objection text for this specific request.')
+  assert.equal(await second.getByLabel('Objection strength for RFP 2',{exact:true}).inputValue(),'78')
+  await page.locator('.disco-request').first().getByLabel('Include this privilege before the request in Word').check()
   await page.getByRole('button', { name: 'Download Word response', exact: true }).click()
   await page.getByRole('alert').filter({ hasText: 'bracketed fact placeholders' }).waitFor()
-  const draft = page.getByRole('textbox', { name: 'Objection for RFP 1', exact: true })
+  const draft = page.getByRole('textbox', { name: 'Privilege for RFP 1', exact: true })
   await draft.fill((await draft.inputValue()).replace('[confirm privileged scope]', 'confidential legal-advice communications concerning this action'))
-  await page.getByLabel('Include this objection below the response in Word').last().check()
+  await page.getByLabel('Privilege strength for RFP 1',{exact:true}).fill('90')
+  await page.locator('.disco-request').nth(2).getByLabel('Include this objection between the request and response in Word').check()
+  const downloadCopy=async path=>{
+    const downloading=page.waitForEvent('download')
+    await page.getByRole('button',{name:'Download Word response',exact:true}).click()
+    await (await downloading).saveAs(path)
+    const zip=await JSZip.loadAsync(fs.readFileSync(path))
+    return zip.file('word/document.xml').async('string')
+  }
   await page.screenshot({ path: 'test-results/discovery-analysis-desktop.png', fullPage: true })
-  const downloading = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'Download Word response', exact: true }).click()
-  const download = await downloading
-  await download.saveAs('test-results/discovery-with-objections.docx')
-  const zip = await JSZip.loadAsync(fs.readFileSync('test-results/discovery-with-objections.docx'))
-  const xml = await zip.file('word/document.xml').async('string')
-  assert.equal((xml.match(/OBJECTION:/g) || []).length, 2)
-  assert.ok(xml.indexOf('Privileged communications withheld.') < xml.indexOf('OBJECTION:'))
-  assert.ok(xml.indexOf('OBJECTION:') < xml.indexOf('REQUEST FOR PRODUCTION NO. 2'))
+  const xml=await downloadCopy('test-results/discovery-with-objections.docx')
+  assert.equal((xml.match(/OBJECTION:/g)||[]).length,2)
+  assert.equal((xml.match(/PRIVILEGE \(/g)||[]).length,2)
+  assert.ok(xml.indexOf('PRIVILEGE (')<xml.indexOf('Produce confidential communications'))
+  assert.ok(xml.indexOf('Manual objection text')<xml.indexOf('See Exhibit A.'))
+  assert.ok(xml.indexOf('Produce pay stubs')<xml.indexOf('Manual objection text'))
+  assert.ok(xml.indexOf('not limited to the disputed possession')<xml.indexOf('Responsive materials will be produced.'))
   assert.match(xml, /<w:b\/?[ >]/)
-  assert.ok(xml.includes('See Exhibit A.') && xml.includes('See Exhibit B.'))
+  assert.ok(xml.includes('See Exhibit A.')&&xml.includes('See Exhibit B.'))
+  await page.getByLabel('Privilege placement in Word').selectOption('after_request')
+  const after=await downloadCopy('test-results/discovery-privileges-after-request.docx')
+  assert.ok(after.indexOf('Produce confidential communications')<after.indexOf('PRIVILEGE ('))
+  assert.ok(after.indexOf('PRIVILEGE (')<after.indexOf('Privileged communications withheld.'))
   assert.equal(calls.filter(c => c.action === 'analyze').at(-1).requests.length, 1)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: 'test-results/discovery-analysis-mobile.png', fullPage: true })
   assert.ok(await page.locator('.disco-workspace').evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'Discovery content must not overflow on mobile')
+  await page.getByLabel('Objection drafting threshold',{exact:true}).fill('4')
+  assert.equal(await page.locator('.disco-result').count(),0)
+  assert.equal(await second.getByLabel('Objection for RFP 2',{exact:true}).inputValue(),'Manual objection text for this specific request.')
+  assert.equal(await page.getByLabel('Objection for RFP 3',{exact:true}).count(),0,'Unedited AI draft clears when the threshold changes')
+  assert.equal(await page.getByLabel('Privilege for RFP 1',{exact:true}).inputValue().then(x=>x.includes('confidential legal-advice communications')),true)
+  await page.getByRole('button',{name:/Discovery chat/}).click()
+  await page.screenshot({path:'test-results/discovery-chat-mobile.png',fullPage:true})
+  assert.ok(await page.locator('.disco-workspace').evaluate(el=>el.scrollWidth<=el.clientWidth+1))
+  await page.getByRole('button',{name:/Analyze & draft/}).click()
   await page.getByLabel('Rules regime').selectOption('civil_current')
   assert.equal(await page.locator('.disco-result').count(), 0, 'A changed legal regime invalidates previous analysis')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ typesAndRegimes: true, searchableExamples: true, wordPairs: 4, retryRemaining: true, properRequestsWithoutObjections: 2, placeholdersBlocked: true, objectionsExported: 2, mobileOverflow: false, pageErrors: errors }))
-} finally { await browser.close(); await new Promise(resolve => server.httpServer.close(resolve)) }
+  console.log(JSON.stringify({ typesAndRegimes: true, searchableExamples: true, wordPairs: 4, retryRemaining: true, properRequestsWithoutObjections: 2, placeholdersBlocked: true, objectionsExported: 2, privilegesExported:2, manualOverrides:true, savedRulesReload:true, chatRetryAndFollowup:true, thresholds:true, mobileOverflow: false, pageErrors: errors }))
+} finally { releaseProfileSave?.(); await browser.close(); await new Promise(resolve => server.httpServer.close(resolve)) }

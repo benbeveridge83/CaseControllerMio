@@ -90,16 +90,48 @@ test('numbered witness names that resemble question prefixes remain in the answe
   assert.match(parsed.requests[0].response, /1\. Will Smith\n2\. John Jones/)
 })
 
-test('DOCX export preserves parts and places a bold label after the response, before the next request', async () => {
+test('DOCX export preserves parts and places a bold objection between the request and response', async () => {
   const bytes = await fixture(p('REQUEST FOR PRODUCTION NO. 1: Produce attorney communications.') + p('RESPONSE: Withheld.') + p('REQUEST FOR PRODUCTION NO. 2: Produce pay stubs.') + p('RESPONSE: Attached.') + p('CERTIFICATE OF SERVICE') + p('Served on counsel.'), {'word/header1.xml': '<header>Keep me</header>'})
   const parsed = await readDiscoveryDocx(bytes, 'rfp')
   const output = await exportDiscoveryDocx({ originalBytes: bytes, requests: parsed.requests, objections: [{ id: parsed.requests[0].id, text: 'Confidential legal advice is privileged. Tex. R. Evid. 503.' }] })
   const zip = await JSZip.loadAsync(output), xml = await zip.file('word/document.xml').async('string')
   assert.match(xml, /<w:b\/?[ >]/)
-  assert.ok(xml.indexOf('Withheld.') < xml.indexOf('OBJECTION:'))
+  assert.ok(xml.indexOf('Produce attorney communications.') < xml.indexOf('OBJECTION:'))
+  assert.ok(xml.indexOf('OBJECTION:') < xml.indexOf('RESPONSE: Withheld.'))
   assert.ok(xml.indexOf('OBJECTION:') < xml.indexOf('REQUEST FOR PRODUCTION NO. 2'))
   assert.equal(await zip.file('word/header1.xml').async('string'), '<header>Keep me</header>')
   assert.equal((xml.match(/OBJECTION:/g)||[]).length, 1)
+})
+
+test('selected privileges precede the request by default, with objections before the response', async () => {
+  const originalBytes=await fixture(p('REQUEST FOR PRODUCTION NO. 1: Produce communications.')+p('RESPONSE: Withheld.')+p('VERIFICATION'))
+  const {requests}=await readDiscoveryDocx(originalBytes)
+  for (const privilegePlacement of ['before_request','after_request']) {
+    const bytes=await exportDiscoveryDocx({originalBytes,requests,privilegePlacement,privileges:[{id:requests[0].id,text:'Confidential legal advice.'}],objections:[{id:requests[0].id,text:'Unbounded subject matter.'}]})
+    const xml=await (await JSZip.loadAsync(bytes)).file('word/document.xml').async('string')
+    const order=privilegePlacement==='before_request'?['PRIVILEGE','REQUEST FOR PRODUCTION NO. 1','OBJECTION:','RESPONSE: Withheld.']:['REQUEST FOR PRODUCTION NO. 1','PRIVILEGE','OBJECTION:','RESPONSE: Withheld.']
+    for(let i=1;i<order.length;i++)assert.ok(xml.indexOf(order[i-1])<xml.indexOf(order[i]),order.join(' → '))
+    assert.ok(xml.includes('VERIFICATION'))
+  }
+})
+
+test('inline request and response split around annotations without losing formatted response text', async () => {
+  const originalBytes=await fixture('<w:p><w:r><w:t>REQUEST NO. 1: Produce records. </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>RESPONSE: Attached.</w:t></w:r></w:p>')
+  const {requests}=await readDiscoveryDocx(originalBytes)
+  const bytes=await exportDiscoveryDocx({originalBytes,requests,privilegePlacement:'after_request',privileges:[{id:requests[0].id,text:'Privileged part withheld.'}],objections:[{id:requests[0].id,text:'Time period is excessive.'}]})
+  const xml=await (await JSZip.loadAsync(bytes)).file('word/document.xml').async('string')
+  assert.ok(xml.indexOf('Produce records.')<xml.indexOf('PRIVILEGE'))
+  assert.ok(xml.indexOf('PRIVILEGE')<xml.indexOf('OBJECTION:'))
+  assert.ok(xml.indexOf('OBJECTION:')<xml.indexOf('RESPONSE: Attached.'))
+  assert.match(xml,/<w:i\/?[ >]/)
+})
+
+test('request-only document gets selected manual annotations before a new response space', async () => {
+  const {requests}=parseDiscoveryText('REQUEST NO. 1: Produce records.')
+  const bytes=await exportDiscoveryDocx({requests,privileges:[{id:requests[0].id,text:'Manual privilege.'}],objections:[{id:requests[0].id,text:'Manual objection.'}]})
+  const xml=await (await JSZip.loadAsync(bytes)).file('word/document.xml').async('string')
+  assert.ok(xml.indexOf('PRIVILEGE')<xml.indexOf('REQUEST FOR PRODUCTION NO. 1'))
+  assert.ok(xml.indexOf('OBJECTION:')<xml.indexOf('RESPONSE:'))
 })
 
 test('last response insertion stays before verification/signature and supports table cells', async () => {

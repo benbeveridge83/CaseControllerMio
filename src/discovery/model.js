@@ -21,7 +21,7 @@ export const ASSESSMENTS = {
   needs_facts: {label:'More facts needed',color:'slate'}
 }
 export function citationText(ids = []) {
-  return [...new Set(ids)].map(id => {const s=SOURCE_BY_ID[id];return s ? `${s.label}${s.pinpoint ? ` (${s.pinpoint})` : ''}` : ''}).filter(Boolean).join('; ')
+  return [...new Set(ids)].map(id => {const s=SOURCE_BY_ID[id];return s ? `${s.label}${s.pinpoint ? `, ${s.pinpoint}` : ''} (${s.proposition})` : ''}).filter(Boolean).join('; ')
 }
 export function objectionWithAuthorities(result, text = result?.objection || '') {
   if (!text.trim()) return ''

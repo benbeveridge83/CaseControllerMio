@@ -19,7 +19,7 @@
       "label": "TRCP 190.2–190.4: discovery plans and limits",
       "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=127",
       "pinpoint": "190.2(a), (b)(1), (3)–(5); 190.3(b)(1), (3); 190.4",
-      "proposition": "Level 1 ordinarily permits 15 interrogatories, 15 production requests, and 15 admissions per other party, counting discrete subparts. Level 2 ordinarily permits 25 interrogatories, excluding questions solely identifying or authenticating specific documents. Court orders may change the plan.",
+      "proposition": "Level 1 ordinarily permits 15 interrogatories, 15 production requests, and 15 admissions per other party. Level 2 ordinarily permits 25 interrogatories per other party. Discrete subparts count separately; at both levels, interrogatories solely identifying or authenticating specific documents are excluded. Court orders may change these limits.",
       "kind": "rule",
       "official": true
     },

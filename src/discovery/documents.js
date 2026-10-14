@@ -189,47 +189,107 @@ export function mapRecognizedRanges(paragraphs, ranges, defaultType = 'rfp') {
 function paragraphXml(text, bold = false) {
   return `<w:p><w:pPr><w:spacing w:after="160"/></w:pPr><w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`
 }
-function objectionXml(text) {
-  const clean = String(text).replace(/^\s*OBJECTION\s*:\s*/i, '').trim()
-  if (!clean || clean.length > 20_000) throw new Error('An objection is empty or too long.')
-  return `<w:p><w:pPr><w:spacing w:before="100" w:after="180"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">OBJECTION: </w:t></w:r><w:r><w:t xml:space="preserve">${escapeXml(clean)}</w:t></w:r></w:p>`
+function annotationXml(text, label = 'OBJECTION') {
+  const clean = String(text).replace(/^\s*(?:OBJECTION|PRIVILEGE)\s*:\s*/i, '').trim()
+  if (!clean || clean.length > 20_000) throw new Error('An objection or privilege is empty or too long.')
+  return `<w:p><w:pPr><w:spacing w:before="100" w:after="180"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXml(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${escapeXml(clean)}</w:t></w:r></w:p>`
+}
+function insertXml(doc, parent, before, xml) {
+  if (!xml) return
+  const fragment = parseXml(`<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`)
+  for (const node of Array.from(el(fragment, 'body').childNodes)) parent.insertBefore(doc.importNode(node, true), before)
+}
+function splitInlineResponse(node) {
+  const text = textOf(node), match = /\s+(?:RESPONSE|ANSWER)\s*:/i.exec(text)
+  if (!match) throw new Error('The inline response boundary could not be verified. Put the request and response in separate Word paragraphs.')
+  const offset = match.index + match[0].search(/RESPONSE|ANSWER/i)
+  const elements = Array.from(node.childNodes).filter(n => n.nodeType === 1)
+  const unsupported = elements.some(n => n.namespaceURI !== W || !['pPr','r'].includes(n.localName) || (n.localName === 'r' && Array.from(n.childNodes).some(c => c.nodeType === 1 && (c.namespaceURI !== W || !['rPr','t','br','cr','tab'].includes(c.localName)))))
+  if (unsupported || el(node, 'sectPr')) throw new Error('This inline response contains complex Word formatting. Put the request and response in separate paragraphs in Word, then upload again.')
+  const before = node.cloneNode(false), after = node.cloneNode(false)
+  // The new response paragraph is not another numbered request.
+  for (const attr of Array.from(after.attributes || [])) if (['paraId','textId'].includes(attr.localName)) after.removeAttributeNode(attr)
+  let position = 0
+  for (const child of elements) {
+    if (child.localName === 'pPr') {
+      before.appendChild(child.cloneNode(true))
+      const props = child.cloneNode(true), numPr = el(props, 'numPr')
+      if (numPr) numPr.parentNode.removeChild(numPr)
+      after.appendChild(props); continue
+    }
+    const left = child.cloneNode(false), right = child.cloneNode(false)
+    const props = el(child, 'rPr')
+    if (props) { left.appendChild(props.cloneNode(true)); right.appendChild(props.cloneNode(true)) }
+    let leftCount = 0, rightCount = 0
+    for (const part of Array.from(child.childNodes).filter(n => n.nodeType === 1 && n.localName !== 'rPr')) {
+      const value = textOf(part), cut = Math.max(0, Math.min(value.length, offset - position))
+      if (part.localName === 't') {
+        for (const [target, chunk] of [[left,value.slice(0,cut)],[right,value.slice(cut)]]) if (chunk) {
+          const copy = part.cloneNode(false); copy.setAttribute('xml:space','preserve'); copy.textContent = chunk; target.appendChild(copy)
+          if (target === left) leftCount++; else rightCount++
+        }
+      } else if (position < offset) { left.appendChild(part.cloneNode(true)); leftCount++ } else { right.appendChild(part.cloneNode(true)); rightCount++ }
+      position += value.length
+    }
+    if (leftCount) before.appendChild(left)
+    if (rightCount) after.appendChild(right)
+  }
+  node.parentNode.insertBefore(before, node)
+  node.parentNode.insertBefore(after, node)
+  node.parentNode.removeChild(node)
+  return { requestNode:before, responseNode:after }
 }
 
-export async function exportDiscoveryDocx({ originalBytes, requests, objections = [] }) {
+export async function exportDiscoveryDocx({ originalBytes, requests, objections = [], privileges = [], privilegePlacement = 'before_request' }) {
   if (!Array.isArray(requests) || !requests.length) throw new Error('There are no requests to export.')
-  const ids = new Set(requests.map(r => r.id)), selected = new Map()
+  if (!['before_request','after_request'].includes(privilegePlacement)) throw new Error('Choose a valid privilege placement.')
+  const ids = new Set(requests.map(r => r.id)), selected = new Map(), privileged = new Map()
   if (ids.size !== requests.length) throw new Error('Duplicate request identities prevent safe export.')
-  for (const objection of objections) {
-    if (!ids.has(objection.id) || selected.has(objection.id)) throw new Error('An objection does not match a unique request.')
-    selected.set(objection.id, objection.text)
+  for (const [entries, target] of [[objections,selected],[privileges,privileged]]) for (const entry of entries) {
+    if (!ids.has(entry.id) || target.has(entry.id)) throw new Error('An objection or privilege does not match a unique request.')
+    if (typeof entry.text !== 'string' || !entry.text.trim() || entry.text.length > 20000) throw new Error('An objection or privilege is empty or too long.')
+    target.set(entry.id, entry.text)
   }
+  const additions = r => ({
+    objection: selected.has(r.id) ? annotationXml(selected.get(r.id)) : '',
+    privilege: privileged.has(r.id) ? annotationXml(privileged.get(r.id), `PRIVILEGE (${TITLES[r.type] || 'REQUEST'} NO. ${r.number})`) : ''
+  })
   let zip
   if (originalBytes) {
     const loaded = await loadWord(originalBytes)
     checkParagraphBoundaries(loaded.paragraphs)
     if (loaded.revisions) throw new Error('Accept or reject tracked changes in Word and upload a clean copy before inserting objections.')
     zip = loaded.zip
-    const ranges = requests.filter(r => selected.has(r.id)).sort((a, b) => a.anchor?.start - b.anchor?.start)
+    const ranges = requests.filter(r => selected.has(r.id) || privileged.has(r.id)).sort((a,b) => a.anchor?.start - b.anchor?.start)
     let previousEnd = -1
     for (const request of ranges) {
       const a = request.anchor
       if (!a || !Number.isInteger(a.start) || !Number.isInteger(a.end) || a.start <= previousEnd || a.end < a.start || !loaded.nodes[a.end]) throw new Error('A request has no reliable original Word position. Re-upload the document before exporting.')
-      if (loaded.paragraphs.slice(a.start, a.end + 1).map(p => p.text).join('\n') !== a.sourceText) throw new Error('The original document no longer matches the recognized request. Re-upload it.')
+      if (loaded.paragraphs.slice(a.start,a.end+1).map(p => p.text).join('\n') !== a.sourceText) throw new Error('The original document no longer matches the recognized request. Re-upload it.')
+      const responseStart = request.responseStart
+      if (responseStart != null && (!Number.isInteger(responseStart) || responseStart < a.start || responseStart > a.end)) throw new Error('The response position is invalid. Re-upload the document.')
       previousEnd = a.end
-      const target = loaded.nodes[a.end]
-      const xml = `${request.responseStart == null ? paragraphXml('RESPONSE:') : ''}${objectionXml(selected.get(request.id))}`
-      const fragment = parseXml(`<w:document xmlns:w="${W}"><w:body>${xml}</w:body></w:document>`)
-      const additions = Array.from(el(fragment, 'body').childNodes)
-      const next = target.nextSibling
-      for (const node of additions) target.parentNode.insertBefore(loaded.doc.importNode(node, true), next)
+      let requestNode = loaded.nodes[a.start], responseNode = responseStart == null ? null : loaded.nodes[responseStart]
+      if (responseStart === a.start) ({requestNode,responseNode} = splitInlineResponse(requestNode))
+      const {objection,privilege} = additions(request)
+      if (privilegePlacement === 'before_request') insertXml(loaded.doc,requestNode.parentNode,requestNode,privilege)
+      const beforeResponse = (privilegePlacement === 'after_request' ? privilege : '') + objection
+      if (responseNode) insertXml(loaded.doc,responseNode.parentNode,responseNode,beforeResponse)
+      else {
+        const end = loaded.nodes[a.end]
+        insertXml(loaded.doc,end.parentNode,end.nextSibling,beforeResponse + paragraphXml('RESPONSE:'))
+      }
     }
-    zip.file('word/document.xml', new XMLSerializer().serializeToString(loaded.doc))
+    zip.file('word/document.xml',new XMLSerializer().serializeToString(loaded.doc))
   } else {
     zip = new JSZip()
-    const body = paragraphXml('Discovery responses', true) + requests.map(r => paragraphXml(`${TITLES[r.type] || 'REQUEST'} NO. ${r.number}: ${r.request}`, true) + paragraphXml(`RESPONSE: ${r.response || ''}`) + (selected.has(r.id) ? objectionXml(selected.get(r.id)) : '')).join('')
-    zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
-    zip.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
-    zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="${W}"><w:body>${body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`)
+    const body = paragraphXml('Discovery responses',true) + requests.map(r => {
+      const {objection,privilege} = additions(r)
+      return (privilegePlacement === 'before_request' ? privilege : '') + paragraphXml(`${TITLES[r.type] || 'REQUEST'} NO. ${r.number}: ${r.request}`,true) + (privilegePlacement === 'after_request' ? privilege : '') + objection + paragraphXml(`RESPONSE: ${r.response || ''}`)
+    }).join('')
+    zip.file('[Content_Types].xml','<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('_rels/.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+    zip.file('word/document.xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="${W}"><w:body>${body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`)
   }
-  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  return zip.generateAsync({type:'uint8array',compression:'DEFLATE'})
 }
