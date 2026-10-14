@@ -1,0 +1,1343 @@
+{
+  "schemaVersion": 1,
+  "reviewedAsOf": "2026-10-14",
+  "jurisdiction": "Texas state civil procedure; family-law emphasis",
+  "editorialNote": "Educational request-review framework for counsel. The status describes the sample request’s permissibility, not an automatic ruling or permission to withhold. Examples are illustrative, not findings about Ben Beveridge’s clients.",
+  "sourceReview": "Official current rule and statute text plus selected Supreme Court opinions were checked. This is not a comprehensive citator check, and local orders, case-specific facts and historical applicability remain material.",
+  "sources": [
+    {
+      "id": "rules-index",
+      "label": "Texas Judicial Branch: current statewide rules",
+      "url": "https://www.txcourts.gov/rules-forms/rules-standards/",
+      "pinpoint": "Statewide Rules table",
+      "proposition": "Official index identifies the Civil Procedure compilation as last amended October 1, 2026 and Evidence rules as July 2, 2026.",
+      "kind": "official-index",
+      "official": true
+    },
+    {
+      "id": "trcp190",
+      "label": "TRCP 190.2–190.4: discovery plans and limits",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=127",
+      "pinpoint": "190.2(a), (b)(1), (3)–(5); 190.3(b)(1), (3); 190.4",
+      "proposition": "Level 1 ordinarily permits 15 interrogatories, 15 production requests, and 15 admissions per other party, counting discrete subparts. Level 2 ordinarily permits 25 interrogatories, excluding questions solely identifying or authenticating specific documents. Court orders may change the plan.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp191",
+      "label": "TRCP 191.1–191.3: agreements, cooperation and signatures",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=132",
+      "pinpoint": "191.1; 191.2; 191.3(b)–(c)",
+      "proposition": "Check discovery agreements and orders; cooperate in discovery; counsel signatures certify a reasonable inquiry and that discovery positions are warranted and not interposed for an improper purpose.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-timing",
+      "label": "TRCP 192.2: timing and sequence",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=136",
+      "pinpoint": "192.2(a)–(b)",
+      "proposition": "For the current family regime, discovery may accompany the initial pleading. Outside family cases, initial disclosures generally must come due before discovery may be served, unless otherwise agreed or ordered.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-scope",
+      "label": "TRCP 192.3: scope of discovery",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=136",
+      "pinpoint": "192.3(a), (b), (c), (j)",
+      "proposition": "Discoverable matter must be nonprivileged and relevant to the subject matter. Inadmissibility alone does not defeat discovery reasonably calculated to lead to admissible evidence. General legal contentions and their factual bases are discoverable.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-control",
+      "label": "TRCP 192.3(b), 192.7(b): possession, custody or control",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=140",
+      "pinpoint": "192.3(b); 192.7(b)",
+      "proposition": "Production reaches physical possession and an equal or superior right to possession; a document need not be on the client’s own device. This is not the complete standard for answering interrogatories, which also require reasonably available information.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-experts",
+      "label": "TRCP 192.3(e): consulting experts",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=137",
+      "pinpoint": "192.3(e)",
+      "proposition": "Information about a consulting expert whose mental impressions or opinions have not been reviewed by a testifying expert is not discoverable under this provision; ordinary facts and independently discoverable documents are not immunized just by delivery to an expert.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-proportionality",
+      "label": "TRCP 192.4: limits on discovery",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=138",
+      "pinpoint": "192.4(a)–(b)",
+      "proposition": "Limit unreasonably cumulative or duplicative discovery, discovery available from a more convenient source, and discovery whose burden or expense outweighs its likely benefit under the listed case-specific factors.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-workproduct",
+      "label": "TRCP 192.5: work product",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=138",
+      "pinpoint": "192.5(a)–(c)",
+      "proposition": "Core attorney work product is protected. Other work product has qualified protection; the rule contains express exceptions, including specified witness, expert and contention information.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp192-protection",
+      "label": "TRCP 192.6: protective orders",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=139",
+      "pinpoint": "192.6(a)–(b)",
+      "proposition": "A supported motion may seek protection from undue burden, unnecessary expense, harassment, annoyance or invasion of personal, constitutional or property rights; protection may limit method, conditions, scope, timing or disclosure.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp193-response",
+      "label": "TRCP 193.1: complete response",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=141",
+      "pinpoint": "193.1",
+      "proposition": "Respond on time using all information reasonably available to the party or attorney. Each answer, objection or other response must follow the request to which it applies.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp193-objections",
+      "label": "TRCP 193.2: specific objections and partial compliance",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=142",
+      "pinpoint": "193.2(a)–(f)",
+      "proposition": "State the specific legal or factual ground and extent of noncompliance. A good-faith basis must exist. Answer the unobjectionable portion unless unreasonable before a ruling. Untimely or obscured objections can be waived. Use Rule 193.3 for privileges.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp193-privilege",
+      "label": "TRCP 193.3: withholding and privilege log",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=142",
+      "pinpoint": "193.3(a)–(d)",
+      "proposition": "A withholding statement identifies the withheld responsive material, the request, and privilege. A description is due within 15 days after a written request for it. Paragraph (c) exempts specified litigation lawyer communications/documents from (a) and (b). Paragraph (d) provides a limited inadvertent-production procedure.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp193-hearing",
+      "label": "TRCP 193.4: evidence and rulings",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=143",
+      "pinpoint": "193.4(a)–(c)",
+      "proposition": "Support challenged objections or privileges with necessary evidence; the court can require in camera review. A party need not obtain a ruling on its own objection to preserve it, but partial-response duties remain.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp193-supplement",
+      "label": "TRCP 193.5–193.6: supplementation and exclusion",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=144",
+      "pinpoint": "193.5(a)–(b); 193.6(a)–(c)",
+      "proposition": "Amend or supplement when required, reasonably promptly. Untimely undisclosed evidence may be excluded unless the required good-cause or absence-of-unfair-surprise/prejudice showing is made; the court may grant a continuance.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp194",
+      "label": "TRCP 194: ordinary civil required disclosures",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=147",
+      "pinpoint": "194.1–194.5",
+      "proposition": "For applicable non-family cases, disclosure is generally automatic. Rule 194.5 prohibits objections and assertions of work product to disclosure under that rule; other privileges use Rule 193.3. Initial and pretrial duties are distinct.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp194a",
+      "label": "TRCP 194a: current family disclosure requests",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=150",
+      "pinpoint": "194a.1–194a.6",
+      "proposition": "For the applicable family regime, serve a request for one or more enumerated categories. Normally respond in 30 days, with the 50-day pre-answer defendant exception and separate expert timing. Rule 194a.5 prohibits work-product claims; it does not repeat Rule 194.5’s blanket prohibition on all objections.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp195a",
+      "label": "TRCP 195a: current family expert discovery",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=156",
+      "pinpoint": "195a.1–195a.2; 195a.8–195a.9",
+      "proposition": "Expert designation/disclosure requests use Rule 194a or permitted depositions/reports, not ordinary interrogatories. Expert response is generally due on the later of 30 days after request or 90/60 days before discovery ends. Specified attorney communications and drafts are protected.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp195",
+      "label": "TRCP 195: ordinary civil expert discovery",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=152",
+      "pinpoint": "195.1–195.2; 195.5",
+      "proposition": "The non-family regime provides expert disclosures without a request and regulates permitted expert discovery, timing, communications and drafts.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp196",
+      "label": "TRCP 196.1–196.3: production and inspection",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=158",
+      "pinpoint": "196.1(a)–(c); 196.2(a)–(b); 196.3(a)–(c)",
+      "proposition": "Request reasonably particular items/categories, with a reasonable production time and place. Produce responsive items in possession, custody or control or accurately state the result of diligent search. Organize by request or as kept in ordinary business.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp196-esi",
+      "label": "TRCP 196.4–196.5: electronic data and testing",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=160",
+      "pinpoint": "196.4; 196.5",
+      "proposition": "Specify electronic information and requested format. Identify inability to retrieve or produce through reasonable efforts. Court-ordered extraordinary retrieval expenses are allocated to the requester. Destructive or materially altering testing needs prior court authorization.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp197",
+      "label": "TRCP 197: interrogatories",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=162",
+      "pinpoint": "197.1; 197.2(a)–(d); comment 1",
+      "proposition": "Specific contentions and general factual bases are proper; marshaling all available or trial proof is not. Records answers require the substantially-equal-burden conditions and specific identification. Party verification is required subject to stated exceptions.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp198",
+      "label": "TRCP 198: requests for admissions",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=163",
+      "pinpoint": "198.1–198.3",
+      "proposition": "Admissions may address facts, opinions, application of law to fact, and document genuineness. State matters separately. A substantive response must fairly admit, deny, qualify or explain inability after reasonable inquiry. An issue for trial is not a proper response. Late responses are deemed admitted.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "trcp2154",
+      "label": "TRCP 215.4: costs of proving an improperly denied admission",
+      "url": "https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf#page=187",
+      "pinpoint": "215.4(b)",
+      "proposition": "An unreasonable failure to admit can support an award of reasonable proof expenses, subject to the rule’s exceptions.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "tre503",
+      "label": "Texas Rule of Evidence 503: lawyer–client privilege",
+      "url": "https://www.txcourts.gov/media/1463074/texas-rules-of-evidence-updated-with-amendments-effective-07022026.pdf#page=20",
+      "pinpoint": "503(a), (b), (d)",
+      "proposition": "Protects qualifying confidential communications facilitating legal services, subject to exceptions; it does not create blanket protection for underlying facts or pre-existing records.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "tre507",
+      "label": "Texas Rule of Evidence 507: trade secrets",
+      "url": "https://www.txcourts.gov/media/1463074/texas-rules-of-evidence-updated-with-amendments-effective-07022026.pdf#page=24",
+      "pinpoint": "507(a)–(c)",
+      "proposition": "Trade-secret privilege is qualified; when disclosure is ordered the court must take protective measures balancing the interests.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "tre509510",
+      "label": "Texas Rules of Evidence 509–510: health privileges",
+      "url": "https://www.txcourts.gov/media/1463074/texas-rules-of-evidence-updated-with-amendments-effective-07022026.pdf#page=26",
+      "pinpoint": "509(c)–(f); 510(b)–(d), particularly 509(e)(4), 510(d)(5)",
+      "proposition": "Medical and mental-health information may be privileged. Exceptions require analysis, including whether a party relies on a condition and the records relate to it. A family dispute does not itself authorize unlimited health-record discovery.",
+      "kind": "rule",
+      "official": true
+    },
+    {
+      "id": "family301",
+      "label": "Texas Family Code Chapter 301",
+      "url": "https://tcss.legis.texas.gov/resources/FA/htm/FA.301.htm",
+      "pinpoint": "301.001–.003; 301.051–.056; 301.101–.108",
+      "proposition": "Statutory family disclosure and expert framework, including enumerated disclosure categories and the work-product-only objection prohibition.",
+      "kind": "statute",
+      "official": true
+    },
+    {
+      "id": "family154063",
+      "label": "Texas Family Code §154.063: support financial information",
+      "url": "https://tcss.legis.texas.gov/resources/FA/htm/FA.154.htm#154.063",
+      "pinpoint": "154.063(1)–(2)",
+      "proposition": "The court shall require information sufficient to identify net resources and ability to pay support, plus past-two-year income-tax returns, a financial statement and current pay stubs.",
+      "kind": "statute",
+      "official": true
+    },
+    {
+      "id": "order2023",
+      "label": "Supreme Court Misc. Docket No. 23-9092",
+      "url": "https://www.txcourts.gov/media/1457521/239092.pdf",
+      "pinpoint": "Order ¶3; Rules 194a and 195a; November 17, 2023",
+      "proposition": "The approved 2023 discovery changes apply only to actions filed on or after September 1, 2023.",
+      "kind": "order",
+      "official": true
+    },
+    {
+      "id": "hb2850",
+      "label": "H.B. 2850, 88th Legislature, enrolled act",
+      "url": "https://capitol.texas.gov/tlodocs/88R/billtext/html/HB02850F.htm",
+      "pinpoint": "Sections 2–3",
+      "proposition": "Chapter 301 applies only to actions filed on or after the September 1, 2023 effective date.",
+      "kind": "statute-history",
+      "official": true
+    },
+    {
+      "id": "order2021",
+      "label": "Supreme Court Misc. Docket No. 20-9153",
+      "url": "https://www.txcourts.gov/media/1450176/209153.pdf",
+      "pinpoint": "Order ¶2; amended Rules 190, 194–198",
+      "proposition": "The 2021 amendments apply to cases filed on or after January 1, 2021 except justice-court cases; prior rules continue for earlier cases.",
+      "kind": "order",
+      "official": true
+    },
+    {
+      "id": "statefarm",
+      "label": "In re State Farm Lloyds, 520 S.W.3d 595 (Tex. 2017)",
+      "url": "https://txcourts.gov/media/1438182/150903.pdf",
+      "pinpoint": "607–612; 615–616",
+      "proposition": "All discovery is subject to proportionality. Requested electronic format is evaluated against reasonable usability, cost and burden; neither side has an absolute right to dictate the format.",
+      "kind": "case",
+      "official": true
+    },
+    {
+      "id": "csx",
+      "label": "In re CSX Corp., 124 S.W.3d 149 (Tex. 2003)",
+      "url": "https://caselaw.findlaw.com/court/tx-supreme-court/1110505.html",
+      "pinpoint": "152–153",
+      "proposition": "Discovery must be reasonably tailored to relevant matters; time and subject-matter limits matter. The opinion is primary judicial text reproduced by FindLaw.",
+      "kind": "case",
+      "official": false
+    },
+    {
+      "id": "weekley",
+      "label": "In re Weekley Homes, L.P., 295 S.W.3d 309 (Tex. 2009)",
+      "url": "https://law.justia.com/cases/texas/supreme-court/2009/2001465.html",
+      "pinpoint": "317–322",
+      "proposition": "Direct forensic access to storage devices is particularly intrusive and requires a supported showing and tailored safeguards; incomplete production alone is not carte blanche. Primary judicial text reproduced by Justia.",
+      "kind": "case",
+      "official": false
+    },
+    {
+      "id": "marino",
+      "label": "Marino v. King, 355 S.W.3d 629 (Tex. 2011)",
+      "url": "https://law.justia.com/cases/texas/supreme-court/2011/10-0854-65.html",
+      "pinpoint": "632–634",
+      "proposition": "Requests for admission should simplify proof, and merits-preclusive deemed admissions implicate due process. This is not an exemption from timely responding to contested requests. Primary judicial text reproduced by Justia.",
+      "kind": "case",
+      "official": false
+    },
+    {
+      "id": "klauto",
+      "label": "In re K & L Auto Crushers, LLC, 627 S.W.3d 239 (Tex. 2021)",
+      "url": "https://law.justia.com/cases/texas/supreme-court/2021/19-1022.html",
+      "pinpoint": "252–258",
+      "proposition": "Tailored discovery and burden evidence matter; consider protective orders for confidential information instead of denying all relevant discovery. Primary judicial text reproduced by Justia.",
+      "kind": "case",
+      "official": false
+    },
+    {
+      "id": "colonial",
+      "label": "In re Colonial Pipeline Co., 968 S.W.2d 938 (Tex. 1998)",
+      "url": "https://caselaw.findlaw.com/court/tx-supreme-court/1131279.html",
+      "pinpoint": "941–942",
+      "proposition": "An ordinary document-production mechanism cannot require creation of a new inventory of records. Read this historical-rule opinion with current Rules 192.3(b), 196 and applicable ESI/expert procedures. Primary judicial text reproduced by FindLaw.",
+      "kind": "case",
+      "official": false
+    },
+    {
+      "id": "kuntz",
+      "label": "In re Kuntz, 124 S.W.3d 179 (Tex. 2003)",
+      "url": "https://law.justia.com/cases/texas/supreme-court/2003/2000329.html",
+      "pinpoint": "183–184",
+      "proposition": "Mere access to an employer’s records did not establish the individually sued employee’s possession, custody or control; the legal right to possession matters. Primary judicial text reproduced by Justia.",
+      "kind": "case",
+      "official": false
+    }
+  ],
+  "generalRules": [
+    {
+      "title": "Choose the governing regime first",
+      "text": "Use the action’s filing date, governing law, discovery plan, agreements and court orders. Current family Rule 194a is not interchangeable with ordinary civil Rule 194. A later modification or reopened matter can require action-specific analysis.",
+      "authorities": [
+        "order2023",
+        "hb2850",
+        "order2021",
+        "trcp191"
+      ]
+    },
+    {
+      "title": "An objection needs a concrete defect",
+      "text": "Identify the request number, exact offending words or scope, a good-faith factual/legal ground, and precisely what will not be provided. Avoid a string of every possible objection. Labels such as vague, burdensome or fishing expedition are not a factual explanation.",
+      "authorities": [
+        "trcp193-objections",
+        "trcp193-hearing"
+      ]
+    },
+    {
+      "title": "Answer the proper part",
+      "text": "Provide the portion to which no objection applies unless doing so before a ruling would be unreasonable under the circumstances. Specify the narrowed scope and what will be produced; a vague “subject to objections” response hides whether anything was withheld.",
+      "authorities": [
+        "trcp193-objections"
+      ]
+    },
+    {
+      "title": "Privilege is a separate workflow",
+      "text": "Use a Rule 193.3 withholding statement for responsive material actually withheld on privilege grounds, subject to the litigation-communication exemption. A log is generally triggered by a written request and due in 15 days; it is not automatically required with every response.",
+      "authorities": [
+        "trcp193-privilege",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "title": "Preserve the factual basis",
+      "text": "Burden and proportionality disputes require evidence when necessary: record volume, sources, retrieval steps, time, cost, alternatives and the issue at stake. Facial overbreadth can sometimes be evaluated from the request itself.",
+      "authorities": [
+        "trcp193-hearing",
+        "trcp192-proportionality",
+        "statefarm",
+        "csx"
+      ]
+    },
+    {
+      "title": "Respond now; supplement when required",
+      "text": "Incomplete investigation is not a blanket excuse to defer all answers. Make a complete response from reasonably available information, explain genuine limits, and supplement reasonably promptly when the rule requires.",
+      "authorities": [
+        "trcp193-response",
+        "trcp193-supplement"
+      ]
+    },
+    {
+      "title": "Do not import trial objections wholesale",
+      "text": "Hearsay, opinion, a legal conclusion, or “the document speaks for itself” does not by itself resolve a discovery request. Analyze relevance, the permitted discovery tool, privilege and whether a fair substantive answer is possible.",
+      "authorities": [
+        "trcp192-scope",
+        "trcp197",
+        "trcp198"
+      ]
+    },
+    {
+      "title": "Calendar the deadline independently",
+      "text": "RFP, interrogatories and RFAs ordinarily have 30-day response deadlines; the current family rules retain 50 days for a defendant served before the answer is due. Disclosures and experts have separate branches. Check service method, computation rules, agreements, scheduling orders and discovery cutoff before calculating any date.",
+      "authorities": [
+        "trcp196",
+        "trcp197",
+        "trcp198",
+        "trcp194a",
+        "trcp195a",
+        "trcp191"
+      ]
+    },
+    {
+      "title": "Admissions require immediate attention",
+      "text": "An unanswered RFA is deemed admitted without a court order. A denial must follow reasonable inquiry; inability to answer requires a detailed explanation. Obtain relief under Rule 198.3 when withdrawal is necessary; do not treat the merits-preclusion cases as permission to ignore requests.",
+      "authorities": [
+        "trcp198",
+        "trcp2154",
+        "marino"
+      ]
+    }
+  ],
+  "dateRegimes": [
+    {
+      "id": "family_current",
+      "title": "Family action filed September 1, 2023 or later",
+      "disclosure": "Requested disclosures: Rule 194a and Family Code Chapter 301.",
+      "objections": "Rule 194a.5 / §301.055 prohibits work-product withholding for a proper disclosure request. Other objections require a specific, good-faith basis; other privileges use Rule 193.3. Do not carry over Rule 194.5’s blanket ban.",
+      "timing": "Normally 30 days from request; 50-day pre-answer defendant exception; expert requests follow Rule 195a.2. Discovery may be served with the initial pleading.",
+      "authorities": [
+        "order2023",
+        "hb2850",
+        "family301",
+        "trcp194a",
+        "trcp195a",
+        "trcp192-timing"
+      ]
+    },
+    {
+      "id": "family_2021",
+      "title": "Family action filed January 1, 2021–August 31, 2023",
+      "disclosure": "Generally automatic Rule 194 disclosures under the 2021 version, including the former family-specific financial categories where applicable.",
+      "objections": "The applicable former Rule 194.5 prohibits objections and work-product assertions. Other privileges and protection procedures remain relevant. Review exemptions for Title IV-D, child protection, protective-order and other specified proceedings.",
+      "timing": "Generally 30 days after first answer or general appearance for initial disclosures; no general 50-day pre-answer extension under the 2021 written-discovery amendments. Use the historical rule and any order.",
+      "authorities": [
+        "order2021",
+        "order2023"
+      ]
+    },
+    {
+      "id": "legacy",
+      "title": "Action filed before January 1, 2021",
+      "disclosure": "Historical request-for-disclosure Rule 194 and historical discovery limits apply; do not substitute the current family Rule 194a merely because the suit remains pending.",
+      "objections": "Former Rule 194.5 prohibited objections and work product for authorized disclosures. Consult the historical rule text and the case’s orders.",
+      "timing": "Historical service, deadline and discovery-period provisions need independent review. Current automatic-disclosure assumptions do not apply.",
+      "authorities": [
+        "order2021"
+      ]
+    },
+    {
+      "id": "civil_current",
+      "title": "Non-family civil action filed January 1, 2021 or later",
+      "disclosure": "Generally automatic disclosures under Rule 194; testifying expert disclosures under Rule 195. Justice-court and other exceptions require separate review.",
+      "objections": "Rule 194.5 prohibits objections and assertions of work product to disclosures under the rule. Other applicable privileges use Rule 193.3; seek an appropriate protective order where warranted.",
+      "timing": "Initial disclosures generally due 30 days after first answer/general appearance, with a later-joined-party branch. Pretrial disclosures ordinarily at least 30 days before trial. Check the exact rule, applicable amendments and orders.",
+      "authorities": [
+        "order2021",
+        "trcp194",
+        "trcp195",
+        "trcp193-privilege"
+      ]
+    },
+    {
+      "id": "unknown",
+      "title": "Filing date or governing procedure is not established",
+      "disclosure": "Select the action’s filing date and whether it is governed by the Family Code before producing a disclosure-specific suggestion.",
+      "objections": "General issue spotting is available; withhold any definitive Rule 194 / 194a or deadline conclusion.",
+      "timing": "Do not calculate or promise a deadline until the governing regime, service facts and orders are known.",
+      "authorities": [
+        "order2023",
+        "order2021",
+        "trcp191"
+      ]
+    }
+  ],
+  "types": {
+    "rfp": {
+      "title": "Requests for production",
+      "rule": "TRCP 196",
+      "scope": "Existing documents, electronically stored information and tangible things within the permitted scope and the responding party’s possession, custody or control.",
+      "allowed": [
+        "Relevant bank statements, income records, messages, deeds and other reasonably described categories.",
+        "Inspection, copying or specified testing; electronic information in a specified usable format."
+      ],
+      "notAllowed": [
+        "Unbounded demands lacking a relevant subject or reasonable particularity.",
+        "Using an ordinary RFP to require creation of a new narrative or to bypass exclusive expert-disclosure methods.",
+        "Destructive testing without prior court authorization."
+      ],
+      "responseNotes": [
+        "State the production action or accurate diligent-search result for each category.",
+        "Produce by the requested or properly stated alternative time/place; organize as ordinarily kept or by request.",
+        "A record held by a bank or employer may still be within the party’s legal control.",
+        "Ordinarily 30 days; current family pre-answer defendant exception is 50 days."
+      ],
+      "authorities": [
+        "trcp196",
+        "trcp196-esi",
+        "trcp192-control",
+        "trcp195a",
+        "trcp193-objections"
+      ]
+    },
+    "rfd": {
+      "title": "Requests for disclosure",
+      "rule": "Family: TRCP 194a / Family Code Chapter 301; other regimes differ",
+      "scope": "For current family actions, a request for the categories expressly listed in Rule 194a.2. Filing date determines whether a request or automatic disclosure applies.",
+      "allowed": [
+        "Correct parties, potential parties, general legal theories/factual bases, economic damages and knowledgeable persons.",
+        "Testifying-expert information through Rule 194a/195a, discoverable settlement agreements and witness statements.",
+        "Specified medical information in qualifying injury-and-damages suits and potential responsible third parties."
+      ],
+      "notAllowed": [
+        "Using Rule 194a as an unlimited demand for every financial record or every document supporting the case.",
+        "Refusing an authorized disclosure on work-product grounds.",
+        "Applying ordinary Rule 194.5’s blanket no-objection rule to Rule 194a without checking the governing regime."
+      ],
+      "responseNotes": [
+        "Current family disclosures require a request; normally 30 days or 50 days for a pre-answer defendant.",
+        "Expert timing follows Rule 195a.2, not the ordinary disclosure deadline.",
+        "Attach required documents unless the voluminous-material procedure in Rule 194a.4 applies.",
+        "For 2021–August 2023 family actions and non-family Rule 194 cases, use the automatic-disclosure branch."
+      ],
+      "authorities": [
+        "trcp194a",
+        "family301",
+        "trcp195a",
+        "trcp194",
+        "order2023",
+        "order2021"
+      ]
+    },
+    "roggs": {
+      "title": "Interrogatories",
+      "rule": "TRCP 197",
+      "scope": "Written questions to a party seeking discoverable facts and specific legal/factual contentions, subject to numerical limits and expert-discovery restrictions.",
+      "allowed": [
+        "Identify property, accounts, events, persons and the general bases for a specified claim or defense.",
+        "A proper records-based answer under Rule 197.2(c) when both sides bear substantially the same burden."
+      ],
+      "notAllowed": [
+        "Demand that the party marshal all available proof or every item intended for trial.",
+        "Expert designation/disclosure by an ordinary interrogatory when the expert rules prescribe the method.",
+        "Excess discrete questions beyond the governing discovery plan without authorization."
+      ],
+      "responseNotes": [
+        "Usually 25 questions under Level 2; Level 1 is 15. Count discrete subparts and apply the identification/authentication exception.",
+        "Answer from information reasonably available to the party or counsel; lack of personal knowledge alone is insufficient.",
+        "The party generally verifies answers under oath, with Rule 197.2(d) exceptions for specified categories.",
+        "Ordinarily 30 days; current family pre-answer defendant exception is 50 days."
+      ],
+      "authorities": [
+        "trcp197",
+        "trcp190",
+        "trcp193-response",
+        "trcp195a"
+      ]
+    },
+    "rfa": {
+      "title": "Requests for admissions",
+      "rule": "TRCP 198",
+      "scope": "Separate admissions of fact, opinion, application of law to fact or genuineness of documents within the permitted discovery scope.",
+      "allowed": [
+        "Authenticate an identified document supplied or made available.",
+        "Admit a specific event, amount, status or application of law to identified facts—even when contested."
+      ],
+      "notAllowed": [
+        "Compound requests that do not separately state the matters to be admitted.",
+        "Abstract legal propositions divorced from the case’s facts or requests outside discovery scope.",
+        "Using deemed admissions to obtain a merits judgment without the protections recognized by the Supreme Court."
+      ],
+      "responseNotes": [
+        "Fairly admit, deny, qualify or explain why you cannot after reasonable inquiry.",
+        "“Issue for trial,” “document speaks for itself,” and unexplained lack of knowledge are inadequate substitutes for a response.",
+        "Requests not timely answered are deemed admitted; withdrawal/amendment requires the Rule 198.3 analysis.",
+        "Ordinarily 30 days; current family pre-answer defendant exception is 50 days. Level 1 ordinarily caps RFAs at 15, counting discrete subparts."
+      ],
+      "authorities": [
+        "trcp198",
+        "trcp190",
+        "marino",
+        "trcp2154"
+      ]
+    }
+  },
+  "categories": [
+    {
+      "id": "focused-financial-records",
+      "title": "Financial records tied to disputed property or support",
+      "types": [
+        "rfp"
+      ],
+      "status": "allowed",
+      "example": "Produce monthly statements for the identified joint checking account from January 2025 through separation.",
+      "explanation": "A defined account and period connected to disputed property or support ordinarily presents a proper category. “All statements” is not inherently overbroad. Check privilege, control and actual burden.",
+      "whatFactsNeeded": [
+        "Account ownership/control",
+        "Relevant period and disputed issue",
+        "Existing confidentiality order"
+      ],
+      "alternative": "Produce the responsive statements; address a concrete date or account limitation if needed.",
+      "authorities": [
+        "trcp196",
+        "trcp192-scope",
+        "trcp192-control"
+      ]
+    },
+    {
+      "id": "unlimited-everything",
+      "title": "Unbounded “all documents” demand",
+      "types": [
+        "rfp"
+      ],
+      "status": "objectionable",
+      "example": "Produce every document and communication of every kind you have ever possessed, about any subject.",
+      "explanation": "The example lacks a meaningful subject-matter connection or reasonable particularity. The defect is the unbounded scope, not the words “every” or “all” alone.",
+      "whatFactsNeeded": [
+        "Claims and defenses",
+        "Requested period, people and subjects",
+        "Which narrower category is relevant"
+      ],
+      "alternative": "Identify the overbroad scope and offer production of defined categories tied to the disputed issue and a supported period.",
+      "authorities": [
+        "trcp196",
+        "trcp192-scope",
+        "csx",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "unclear-term",
+      "title": "Undefined or genuinely ambiguous term",
+      "types": [
+        "rfp",
+        "roggs",
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "Identify all “inappropriate activities” during the marriage.",
+      "explanation": "A vague objection needs the precise term, competing reasonable meanings and resulting inability to answer. A minor ambiguity that permits a reasonable reading should not become a blanket refusal.",
+      "whatFactsNeeded": [
+        "Definitions elsewhere in the requests",
+        "Competing meanings",
+        "Whether a reasonable limited answer is possible"
+      ],
+      "alternative": "Seek clarification, identify the construction used, and answer the clear portion.",
+      "authorities": [
+        "trcp193-objections",
+        "trcp196",
+        "trcp198"
+      ]
+    },
+    {
+      "id": "duplicate-request",
+      "title": "Duplicative or available from a better source",
+      "types": [
+        "rfp",
+        "roggs"
+      ],
+      "status": "conditional",
+      "example": "Produce again the same 24 bank statements already produced as BEN000100–BEN000180.",
+      "explanation": "Rule 192.4 addresses unreasonable duplication and a genuinely more convenient source. Equal availability alone is not an automatic objection, and updated records may be proper.",
+      "whatFactsNeeded": [
+        "Prior production/Bates numbers",
+        "Whether versions or time periods differ",
+        "Comparative burden of each source"
+      ],
+      "alternative": "Identify the exact prior material and explain duplication; produce additions or agree to incorporate the earlier production.",
+      "authorities": [
+        "trcp192-proportionality",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "disproportionate-burden",
+      "title": "Burden exceeds likely benefit",
+      "types": [
+        "rfp",
+        "roggs"
+      ],
+      "status": "conditional",
+      "example": "Recover and review all archived messages from every personal and business device for the last 25 years.",
+      "explanation": "Assess relevance and proportionality with evidence. Volume by itself does not establish undue burden, and an expensive request can still be important to the disputed issues.",
+      "whatFactsNeeded": [
+        "Device and archive count",
+        "Estimated restoration/review hours and cost",
+        "Relevant issues and dates",
+        "Cheaper targeted sources"
+      ],
+      "alternative": "Explain the concrete burden and propose relevant custodians, search terms, dates, sampling or another usable source.",
+      "authorities": [
+        "trcp192-proportionality",
+        "trcp193-hearing",
+        "statefarm"
+      ]
+    },
+    {
+      "id": "outside-control",
+      "title": "Third-party records or no responsive items",
+      "types": [
+        "rfp"
+      ],
+      "status": "conditional",
+      "example": "Produce your former employer’s entire personnel database, which you have no right to obtain.",
+      "explanation": "Production extends to possession, custody or control, including legal rights to obtain records. If no responsive items are found after diligent search, use the Rule 196.2(b)(4) response accurately; do not manufacture a privilege objection.",
+      "whatFactsNeeded": [
+        "Physical possession",
+        "Legal/contractual rights to obtain copies",
+        "Diligent search performed",
+        "Whether any responsive subset is controlled"
+      ],
+      "alternative": "Produce controlled records and accurately explain the absent or uncontrolled remainder; nonparty discovery may be needed.",
+      "authorities": [
+        "trcp192-control",
+        "trcp196",
+        "kuntz"
+      ]
+    },
+    {
+      "id": "new-document",
+      "title": "RFP requiring a new narrative or list",
+      "types": [
+        "rfp"
+      ],
+      "status": "objectionable",
+      "example": "Create and produce a new chronological narrative of every parenting disagreement.",
+      "explanation": "An ordinary production request seeks existing items, not a newly authored narrative. Existing responsive records and reasonable ESI retrieval remain discoverable; an interrogatory or authorized expert report may properly require a new written answer.",
+      "whatFactsNeeded": [
+        "Whether a responsive list already exists",
+        "Whether data can be reasonably retrieved",
+        "Any applicable order or special rule"
+      ],
+      "alternative": "Produce existing responsive records and identify the improper demand to create a narrative; the requester can use a proper interrogatory.",
+      "authorities": [
+        "trcp196",
+        "trcp192-control",
+        "trcp197",
+        "trcp196-esi",
+        "colonial"
+      ]
+    },
+    {
+      "id": "targeted-electronic",
+      "title": "Targeted texts, email or native records",
+      "types": [
+        "rfp"
+      ],
+      "status": "allowed",
+      "example": "Produce messages between the parties about school pickup for March–May 2026 in a readable export preserving dates and participants.",
+      "explanation": "Electronic information is discoverable. State the subject, custodians, dates and requested form. A native-format preference is not automatically decisive; usability and burden matter.",
+      "whatFactsNeeded": [
+        "Platforms and date range",
+        "Requested and available export formats",
+        "Metadata needed for the disputed issue"
+      ],
+      "alternative": "Agree on a usable export and preserve relevant metadata; explain any actual format-specific burden.",
+      "authorities": [
+        "trcp196-esi",
+        "statefarm"
+      ]
+    },
+    {
+      "id": "forensic-device",
+      "title": "Direct forensic access to a phone or computer",
+      "types": [
+        "rfp"
+      ],
+      "status": "conditional",
+      "example": "Turn over your unlocked phone and all passwords for a complete forensic image.",
+      "explanation": "Direct forensic access is highly intrusive and is not a routine substitute for targeted production. Require a supported need, feasible method and safeguards for unrelated/private/privileged material.",
+      "whatFactsNeeded": [
+        "Evidence that ordinary production is inadequate",
+        "Likely relevant recoverable data",
+        "Expert method and expertise",
+        "Privacy and privilege protocol"
+      ],
+      "alternative": "Offer targeted collection first; if necessary propose a neutral examiner, limited dates/searches and privilege review.",
+      "authorities": [
+        "weekley",
+        "trcp196-esi",
+        "trcp192-protection"
+      ]
+    },
+    {
+      "id": "lawyer-communications",
+      "title": "Attorney–client communications and work product",
+      "types": [
+        "rfp",
+        "roggs"
+      ],
+      "status": "conditional",
+      "example": "Produce confidential emails seeking your lawyer’s advice about settlement of this divorce.",
+      "explanation": "Analyze actual privilege elements and exceptions. Use Rule 193.3 for withholding rather than a generic privilege objection. Underlying facts and pre-existing records do not become privileged merely because counsel received them.",
+      "whatFactsNeeded": [
+        "Participants and confidentiality",
+        "Purpose of communication",
+        "Date and litigation relationship",
+        "Exceptions, waiver and Rule 193.3(c) exemption"
+      ],
+      "alternative": "Serve the required withholding statement or identify the applicable exemption; log on proper request and provide nonprivileged responsive material.",
+      "authorities": [
+        "tre503",
+        "trcp192-workproduct",
+        "trcp193-privilege",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "consulting-expert",
+      "title": "Consulting-only experts",
+      "types": [
+        "rfp",
+        "roggs"
+      ],
+      "status": "conditional",
+      "example": "Identify every non-testifying consultant retained solely to help counsel evaluate this case and provide their impressions.",
+      "explanation": "Rule 192.3(e) protects qualifying consulting-expert information when no testifying expert reviewed the consultant’s impressions or opinions. It does not protect every document the consultant happens to possess.",
+      "whatFactsNeeded": [
+        "Anticipation-of-litigation role",
+        "Testifying versus consulting status",
+        "What a testifying expert reviewed"
+      ],
+      "alternative": "Identify the specific protected expert material; distinguish independently discoverable facts and documents.",
+      "authorities": [
+        "trcp192-experts",
+        "trcp192-workproduct",
+        "trcp193-privilege"
+      ]
+    },
+    {
+      "id": "private-confidential",
+      "title": "Confidential information and personal identifiers",
+      "types": [
+        "rfp",
+        "roggs",
+        "rfd"
+      ],
+      "status": "conditional",
+      "example": "Produce complete account records containing account numbers and unrelated third-party financial information.",
+      "explanation": "Confidentiality is not a universal privilege. Relevance, actual privacy harm and available protective measures matter; trade secrets require a separate Rule 507 analysis. For disclosures, first identify the correct Rule 194/194a branch.",
+      "whatFactsNeeded": [
+        "Relevant portions",
+        "Specific privacy or trade-secret interest",
+        "Existing protective order",
+        "Governing disclosure regime"
+      ],
+      "alternative": "Seek limited redaction or a protective order while providing relevant nonprivileged information; do not silently redact material that is itself responsive.",
+      "authorities": [
+        "trcp192-protection",
+        "tre507",
+        "klauto",
+        "trcp193-objections",
+        "trcp194a",
+        "trcp194"
+      ]
+    },
+    {
+      "id": "health-records",
+      "title": "Medical and mental-health records",
+      "types": [
+        "rfp",
+        "roggs",
+        "rfd"
+      ],
+      "status": "conditional",
+      "example": "Produce your entire lifetime therapy and medical file because conservatorship is disputed.",
+      "explanation": "Health privileges and exceptions need a record-specific analysis. A custody issue alone does not justify unlimited lifetime disclosure. The current family RFD medical categories also require the stated injury-and-damages setting. Nonparty records have notice requirements.",
+      "whatFactsNeeded": [
+        "Condition actually relied on in a claim/defense",
+        "Connection between condition and records",
+        "Privilege holder and any waiver/consent",
+        "Dates and nonparty status"
+      ],
+      "alternative": "Identify privileged or irrelevant portions, narrow to the condition and period, use Rule 193.3 and consider in camera review/protection.",
+      "authorities": [
+        "tre509510",
+        "trcp194a",
+        "trcp196",
+        "trcp193-privilege",
+        "trcp193-hearing"
+      ]
+    },
+    {
+      "id": "tax-returns",
+      "title": "Income-tax returns in family litigation",
+      "types": [
+        "rfp"
+      ],
+      "status": "conditional",
+      "example": "Produce 20 years of complete tax returns, including unrelated entities and all attachments.",
+      "explanation": "Assess the disputed financial issues and period; there is no categorical family-law tax-return exemption. In child-support matters §154.063 specifically requires the court to obtain past-two-year returns, a financial statement and current pay stubs. Broader periods require case-specific justification.",
+      "whatFactsNeeded": [
+        "Support or property issue",
+        "Relevant tax years and entities",
+        "Court orders",
+        "Sensitive irrelevant portions"
+      ],
+      "alternative": "Provide required/relevant financial records and explain why any additional years or portions exceed the supported scope.",
+      "authorities": [
+        "family154063",
+        "trcp192-scope",
+        "trcp192-proportionality",
+        "trcp192-protection"
+      ]
+    },
+    {
+      "id": "knowledgeable-persons",
+      "title": "Identify persons with relevant knowledge",
+      "types": [
+        "rfd",
+        "roggs"
+      ],
+      "status": "allowed",
+      "example": "Identify persons with knowledge of the child’s weekday care and briefly describe each person’s connection with that issue.",
+      "explanation": "Witness identity and a brief connection to the case are discoverable. Older form language treating all questions about a witness’s knowledge as improper is too broad.",
+      "whatFactsNeeded": [
+        "Relevant subject",
+        "Information reasonably available",
+        "Safety concerns requiring protection"
+      ],
+      "alternative": "Identify the persons and their connections using the requested authorized method; seek protection for a concrete safety concern.",
+      "authorities": [
+        "trcp192-scope",
+        "trcp194a",
+        "trcp197",
+        "trcp193-response"
+      ]
+    },
+    {
+      "id": "specific-contention",
+      "title": "Specific contention and general factual basis",
+      "types": [
+        "roggs",
+        "rfd"
+      ],
+      "status": "allowed",
+      "example": "State whether you contend the house is separate property and generally describe the factual basis.",
+      "explanation": "Specific legal and factual contentions are proper. “Calls for a legal conclusion” and the existence of a disclosure procedure do not defeat an otherwise proper contention interrogatory.",
+      "whatFactsNeeded": [
+        "Actual pleaded contention",
+        "Reasonably available supporting facts",
+        "Whether the wording demands all proof"
+      ],
+      "alternative": "State the legal theory and general factual basis; distinguish any separate request to marshal every piece of proof.",
+      "authorities": [
+        "trcp197",
+        "trcp192-scope",
+        "trcp194a"
+      ]
+    },
+    {
+      "id": "marshal-proof",
+      "title": "Marshal every piece of proof",
+      "types": [
+        "roggs"
+      ],
+      "status": "objectionable",
+      "example": "For every allegation, list every fact, every witness’s anticipated testimony and every document you will use at trial.",
+      "explanation": "The example demands all available or trial proof rather than a general factual basis for a specific contention. A narrowly targeted question about an event or transaction is not automatically marshaling.",
+      "whatFactsNeeded": [
+        "Exact breadth and subparts",
+        "Whether it seeks all proof",
+        "Specific contention and answerable portion"
+      ],
+      "alternative": "Object to the demand to marshal proof and provide the general factual basis of the identified contention where reasonably separable.",
+      "authorities": [
+        "trcp197",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "expert-wrong-tool",
+      "title": "Testifying-expert designation by the wrong tool",
+      "types": [
+        "roggs",
+        "rfp"
+      ],
+      "status": "objectionable",
+      "example": "Interrogatory: designate every testifying expert and provide all opinions, bases and expert-file materials.",
+      "explanation": "The expert rules prescribe disclosure and permitted deposition/report methods. In current family actions use Rule 194a/195a. This does not block an independently proper request for ordinary factual records merely because an expert also saw them.",
+      "whatFactsNeeded": [
+        "Filing-date regime",
+        "Whether expert designation/opinions are the actual subject",
+        "Existing order and disclosure request"
+      ],
+      "alternative": "Identify the method defect and comply with the proper expert request and applicable schedule.",
+      "authorities": [
+        "trcp195a",
+        "trcp195",
+        "trcp197"
+      ]
+    },
+    {
+      "id": "standard-family-disclosure",
+      "title": "Enumerated current family disclosures",
+      "types": [
+        "rfd"
+      ],
+      "status": "allowed",
+      "example": "Under Rule 194a, disclose the information described in Rules 194a.2(a), (c), (e) and (f).",
+      "explanation": "For an action filed September 1, 2023 or later, these are authorized requested disclosures. Supply the enumerated content; a work-product objection is prohibited. Other real objections/privileges require their proper analysis and procedure.",
+      "whatFactsNeeded": [
+        "Action filing date",
+        "Which subparts were requested",
+        "Service and expert dates",
+        "Applicable orders"
+      ],
+      "alternative": "Provide the authorized disclosures, use the expert timing branch, and supplement as required.",
+      "authorities": [
+        "trcp194a",
+        "family301",
+        "trcp195a",
+        "order2023"
+      ]
+    },
+    {
+      "id": "expanded-disclosure",
+      "title": "Non-enumerated material labeled a disclosure",
+      "types": [
+        "rfd"
+      ],
+      "status": "objectionable",
+      "example": "Under Rule 194a, produce every bank statement, every text message and every document you might use at trial.",
+      "explanation": "Those blanket document categories are not supplied merely by citing Rule 194a.2. Some documents fall within its specific expert, statement, settlement or medical categories. Other relevant records may be obtained through properly drafted RFPs.",
+      "whatFactsNeeded": [
+        "Exact category and governing regime",
+        "Whether a listed subpart covers any material",
+        "Any separate valid production request or order"
+      ],
+      "alternative": "Identify the extra-statutory scope, answer the authorized disclosure portion and address properly served RFPs separately.",
+      "authorities": [
+        "trcp194a",
+        "family301",
+        "trcp196",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "late-discovery",
+      "title": "Request conflicts with the discovery cutoff",
+      "types": [
+        "rfp",
+        "rfd",
+        "roggs",
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "Serve ordinary written discovery ten days before the discovery period closes, without an agreed or ordered extension.",
+      "explanation": "These methods generally must be served no later than 30 days before the end of discovery. Examine the governing plan, applicable response deadline and any reopening or extension; a label of “late” is insufficient.",
+      "whatFactsNeeded": [
+        "Discovery plan and cutoff",
+        "Service date/method",
+        "Agreement/order reopening discovery",
+        "Applicable regime"
+      ],
+      "alternative": "State the relevant dates and deadline conflict; confer about a limited extension or court relief.",
+      "authorities": [
+        "trcp190",
+        "trcp191",
+        "trcp196",
+        "trcp194a",
+        "trcp197",
+        "trcp198"
+      ]
+    },
+    {
+      "id": "numeric-excess",
+      "title": "Requests exceed the governing numerical limit",
+      "types": [
+        "roggs",
+        "rfp",
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "In a Level 2 case without an expansion order, serve 40 interrogatories containing additional discrete subparts.",
+      "explanation": "Level 2 ordinarily allows 25 interrogatories; Level 1 ordinarily allows 15 interrogatories, 15 RFPs and 15 RFAs. Do not apply a 25-item cap to every discovery tool. Count discrete subparts and apply the interrogatory identification/authentication exception.",
+      "whatFactsNeeded": [
+        "Level/order",
+        "Earlier requests and running count",
+        "Discrete subparts",
+        "Identification/authentication-only questions"
+      ],
+      "alternative": "Identify the excess request numbers and count; respond to permissible requests and seek an agreement or ruling on disputed counts.",
+      "authorities": [
+        "trcp190",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "authenticate-document",
+      "title": "Authenticate an identified document",
+      "types": [
+        "rfa"
+      ],
+      "status": "allowed",
+      "example": "Admit that Exhibit A is a true copy of the lease you signed on May 1, 2025.",
+      "explanation": "Authenticity is an express and useful RFA subject. The document must be served or otherwise available for inspection/copying. An authenticity admission does not necessarily concede every statement’s truth or all admissibility issues.",
+      "whatFactsNeeded": [
+        "Access to the exhibit",
+        "Signature/version authenticity",
+        "Basis for any limited qualification"
+      ],
+      "alternative": "Admit, deny or qualify the particular authenticity proposition after reasonable inquiry.",
+      "authorities": [
+        "trcp198"
+      ]
+    },
+    {
+      "id": "law-to-fact",
+      "title": "Apply law to identified facts",
+      "types": [
+        "rfa"
+      ],
+      "status": "allowed",
+      "example": "Admit that the identified car, bought during the marriage using wages earned during the marriage, is community property.",
+      "explanation": "An RFA can address facts, opinions and application of law to fact. A contested issue or possible effect on the case does not by itself authorize a refusal. Distinguish a request demanding an abstract statement of law.",
+      "whatFactsNeeded": [
+        "Exact proposition",
+        "Known facts and reasonable inquiry",
+        "Any qualification necessary to avoid misleading admission"
+      ],
+      "alternative": "Admit or deny the specific matter, or qualify only as good faith requires; do not use “legal conclusion” as a reflex.",
+      "authorities": [
+        "trcp198",
+        "trcp192-scope"
+      ]
+    },
+    {
+      "id": "abstract-law",
+      "title": "Abstract legal proposition disconnected from facts",
+      "types": [
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "Admit that every premarital agreement in Texas is enforceable.",
+      "explanation": "Rule 198 expressly allows application of law to fact. A categorical legal proposition unrelated to the case may fall outside that scope; explain the disconnect rather than objecting to all legal content.",
+      "whatFactsNeeded": [
+        "Connection to the parties and agreement at issue",
+        "Whether the request instead applies law to actual facts"
+      ],
+      "alternative": "Identify the abstract or overbroad proposition and suggest a fact-specific admission concerning the agreement at issue.",
+      "authorities": [
+        "trcp198",
+        "trcp192-scope",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "compound-admission",
+      "title": "Several independent admissions in one request",
+      "types": [
+        "rfa"
+      ],
+      "status": "objectionable",
+      "example": "Admit you signed the agreement, received the payment, waived reimbursement and consented to the sale.",
+      "explanation": "Each matter must be stated separately. If a clear portion can fairly be admitted or denied, consider a precise qualified response alongside the specific objection; do not use compoundness to hide an answer that can be fairly given.",
+      "whatFactsNeeded": [
+        "Independent propositions",
+        "Whether some can be admitted",
+        "Applicable numerical limit"
+      ],
+      "alternative": "Ask for separate requests and give any fair, unobjectionable partial response.",
+      "authorities": [
+        "trcp198",
+        "trcp193-objections",
+        "trcp190"
+      ]
+    },
+    {
+      "id": "incomplete-investigation",
+      "title": "Prematurity or lack of personal knowledge",
+      "types": [
+        "rfp",
+        "rfd",
+        "roggs",
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "Respond: “Discovery is ongoing; no response will be made until discovery closes.”",
+      "explanation": "That blanket response is inadequate. Use information reasonably available now. For an RFA, lack of knowledge is permissible only with the required statement that reasonable inquiry left insufficient known or easily obtainable information.",
+      "whatFactsNeeded": [
+        "Inquiry actually undertaken",
+        "Information available to client/counsel",
+        "What remains unavailable and why"
+      ],
+      "alternative": "Answer presently available matters, describe genuine limits specifically and supplement when required.",
+      "authorities": [
+        "trcp193-response",
+        "trcp193-supplement",
+        "trcp198"
+      ]
+    },
+    {
+      "id": "merits-admissions",
+      "title": "Merits-preclusive admission strategy",
+      "types": [
+        "rfa"
+      ],
+      "status": "conditional",
+      "example": "Admit that every allegation in the petition is true and that you have no defense to any requested relief.",
+      "explanation": "Separate factual and law-to-fact requests can be proper, even on contested matters. Broad surrender-of-the-case requests and merits-preclusive deemed admissions raise distinct concerns under Marino. This is not a categorical objection to every ultimate issue.",
+      "whatFactsNeeded": [
+        "Wording and breadth",
+        "Whether matters are separately stated",
+        "Response deadline and any missed response",
+        "Actual merits-preclusive effect"
+      ],
+      "alternative": "Respond timely to proper propositions; specifically address any compound or scope defect and seek withdrawal relief promptly if admissions were deemed.",
+      "authorities": [
+        "trcp198",
+        "marino",
+        "trcp193-objections"
+      ]
+    },
+    {
+      "id": "records-answer",
+      "title": "Answering an interrogatory from identified records",
+      "types": [
+        "roggs"
+      ],
+      "status": "allowed",
+      "example": "State monthly deposits to the account for 2025; the same figures are readily derived from the identified statements.",
+      "explanation": "Rule 197.2(c) is an answer option, not a free-standing refusal. It requires substantially equal burden and records specified well enough for the requesting party to locate the answer as readily as the responding party.",
+      "whatFactsNeeded": [
+        "Records that actually supply the answer",
+        "Bates/page references",
+        "Comparative derivation burden"
+      ],
+      "alternative": "Specify the exact records and provide the required access; give a narrative answer if the equal-burden condition is not met.",
+      "authorities": [
+        "trcp197"
+      ]
+    },
+    {
+      "id": "trial-exhibits",
+      "title": "Demand for final trial exhibits or a changing selection",
+      "types": [
+        "rfp",
+        "rfd"
+      ],
+      "status": "conditional",
+      "example": "Produce every exhibit you will offer at trial, including a final exhibit list, six months before trial.",
+      "explanation": "Do not claim trial exhibits are categorically immune. Existing reasonably described documents can be discoverable. Final selection, timing and pretrial lists depend on the regime and scheduling/pretrial orders; ordinary Rule 194 includes mandatory pretrial disclosure.",
+      "whatFactsNeeded": [
+        "Filing-date regime",
+        "Existing records versus new final list",
+        "Pretrial/scheduling order",
+        "Applicable disclosure deadline"
+      ],
+      "alternative": "Produce discoverable existing categories and comply with applicable exhibit-disclosure duties; explain any specific premature final-selection demand.",
+      "authorities": [
+        "trcp196",
+        "trcp194",
+        "trcp194a",
+        "trcp191",
+        "trcp193-supplement"
+      ]
+    }
+  ],
+  "uploadNotes": [
+    {
+      "file": "FORM OBJECTION FROM WESTLAW.pdf",
+      "note": "2021 O’Connor form. Useful structure for request-specific grounds, partial compliance and privilege withholding; date-gate the Rule 194 discussion and update expert references for current family actions. Do not reproduce the commercial form wholesale."
+    },
+    {
+      "file": "Binder1ffff.pdf",
+      "note": "Large mixed CLE compilation reviewed for discovery scope, objections, disclosures and response examples. Much disclosure discussion describes the 2021 regime. It contains historical citations and form language that must not be treated as current blanket rules. Its statements about all interrogatory answers being sworn and Rule 193.6 requiring both exceptions are overbroad; read the rule’s actual exceptions."
+    },
+    {
+      "file": "OBJECTIONS TO PRODUCTION.pdf",
+      "note": "Template objection bank, including expert, any/all, confidentiality, work-product and prematurity language. Treat as issue prompts; replace conclusory templates with request-specific facts, the correct tool/rule and partial response."
+    },
+    {
+      "file": "2023 OBJECTION FOR INTERROGATORIES (EAG).pdf",
+      "note": "Contains useful proportionality and records-answer concepts. Evidence Rule 403 is not the general discovery-scope rule; use TRCP 192.3/192.4. The 25-interrogatory statement needs the discovery level/order. “Premature until discovery completed” is not a blanket excuse."
+    },
+    {
+      "file": "Objections to interrogatories.docx",
+      "note": "Short checklist. The assertion that documents not reviewed by a testifying expert are therefore undiscoverable is incorrect as a general rule. Rule 192.3(e) concerns qualifying consulting-expert material. Possession/custody/control is not a complete defense to an interrogatory seeking reasonably available information."
+    },
+    {
+      "file": "Discovery objections that are not allowed under the Texas Rules of Civil Procedure.docx",
+      "note": "Summary contains important inaccuracies: it conflates Rule 194 with current family Rule 194a, suggests every privilege needs an immediate log, rejects opinions broadly despite Rule 198.1, and misdescribes proper marshaling objections. Its health-care-liability §74.352 discussion and federal administrative examples are not a general family-law standard. Do not use its confidence percentages as authority."
+    },
+    {
+      "file": "OBJECTIONS TO DISCOVERY.docx",
+      "note": "Broad list requires qualification. Hearsay, disputed facts, document-speaks-for-itself, any/all wording, legal contentions and tax-return requests are not categorically invalid. Statements about trial exhibits and all “supporting documents” need current-rule and request-specific analysis. Esparza pinpoint appears malformed and was not adopted."
+    },
+    {
+      "file": "Objections.pdf",
+      "note": "Image-only three-page scan, OCR reviewed. Correct proportionality pinpoint to Rule 192.4(b); distinguish records answers and privilege procedure from objections. The footnote suggesting factual grounds merely “may” be stated should not displace Rule 193.2(a)’s required specific legal or factual basis."
+    },
+    {
+      "file": "Discovery Objection list.doc",
+      "note": "Legacy binary Word text recovered for substantive review. It cites superseded Rules 166b, 167 and 168 and includes blanket any/all, equal-access, HIPAA, prematurity and legal-conclusion language that needs correction. Use current numbered rules and case-specific facts."
+    },
+    {
+      "file": "._Discovery Objection list.doc",
+      "note": "AppleDouble companion metadata, not a separate substantive legal document."
+    }
+  ],
+  "aiGuardrails": [
+    "Require the case regime and exact request text before a disclosure-specific answer; request service date, answer-due date, discovery cutoff and orders before any deadline conclusion.",
+    "Return request-type, issue, conditional assessment, facts still needed, proposed response/objection language with factual placeholders, partial-compliance scope, and only source IDs supplied in this dataset.",
+    "Do not fabricate record volumes, search efforts, privilege facts, deadlines, citations or client-specific facts. A needed fact must remain a question or bracketed placeholder.",
+    "Never recommend boilerplate objections to every request. Prefer answering an authorized request when no concrete defect is identified.",
+    "Keep Rule 193.3 privilege withholding separate from Rule 193.2 objections, and never assert work product against a proper Rule 194a disclosure.",
+    "Do not infer that all/any/every, supports your claim, legal conclusion, hearsay, confidential, equally available, or discovery ongoing establishes an objection without context.",
+    "For RFAs, emphasize a timely fair response and reasonable inquiry; do not equate a contested fact or law-to-fact issue with an invalid request.",
+    "Counsel must verify factual support, governing law, privilege exceptions, numerical counts and the final wording before service."
+  ],
+  "reviewedAt": "2026-10-14"
+}

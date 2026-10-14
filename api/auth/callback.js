@@ -1,7 +1,13 @@
 import pncHandler from '../../lib/pnc.js'
 import dropboxSignHandler from '../../lib/dropbox-sign.js'
 
+export const config = { maxDuration: 120 }
+
 export default async function handler(req, res) {
+  if (req.query?.integration === 'discovery_objections') {
+    const { default: discoveryHandler } = await import('../../lib/discovery-objections-handler.js')
+    return discoveryHandler(req, res)
+  }
   if (['pnc','client_intake'].includes(req.query?.integration)) return pncHandler(req,res)
   if (String(req.query?.integration || '').trim().toLowerCase() === 'dropbox_sign') {
     return dropboxSignHandler(req, res)
