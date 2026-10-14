@@ -2,13 +2,14 @@ import { ASSESSMENTS, DISCOVERY_TYPES } from './model.js'
 import { strengthLabel } from './strategy.js'
 import Authorities from './Authorities.jsx'
 
-export default function RequestReview({ request, result, drafts = {}, onChange, disabled, privilegePlacement, profile }) {
+export default function RequestReview({ request, result, analysisError, drafts = {}, onChange, disabled, privilegePlacement, profile }) {
   const label = `${DISCOVERY_TYPES.find(t=>t.id===request.type)?.label || request.type} ${request.number}`
   const assessment = result && ASSESSMENTS[result.assessment]
   function change(kind, patch) { onChange(kind,{...drafts[kind],...patch}) }
   function add(kind) { change(kind,{text:'',origin:'manual',selected:false,strength:null,strengthSource:'manual',strengthReason:''}) }
   return <article className="disco-card disco-request" data-request-id={request.id}>
-    <header><div className="disco-request-number">{label}</div>{assessment?<span className={`disco-badge ${assessment.color}`}>{assessment.label}</span>:<span className="disco-badge slate">Not analyzed</span>}</header><div className="disco-request-text">{request.request}</div>
+    <header><div className="disco-request-number">{label}</div>{assessment?<span className={`disco-badge ${assessment.color}`}>{assessment.label}</span>:<span className="disco-badge slate">{analysisError?'Needs retry or manual review':'Not analyzed'}</span>}</header><div className="disco-request-text">{request.request}</div>
+    {analysisError&&!result&&<div className="disco-request-error"><strong>No analysis accepted.</strong> {analysisError.message} <small>{analysisError.code} · {analysisError.attempt} attempt{analysisError.attempt===1?'':'s'}. Use the analysis button above to retry unfinished requests, or add your own language below.</small></div>}
     {result&&<div className="disco-result"><p><strong>Assessment. </strong>{result.reason}</p><Authorities ids={result.authorities}/>{result.factsNeeded?.length>0&&<section><h3>Facts to confirm</h3><ul>{result.factsNeeded.map((f,i)=><li key={i}>{f}</li>)}</ul></section>}<p><strong>Response guidance. </strong>{result.responseGuidance}</p>{result.withholding&&<p className="disco-message"><strong>Privilege procedure. </strong>{result.withholding}</p>}{result.screenedOut?.map((text,i)=><p className="disco-message" key={i}>{text}</p>)}{result.appliedRuleIds?.length>0&&<p className="disco-note">Personal examples used: {result.appliedRuleIds.map(id=>profile.rules.find(r=>r.id===id)?.title || id).join('; ')}</p>}{!result.objection&&!result.privilege&&<div className="disco-proper">No objection or privilege proposed at this threshold. You can add your own below.</div>}</div>}
     <div className="disco-manual-actions">{['privilege','objection'].map(kind=>!drafts[kind]&&<button key={kind} type="button" disabled={disabled} onClick={()=>add(kind)}>+ Add {kind}</button>)}</div>
     {['privilege','objection'].map(kind=>{

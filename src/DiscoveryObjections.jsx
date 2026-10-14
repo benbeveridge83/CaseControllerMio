@@ -10,6 +10,8 @@ import Authorities from './discovery/Authorities.jsx'
 import PersonalRules from './discovery/PersonalRules.jsx'
 import DiscoveryChat from './discovery/DiscoveryChat.jsx'
 import RequestReview from './discovery/RequestReview.jsx'
+import AnalysisProgress from './discovery/AnalysisProgress.jsx'
+import { runAnalysisQueue, discoveryApiError } from './discovery/analysisQueue.js'
 import './discoveryObjections.css'
 
 function RuleList({title,items=[]}) { return <section><h3>{title}</h3><ul>{items.map((item,i)=><li key={i}>{typeof item==='string'?item:item.text}</li>)}</ul></section> }
@@ -24,6 +26,7 @@ export default function DiscoveryObjections({session}) {
   const [personalState]=useState(()=>loadPersonalState(mioCloudStore))
   const [profile,setProfile]=useState(personalState.profile),[chatBusy,setChatBusy]=useState(false),[strategy,setStrategy]=useState(2),[privilegePlacement,setPrivilegePlacement]=useState('before_request')
   const [busy,setBusy]=useState(''),[progress,setProgress]=useState(''),[aiConfigured,setAiConfigured]=useState(null)
+  const [analysisJob,setAnalysisJob]=useState({phase:'idle',failures:{}})
   const controller=useRef(null),busyRef=useRef(false),uploadRef=useRef(null)
   const selectedRegime=REGIMES.find(r=>r.id===regime)
   const guide=LEGAL_DATA.types[type]
@@ -37,10 +40,11 @@ export default function DiscoveryObjections({session}) {
 
   async function api(body,signal) {
     const {data,error:authError}=await supabase.auth.getSession()
-    if(authError || !data?.session?.access_token || data.session.user?.id!==session?.user?.id) throw new Error('Sign in to Mio again to use discovery AI.')
+    if(authError || !data?.session?.access_token || data.session.user?.id!==session?.user?.id) throw Object.assign(new Error('Sign in to Mio again to use discovery AI.'),{status:401,code:'AUTH_REQUIRED',retryable:false})
+    if(signal?.aborted)throw new DOMException('Analysis stopped.','AbortError')
     const response=await fetch('/api/discovery-objections',{method:'POST',headers:{Authorization:`Bearer ${data.session.access_token}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal})
     const payload=await response.json().catch(()=>null)
-    if(!response.ok||!payload?.ok) throw new Error(payload?.error||'The discovery AI service is unavailable. The rules and Word recognition are still available.')
+    if(!response.ok||!payload?.ok) throw discoveryApiError(response,payload)
     return payload
   }
   useEffect(()=>{
@@ -50,7 +54,7 @@ export default function DiscoveryObjections({session}) {
     // This workspace is keyed to the authenticated user at its mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[])
-  function invalidate() { setResults({});setDrafts(invalidateAiDrafts);setNotice('');setError('') }
+  function invalidate() { setAnalysisJob({phase:'idle',failures:{}});setResults({});setDrafts(invalidateAiDrafts);setNotice('');setError('') }
   async function saveProfile(next) {
     if(busyRef.current||chatBusy)throw new Error('Wait for the current discovery action before saving guidance.')
     busyRef.current=true;setBusy('save-rules')
@@ -88,22 +92,19 @@ export default function DiscoveryObjections({session}) {
     if(busyRef.current||chatBusy||!requests.length||aiUnavailable)return
     busyRef.current=true;setBusy('analyze');setError('');setNotice('')
     const abort=new AbortController();controller.current=abort
-    const pending=requests.filter(r=>!results[r.id])
     try {
-      for(let i=0;i<pending.length;i+=3) {
-        const batch=pending.slice(i,i+3)
-        setProgress(`Analyzing requests ${completed+i+1}–${Math.min(requests.length,completed+i+batch.length)} of ${requests.length}…`)
-        const data=await api({action:'analyze',regime,level,context,strategy,personal:profile,requests:batch.map(({id,type,number,request,response})=>({id,type,number,request,response}))},abort.signal)
-        if(abort.signal.aborted)return
-        const next=Object.fromEntries(data.results.map(result=>[result.id,result]))
-        setResults(previous=>({...previous,...next}))
-        setDrafts(previous=>mergeAiDrafts(previous,data.results))
-      }
-      setNotice('Analysis complete. Review the strengths and authority, edit the language, then select objections and privileges to include.')
-    } catch(cause){if(!abort.signal.aborted)setError(cause.message+' Completed results remain below; retry to continue the remaining requests.')}
-    finally {busyRef.current=false;setBusy('');setProgress('')}
+      const outcome=await runAnalysisQueue({requests,completedIds:Object.keys(results),failures:analysisJob.failures,signal:abort.signal,
+        analyze:(request,{signal,retry})=>api({action:'analyze',regime,level,context,strategy,personal:profile,requests:[(({id,type,number,request,response})=>({id,type,number,request,response}))(request)],...(retry?{retry}:{})},signal),
+        onState:setAnalysisJob,
+        onResult:result=>{
+          setResults(previous=>({...previous,[result.id]:result}))
+          setDrafts(previous=>mergeAiDrafts(previous,[result]))
+        }
+      })
+      if(outcome.phase==='completed')setNotice('Analysis complete. Review the strengths and authority, edit the language, then select objections and privileges to include.')
+    } finally {busyRef.current=false;setBusy('');controller.current=null}
   }
-  function cancel() { controller.current?.abort();setNotice('Analysis stopped. Completed results remain available.');setProgress('') }
+  function cancel() { controller.current?.abort() }
   async function download() {
     setError('');setNotice('');setBusy('export');busyRef.current=true
     try {
@@ -152,8 +153,9 @@ export default function DiscoveryObjections({session}) {
 
       {aiConfigured===false&&<div className="disco-error">Mio’s AI service is not connected on the server. Rules, examples, and numbered Word recognition remain available; AI analysis needs the server’s OpenAI connection.</div>}
       {warnings.map((warning,i)=><div key={i} className="disco-message">{warning}</div>)}
-      {requests.length>0&&<><div className="disco-review-bar"><div><strong>Check the recognized pairs below</strong><small>Each result stays attached to its original request number and discovery type.</small></div><button type="button" className="disco-primary" disabled={locked||aiUnavailable||completed===requests.length} onClick={analyze}>{completed===requests.length?'All requests analyzed':completed?`Analyze ${requests.length-completed} remaining`:`Analyze ${requests.length} request${requests.length===1?'':'s'}`}</button>{busy==='analyze'&&<button type="button" onClick={cancel}>Stop analysis</button>}</div>
-      <div className="disco-request-list">{requests.map(request=><RequestReview key={request.id} request={request} result={results[request.id]} drafts={drafts[request.id]} disabled={locked} privilegePlacement={privilegePlacement} profile={profile} onChange={(kind,value)=>changeAnnotation(request.id,kind,value)}/>)}</div>
+      {requests.length>0&&<><div className="disco-review-bar"><div><strong>Check the recognized pairs below</strong><small>Each result stays attached to its original request number and discovery type.</small></div></div>
+      <AnalysisProgress job={analysisJob} total={requests.length} completed={completed} disabled={locked||aiUnavailable} onAnalyze={analyze} onStop={cancel}/>
+      <div className="disco-request-list">{requests.map(request=><RequestReview key={request.id} request={request} result={results[request.id]} analysisError={analysisJob.failures?.[request.id]} drafts={drafts[request.id]} disabled={locked} privilegePlacement={privilegePlacement} profile={profile} onChange={(kind,value)=>changeAnnotation(request.id,kind,value)}/>)}</div>
       <div className="disco-export"><div><strong>{chosen.objections} objections and {chosen.privileges} privileges selected</strong><label className="disco-label" htmlFor="disco-placement">Privilege placement in Word</label><select id="disco-placement" value={privilegePlacement} disabled={locked} onChange={e=>setPrivilegePlacement(e.target.value)}><option value="before_request">Before the request</option><option value="after_request">After the request, before objections</option></select><p className="disco-word-order"><b>Word order:</b> {privilegePlacement==='before_request'?'Privilege → Request → Objection → Response':'Request → Privilege → Objection → Response'}</p><p>Only selected entries are inserted. Labels are bold. Privileges may also require a withholding statement or log. Review the final copy before service.</p></div><button type="button" className="disco-primary" disabled={locked||Boolean(document?.hasTrackedChanges)||(!chosen.objections&&!chosen.privileges&&Boolean(document))} onClick={download}>{busy==='export'?'Preparing Word…':'Download Word response'}</button></div></>}
       <p className="disco-note">The uploaded file stays in this page’s memory. Clicking an AI action sends the recognized text to Mio’s AI service. Requests and drafts clear when you leave or refresh; download before leaving. Personal rules and recent chat are saved separately to your account.</p>
     </section>}

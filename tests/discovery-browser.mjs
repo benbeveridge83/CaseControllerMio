@@ -16,7 +16,8 @@ const b64 = value => Buffer.from(JSON.stringify(value)).toString('base64url'), e
 const session = { access_token: `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: id, email, role: 'authenticated', exp, aud: 'authenticated' })}.test-signature`, refresh_token: 'synthetic-test-token', expires_at: exp, expires_in: 3600, token_type: 'bearer', user }
 const context = await browser.newContext({ viewport: { width: 1440, height: 1050 }, acceptDownloads: true }), page = await context.newPage()
 const errors = [], calls = [], states = new Map()
-let failSecondBatch = true, analysisCount = 0, failChat = true, failProfileWrite = false, failChatWrite = false, holdProfileSave = true, releaseProfileSave, notifyProfileSave
+let queueScenario=false, holdFourth=false, failFourth=true, failFifth=true, releaseHeldAnalysis, notifyHeldAnalysis
+let analysisCount = 0, failChat = true, failProfileWrite = false, failChatWrite = false, holdProfileSave = true, releaseProfileSave, notifyProfileSave
 const profileSaveStarted = new Promise(resolve=>{notifyProfileSave=resolve})
 page.on('pageerror', error => errors.push(error.message))
 await page.route('**/*', async route => {
@@ -36,7 +37,14 @@ await page.route('**/*', async route => {
       }
       if (body.action === 'analyze') {
         analysisCount++
-        if (analysisCount === 2 && failSecondBatch) return respond({ ok: false, error: 'Synthetic temporary provider failure.' }, 502)
+        assert.equal(body.requests.length,1,'Each call must isolate one request')
+        if (!queueScenario && analysisCount === 2) return respond({ ok: false, error: 'Synthetic temporary provider failure.',code:'AI_UNAVAILABLE',retryable:true }, 502)
+        if(queueScenario){
+          const number=body.requests[0].number
+          if(number==='4'&&holdFourth){await new Promise(resolve=>{releaseHeldAnalysis=resolve;notifyHeldAnalysis()});return route.abort().catch(()=>{})}
+          if(number==='4'&&failFourth)return respond({ok:false,error:'Synthetic invalid result.',code:'AI_INVALID_RESULT',retryable:true},502)
+          if(number==='5'&&failFifth){failFifth=false;return route.fulfill({status:502,contentType:'text/html',body:'Bad Gateway'})}
+        }
         assert.equal(body.regime, 'family_current')
         assert.equal(body.personal.rules[0].title,'Attorney communications')
         assert.equal(body.strategy,2)
@@ -174,10 +182,11 @@ try {
   await second.getByLabel('Privilege for RFP 2',{exact:true}).fill('Manual privilege text for a confidential subset.')
   await second.getByLabel('Include this privilege before the request in Word').check()
   await page.getByRole('button', { name: 'Analyze 4 requests', exact: true }).click()
-  await page.getByRole('alert').filter({ hasText: 'Synthetic temporary provider failure' }).waitFor()
-  assert.equal(await page.locator('.disco-result').count(), 3)
-  failSecondBatch = false
-  await page.getByRole('button', { name: 'Analyze 1 remaining', exact: true }).click()
+  const progress=page.getByRole('region',{name:'Analysis progress'})
+  await progress.getByText('Running · waiting to retry',{exact:true}).waitFor()
+  await progress.getByText('1 of 4 analyzed',{exact:true}).waitFor()
+  await progress.getByText('3 remaining',{exact:true}).waitFor()
+  await progress.getByText('Synthetic temporary provider failure.',{exact:true}).waitFor()
   await page.getByRole('button', { name: 'All requests analyzed', exact: true }).waitFor()
   assert.equal(await page.locator('.disco-result').count(), 4)
   assert.equal(await page.locator('.disco-proper').count(), 2)
@@ -226,6 +235,44 @@ try {
   await page.getByRole('button',{name:/Analyze & draft/}).click()
   await page.getByLabel('Rules regime').selectOption('civil_current')
   assert.equal(await page.locator('.disco-result').count(), 0, 'A changed legal regime invalidates previous analysis')
+  // Reproduce the user's exact shape: three accepted, 22 remaining, then an isolated bad request.
+  await page.setViewportSize({width:1440,height:1050})
+  await page.getByLabel('Rules regime').selectOption('family_current')
+  await page.getByLabel('Objection drafting threshold',{exact:true}).fill('2')
+  await page.getByRole('button',{name:/Roggs Interrogatories/}).click()
+  const twentyFive=Array.from({length:25},(_,i)=>`INTERROGATORY NO. ${i+1}: Identify witness ${i+1}.\nRESPONSE: Witness ${i+1}.`).join('\n')
+  await page.getByLabel('Paste Roggs requests').fill(twentyFive)
+  await page.getByRole('button',{name:'Recognize pasted requests',exact:true}).click()
+  await page.getByText('25 requests recognized.',{exact:false}).waitFor()
+  queueScenario=true;holdFourth=true
+  const held=new Promise(resolve=>{notifyHeldAnalysis=resolve})
+  await page.getByRole('button',{name:'Analyze 25 requests',exact:true}).click()
+  await held
+  await progress.getByText('3 of 25 analyzed',{exact:true}).waitFor()
+  await progress.getByText('22 remaining',{exact:true}).waitFor()
+  await progress.getByText('Running',{exact:true}).waitFor()
+  await progress.scrollIntoViewIfNeeded()
+  await page.screenshot({path:'test-results/discovery-progress-running.png'})
+  await page.getByRole('button',{name:'Stop analysis',exact:true}).click()
+  await progress.getByText('Stopped · not running',{exact:true}).waitFor()
+  releaseHeldAnalysis();holdFourth=false
+  const resumeCallIndex=calls.length
+  await page.getByRole('button',{name:'Analyze 22 remaining',exact:true}).click()
+  await progress.getByText('Running · waiting to retry',{exact:true}).waitFor()
+  await page.getByRole('button',{name:'Analyze 1 remaining',exact:true}).waitFor()
+  await progress.getByText('24 of 25 analyzed',{exact:true}).waitFor()
+  await progress.getByText('Finished · some requests need retry',{exact:true}).waitFor()
+  assert.equal(await page.locator('.disco-result').count(),24)
+  assert.equal(await page.locator('.disco-request-error').count(),1)
+  assert.ok(calls.slice(resumeCallIndex).filter(c=>c.action==='analyze').every(c=>Number(c.requests[0].number)>=4),'Resume must not reanalyze completed requests')
+  await page.screenshot({path:'test-results/discovery-progress-retry.png'})
+  failFourth=false
+  await page.getByRole('button',{name:'Analyze 1 remaining',exact:true}).click()
+  await progress.getByText('25 of 25 analyzed',{exact:true}).waitFor()
+  await progress.getByText('0 remaining',{exact:true}).waitFor()
+  await progress.getByText('Complete · not running',{exact:true}).waitFor()
+  assert.equal(await page.locator('.disco-request-error').count(),0)
+  assert.equal(await page.locator('.disco-result').count(),25)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ typesAndRegimes: true, searchableExamples: true, wordPairs: 4, retryRemaining: true, properRequestsWithoutObjections: 2, placeholdersBlocked: true, objectionsExported: 2, privilegesExported:2, manualOverrides:true, savedRulesReload:true, chatRetryAndFollowup:true, thresholds:true, mobileOverflow: false, pageErrors: errors }))
-} finally { releaseProfileSave?.(); await browser.close(); await new Promise(resolve => server.httpServer.close(resolve)) }
+  console.log(JSON.stringify({ typesAndRegimes: true, searchableExamples: true, wordPairs: 4, retryRemaining: true, progressCounts:true, stopAndResume:true, twentyFiveRequests:true, failureIsolation:true, properRequestsWithoutObjections: 2, placeholdersBlocked: true, objectionsExported: 2, privilegesExported:2, manualOverrides:true, savedRulesReload:true, chatRetryAndFollowup:true, thresholds:true, mobileOverflow: false, pageErrors: errors }))
+} finally { releaseHeldAnalysis?.(); releaseProfileSave?.(); await browser.close(); await new Promise(resolve => server.httpServer.close(resolve)) }
