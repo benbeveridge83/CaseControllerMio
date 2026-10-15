@@ -14,6 +14,7 @@ import { CALENDAR_SHOW_ALL, calendarEventMatchesStatusFilters, calendarStatusHid
 import { mioCalendarEventChannel } from './mioCalendarEventChannel.js'
 import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
 import MioAgentPanel from './MioAgentPanel.jsx'
+import MatterClientInfo from './MatterClientInfo.jsx'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -58898,6 +58899,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
                     {[
                       ['matter', 'Matter Info'],
+                      ['client', 'Client Info'],
                       ['court', 'Court Info'],
                       ['parties', 'Parties and Counsels'],
                       ['prior', 'Prior Counsel'],
@@ -58906,6 +58908,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     ].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => setMatterWindowTab(key)} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: matterWindowTab === key ? '#2f6584' : 'white', color: matterWindowTab === key ? 'white' : '#222', fontWeight: matterWindowTab === key ? 'bold' : 'normal' }}>{label}</button>
                     ))}
+                  </div>
+
+                  <div hidden={matterWindowTab !== 'client'}>
+                    <MatterClientInfo key={matterForm.client_id || 'no-client'} clientId={matterForm.client_id} active={matterWindowTab === 'client'} supabase={supabase} onSaved={client => {
+                      setClients(current => current.map(row => row.id === client.id ? {...row, ...client} : row))
+                      setMatters(current => current.map(row => row.client_id === client.id ? {...row, clients: {...row.clients, ...client}} : row))
+                    }} />
                   </div>
 
                   {matterWindowTab === 'matter' && <>
@@ -59055,7 +59064,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   {matterWindowTab === 'thirdparties' && renderMatterThirdPartiesEditor()}
 
                   <div style={{ marginTop: 20 }}>
-                    <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>
+                    {matterWindowTab !== 'client' && <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>}
                     <button type="button" onClick={closeMatterWindow} style={{ marginLeft: 8 }}>Cancel</button>
                   </div>
                 </form>
@@ -63221,6 +63230,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
                     {[
                       ['matter', 'Matter Info'],
+                      ['client', 'Client Info'],
                       ['court', 'Court Info'],
                       ['parties', 'Parties and Counsels'],
                       ['prior', 'Prior Counsel'],
@@ -63229,6 +63239,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     ].map(([key, label]) => (
                       <button key={key} type="button" onClick={() => setMatterWindowTab(key)} style={{ padding: '7px 12px', border: '1px solid #c8d0d8', background: matterWindowTab === key ? '#2f6584' : 'white', color: matterWindowTab === key ? 'white' : '#222', fontWeight: matterWindowTab === key ? 'bold' : 'normal' }}>{label}</button>
                     ))}
+                  </div>
+
+                  <div hidden={matterWindowTab !== 'client'}>
+                    <MatterClientInfo key={matterForm.client_id || 'no-client'} clientId={matterForm.client_id} active={matterWindowTab === 'client'} supabase={supabase} onSaved={client => {
+                      setClients(current => current.map(row => row.id === client.id ? {...row, ...client} : row))
+                      setMatters(current => current.map(row => row.client_id === client.id ? {...row, clients: {...row.clients, ...client}} : row))
+                    }} />
                   </div>
 
                   {matterWindowTab === 'matter' && <>
@@ -63378,7 +63395,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   {matterWindowTab === 'thirdparties' && renderMatterThirdPartiesEditor()}
 
                   <div style={{ marginTop: 20 }}>
-                    <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>
+                    {matterWindowTab !== 'client' && <button type="submit">{editingMatterId ? 'Update Matter' : 'Add Matter'}</button>}
                     <button type="button" onClick={closeMatterWindow} style={{ marginLeft: 8 }}>Cancel</button>
                   </div>
                 </form>
