@@ -54,3 +54,15 @@ export const FEE_AGREEMENT_FIXED_FIELDS=['client_name','client_email','date','re
 export function feeAgreementCustomFields(fieldsJson){try{const fields=JSON.parse(fieldsJson||'[]');if(!Array.isArray(fields))return [];const seen=new Set(),out=[];for(const f of fields){if(f&&f.semantic&&!FEE_AGREEMENT_FIXED_FIELDS.includes(f.semantic)&&!seen.has(f.semantic)){seen.add(f.semantic);out.push(f)}}return out}catch{return []}}
 export function humanizeFieldName(s){return String(s||'').replace(/[_-]+/g,' ').replace(/^\s+|\s+$/g,'').replace(/\b\w/g,c=>c.toUpperCase())}
 
+
+// Older workflows kept only the latest status. Preserve it without guessing who received it.
+export function emailHistory(state={}) {
+ const rows=(Array.isArray(state.email_history)?state.email_history:[]).map(row=>({...row}))
+ for(const kind of ['consult','engage','retainer_email']) {
+  const old=state[kind+'_delivery']
+  if(!old||!['sent','sending','retry_approved'].includes(old.status))continue
+  const reference=old.reference||kind+':'+(old.at||'legacy')
+  if(!rows.some(row=>row.reference===reference))rows.push({...old,reference,kind,recipient:old.recipient||null,subject:old.subject||'',status:old.status==='retry_approved'?'unknown':old.status,legacy:true})
+ }
+ return rows
+}

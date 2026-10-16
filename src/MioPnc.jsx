@@ -1,6 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react'
 import {mioCloudStore,mioStorage} from './mioCloudRuntime.js'
-import {PNC_DEFAULTS,DEFAULT_INTAKES,pncStage,readyToClient,retainerAmountLocked,templateText,emailOK,zonedDateTime,feeAgreementCustomFields,humanizeFieldName} from './mioPncModel.js'
+import {PNC_DEFAULTS,DEFAULT_INTAKES,pncStage,readyToClient,retainerAmountLocked,templateText,emailOK,zonedDateTime,feeAgreementCustomFields,humanizeFieldName,emailHistory} from './mioPncModel.js'
 import './mioPnc.css'
 import {FeeAgreementPdfMapper} from './FeeAgreementPdfMapper.jsx'
 import {FeeAgreementPdfPreview} from './FeeAgreementPdfPreview.jsx'
@@ -9,33 +9,67 @@ const label=s=>String(s||'not_sent').replaceAll('_',' ')
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
 const settingKey='caseMioPncSettingsV313'
 const settings=()=>{try{return {...PNC_DEFAULTS,intakes:DEFAULT_INTAKES,...JSON.parse(mioStorage.getItem(settingKey)||'{}')}}catch{return {...PNC_DEFAULTS,intakes:DEFAULT_INTAKES}}}
-export function useMioPnc({session,enabled,matters,clients,refreshMatters,refreshClients,graphFetch,supabase,onCalendarSaved,onFinanceRefresh,intakeTemplates=[]}){
+export function useMioPnc({session,enabled,matters,clients,refreshMatters,refreshClients,graphFetch,ensureEmailAccess,emailAccount,supabase,onCalendarSaved,onFinanceRefresh,intakeTemplates=[]}){
  const [rows,setRows]=useState({}),[modal,setModal]=useState(null),[error,setError]=useState(''),[defaults,setDefaults]=useState(settings),[loading,setLoading]=useState(false)
- const latest=useRef();latest.current={session,matters,clients,refreshMatters,refreshClients,graphFetch,supabase,onCalendarSaved,onFinanceRefresh,rows,modal}
+ const [emailConnection,setEmailConnection]=useState({status:'idle',error:''})
+ const emailPreflight=useRef(null)
+ const latest=useRef();latest.current={session,matters,clients,refreshMatters,refreshClients,graphFetch,ensureEmailAccess,emailAccount,supabase,onCalendarSaved,onFinanceRefresh,rows,modal}
+ async function ensureEmailReady({interactive=false,matterId=latest.current.modal?.id,mode=latest.current.modal?.mode||'agreement'}={}){
+  if(emailPreflight.current)return emailPreflight.current
+  if(interactive&&matterId){try{sessionStorage.setItem('mio-pnc-email-return',JSON.stringify({owner:latest.current.session?.user?.id,id:matterId,mode,at:Date.now()}))}catch{}}
+  setEmailConnection({status:'connecting',error:''})
+  const task=(async()=>{
+   try{
+    if(!latest.current.ensureEmailAccess)throw Error('Microsoft email connection is unavailable. Reload Mio.')
+    await latest.current.ensureEmailAccess({allowInteractive:interactive})
+    try{sessionStorage.removeItem('mio-pnc-email-return')}catch{}
+    setEmailConnection({status:'ready',error:''})
+   }catch(e){setEmailConnection({status:'error',error:e.message});throw e}
+  })()
+  emailPreflight.current=task
+  try{return await task}finally{if(emailPreflight.current===task)emailPreflight.current=null}
+ }
+ function open(m,mode='agreement'){
+  setModal({id:m.id,mode})
+  if(pncStage(m)==='consult')void ensureEmailReady({interactive:true,matterId:m.id,mode}).catch(()=>{})
+ }
  async function api(action,body={}){const token=latest.current.session?.access_token;if(!token)throw Error('Sign in to Mio first.');const response=await fetch('/api/pnc',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({action,...body})});const data=await response.json().catch(()=>({error:'The PNC service did not return JSON. Check the deployment.'}));if(!response.ok||data.error)throw Error(data.error||'PNC request failed.');return data}
  function remember(data){if(data.workflow)setRows(old=>({...old,[data.workflow.matter_id]:data.workflow}));return data}
  async function load(){setLoading(true);try{const data=await api('list');setRows(Object.fromEntries((data.rows||[]).map(w=>[w.matter_id,w])));setError('')}catch(e){setError(e.message)}finally{setLoading(false)}}
- useEffect(()=>{setDefaults(settings());setRows({});setModal(null);setError('')},[session?.user?.id])
+ useEffect(()=>{setDefaults(settings());setRows({});setModal(null);setError('');setEmailConnection({status:'idle',error:''})},[session?.user?.id])
  useEffect(()=>{if(session?.user?.id&&enabled)void load()},[session?.user?.id,enabled])
+ useEffect(()=>{
+  if(!session?.user?.id)return
+  let pending;try{pending=JSON.parse(sessionStorage.getItem('mio-pnc-email-return')||'null');sessionStorage.removeItem('mio-pnc-email-return')}catch{}
+  if(pending?.owner===session.user.id&&pending.id&&Date.now()-pending.at<15*60*1000){
+   setModal({id:pending.id,mode:pending.mode||'agreement'})
+   void ensureEmailReady({interactive:false,matterId:pending.id}).catch(()=>{})
+  }
+ },[session?.user?.id])
  useEffect(()=>{if(!session?.user?.id)return;const changed=()=>{void latest.current.refreshClients();void latest.current.refreshMatters();void load()};window.addEventListener('mio-lead-converted',changed);return()=>window.removeEventListener('mio-lead-converted',changed)},[session?.user?.id])
  useEffect(()=>{if(!enabled||!session?.user?.id)return;const timer=setInterval(async()=>{if(document.hidden||latest.current.modal)return;for(const w of Object.values(latest.current.rows)){if(!pncStage(latest.current.matters.find(m=>m.id===w.matter_id)))continue;try{remember(await api('refresh',{matter_id:w.matter_id,sync:false}))}catch{}}},120000);return()=>clearInterval(timer)},[enabled,session?.user?.id])
  async function run(action,body){const data=remember(await api(action,body));if(data.matter)await latest.current.refreshMatters();if((action==='refresh'||action==='advance'&&data.matter?.matter_status==='Client-Need to Draft')&&latest.current.onFinanceRefresh)await latest.current.onFinanceRefresh();return data}
- async function create(form){const data=remember(await api('create',form));await Promise.all([latest.current.refreshClients(),latest.current.refreshMatters()]);setModal({id:data.workflow.matter_id});return data}
+ async function create(form){const data=remember(await api('create',form));await Promise.all([latest.current.refreshClients(),latest.current.refreshMatters()]);setModal({id:data.workflow.matter_id});void ensureEmailReady({interactive:true,matterId:data.workflow.matter_id}).catch(()=>{});return data}
  async function saveSettings(value){await mioCloudStore.saveNow(settingKey,JSON.stringify(value),{throwOnError:true});setDefaults(value)}
- async function sendMessage(w,kind){
+ async function sendMessage(w,kind,{resend=false}={}){
   const c=w.config,m=latest.current.matters.find(x=>x.id===w.matter_id);if(!m||!emailOK(m.clients?.email))throw Error('A valid client email is required.')
+  const previous=w.state[kind+'_delivery']
+  if(previous?.status==='sent'&&!resend)throw Error('This email was already sent. Use Send again to send another copy.')
+  if(previous?.status==='sending')throw Error('The prior email outcome is uncertain. Check Sent Items before retrying.')
+  // Authentication must finish before claiming a delivery, so redirects never strand a send.
+  await ensureEmailReady({interactive:kind!=='consult'})
   if(c.include_date&&kind==='consult'&&w.state.calendar_delivery?.status!=='sent'){
    const start=zonedDateTime(c.consultation_start,c.time_zone||'America/Chicago'),duration=Number(c.duration||60);if(duration<5||duration>480)throw Error('Consultation duration must be 5 to 480 minutes.')
    const end=new Date(start.getTime()+duration*60000)
    if(!w.state.calendar_delivery||w.state.calendar_delivery.status==='failed'){
-    const overlap=await latest.current.graphFetch('/me/calendarView?startDateTime='+encodeURIComponent(start.toISOString())+'&endDateTime='+encodeURIComponent(end.toISOString())+'&$select=subject,start,end,showAs,isCancelled',{allowInteractive:true})
+    const overlap=await latest.current.graphFetch('/me/calendarView?startDateTime='+encodeURIComponent(start.toISOString())+'&endDateTime='+encodeURIComponent(end.toISOString())+'&$select=subject,start,end,showAs,isCancelled',{allowInteractive:false})
     const conflicts=(overlap?.value||[]).filter(x=>!x.isCancelled&&x.showAs!=='free')
     if(conflicts.length&&!window.confirm('Your calendar has '+conflicts.length+' overlapping event(s). Schedule this consultation anyway?'))throw Error('Scheduling cancelled. No invitation was sent.')
    }
    w=(await run('claim_delivery',{matter_id:w.matter_id,kind:'calendar'})).workflow
    const requestId=w.state.calendar_delivery.reference
    let event
-   try{event=await latest.current.graphFetch('/me/events',{method:'POST',allowInteractive:true,maxRetries:0,body:JSON.stringify({transactionId:requestId,subject:'Consultation - '+m.name,body:{contentType:'Text',content:templateText(c.consultation_body,values(w,m))},start:{dateTime:start.toISOString(),timeZone:'UTC'},end:{dateTime:end.toISOString(),timeZone:'UTC'},location:{displayName:c.location||''},attendees:[{emailAddress:{address:m.clients.email,name:[m.clients.first_name,m.clients.last_name].join(' ')},type:'required'}]})});if(!event?.id)throw Error('Calendar did not return an event ID.')
+   try{event=await latest.current.graphFetch('/me/events',{method:'POST',allowInteractive:false,maxRetries:0,body:JSON.stringify({transactionId:requestId,subject:'Consultation - '+m.name,body:{contentType:'Text',content:templateText(c.consultation_body,values(w,m))},start:{dateTime:start.toISOString(),timeZone:'UTC'},end:{dateTime:end.toISOString(),timeZone:'UTC'},location:{displayName:c.location||''},attendees:[{emailAddress:{address:m.clients.email,name:[m.clients.first_name,m.clients.last_name].join(' ')},type:'required'}]})});if(!event?.id)throw Error('Calendar did not return an event ID.')
     w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'sent',reference:event.id,local_id:requestId})).workflow
    }catch(e){throw Error('Calendar outcome needs review. Retry uses the same calendar transaction ID; do not create a separate event. '+e.message)}
   }
@@ -46,15 +80,34 @@ export function useMioPnc({session,enabled,matters,clients,refreshMatters,refres
    const {error}=await latest.current.supabase.from('calendar_events').upsert(event,{onConflict:'id'});if(error)throw Error('Invitation was sent, but the Mio calendar copy failed. Retry will save the copy without sending another invitation. '+error.message)
    latest.current.onCalendarSaved(event);w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'sent',reference:w.state.calendar_delivery.reference,local_id:event.id,local_saved:true})).workflow
   }
-  if(w.state[kind+'_delivery']?.status==='sent')return {workflow:w}
-  w=(await run('claim_delivery',{matter_id:w.matter_id,kind})).workflow
-  const v=values(w,m),subject=templateText(c[kind+'_subject'],v),text=templateText(c[kind+'_body'],v),sender=String(c.sender_email||'billing@beveridgelawfirm.com').trim(),signedIn=String(latest.current.session?.user?.email||'').toLowerCase(),base=(!sender.toLowerCase()||sender.toLowerCase()===signedIn)?'/me':'/users/'+encodeURIComponent(sender)
-  try{await latest.current.graphFetch(base+'/sendMail',{method:'POST',allowInteractive:true,maxRetries:0,body:JSON.stringify({message:{subject,body:{contentType:'HTML',content:'<div style="white-space:pre-wrap">'+esc(text).replace(/https:\/\/[^\s<>]+/g,u=>'<a href="'+u+'">'+(/secure\.(lawpay|affinipay)\.com/.test(u)?'Click here to pay':u)+'</a>')+'</div>'},toRecipients:[{emailAddress:{address:m.clients.email}}]},saveToSentItems:true})})}catch(e){throw Error('Email delivery is uncertain. Check Sent Items before using the retry control; the payment and signature requests have been preserved. '+e.message)}
-  return run('record_delivery',{matter_id:w.matter_id,kind,status:'sent',reference:w.state[kind+'_delivery'].reference})
+  const v=values(w,m),subject=templateText(c[kind+'_subject'],v),text=templateText(c[kind+'_body'],v).replace(/\n{3,}/g,'\n\n'),sender=String(c.sender_email||'billing@beveridgelawfirm.com').trim(),signedIn=String(latest.current.emailAccount||latest.current.session?.user?.email||'').toLowerCase(),base=(!sender.toLowerCase()||sender.toLowerCase()===signedIn)?'/me':'/users/'+encodeURIComponent(sender)
+  w=(await run('claim_delivery',{matter_id:w.matter_id,kind,resend,previous_reference:previous?.reference||'',recipient:m.clients.email,subject,body:text})).workflow
+  const claimed=w.state[kind+'_delivery']
+  if(claimed?.status!=='sending')throw Error('The email was not reserved for sending. Reload its history.')
+  try{await latest.current.graphFetch(base+'/sendMail',{method:'POST',allowInteractive:false,maxRetries:0,body:JSON.stringify({message:{subject,body:{contentType:'HTML',content:emailHtml(text)},toRecipients:[{emailAddress:{address:claimed.recipient||m.clients.email}}]},saveToSentItems:true})})}catch(e){throw Error('Email delivery is uncertain. Check Sent Items before using the retry control; the payment and signature requests have been preserved. '+e.message)}
+  try{return await run('record_delivery',{matter_id:w.matter_id,kind,status:'sent',reference:claimed.reference})}
+  catch(e){throw Error('Microsoft accepted the email, but Mio could not save its final status. Check Sent Items before retrying. '+e.message)}
  }
- return {rows,modal,setModal,error,loading,defaults,run,load,create,saveSettings,sendMessage,clients,matters,intakeTemplates,openNew:()=>setModal({new:true,key:crypto.randomUUID()}),open:(m,mode='agreement')=>setModal({id:m.id,mode}),supabase}
+
+ return {rows,modal,setModal,error,loading,defaults,run,load,create,saveSettings,sendMessage,clients,matters,intakeTemplates,openNew:()=>setModal({new:true,key:crypto.randomUUID()}),open,supabase,emailConnection,ensureEmailReady,emailAccount}
 }
 function values(w,m){const c=w.config||{},s=w.state||{},v={client_name:[m?.clients?.first_name,m?.clients?.last_name].filter(Boolean).join(' ')||m?.name,consult_fee:money(c.consult_fee),retainer:money(c.retainer),payment_link:s[pncStage(m)==='consult'?'consult_request':'retainer_request']?.url||'',signature_link:s.signature?.url||'',intake_link:s.intake?.url||'',consultation_date:c.consultation_start?c.consultation_start.replace('T',' ')+' ('+(c.time_zone||'America/Chicago')+')':'',location:c.location||''};v.intake_section=c.include_intake?templateText(c.intake_body,v):'';v.consultation_section=c.include_date?templateText(c.consultation_body,v):'';return v}
+function emailParts(text){return String(text||'').replace(/\n{3,}/g,'\n\n').split(/(https:\/\/[^\s<>]+)/g)}
+function linkTitle(url){return /secure\.(lawpay|affinipay)\.com/.test(url)?'Pay securely':url.includes('/#client-intake/')?'Complete intake form':url}
+function emailHtml(text){return '<div style="white-space:pre-wrap;text-align:left">'+emailParts(text).map(part=>part.startsWith('https://')?'<a href="'+esc(part)+'">'+esc(linkTitle(part))+'</a>':esc(part)).join('')+'</div>'}
+function EmailPreview({text}){return <div className="mio-pnc-preview">{emailParts(text).map((part,index)=>part.startsWith('https://')?<a key={index} href={part} target="_blank" rel="noreferrer">{linkTitle(part)}</a>:part)}</div>}
+function EmailHistory({state}){
+ const history=emailHistory(state).slice().reverse()
+ return <section className="pnc-email-history" aria-label="Email history"><h3>Sent history</h3>
+  <p>Sent means Microsoft accepted the email for sending; it does not confirm delivery to the recipient's inbox.</p>
+  {!history.length?<p>No emails have been recorded for this matter.</p>:<div className="pnc-scroll"><table><thead><tr><th>Time (Central)</th><th>To / From</th><th>Subject</th><th>Outcome</th></tr></thead><tbody>{history.map(row=><tr key={row.reference}>
+   <td>{row.at?new Date(row.at).toLocaleString('en-US',{timeZone:'America/Chicago'}):'Time not recorded'}</td>
+   <td><strong>{row.recipient||'Recipient not recorded'}</strong><br/><small>{row.sender?'From: '+row.sender:'Sender not recorded'}</small></td>
+   <td>{row.subject||'Subject not recorded'}{row.body&&<details><summary>View message</summary><EmailPreview text={row.body}/></details>}{row.legacy&&<small className="pnc-legacy-note">Earlier send — only previously recorded details are available.</small>}</td>
+   <td>{row.status==='sent'?'Sent':row.status==='sending'?'Unconfirmed — check Sent Items':row.status==='unknown'?'Unconfirmed — retry approved':label(row.status)}</td>
+  </tr>)}</tbody></table></div>}
+ </section>
+}
 function Field({name,children}){return <label className="mio-pnc-field"><span>{name}</span>{React.isValidElement(children)?React.cloneElement(children,{'aria-label':name}):children}</label>}
 function Dialog({title,children,onClose,busy}){return <div className="mio-pnc-overlay"><section role="dialog" aria-modal="true" aria-label={title} className="mio-pnc-dialog"><header><h2>{title}</h2><button type="button" onClick={onClose} disabled={busy}>Close</button></header>{children}</section></div>}
 function Status({title,value}){return <span className="mio-pnc-badge" data-state={value||'not_sent'}>{title}: <b>{label(value)}</b></span>}
@@ -81,36 +134,51 @@ function NewPnc({ctrl,caseTypes}){
 }
 function Editor({ctrl,matter:m,initial}){
  const configBaseline=useRef(initial.config)
+ const [tab,setTab]=useState('compose')
  const [c,setC]=useState(()=>({...ctrl.defaults,...initial.config})),[revision,setRevision]=useState(initial.revision),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('')
  const w=ctrl.rows[m.id]||initial,s=w.state||{},stage=pncStage(m),templates=[...(ctrl.defaults.intakes||DEFAULT_INTAKES),...ctrl.intakeTemplates.filter(t=>t.is_active!==false)],kind=stage==='consult'?'consult':'engage'
  const set=(k,v)=>setC(x=>({...x,[k]:v}));const input=(key,name,type='text',disabled=false)=><Field name={name}><input type={type} value={c[key]??''} disabled={disabled} onChange={e=>set(key,e.target.value)}/></Field>
  async function action(fn){if(busy)return;setBusy(true);setError('');setNotice('');try{const r=await fn();if(r?.workflow)setRevision(r.workflow.revision);return r}catch(e){setError(e.message);await ctrl.load()}finally{setBusy(false)}}
  async function save(){if(w.revision!==revision&&JSON.stringify(w.config)!==JSON.stringify(configBaseline.current))throw Error('This draft changed in another window. Close and reopen it before saving.');const r=await ctrl.run('save',{matter_id:m.id,revision:w.revision,config:c});configBaseline.current=r.workflow.config;setRevision(r.workflow.revision);return r.workflow}
  async function prepare(){await save();const r=await ctrl.run(stage==='consult'?'prepare_consult':'prepare_engagement',{matter_id:m.id});setRevision(r.workflow.revision);setNotice('Links prepared. Review the message below before sending.');return r}
- async function send(){const r=await prepare();if(!window.confirm('Send '+(stage==='consult'?'this consultation email'+(c.include_date?' and calendar invitation':''):'the fee agreement through Dropbox Sign and this retainer email')+' to '+m.clients.email+'?'))return r
+ async function send(){const resend=s[kind+'_delivery']?.status==='sent';const r=await prepare();if(!window.confirm((resend?'Send another copy of ':'Send ')+(stage==='consult'?'this consultation email'+(c.include_date&&s.calendar_delivery?.status!=='sent'?' and calendar invitation':''):'the fee agreement through Dropbox Sign and this retainer email')+' to '+m.clients.email+'?'))return r
   let sendW=r.workflow
   if(stage==='engage'){const signed=await ctrl.run('send_signature',{matter_id:m.id,confirmed:true});sendW=signed.workflow;setRevision(sendW.revision)}
-  const sent=await ctrl.sendMessage(sendW,kind);setNotice('Sent. This row will show provider payment and signature status after Refresh status.');return sent
+  const sent=await ctrl.sendMessage(sendW,kind,{resend});setNotice('Sent to '+m.clients.email+'. The attempt is recorded in Sent history.');return sent
  }
  async function sendAgreement(){await save();if(!window.confirm('Send the fee agreement through Dropbox Sign to '+m.clients.email+'?'))return;const r=await ctrl.run('send_signature',{matter_id:m.id,confirmed:true});setNotice('Fee agreement sent for e-signature.');return r}
  async function sendRetainer(){const r=await prepare();if(!window.confirm('Send the retainer payment email shown below to '+m.clients.email+'?'))return;const sent=await ctrl.sendMessage(r.workflow,'retainer_email');setNotice('Retainer payment email sent.');return sent}
  const reset=async kind=>{if(!window.confirm('Check Sent Items / Dropbox Sign first. Confirm no '+kind+' email was sent and allow another attempt?'))return;return ctrl.run('reset_delivery',{matter_id:m.id,kind,confirmed:true})}
  return <Dialog title={stage==='consult'?'Consultation - '+m.name:'Fee agreement and retainer - '+m.name} busy={busy} onClose={()=>ctrl.setModal(null)}>
-  <p><b>{m.matter_status}</b> / {m.clients?.email}</p><fieldset disabled={busy}><div className="mio-pnc-grid">
-  {stage==='consult'?<>{input('consult_fee','Consultation fee (operating account)','number',!!s.consult_request)}<Field name="Include intake form"><input type="checkbox" checked={!!c.include_intake} onChange={e=>set('include_intake',e.target.checked)} disabled={!!s.intake}/></Field>{c.include_intake&&<Field name="Intake form"><select disabled={!!s.intake} value={c.intake_template?.id||''} onChange={e=>set('intake_template',templates.find(t=>t.id===e.target.value))}><option value="">Select form</option>{templates.map((t,i)=><option key={t.id+':'+i} value={t.id}>{t.name}</option>)}</select></Field>}<Field name="Add consultation to calendar and invite client"><input type="checkbox" checked={!!c.include_date} disabled={!!s.calendar_delivery} onChange={e=>set('include_date',e.target.checked)}/></Field>{c.include_date&&<>{input('consultation_start','Consultation date and time','datetime-local',!!s.calendar_delivery)}{input('duration','Duration (minutes)','number',!!s.calendar_delivery)}{input('time_zone','Time zone (IANA, e.g. America/Chicago)','text',!!s.calendar_delivery)}{input('location','Location or video meeting link','text',!!s.calendar_delivery)}</>}</>:<>{input('retainer','Retainer amount (trust account)','number',retainerAmountLocked(s))}{input('signature_template_id','Dropbox Sign fee-agreement template ID','text',!!s.signature?.id)}{input('signer_role','Client signer role (exact template role)','text',!!s.signature?.id)}<Field name="Additional agreement merge fields (JSON)"><textarea disabled={!!s.signature?.id} rows={3} value={c.signature_fields||'{}'} onChange={e=>set('signature_fields',e.target.value)}/></Field><p>Use a Dropbox Sign template configured with the client as the only signer. Edit default template and retainer in PNC Settings.</p></>}
-  {input(kind+'_subject','Email subject')}<Field name="Email template"><textarea rows={7} value={c[kind+'_body']||''} onChange={e=>set(kind+'_body',e.target.value)}/></Field>{stage==='consult'&&c.include_date&&<Field name="Consultation wording"><textarea rows={3} value={c.consultation_body||''} onChange={e=>set('consultation_body',e.target.value)}/></Field>}{stage==='consult'&&c.include_intake&&<Field name="Intake wording"><textarea rows={3} value={c.intake_body||''} onChange={e=>set('intake_body',e.target.value)}/></Field>}
+  {stage==='consult'?<>
+   <div className="pnc-recipient-bar"><div><small>TO</small><strong>{m.clients?.email||'Email address required'}</strong><span>{[m.clients?.first_name,m.clients?.last_name].filter(Boolean).join(' ')}</span></div><div><small>FROM</small><span>{c.sender_email||'billing@beveridgelawfirm.com'}</span></div></div>
+   <div className="pnc-email-connection" data-state={ctrl.emailConnection?.status} role="status">
+    {ctrl.emailConnection?.status==='ready'?'Outlook ready'+(ctrl.emailAccount?' · '+ctrl.emailAccount:''):ctrl.emailConnection?.status==='connecting'?'Connecting to Outlook…':'Outlook sign-in required'}
+    {ctrl.emailConnection?.status!=='ready'&&ctrl.emailConnection?.status!=='connecting'&&<button type="button" disabled={busy} onClick={()=>ctrl.ensureEmailReady({interactive:true,matterId:m.id}).catch(()=>{})}>Connect Outlook</button>}
+   </div>
+   {ctrl.emailConnection?.error&&<p role="alert" className="mio-pnc-error">{ctrl.emailConnection.error}</p>}
+   <div className="pnc-compose-tabs" role="tablist" aria-label="Consultation email"><button role="tab" aria-selected={tab==='compose'} onClick={()=>setTab('compose')}>Compose email</button><button role="tab" aria-selected={tab==='history'} onClick={()=>setTab('history')}>Sent history ({emailHistory(s).length})</button></div>
+   {s.consult_delivery?.status==='sent'&&<p className="pnc-send-note">A consultation email was previously sent{ s.consult_delivery.recipient?' to '+s.consult_delivery.recipient:''}. You can send another copy to the address shown above.</p>}
+   {s.calendar_delivery?.status==='sent'&&<p className="pnc-send-note">The calendar invitation already exists. Sending another email will not resend or change that invitation; update its attendee in Outlook if the email address changed.</p>}
+  </>:<p><b>{m.matter_status}</b> / {m.clients?.email}</p>}
+  {stage==='consult'&&tab==='history'&&<EmailHistory state={s}/>}
+  <div hidden={stage==='consult'&&tab!=='compose'} className={stage==='consult'?'pnc-consult-compose':''}>
+  <fieldset disabled={busy}><div className="mio-pnc-grid">
+  {stage==='consult'?<>{input('consult_fee','Consultation fee (operating account)','number',!!s.consult_request)}<Field name="Include intake form"><input type="checkbox" checked={!!c.include_intake} onChange={e=>set('include_intake',e.target.checked)}/></Field>{c.include_intake&&<Field name="Intake form"><select disabled={!!s.intake} value={c.intake_template?.id||''} onChange={e=>set('intake_template',templates.find(t=>t.id===e.target.value))}><option value="">Select form</option>{templates.map((t,i)=><option key={t.id+':'+i} value={t.id}>{t.name}</option>)}</select></Field>}<Field name="Add consultation to calendar and invite client"><input type="checkbox" checked={!!c.include_date} disabled={!!s.calendar_delivery} onChange={e=>set('include_date',e.target.checked)}/></Field>{c.include_date&&<>{input('consultation_start','Consultation date and time','datetime-local',!!s.calendar_delivery)}{input('duration','Duration (minutes)','number',!!s.calendar_delivery)}{input('time_zone','Time zone (IANA, e.g. America/Chicago)','text',!!s.calendar_delivery)}{input('location','Location or video meeting link','text',!!s.calendar_delivery)}</>}</>:<>{input('retainer','Retainer amount (trust account)','number',retainerAmountLocked(s))}{input('signature_template_id','Dropbox Sign fee-agreement template ID','text',!!s.signature?.id)}{input('signer_role','Client signer role (exact template role)','text',!!s.signature?.id)}<Field name="Additional agreement merge fields (JSON)"><textarea disabled={!!s.signature?.id} rows={3} value={c.signature_fields||'{}'} onChange={e=>set('signature_fields',e.target.value)}/></Field><p>Use a Dropbox Sign template configured with the client as the only signer. Edit default template and retainer in PNC Settings.</p></>}
+  </div><div className="pnc-email-writing">{input(kind+'_subject','Email subject')}<Field name="Email message"><textarea rows={8} value={c[kind+'_body']||''} onChange={e=>set(kind+'_body',e.target.value)}/></Field>{stage==='consult'&&c.include_date&&<Field name="Consultation wording"><textarea rows={3} value={c.consultation_body||''} onChange={e=>set('consultation_body',e.target.value)}/></Field>}{stage==='consult'&&c.include_intake&&<Field name="Intake wording"><textarea rows={3} value={c.intake_body||''} onChange={e=>set('intake_body',e.target.value)}/></Field>}
   </div></fieldset>
-  <div className="mio-pnc-actions"><button disabled={busy} onClick={()=>action(async()=>({workflow:await save()}))}>Save draft</button><button disabled={busy} onClick={()=>action(prepare)}>Prepare links and preview</button><button disabled={busy||s[kind+'_delivery']?.status==='sent'||s[kind+'_delivery']?.status==='sending'} onClick={()=>action(send)}>{stage==='consult'?'Send consultation email':'Send fee agreement and retainer email'}</button><button disabled={busy} onClick={()=>action(()=>ctrl.run('refresh',{matter_id:m.id,sync:true}))}>Refresh status</button></div>
+  <div className="mio-pnc-actions"><button disabled={busy} onClick={()=>action(async()=>({workflow:await save()}))}>Save draft</button><button disabled={busy} onClick={()=>action(prepare)}>Prepare links and preview</button><button className="pnc-primary" disabled={busy||s[kind+'_delivery']?.status==='sending'||(stage==='consult'&&ctrl.emailConnection?.status!=='ready')} onClick={()=>action(send)}>{stage==='consult'?(s.consult_delivery?.status==='sent'?'Send again':'Send consultation email'):'Send fee agreement and retainer email'}</button><button disabled={busy} onClick={()=>action(()=>ctrl.run('refresh',{matter_id:m.id,sync:true}))}>Refresh status</button></div>
   {stage==='engage'&&<><div className="mio-pnc-actions"><button disabled={busy||!!s.signature?.id||!!s.signature_sending} onClick={()=>action(sendAgreement)}>Send fee agreement for e-signature</button><button disabled={busy||['sent','sending'].includes(s.retainer_email_delivery?.status)} onClick={()=>action(sendRetainer)}>Send retainer payment link</button><Status title="Retainer email" value={s.retainer_email_delivery?.status}/></div><details><summary>Retainer-only email preview</summary>{input('retainer_email_subject','Retainer email subject')}<Field name="Retainer email template"><textarea rows={5} value={c.retainer_email_body||''} onChange={e=>set('retainer_email_body',e.target.value)}/></Field><pre className="mio-pnc-preview">{templateText(c.retainer_email_body,values({...w,config:c},m))}</pre></details>{s.retainer_email_delivery?.status==='sending'&&<p role="alert">Check Sent Items before retrying. <button disabled={busy} onClick={()=>action(()=>reset('retainer_email'))}>Verified not sent: allow retry</button></p>}</>}
   {s[kind+'_delivery']?.status==='sending'&&<p className="mio-pnc-error">A prior email attempt has an uncertain outcome. Check Sent Items. <button disabled={busy} onClick={()=>action(()=>reset(kind))}>Verified not sent: allow retry</button></p>}
   {(s.consult_preparing||s.retainer_preparing)&&<p className="mio-pnc-error">A payment-link preparation did not finish. No card charge was initiated by Mio. <button disabled={busy} onClick={()=>action(async()=>{if(window.confirm('Allow payment-link preparation to be retried? Existing matching links are reused.'))return ctrl.run('reset_preparation',{matter_id:m.id,kind:s.consult_preparing?'consult':'retainer',confirmed:true})})}>Recover link preparation</button></p>}
   {s.signature_sending&&<p className="mio-pnc-error">Dropbox Sign send needs reconciliation. <button onClick={()=>action(async()=>{const id=window.prompt('Paste the existing Dropbox Sign request ID after checking its status:');return id?ctrl.run('link_signature',{matter_id:m.id,signature_request_id:id}):null})}>Link existing signature request</button></p>}
   {notice&&<p role="status">{notice}</p>}{error&&<p role="alert" className="mio-pnc-error">{error}</p>}{s.warnings?.map(x=><p key={x} className="mio-pnc-error">{x}</p>)}
-  <details open><summary>Email preview</summary><p><b>{templateText(c[kind+'_subject'],values({...w,config:c},m))}</b></p><pre className="mio-pnc-preview">{templateText(c[kind+'_body'],values({...w,config:c},m))}</pre></details>
+  <details open><summary>Email preview</summary><p><b>{templateText(c[kind+'_subject'],values({...w,config:c},m))}</b></p><EmailPreview text={templateText(c[kind+'_body'],values({...w,config:c},m))}/></details>
   <div className="mio-pnc-actions"><Status title="Consult fee" value={s.consult?.status}/><Status title="Intake" value={s.intake?.status||'not_requested'}/><Status title="Agreement" value={s.signature?.status}/><Status title="Retainer" value={s.retainer?.status}/></div>
   {s.retainer&&<p>Retainer: paid {money(s.retainer.paid_cents/100)}, processing {money(s.retainer.processing_cents/100)} of {money(s.retainer.required_cents/100)}.</p>}
   {s.intake?.id&&<button disabled={busy} onClick={()=>action(async()=>{const data=await ctrl.run('intake_answers',{matter_id:m.id});window.alert(Object.entries(data.answers||{}).map(([k,v])=>k+': '+(typeof v==='object'?JSON.stringify(v):v)).join('\n\n')||'No intake submitted yet.')})}>View intake answers</button>}
   <hr/><button disabled={busy||(stage==='engage'&&!readyToClient(s))} onClick={()=>action(async()=>{if(!window.confirm(stage==='consult'?'The client has told you to move forward. Change status to Consult- Need to Client?':'Verify the signed agreement and full paid/processing retainer, then change status to Client-Need to Draft?'))return;return ctrl.run('advance',{matter_id:m.id,confirmed:true})})}>{stage==='consult'?'Client wants to move forward':'Move to Client-Need to Draft'}</button><p>{stage==='engage'?'Both the signed agreement and full retainer paid or processing are required. The server rechecks them before advancing.':'Consultation payment and intake are tracked independently. Advancing is your explicit decision.'}</p>
+  </div>
  </Dialog>
 }
 function PncModalInner({ctrl,matter:m,workflow:w,mode}){

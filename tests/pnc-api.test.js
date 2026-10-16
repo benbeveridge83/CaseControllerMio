@@ -31,3 +31,62 @@ test('missing request and changed amount fail closed',async()=>{const f=fixture(
 test('provider outage and test-mode signatures cannot satisfy final gate',async()=>{const f=fixture();f.m.matter_status=model.CONSULT_STATUS;await f.call('prepare_engagement');f.w.state.signature={id:'sign',status:'signed'};const r=f.requests[0];f.transactions=[{gateway_transaction_id:'tx',reference:r.reference,account_key:'trust',currency:'USD',amount_cents:500000,status:'paid'}];f.failProvider=true;assert.equal((await f.call('advance',{confirmed:true})).code,409);assert.equal(f.w.state.signature.status,'unverified');f.failProvider=false;f.signComplete=true;f.testMode=true;assert.equal((await f.call('advance',{confirmed:true})).code,409)})
 test('email retries need review and calendar retries reuse transaction ID',async()=>{const f=fixture();const a=await f.call('claim_delivery',{kind:'calendar'}),b=await f.call('claim_delivery',{kind:'calendar'});assert.equal(a.body.workflow.state.calendar_delivery.reference,b.body.workflow.state.calendar_delivery.reference);assert.equal((await f.call('claim_delivery',{kind:'consult'})).code,200);assert.equal((await f.call('claim_delivery',{kind:'consult'})).code,409);assert.equal((await f.call('reset_delivery',{kind:'consult',confirmed:true})).code,200);assert.equal((await f.call('claim_delivery',{kind:'consult'})).code,200)})
 test('outbound credit never counts as incoming retainer',()=>{const r={id:'r',reference:'ref',amount_cents:500000,account_key:'trust'};const t={gateway_transaction_id:'credit',reference:'ref',amount_cents:500000,account_key:'trust',currency:'USD',transaction_type:'CREDIT',status:'COMPLETED'};assert.notEqual(model.paymentEvidence([t],r).status,'paid')})
+
+test('confirmed consultation resend records both recipients and preserves the first send',async()=>{
+ const f=fixture(),first=await f.call('claim_delivery',{kind:'consult',recipient:f.m.clients.email,subject:'Consultation',body:'First message'})
+ const reference=first.body.workflow.state.consult_delivery.reference
+ assert.equal((await f.call('record_delivery',{kind:'consult',status:'sent',reference})).code,200)
+ f.m.clients.email='corrected@example.test'
+ assert.equal((await f.call('claim_delivery',{kind:'consult',recipient:f.m.clients.email})).code,409)
+ const second=await f.call('claim_delivery',{kind:'consult',resend:true,previous_reference:reference,recipient:f.m.clients.email,subject:'Consultation again',body:'Second message'})
+ assert.equal(second.code,200)
+ const next=second.body.workflow.state.consult_delivery.reference
+ assert.notEqual(next,reference)
+ assert.equal((await f.call('record_delivery',{kind:'consult',status:'sent',reference})).code,409,'Late completion cannot mark a new attempt sent')
+ assert.equal((await f.call('record_delivery',{kind:'consult',status:'sent',reference:next})).code,200)
+ assert.deepEqual(f.w.state.email_history.map(x=>[x.recipient,x.status]),[['example@invalid.test','sent'],['corrected@example.test','sent']])
+ assert.equal(f.w.state.email_history[0].body,'First message')
+})
+
+test('email history preserves legacy sent information without inventing recipient',async()=>{
+ const f=fixture();f.w.state.consult_delivery={status:'sent',at:'2026-10-01T12:00:00Z',reference:'legacy-send'}
+ const r=await f.call('claim_delivery',{kind:'consult',resend:true,previous_reference:'legacy-send',recipient:f.m.clients.email,subject:'Resend'})
+ assert.equal(r.code,200)
+ assert.equal(f.w.state.email_history[0].legacy,true)
+ assert.equal(f.w.state.email_history[0].at,'2026-10-01T12:00:00Z')
+ assert.equal(f.w.state.email_history[0].recipient,null)
+})
+
+test('claim rejects a stale recipient and stale resend confirmation',async()=>{
+ const f=fixture();assert.equal((await f.call('claim_delivery',{kind:'consult',recipient:'old@example.test'})).code,409)
+ f.w.state.consult_delivery={status:'sent',reference:'latest'}
+ assert.equal((await f.call('claim_delivery',{kind:'consult',resend:true,previous_reference:'older',recipient:f.m.clients.email})).code,409)
+ assert.equal(f.w.state.consult_delivery.reference,'latest')
+})
+
+test('retry review keeps uncertain attempt in history and issues a new reference',async()=>{
+ const f=fixture(),a=await f.call('claim_delivery',{kind:'consult',recipient:f.m.clients.email})
+ const reference=a.body.workflow.state.consult_delivery.reference
+ await f.call('reset_delivery',{kind:'consult',confirmed:true})
+ assert.equal(f.w.state.email_history[0].status,'unknown')
+ assert.equal((await f.call('record_delivery',{kind:'consult',reference,status:'sent'})).code,409)
+ const b=await f.call('claim_delivery',{kind:'consult',recipient:f.m.clients.email})
+ assert.notEqual(b.body.workflow.state.consult_delivery.reference,reference)
+ assert.equal(f.w.state.email_history.length,2)
+})
+
+test('reused LawPay link reflects corrected payer email without making another request',async()=>{
+ const f=fixture();await f.call('prepare_consult');f.requests[0].payment_url+='&email=wrong%40example.test';f.m.clients.email='corrected@example.test'
+ const r=await f.call('prepare_consult')
+ assert.equal(f.requests.length,1)
+ assert.equal(new URL(r.body.workflow.state.consult_request.url).searchParams.get('email'),'corrected@example.test')
+})
+
+test('resend never includes an expired intake link; existing intake can be omitted',async()=>{
+ const f=fixture();f.w.config.include_intake=true;f.w.config.intake_template={id:'form',questions:[{id:'q'}]};f.w.state.intake={id:'old-intake',url:'https://example.invalid/#client-intake/old',expires_at:'2020-01-01T00:00:00Z'}
+ const blocked=await f.call('prepare_consult');assert.equal(blocked.code,409);assert.match(blocked.body.error,/intake link.*expired/i)
+ assert.equal(f.requests.length,0)
+ const saved=await f.call('save',{revision:f.w.revision,config:{include_intake:false}});assert.equal(saved.code,200)
+ assert.equal((await f.call('prepare_consult')).code,200)
+ assert.equal(f.w.state.intake.id,'old-intake','Omitting the intake preserves its existing record')
+})

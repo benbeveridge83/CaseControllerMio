@@ -1,7 +1,7 @@
 function once(code,from,to,label){if(code.split(from).length!==2)throw Error('V313 anchor changed: '+label);return code.replace(from,()=>to)}
 export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',enforce:'pre',transform(source,id){if(!id.split('?')[0].replaceAll('\\','/').endsWith('/src/App.jsx'))return null
  let code="import MioFormspree from './MioFormspree.jsx'\nimport MioDailyTrust from './MioDailyTrust.jsx'\nimport {dailyTrustSummary,firmDate} from './mioDailyTrust.js'\nimport {useMioPnc,MioPncRow,MioPncModal,MioPncSettings} from './MioPnc.jsx'\nimport {pncStage} from './mioPncModel.js'\n"+source
- const hook=`  const mioPnc = useMioPnc({session,enabled:page==='matters'||page==='settings',matters,clients,refreshMatters:fetchMatters,refreshClients:fetchClients,graphFetch,supabase,onFinanceRefresh:()=>loadLawPayWorkspace({force:true}),onCalendarSaved:row=>setEvents(old=>[...old.filter(e=>e.id!==row.id),row]),intakeTemplates:draftingIntakeTemplates})
+ const hook=`  const mioPnc = useMioPnc({session,enabled:page==='matters'||page==='settings',matters,clients,refreshMatters:fetchMatters,refreshClients:fetchClients,graphFetch,ensureEmailAccess:getMicrosoftGraphToken,emailAccount:serviceGraphAuth?.account?.username,supabase,onFinanceRefresh:()=>loadLawPayWorkspace({force:true}),onCalendarSaved:row=>setEvents(old=>[...old.filter(e=>e.id!==row.id),row]),intakeTemplates:draftingIntakeTemplates})
   const [dailyCoverageFinanceReady,setDailyCoverageFinanceReady]=useState(false)
   const [dailyCoverageFinanceError,setDailyCoverageFinanceError]=useState('')
   const [dailyCoverageScope,setDailyCoverageScope]=useState('me')
