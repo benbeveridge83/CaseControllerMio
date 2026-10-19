@@ -15,6 +15,8 @@ import { mioCalendarEventChannel } from './mioCalendarEventChannel.js'
 import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
 import MioAgentPanel from './MioAgentPanel.jsx'
 import MatterClientInfo from './MatterClientInfo.jsx'
+import ManualRfpCoverEditor from './ManualRfpCoverEditor.jsx'
+import { buildRfpCoverDocx, buildRfpCoverPdf, convertRfpDocuments, extractRfpDocxText, invalidateRfpConvertedFiles, rfpConversionKind, rfpFileName } from './manualRfpPreparation.js'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -5860,6 +5862,10 @@ function App() {
   const [manualRfpSettingsOpen, setManualRfpSettingsOpen] = useState(false)
   const [manualRfpTagPanelOpen, setManualRfpTagPanelOpen] = useState(false)
   const [manualRfpBusy, setManualRfpBusy] = useState('')
+  const [manualRfpCoverDocuments, setManualRfpCoverDocuments] = useState(null)
+  const manualRfpPreparationLock = useRef(false)
+  const manualRfpDocumentsRef = useRef(documents)
+  manualRfpDocumentsRef.current = documents
   const [manualRfpNotice, setManualRfpNotice] = useState(null)
   const [manualRfpJobName, setManualRfpJobName] = useState('')
   const [manualRfpPoolName, setManualRfpPoolName] = useState('')
@@ -16343,6 +16349,146 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     } finally { setManualRfpBusy('') }
   }
 
+  async function saveManualRfpPreparedDocument(nextDoc) {
+    // Await durable metadata before showing a successful replacement. A failed
+    // upload/save must never leave a row pointing at missing PDF content.
+    const before = (manualRfpDocumentsRef.current || []).find((doc) => String(doc.id) === String(nextDoc.id))
+    const fileFields = ['file_path', 'file_name', 'original_file_name', 'file_type', 'file_size', 'converted_to_pdf', 'pdf_conversion_source', 'pdf_converted_at']
+    const changed = before && nextDoc.pdf_conversion_source ? Object.fromEntries(fileFields.map((key) => [key, nextDoc[key]])) : nextDoc
+    const merge = (rows) => rows.some((doc) => String(doc.id) === String(nextDoc.id))
+      ? rows.map((doc) => {
+        if (String(doc.id) !== String(nextDoc.id)) return doc
+        const next = { ...doc, ...changed }
+        if (nextDoc.pdf_conversion_source) for (const key of ['file_data', 'file_data_url', 'file_url', 'content_url', 'file', 'blob']) delete next[key]
+        return next
+      })
+      : [...rows, nextDoc]
+    try {
+      await saveMioStateKeyNow('caseControllerDocuments', JSON.stringify(stripLargeFileData(merge(manualRfpDocumentsRef.current || []))), { throwOnError: true })
+    } catch (error) {
+      // The cloud store stages writes before acknowledgement. Replace the failed
+      // pending value with the current records, so a later retry cannot publish
+      // a replacement that this workflow reported as failed.
+      safeSetLocalStorage('caseControllerDocuments', JSON.stringify(stripLargeFileData(manualRfpDocumentsRef.current || [])))
+      throw error
+    }
+    setDocuments((current) => {
+      const next = merge(current)
+      manualRfpDocumentsRef.current = next
+      return next
+    })
+  }
+
+  async function convertManualRfpSelectedDocuments(matter) {
+    if (manualRfpPreparationLock.current || manualRfpBusy) return
+    const selected = new Set(manualRfpSelectedDocumentIds.map(String))
+    const docs = documents.filter((doc) => String(doc.matter_id) === String(matter.id) && selected.has(String(doc.id)))
+    if (!docs.length) return
+    const textFiles = docs.filter((doc) => rfpConversionKind(doc) === 'text')
+    if (textFiles.length && !window.confirm(`${textFiles.length} selected office/text file(s) will become text-based PDF renditions. Tables, images, and original formatting may not be retained.\n\nOriginal files will remain available. For exact formatting, export these files to PDF in their original application.\n\nContinue with text-based conversion?`)) return
+    manualRfpPreparationLock.current = true
+    setManualRfpNotice(null)
+    try {
+      const result = await convertRfpDocuments(docs, {
+        onProgress: ({ completed, total, name }) => setManualRfpBusy(`Converting to PDF: ${completed} of ${total} complete${completed < total ? ` — ${name}` : ''}`),
+        convert: async (doc) => {
+          if (rfpConversionKind(doc) === 'text') {
+            const dataUrl = await loadDocumentFileDataUrl(doc)
+            if (!dataUrl) throw new Error('File content is unavailable.')
+            let text
+            const name = rfpFileName(doc)
+            if (/\.docx$/i.test(name)) text = await extractRfpDocxText(dataUrlToUint8Array(dataUrl))
+            else if (/\.xlsx?$/i.test(name)) {
+              const workbook = XLSX.read(dataUrlToUint8Array(dataUrl), { type: 'array' })
+              text = workbook.SheetNames.map((name) => `${name}\n${XLSX.utils.sheet_to_csv(workbook.Sheets[name])}`).join('\n\n')
+            } else if (/\.html?$/i.test(name) || /text\/html/i.test(doc.file_type || '')) {
+              const html = new DOMParser().parseFromString(dataUrlToText(dataUrl), 'text/html')
+              html.querySelectorAll('script,style').forEach((node) => node.remove())
+              text = html.body.textContent || ''
+            } else text = dataUrlToText(dataUrl)
+            if (!String(text).trim()) throw new Error('No readable text was found. Original was not changed.')
+            return (await manualRfpLoadPdf({}, { ...doc, file_name: `${name}.txt`, file_type: 'text/plain', file_data: await blobToDataUrl(new Blob([text], { type: 'text/plain' })) }, false)).save()
+          }
+          if (rfpConversionKind(doc) === 'image' && /\.(webp|bmp)$/i.test(rfpFileName(doc))) {
+            const dataUrl = await loadDocumentFileDataUrl(doc)
+            if (!dataUrl) throw new Error('File content is unavailable.')
+            const image = new Image()
+            image.src = dataUrl
+            await image.decode()
+            const canvas = document.createElement('canvas')
+            canvas.width = image.naturalWidth; canvas.height = image.naturalHeight
+            canvas.getContext('2d').drawImage(image, 0, 0)
+            return (await manualRfpLoadPdf({}, { ...doc, file_name: 'image.png', file_type: 'image/png', file_data: canvas.toDataURL('image/png') }, false)).save()
+          }
+          return (await manualRfpLoadPdf({}, doc, false)).save()
+        },
+        archive: async (doc) => {
+          if (doc.file_path || doc.filePath || doc.storage_path || doc.path) return doc
+          const dataUrl = await loadDocumentFileDataUrl(doc)
+          if (!dataUrl) throw new Error('Original file content is unavailable.')
+          const file = new File([dataUrlToUint8Array(dataUrl)], rfpFileName(doc), { type: doc.file_type || doc.mime_type || 'application/octet-stream' })
+          const stored = await uploadMioDocumentFile(file, `${doc.id}-original`, matter.id)
+          if (!stored.file_path) throw new Error('Original upload failed. File was not changed.')
+          return { ...doc, ...stored }
+        },
+        upload: (bytes, name, doc) => uploadMioDocumentFile(new File([bytes], name, { type: 'application/pdf' }), doc.id, matter.id),
+        onConverted: saveManualRfpPreparedDocument,
+      })
+      const convertedIds = result.converted.map((doc) => String(doc.id))
+      if (convertedIds.length) {
+        setRespondingDiscoverySets((current) => {
+          const next = current.map((job) => invalidateRfpConvertedFiles(job, convertedIds))
+          const serialized = JSON.stringify(next)
+          safeSetLocalStorage('caseMioRespondingDiscoverySets', serialized)
+          saveMioStateKeyNow('caseMioRespondingDiscoverySets', serialized, { throwOnError: true }).catch((error) => setManualRfpNotice({ type: 'error', text: `PDFs were saved, but the updated Bates references could not be saved: ${error.message}. Save Job before leaving.` }))
+          return next
+        })
+      }
+      const details = [...result.failed.map(({ doc, reason }) => `${rfpFileName(doc)}: ${reason}`), ...result.skipped.map(({ doc, reason }) => `${rfpFileName(doc)}: ${reason}`)]
+      setManualRfpNotice({ type: result.failed.length ? 'error' : 'success', text: `Converted ${result.converted.length} of ${docs.length} selected files. Names and folder assignments retained. Originals are available through “Original” below each converted filename.${convertedIds.some((id) => respondingDiscoverySets.some((job) => job.bates_by_document?.[id])) ? ' Reapply Bates stamps to the converted files.' : ''}${details.length ? `\n${details.join('\n')}` : ''}` })
+    } catch (error) {
+      setManualRfpNotice({ type: 'error', text: `PDF conversion stopped: ${error.message || error}` })
+    } finally { manualRfpPreparationLock.current = false; setManualRfpBusy('') }
+  }
+
+  async function createManualRfpCoverSheets(matter, set, sheets, settings, format) {
+    if (manualRfpPreparationLock.current || manualRfpBusy) return
+    manualRfpPreparationLock.current = true
+    setManualRfpNotice(null)
+    const created = [], failed = [], failedIds = []
+    try {
+      for (let index = 0; index < sheets.length; index++) {
+        const sheet = sheets[index]
+        setManualRfpBusy(`Creating cover sheets: ${index} of ${sheets.length} complete — ${sheet.filename}`)
+        try {
+          let bytes
+          if (format === 'pdf') { await ensureBillingPdfLibrary(); bytes = await (await buildRfpCoverPdf(sheet, settings, window.PDFLib)).save() }
+          else bytes = await buildRfpCoverDocx(sheet, settings)
+          const name = `${sheet.outputName.trim().replace(/\.(pdf|docx)$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}.${format}`
+          const mime = format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          const id = `doc-cover-${crypto.randomUUID()}`
+          const stored = await uploadMioDocumentFile(new File([bytes], name, { type: mime }), id, matter.id)
+          if (!stored.file_path) throw new Error('Cover sheet upload failed; native file unchanged.')
+          const source = manualRfpDocumentsRef.current.find((doc) => String(doc.id) === sheet.sourceId)
+          const row = { id, matter_id: matter.id, name: sheet.outputName.trim(), description: `Cover sheet for ${sheet.filename}`, date: source?.date || '', status: 'Neither', tag_ids: [...(source?.tag_ids || [])], document_field_values: {}, upload_date: dateToInputValue(new Date()), rfp_cover_sheet: { sheet, settings }, cover_sheet_for: sheet.sourceId, ...emptyDocumentAiReview, ...stored }
+          await saveManualRfpPreparedDocument(row)
+          created.push(id)
+        } catch (error) { failed.push(`${sheet.filename}: ${error.message || error}`); failedIds.push(sheet.sourceId) }
+      }
+      if (created.length) {
+        const poolId = manualRfpActivePoolId || set?.active_pool_id
+        if (set && poolId) updateManualRfpSet(set.id, (job) => ({ ...job, document_pools: (job.document_pools || []).map((pool) => String(pool.id) === String(poolId) ? { ...pool, document_ids: [...new Set([...(pool.document_ids || []), ...created])] } : pool) }))
+        setManualRfpSelectedDocumentIds(created)
+        setManualRfpDocumentSearch('')
+        setManualRfpDocumentStatusFilter('all')
+        setManualRfpSelectedTagIds([])
+      }
+      setManualRfpNotice({ type: failed.length ? 'error' : 'success', text: `Created ${created.length} ${format === 'pdf' ? 'PDF' : 'Word'} cover sheet(s). The new sheets are selected and ready to assign. Native files remain separate.${failed.length ? `\n${failed.join('\n')}` : ''}` })
+      if (failed.length) return { failedIds, error: failed.join('\n') }
+      setManualRfpCoverDocuments(null)
+    } finally { manualRfpPreparationLock.current = false; setManualRfpBusy('') }
+  }
+
   function manualRfpAssignmentMap(set) {
     const map = {}
     ;(set?.requests || []).forEach((request, index) => manualRfpRequestDocumentIds(request).forEach((docId) => {
@@ -16470,6 +16616,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         })
       }
       const convertToPdf = async (doc, sourceName, isMedia) => {
+        if (doc.rfp_cover_sheet) return buildRfpCoverPdf(doc.rfp_cover_sheet.sheet, doc.rfp_cover_sheet.settings, window.PDFLib)
         const output = await PDFDocument.create()
         const font = await output.embedFont(StandardFonts.Helvetica)
         const bold = await output.embedFont(StandardFonts.HelveticaBold)
@@ -16792,6 +16939,9 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     const stampedId = useBates ? set.bates_by_document?.[String(original.id)]?.stamped_document_id : null
     const stamped = stampedId ? documents.find((doc) => String(doc.id) === String(stampedId)) : null
     const source = stamped || original
+    if (!stamped && original.rfp_cover_sheet && rfpConversionKind(original) !== 'pdf') {
+      return buildRfpCoverPdf(original.rfp_cover_sheet.sheet, original.rfp_cover_sheet.settings, window.PDFLib)
+    }
     const sourceName = source.file_name || source.original_file_name || source.name || 'document'
     const dataUrl = await loadDocumentFileDataUrl(source)
     const mime = String(source.file_type || source.mime_type || (String(dataUrl || '').match(/^data:([^;,]+)/)?.[1]) || '').toLowerCase()
@@ -17069,6 +17219,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return manualRfpDocumentSort === 'upload_asc' ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate)
     })
     const selectedSetIds = new Set(manualRfpSelectedDocumentIds.map(String))
+    const selectedMatterDocs = matterDocs.filter((doc) => selectedSetIds.has(String(doc.id)))
     const columnCount = 2 + Object.values(manualRfpVisibleDocumentColumns).filter(Boolean).length
     const documentLabel = (doc) => doc.name || doc.file_name || doc.original_file_name || 'Document'
     const fileLabel = (doc) => doc.file_name || doc.original_file_name || doc.name || 'Document'
@@ -17106,6 +17257,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     return <div style={{ display: 'grid', gap: 12 }}>
       {manualRfpDownloadReview.open && <section id="manual-rfp-download-review" style={{ order: 8, border: '2px solid #2563eb', borderRadius: 14, background: '#eff6ff', overflow: 'hidden' }}><div style={{ padding: 12, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap', background: '#dbeafe' }}><div><h3 style={{ margin: 0 }}>Review Production Names &amp; Download</h3><div style={{ color: '#475569', fontSize: 12 }}>Edit the base name and confirm the exact produced filename or PDF bookmark before downloading.</div></div><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, open: false }))}>Close</button></div><div style={{ padding: 12 }}><label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontWeight: 800 }}><input type="checkbox" checked={(set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false && manualRfpDownloadReview.prefix_bates !== false} disabled={!((set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false)} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, prefix_bates: event.target.checked }))} /> Add Bates name and range at the beginning of each filename for sorting</label><div style={{ overflowX: 'auto', maxHeight: 520, marginTop: 10 }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050, background: '#fff' }}><thead><tr><th style={{ padding: 7 }}>Include</th><th style={{ textAlign: 'left', padding: 7 }}>Bates range</th><th style={{ textAlign: 'left', padding: 7 }}>Original filename</th><th style={{ textAlign: 'left', padding: 7 }}>Editable base filename</th><th style={{ textAlign: 'left', padding: 7 }}>Final produced filename / PDF bookmark</th></tr></thead><tbody>{manualRfpDownloadReview.rows.map((row, index) => <tr key={row.document_id}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', textAlign: 'center' }}><input type="checkbox" checked={row.include !== false} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, include: event.target.checked } : item) }))} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{row.bates ? `${row.bates.prefix || set.bates_prefix} ${row.bates.start}-${row.bates.end}` : 'Not stamped'}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{row.original_name}</td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input value={row.export_name} onChange={(event) => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => itemIndex === index ? { ...item, export_name: event.target.value } : item) }))} style={{ width: '100%' }} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0', fontWeight: 700 }}>{manualRfpReviewedExportName(set, row, (set.final_output_mode || 'folder_original') !== 'folder_original' && set.final_use_bates !== false && manualRfpDownloadReview.prefix_bates !== false)}</td></tr>)}</tbody></table></div><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: true })) }))}>Select all</button><button type="button" onClick={() => setManualRfpDownloadReview((current) => ({ ...current, rows: current.rows.map((row) => ({ ...row, include: false })) }))}>Select none</button><button type="button" onClick={() => downloadManualRfpRequestFolders(set, matterDocs, manualRfpDownloadReview)} disabled={Boolean(manualRfpBusy)} style={{ background: '#1d4ed8', color: '#fff', border: 0, borderRadius: 8, padding: '9px 13px', fontWeight: 900 }}>Create &amp; Download Production</button></div></div></section>}
 
+      {manualRfpCoverDocuments && <ManualRfpCoverEditor documents={manualRfpCoverDocuments} onClose={() => setManualRfpCoverDocuments(null)} busy={manualRfpBusy} onCreate={(sheets, settings, format) => createManualRfpCoverSheets(matter, set, sheets, settings, format)} />}
       {manualRfpViewer.open && <div style={{ position: 'fixed', inset: 0, zIndex: 100000, background: 'rgba(15,23,42,.62)', display: 'grid', placeItems: 'center', padding: 24 }} onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}><section style={{ width: 'min(1180px,96vw)', height: 'min(850px,92vh)', background: '#fff', borderRadius: 14, overflow: 'hidden', boxShadow: '0 24px 70px rgba(0,0,0,.35)', display: 'grid', gridTemplateRows: 'auto 1fr' }} onClick={(event) => event.stopPropagation()}><div style={{ padding: 10, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}><strong>{manualRfpViewer.name}</strong><button type="button" onClick={() => setManualRfpViewer({ open: false, name: '', url: '', loading: false })}>Close Viewer</button></div>{manualRfpViewer.loading ? <div style={{ display: 'grid', placeItems: 'center', color: '#475569' }}>Loading document…</div> : manualRfpViewer.url ? <iframe title={`Document viewer - ${manualRfpViewer.name}`} src={manualRfpViewer.url} style={{ width: '100%', height: '100%', border: 0 }} /> : <div style={{ display: 'grid', placeItems: 'center', color: '#991b1b' }}>No saved file content is available for this document.</div>}</section></div>}
       <div style={{ order: 1, border: '1px solid #bfdbfe', borderRadius: 14, background: 'linear-gradient(135deg,#eff6ff,#fff)', padding: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -17174,12 +17326,17 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           <section style={{ border: '1px solid #cbd5e1', borderRadius: 14, background: '#fff', overflow: 'hidden' }}>
             <div style={{ padding: 11, borderBottom: '1px solid #cbd5e1', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><div><strong>Matter documents</strong><div style={{ color: '#64748b', fontSize: 12 }}>{visibleDocs.length} shown • assigned documents are faint and show their folder(s)</div></div><label style={{ border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', padding: '7px 10px', color: '#1d4ed8', fontWeight: 800, cursor: 'pointer' }}>+ Add Files<input type="file" multiple style={{ display: 'none' }} onChange={(event) => { addManualRfpMatterFiles(event.target.files, matter); event.target.value = '' }} /></label></div>
 
+            <div className="rfp-preparation-toolbar">
+              <button type="button" disabled={Boolean(manualRfpBusy) || !selectedMatterDocs.length} onClick={() => convertManualRfpSelectedDocuments(matter)}>Convert selected to PDFs ({selectedMatterDocs.length})</button>
+              <button type="button" disabled={Boolean(manualRfpBusy) || !selectedMatterDocs.length} onClick={() => setManualRfpCoverDocuments(selectedMatterDocs)}>Create cover sheets ({selectedMatterDocs.length})</button>
+              <p role="status" style={{ whiteSpace: 'pre-wrap' }}>{manualRfpBusy || manualRfpNotice?.text || 'Check files below, or use Select all shown. Convert before assigning or Bates-stamping. Use cover sheets for audio, video, and other native files.'}</p>
+            </div>
             <div style={{ padding: 9, display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) 155px 155px', gap: 7, borderBottom: '1px solid #e2e8f0' }}><input value={manualRfpDocumentSearch} onChange={(event) => setManualRfpDocumentSearch(event.target.value)} placeholder="Filter file name, document name, date..." /><select value={manualRfpDocumentStatusFilter} onChange={(event) => setManualRfpDocumentStatusFilter(event.target.value)}><option value="all">All documents</option><option value="unassigned">Not assigned</option><option value="assigned">Already assigned</option></select><select value={manualRfpDocumentSort} onChange={(event) => setManualRfpDocumentSort(event.target.value)}><option value="upload_desc">Newest uploaded</option><option value="upload_asc">Oldest uploaded</option><option value="name_asc">Name A-Z</option><option value="name_desc">Name Z-A</option></select></div>
             <div style={{ padding: '7px 9px', display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid #e2e8f0' }}><button type="button" onClick={() => setManualRfpSelectedDocumentIds(visibleDocs.map((doc) => String(doc.id)))}>Select all shown</button><button type="button" onClick={() => setManualRfpSelectedDocumentIds([])}>Select none</button><span style={{ color: '#64748b', fontSize: 12 }}>{manualRfpSelectedDocumentIds.length} selected</span><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Filter by tags ({manualRfpSelectedTagIds.length})</summary><div style={{ position: 'absolute', zIndex: 30, width: 360, maxHeight: 340, overflow: 'auto', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}><div style={{ display: 'flex', gap: 6, marginBottom: 6 }}><button type="button" onClick={() => setManualRfpSelectedTagIds(matterTagIds)}>All tags</button><button type="button" onClick={() => setManualRfpSelectedTagIds([])}>No tag filter</button></div>{matterTagIds.map((tagId) => <label key={tagId} style={{ display: 'block', padding: 3 }}><input type="checkbox" checked={manualRfpSelectedTagIds.includes(tagId)} onChange={(event) => setManualRfpSelectedTagIds((current) => event.target.checked ? [...current, tagId] : current.filter((id) => id !== tagId))} /> {tagFullName(tagId) || tags.find((tag) => String(tag.id) === tagId)?.name || tagId}</label>)}</div></details><details><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Columns</summary><div style={{ position: 'absolute', zIndex: 20, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, padding: 8, boxShadow: '0 8px 24px rgba(15,23,42,.15)' }}>{Object.entries({ file_name: 'File name', document_name: 'Document name', upload_date: 'Upload date' }).map(([key, label]) => <label key={key} style={{ display: 'block', whiteSpace: 'nowrap' }}><input type="checkbox" checked={manualRfpVisibleDocumentColumns[key]} onChange={(event) => setManualRfpVisibleDocumentColumns((current) => ({ ...current, [key]: event.target.checked }))} /> {label}</label>)}</div></details></div>
             <div style={{ maxHeight: 650, overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 540 }}><thead style={{ position: 'sticky', top: 0, zIndex: 4, background: '#f8fafc' }}><tr><th style={{ padding: 7 }}></th><th style={{ textAlign: 'left', padding: 7 }}>Assigned</th>{manualRfpVisibleDocumentColumns.file_name && <th style={{ textAlign: 'left', padding: 7 }}>File name</th>}{manualRfpVisibleDocumentColumns.document_name && <th style={{ textAlign: 'left', padding: 7 }}>Document name</th>}{manualRfpVisibleDocumentColumns.upload_date && <th style={{ textAlign: 'left', padding: 7 }}>Upload date</th>}</tr></thead><tbody>{visibleDocs.map((doc) => {
               const assignments = assignmentMap[String(doc.id)] || []
               const checked = selectedSetIds.has(String(doc.id))
-              return <tr key={doc.id} draggable onClick={(event) => { if (event.target.closest('button,input,a,select,textarea')) return; selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event) }} onDoubleClick={() => openManualRfpViewer(doc)} onDragStart={(event) => { const ids = checked && manualRfpSelectedDocumentIds.length ? manualRfpSelectedDocumentIds : [String(doc.id)]; event.dataTransfer.setData('application/x-mio-document-ids', JSON.stringify(ids)); event.dataTransfer.effectAllowed = 'copy' }} style={{ opacity: assignments.length ? .55 : 1, background: checked ? '#dbeafe' : '#fff', cursor: 'grab' }}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event, true)} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{assignments.length ? assignments.map((value) => <span key={value} style={{ display: 'inline-block', margin: 2, padding: '2px 6px', borderRadius: 999, background: '#e2e8f0', fontSize: 10 }}>{String(value).match(/^\d+$/) ? `Request ${value}` : value}</span>) : <span style={{ color: '#94a3b8' }}>—</span>}</td>{manualRfpVisibleDocumentColumns.file_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => openManualRfpViewer(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textAlign: 'left' }}>{fileLabel(doc)}</button></td>}{manualRfpVisibleDocumentColumns.document_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(doc)}</td>}{manualRfpVisibleDocumentColumns.upload_date && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{doc.upload_date || String(doc.created_at || '').slice(0, 10) || doc.date || ''}</td>}</tr>
+              return <tr key={doc.id} draggable onClick={(event) => { if (event.target.closest('button,input,a,select,textarea')) return; selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event) }} onDoubleClick={() => openManualRfpViewer(doc)} onDragStart={(event) => { const ids = checked && manualRfpSelectedDocumentIds.length ? manualRfpSelectedDocumentIds : [String(doc.id)]; event.dataTransfer.setData('application/x-mio-document-ids', JSON.stringify(ids)); event.dataTransfer.effectAllowed = 'copy' }} style={{ opacity: assignments.length ? .55 : 1, background: checked ? '#dbeafe' : '#fff', cursor: 'grab' }}><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><input type="checkbox" checked={checked} onClick={(event) => event.stopPropagation()} onChange={(event) => selectDocumentRow(doc.id, visibleDocs.indexOf(doc), event, true)} /></td><td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{assignments.length ? assignments.map((value) => <span key={value} style={{ display: 'inline-block', margin: 2, padding: '2px 6px', borderRadius: 999, background: '#e2e8f0', fontSize: 10 }}>{String(value).match(/^\d+$/) ? `Request ${value}` : value}</span>) : <span style={{ color: '#94a3b8' }}>—</span>}</td>{manualRfpVisibleDocumentColumns.file_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}><button type="button" onClick={() => openManualRfpViewer(doc)} style={{ border: 0, background: 'transparent', color: '#1d4ed8', padding: 0, textAlign: 'left' }}>{fileLabel(doc)}</button>{doc.pdf_conversion_source && <button type="button" onClick={() => downloadDocument(doc.pdf_conversion_source)} style={{ display: 'block', fontSize: 11, marginTop: 4 }} title="Download the preserved original file">Original</button>}{doc.rfp_cover_sheet && <button type="button" onClick={() => downloadDocument(doc)} style={{ display: 'block', fontSize: 11, marginTop: 4 }}>Download cover sheet</button>}</td>}{manualRfpVisibleDocumentColumns.document_name && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0' }}>{documentLabel(doc)}</td>}{manualRfpVisibleDocumentColumns.upload_date && <td style={{ padding: 7, borderTop: '1px solid #e2e8f0', whiteSpace: 'nowrap' }}>{doc.upload_date || String(doc.created_at || '').slice(0, 10) || doc.date || ''}</td>}</tr>
             })}{!visibleDocs.length && <tr><td colSpan={columnCount} style={{ padding: 22, textAlign: 'center', color: '#64748b' }}>No matter documents match the current filter.</td></tr>}</tbody></table></div>
           </section>
         </div>
