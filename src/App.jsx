@@ -14077,60 +14077,54 @@ function App() {
     return discoveryDocumentPathInfo(doc).response
   }
 
-  function discoveryDocumentRecoveryText(doc) {
-    const fieldValues = doc?.document_field_values || {}
-    const tagText = (doc?.tag_ids || []).map((tagId) => tagFullName(tagId)).join(' ')
-    return [
-      doc?.name,
-      doc?.file_name,
-      doc?.description,
-      doc?.status,
-      tagText,
-      JSON.stringify(fieldValues)
-    ].filter(Boolean).join(' ').toLowerCase()
+  function isDiscoveryResponseDocument(doc) {
+    if (doc?.discovery_document_kind === 'response') return true
+    return Boolean(doc?.id && discoveryRequests.some((request) =>
+      (request.responses || []).some((response) => String(response.document_id || '') === String(doc.id))))
   }
 
-  function documentLooksLikeDiscoveryRequestCandidate(doc, side) {
-    if (!doc || doc.is_active === false) return false
-    if (documentHasDiscoveryRequestSide(doc, side)) return true
-    const text = discoveryDocumentRecoveryText(doc)
-    const isRequest = /discovery|request for|requests for|rfp|rfa|rfd|rogg|interrogator|production|admission|disclosure/.test(text)
-    if (!isRequest) return false
-    if (/response|answer|objection|supplemental/.test(text) && !/request/.test(text)) return false
-    const looksOurSide = /\bours\b|our request|our requests|discovery ours|discovery our|propound|sent to opposing/.test(text)
-    const looksTheirSide = /their request|their requests|opposing party|opposing part|received from|served on us|to us/.test(text)
-    if (side === 'our') return looksOurSide || (!looksTheirSide && isRequest)
-    return looksTheirSide || (!looksOurSide && isRequest)
-  }
-
-  function discoveryRecoveredDocumentToTrackingRow(doc, side) {
-    const stored = storedDiscoveryRequestForDoc(doc) || {}
-    const matter = discoveryDocumentMatter(doc)
-    const trialDate = discoveryTrialDateForDoc(doc)
-    const thirtyBeforeTrial = discoveryThirtyDaysBeforeTrial(doc)
-    const defaultTrial = trialDate ? dateToInputValue(trialDate) : ''
-    const defaultThirtyBeforeTrial = thirtyBeforeTrial ? dateToInputValue(thirtyBeforeTrial) : ''
-    const defaultRequestServed = discoveryDocServiceDate(doc)
-    const defaultResponseDue = discoveryDocResponseDueDate(doc)
-    return {
-      id: `recovered-${side}-${doc.id}`,
-      document: doc,
-      matter,
-      documentTitle: `${discoveryDocumentTitle(doc)} (Recovery: untagged discovery candidate)`,
-      trial: discoveryStoredDateOrDefault(stored, 'trial', defaultTrial),
-      trialDisplay: discoveryDateDisplay(discoveryStoredDateOrDefault(stored, 'trial', defaultTrial)),
-      thirtyBeforeTrial: discoveryStoredDateOrDefault(stored, 'thirtyBeforeTrial', defaultThirtyBeforeTrial),
-      thirtyBeforeTrialDisplay: discoveryDateDisplay(discoveryStoredDateOrDefault(stored, 'thirtyBeforeTrial', defaultThirtyBeforeTrial)),
-      matterLabel: matter ? formatMatterOption(matter) : 'N/A',
-      discovery_type: discoveryTypeForDoc(doc),
-      request_served: discoveryStoredDateOrDefault(stored, 'request_served', defaultRequestServed),
-      sent_to_c: stored.sent_to_c || '',
-      response_due: discoveryStoredDateOrDefault(stored, 'response_due', defaultResponseDue),
-      mediation_document_exchange: discoveryStoredDateOrDefault(stored, 'mediation_document_exchange', ''),
-      responses: Array.isArray(stored.responses) ? stored.responses : [],
-      discovery_agreement_note: stored.discovery_agreement_note || '',
-      agreement_document_ids: Array.isArray(stored.agreement_document_ids) ? stored.agreement_document_ids : []
+  function discoveryRequestAssignments(doc, placements = litigationPlacements) {
+    if (!doc || doc.is_active === false || !doc.matter_id || isDiscoveryResponseDocument(doc)) return []
+    // The document's primary assignment and explicit drag/drop placements are
+    // authoritative. Ignore the derived legacy-primary copy so edits/removals
+    // take effect immediately, before the placement synchronization effect runs.
+    const candidates = [{ track_id: doc.litigation_track_id, matter_id: doc.matter_id,
+      discovery_side: doc.discovery_side, discovery_type: doc.discovery_type },
+      ...(placements || []).filter((placement) => doc.id && String(placement.document_id) === String(doc.id) && placement.source !== 'legacy-primary')]
+    const assignments = new Map()
+    for (const placement of candidates) {
+      const track = litigationTrackForId(placement.track_id)
+      if (!track || track.type !== 'discovery' || track.is_archived || String(track.matter_id) !== String(doc.matter_id)) continue
+      if (placement.matter_id && String(placement.matter_id) !== String(doc.matter_id)) continue
+      const sideValue = String(placement.discovery_side || '').toLowerCase()
+      const side = ['our', 'ours'].includes(sideValue) ? 'our' : ['their', 'theirs'].includes(sideValue) ? 'their' : ''
+      const type = String(placement.discovery_type || '').toLowerCase()
+      if (!side || !['rfp', 'rfd', 'roggs', 'rfa'].includes(type)) continue
+      const key = JSON.stringify([String(doc.matter_id), side, type])
+      assignments.set(key, { key, side, type })
     }
+    return [...assignments.values()]
+  }
+
+  function confirmDiscoveryRequestDocuments(candidates = [], placements = litigationPlacements, existingDocuments = documents) {
+    // Run before state setters or file uploads: React may replay updater functions.
+    const previousById = new Map(existingDocuments.map((doc) => [String(doc.id), doc]))
+    const candidateIds = new Set(candidates.filter((doc) => doc.id).map((doc) => String(doc.id)))
+    const resultingDocs = [...existingDocuments.filter((doc) => !candidateIds.has(String(doc.id))), ...candidates]
+    const assignments = new Map(resultingDocs.map((doc) => [doc, discoveryRequestAssignments(doc, placements)]))
+    const warnings = new Map()
+    for (const doc of candidates) {
+      const previousKeys = new Set(discoveryRequestAssignments(previousById.get(String(doc.id))).map((item) => item.key))
+      for (const assignment of assignments.get(doc)) {
+        if (previousKeys.has(assignment.key)) continue
+        const matches = resultingDocs.filter((other) => other !== doc && assignments.get(other).some((item) => item.key === assignment.key))
+        if (!matches.length || warnings.has(assignment.key)) continue
+        const labels = { rfp: 'Request for Production', rfd: 'Request for Disclosures', roggs: 'Interrogatories', rfa: 'Request for Admissions' }
+        warnings.set(assignment.key, `${matterName(doc.matter_id) || doc.matter_id} — ${assignment.side === 'our' ? 'Our' : 'Their'} ${labels[assignment.type]}:\n${[doc, ...matches].map((item) => `• ${discoveryDocumentTitle(item)}`).join('\n')}`)
+      }
+    }
+    if (!warnings.size) return true
+    return confirm(`This would add a duplicate discovery request of the same type for the same matter:\n\n${[...warnings.values()].join('\n\n')}\n\nDo you intend to add another request? Select OK to add the duplicate, or Cancel to keep this change unsaved.`)
   }
 
   function localStorageDiscoveryRecoveryCandidates() {
@@ -14206,7 +14200,7 @@ function App() {
         })
         return [...current, ...cleaned]
       })
-      alert('Imported recovered discovery rows into the Discovery table. Check Our Requests and Their Requests, and then move this data to Supabase.')
+      alert('Recovered saved discovery dates and notes. Requests appear only when their document is assigned to a Discovery Litigation Track, request side, and type.')
     } catch (error) {
       alert('Could not import from that localStorage key. See console for details.')
       console.error(error)
@@ -14225,10 +14219,11 @@ function App() {
   function upsertDiscoveryDocRequest(doc, patch) {
     const existing = storedDiscoveryRequestForDoc(doc)
     const id = existing?.id || discoveryDocRequestId(doc)
+    const assignment = discoveryRequestAssignments(doc).find((item) => item.side === discoverySideFilter)
     const base = existing || {
       id,
-      side: doc.discovery_side === 'ours' ? 'our' : doc.discovery_side === 'theirs' ? 'their' : discoverySideFilter,
-      discovery_type: doc.discovery_type || inferDiscoveryTypeFromDocument(doc),
+      side: assignment?.side || discoverySideFilter,
+      discovery_type: assignment?.type || doc.discovery_type || '',
       matter_id: doc.matter_id || '',
       document_id: doc.id,
       file_name: doc.file_name || doc.name || '',
@@ -14446,9 +14441,11 @@ function App() {
     const docId = String(requestId || '').replace(/^doc-/, '')
     const doc = documents.find((item) => item.id === docId)
     if (!doc) return null
+    const assignment = discoveryRequestAssignments(doc).find((item) => item.side === discoverySideFilter)
     return {
       id: discoveryDocRequestId(doc),
-      side: discoverySideFilter,
+      side: assignment?.side || discoverySideFilter,
+      discovery_type: assignment?.type || '',
       matter_id: doc.matter_id || '',
       document_id: doc.id,
       file_name: doc.file_name || doc.name || '',
@@ -14543,8 +14540,7 @@ function App() {
   }
 
   function discoveryMatrixDocSideMatches(doc, side) {
-    if (side === 'their') return documentHasDiscoveryRequestSide(doc, 'their') || String(doc.discovery_side || '').toLowerCase() === 'theirs'
-    return documentHasDiscoveryRequestSide(doc, 'our') || String(doc.discovery_side || '').toLowerCase() === 'ours'
+    return discoveryRequestAssignments(doc).some((assignment) => assignment.side === side)
   }
 
   function discoveryMatrixRequestMeta(status, side = 'our') {
@@ -14793,7 +14789,7 @@ function App() {
       if (!doc || doc.is_active === false) return false
       if (String(doc.matter_id || '') !== String(matter.id)) return false
       if (typeKey === 'depositions') return discoveryMatrixDocIsDeposition(doc)
-      return discoveryMatrixDocSideMatches(doc, side) && discoveryMatrixDocTypeKey(doc) === typeKey
+      return discoveryRequestAssignments(doc).some((assignment) => assignment.side === side && assignment.type === typeKey)
     })
   }
 
@@ -15116,7 +15112,7 @@ function App() {
     }
 
     const documentRows = documents
-      .filter((doc) => doc.is_active !== false && documentHasDiscoveryRequestSide(doc, side))
+      .filter((doc) => discoveryRequestAssignments(doc).some((assignment) => assignment.side === side))
       .map((doc) => {
         const stored = storedDiscoveryRequestForDoc(doc) || {}
         const matter = discoveryDocumentMatter(doc)
@@ -15141,7 +15137,7 @@ function App() {
           thirtyBeforeTrial: thirtyBeforeTrialValue,
           thirtyBeforeTrialDisplay: discoveryDateDisplay(thirtyBeforeTrialValue),
           matterLabel: matter ? formatMatterOption(matter) : 'N/A',
-          discovery_type: discoveryTypeForDoc(doc),
+          discovery_type: discoveryRequestAssignments(doc).filter((assignment) => assignment.side === side).map((assignment) => assignment.type === 'roggs' ? 'Roggs' : assignment.type.toUpperCase()).join(', '),
           request_served: requestServed,
           sent_to_c: stored.sent_to_c || '',
           response_due: responseDue,
@@ -15152,25 +15148,9 @@ function App() {
         }
       })
 
-    const representedRequestIds = new Set(documentRows.map((row) => row.id))
-    const representedDocumentIds = new Set(documentRows.map((row) => row.document?.id).filter(Boolean))
-
-    const recoveredDocumentRows = documents
-      .filter((doc) => !representedDocumentIds.has(doc.id) && documentLooksLikeDiscoveryRequestCandidate(doc, side))
-      .map((doc) => discoveryRecoveredDocumentToTrackingRow(doc, side))
-
-    recoveredDocumentRows.forEach((row) => { if (row.document?.id) representedDocumentIds.add(row.document.id) })
-
-    // Recovery fallback: older Mio discovery rows were stored in caseControllerDiscoveryRequests
-    // and the new tracking page only looked at tagged Documents. If Chrome/local storage loses
-    // the tag rows, or if a request was created from the old Discovery Table, show those saved
-    // discovery request records instead of leaving this page blank.
-    const legacyRows = (discoveryRequests || [])
-      .filter((request) => (request.side || 'their') === side)
-      .filter((request) => !representedRequestIds.has(request.id) && !(request.document_id && representedDocumentIds.has(request.document_id)))
-      .map((request) => discoveryLegacyRequestToTrackingRow(request))
-
-    return sortedDiscoveryRows([...documentRows, ...recoveredDocumentRows, ...legacyRows].filter((row) => passesStatusFilters(row) && !isDiscoveryRowDeleted(row)))
+    // Discovery track assignments control membership. Saved request records only
+    // supply dates/notes; tags, filenames and recovery metadata never create rows.
+    return sortedDiscoveryRows(documentRows.filter((row) => passesStatusFilters(row) && !isDiscoveryRowDeleted(row)))
   }
 
   function discoverySortValue(row, key) {
@@ -15358,6 +15338,12 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       alert(`Select RFD, RFP, ROGGS, or RFA for “${missingType.name || 'the request document'}”.`)
       return
     }
+    const candidates = rowsToSave.map((row) => ({ ...row,
+      litigation_track_id: discoveryTrackForMatterId(row.matter_id)?.id || '',
+      discovery_side: discoveryTrackSideId(discoveryForm.side || discoverySideFilter),
+      discovery_type: row.discovery_type || inferDiscoveryTypeFromDocument(row)
+    }))
+    if (!confirmDiscoveryRequestDocuments(candidates)) return
 
     const createdDocs = []
     const createdRequests = []
@@ -15459,6 +15445,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
             litigation_track_id: track.id,
             discovery_side: side,
             discovery_type: discoveryType,
+            discovery_document_kind: 'response',
             litigation_party_id: doc.litigation_party_id || responsePartyId
           })
         : doc))
@@ -15484,6 +15471,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         litigation_track_id: track.id,
         discovery_side: side,
         discovery_type: discoveryType,
+        discovery_document_kind: 'response',
         litigation_party_id: responsePartyId
       }))
       setDocuments((current) => [newDocument, ...current])
@@ -17949,6 +17937,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     })
+    if (!confirmDiscoveryRequestDocuments([doc], [...litigationPlacements, normalized])) return false
     setLitigationPlacements((current) => {
       const exists = (current || []).some((row) => String(row.document_id) === String(normalized.document_id)
         && String(row.track_id) === String(normalized.track_id)
@@ -17962,6 +17951,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const cleanTags = Array.isArray(row.tag_ids) ? row.tag_ids : []
       return { ...row, tag_ids: tagAndParentIds([...cleanTags, LITIGATION_TRACK_ROOT_TAG_ID, litigationTrackTagId(trackId)]) }
     }))
+    return true
   }
 
   function removeLitigationPlacement(placementId) {
@@ -18028,7 +18018,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
   }
 
   function updateSavedDocumentLitigation(docId, patch) {
-    setDocuments((current) => current.map((doc) => String(doc.id) === String(docId) ? withLitigationAssignment(doc, patch) : doc))
+    const doc = documents.find((item) => String(item.id) === String(docId))
+    if (!doc) return
+    const next = withLitigationAssignment(doc, patch)
+    if (!confirmDiscoveryRequestDocuments([next])) return
+    setDocuments((current) => current.map((item) => String(item.id) === String(docId) ? next : item))
   }
 
   function updateBulkDocumentLitigation(rowId, patch) {
@@ -18077,6 +18071,12 @@ async function handleDiscoveryNewRequestFiles(fileList) {
               <select value={row.discovery_type || ''} onChange={(event) => onPatch({ discovery_type: event.target.value })}>
                 <option value="">Choose type...</option>
                 {DISCOVERY_TRACK_TYPES.map((type) => <option key={type.id} value={type.id}>{type.short} — {type.name}</option>)}
+              </select>
+            </LabeledField>
+            <LabeledField label="Discovery document">
+              <select value={row.discovery_document_kind || 'request'} onChange={(event) => onPatch({ discovery_document_kind: event.target.value })}>
+                <option value="request">Request</option>
+                <option value="response">Response</option>
               </select>
             </LabeledField>
           </>
@@ -18234,6 +18234,7 @@ async function saveLitigationDocument(event) {
     if (!draft.litigation_track_id) return alert('Select a Litigation Track.')
     const track = litigationTrackForId(draft.litigation_track_id)
     if (track?.type === 'discovery' && (!draft.discovery_side || !draft.discovery_type)) return alert('Choose whose discovery requests and the discovery type.')
+    if (!confirmDiscoveryRequestDocuments([draft])) return
     const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const tempFilePayload = draft.file ? await readFileAsDataUrl(draft.file) : {}
     const storedFilePayload = draft.file ? await uploadMioDocumentFile(draft.file, docId, draft.matter_id) : {}
@@ -18855,7 +18856,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
                 const cellEntries = group.entries.filter((entry) => String(columnIdForEntry(entry) || '') === String(column.id || ''))
                 const docs = Array.from(new Map(cellEntries.map((entry) => [String(entry.doc.id), entry.doc])).values())
                 const dropKey = `grouped|${track.id}|${column.id || 'unassigned'}|${group.id}`
-                return <td key={column.id || `unassigned-${index}`} onDragOver={(event) => { event.preventDefault(); setLitigationDropTargetKey(dropKey) }} onDragLeave={() => setLitigationDropTargetKey((current) => current === dropKey ? '' : current)} onDrop={(event) => { event.preventDefault(); const documentId = documentIdFromLitigationDrop(event); setLitigationDropTargetKey(''); if (group.id !== '__untagged__') setDocuments((current) => current.map((doc) => String(doc.id) === String(documentId) ? { ...doc, tag_ids: tagAndParentIds([...(doc.tag_ids || []).filter((tagId) => !isLitigationTrackTagId(tagId)), group.id]) } : doc)); if (track.type === 'discovery') addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, discoverySide: column.side, discoveryType: column.type }); else addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, partyId: column.id || '' }) }} style={{ padding: 7, verticalAlign: 'top', borderBottom: '1px solid #e2e8f0', borderLeft: '1px solid #e2e8f0', background: litigationDropTargetKey === dropKey ? '#dbeafe' : '#fff' }}><div style={{ display: 'grid', gap: 6 }}>{docs.map((doc) => renderLitigationDocumentItem(doc, { compact: true, showTag: false }))}{!docs.length && <div style={{ color: '#94a3b8', fontSize: 11, textAlign: 'center', padding: 8 }}>Drop documents here</div>}<button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, partyId: track.type === 'discovery' ? '' : column.id || '', discoverySide: track.type === 'discovery' ? column.side : '', discoveryType: track.type === 'discovery' ? column.type : '', tagId: group.id === '__untagged__' ? '' : group.id })} style={{ fontSize: 10 }}>+ Document</button></div></td>
+                return <td key={column.id || `unassigned-${index}`} onDragOver={(event) => { event.preventDefault(); setLitigationDropTargetKey(dropKey) }} onDragLeave={() => setLitigationDropTargetKey((current) => current === dropKey ? '' : current)} onDrop={(event) => { event.preventDefault(); const documentId = documentIdFromLitigationDrop(event); setLitigationDropTargetKey(''); const added = track.type === 'discovery' ? addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, discoverySide: column.side, discoveryType: column.type }) : addLitigationPlacement({ documentId, matterId: track.matter_id, trackId: track.id, partyId: column.id || '' }); if (added && group.id !== '__untagged__') setDocuments((current) => current.map((doc) => String(doc.id) === String(documentId) ? { ...doc, tag_ids: tagAndParentIds([...(doc.tag_ids || []).filter((tagId) => !isLitigationTrackTagId(tagId)), group.id]) } : doc)) }} style={{ padding: 7, verticalAlign: 'top', borderBottom: '1px solid #e2e8f0', borderLeft: '1px solid #e2e8f0', background: litigationDropTargetKey === dropKey ? '#dbeafe' : '#fff' }}><div style={{ display: 'grid', gap: 6 }}>{docs.map((doc) => renderLitigationDocumentItem(doc, { compact: true, showTag: false }))}{!docs.length && <div style={{ color: '#94a3b8', fontSize: 11, textAlign: 'center', padding: 8 }}>Drop documents here</div>}<button type="button" onClick={() => openLitigationDocumentModal({ matterId: track.matter_id, trackId: track.id, partyId: track.type === 'discovery' ? '' : column.id || '', discoverySide: track.type === 'discovery' ? column.side : '', discoveryType: track.type === 'discovery' ? column.type : '', tagId: group.id === '__untagged__' ? '' : group.id })} style={{ fontSize: 10 }}>+ Document</button></div></td>
               })}
             </tr>)}</tbody>
           </table>
@@ -20561,7 +20562,8 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       litigation_row_id: doc.litigation_row_id || 'pleadings',
       litigation_party_id: doc.litigation_party_id || '',
       discovery_side: doc.discovery_side || '',
-      discovery_type: doc.discovery_type || ''
+      discovery_type: doc.discovery_type || '',
+      discovery_document_kind: isDiscoveryResponseDocument(doc) ? 'response' : 'request'
     })
     setShowDocumentWindow(true)
   }
@@ -20579,9 +20581,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Choose whether this belongs to Our Requests or Their Requests and select RFD, RFP, ROGGS, or RFA.')
       return
     }
-    setDocuments((current) => current.map((doc) => doc.id === editingDocumentId
-      ? withLitigationAssignment({ ...doc, ...documentEditForm, tag_ids: tagAndParentIds(documentEditForm.tag_ids || []) }, {})
-      : doc))
+    const previous = documents.find((doc) => doc.id === editingDocumentId)
+    if (!previous) return
+    const next = withLitigationAssignment({ ...previous, ...documentEditForm, tag_ids: tagAndParentIds(documentEditForm.tag_ids || []) }, {})
+    if (!confirmDiscoveryRequestDocuments([next])) return
+    setDocuments((current) => current.map((doc) => doc.id === editingDocumentId ? next : doc))
     closeDocumentEditWindow()
   }
 
@@ -20605,10 +20609,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
   function toggleDocumentTag(docId, tagId) {
     if (isLitigationTrackTagId(tagId)) return
-    setDocuments((currentDocuments) => currentDocuments.map((doc) => {
-      if (doc.id !== docId) return doc
-      return withLitigationAssignment({ ...doc, tag_ids: normalizeTagSelectionForToggle(doc.tag_ids || [], tagId) }, {})
-    }))
+    const doc = documents.find((item) => item.id === docId)
+    if (!doc) return
+    const next = withLitigationAssignment({ ...doc, tag_ids: normalizeTagSelectionForToggle(doc.tag_ids || [], tagId) }, {})
+    if (!confirmDiscoveryRequestDocuments([next])) return
+    setDocuments((current) => current.map((item) => item.id === docId ? next : item))
   }
 
   function applyTagsToDocuments(docIds, tagIds = bulkSelectedTagIds) {
@@ -20622,11 +20627,13 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Select at least one tag first.')
       return
     }
-    setDocuments((currentDocuments) => currentDocuments.map((doc) => {
-      if (!selectedIds.includes(doc.id)) return doc
+    const candidates = documents.filter((doc) => selectedIds.includes(doc.id)).map((doc) => {
       const allowedTags = selectedTags.filter((tagId) => isTagAvailableForMatter(tagId, doc.matter_id))
       return { ...doc, tag_ids: tagAndParentIds(Array.from(new Set([...(doc.tag_ids || []), ...allowedTags]))) }
-    }))
+    })
+    if (!confirmDiscoveryRequestDocuments(candidates)) return
+    const byId = new Map(candidates.map((doc) => [doc.id, doc]))
+    setDocuments((current) => current.map((doc) => byId.get(doc.id) || doc))
   }
 
   function removeTagFromDocument(docId, tagId) {
@@ -20684,6 +20691,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Select the matter the document is being added to.')
       return
     }
+    if (!confirmDiscoveryRequestDocuments([withLitigationAssignment({ ...documentForm, matter_id: matterIdForDocument }, {})])) return
     const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const tempFilePayload = documentForm.file ? await readFileAsDataUrl(documentForm.file) : {}
     const storedFilePayload = documentForm.file ? await uploadMioDocumentFile(documentForm.file, docId, matterIdForDocument) : {}
@@ -20701,6 +20709,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       litigation_party_id: documentForm.litigation_party_id || '',
       discovery_side: documentForm.discovery_side || '',
       discovery_type: documentForm.discovery_type || '',
+      discovery_document_kind: documentForm.discovery_document_kind || 'request',
       upload_date: dateToInputValue(new Date()),
       ...emptyDocumentAiReview,
       ...tempFilePayload,
@@ -23038,6 +23047,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Choose at least one bulk document row with a matter and a name.')
       return false
     }
+    if (!confirmDiscoveryRequestDocuments(rows.map((row) => withLitigationAssignment(row, {})))) return false
     const committedIds = new Set(rows.map((row) => row.id))
     const savedRows = []
     for (let index = 0; index < rows.length; index += 1) {
@@ -23080,11 +23090,13 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function updateDocumentCell(docId, field, value) {
-    setDocuments((current) => current.map((doc) => {
-      if (doc.id !== docId) return doc
-      if (field === 'matter_id') return withLitigationAssignment({ ...doc, matter_id: value }, { litigation_track_id: '' })
-      return { ...doc, [field]: value }
-    }))
+    const doc = documents.find((item) => item.id === docId)
+    if (!doc) return
+    const next = field === 'matter_id'
+      ? withLitigationAssignment({ ...doc, matter_id: value }, { litigation_track_id: '' })
+      : { ...doc, [field]: value }
+    if (!confirmDiscoveryRequestDocuments([next])) return
+    setDocuments((current) => current.map((item) => item.id === docId ? next : item))
   }
 
   function documentSortValue(doc, key) {
@@ -36665,6 +36677,22 @@ useEffect(() => {
     })
   }
 
+  function confirmServiceDiscoveryRequest(row, fileName, documentCatalog = documents) {
+    const existing = documentCatalog.find((doc) => doc.source_service_email_id === row.id && (doc.file_name === fileName || doc.name === fileName.replace(/\.pdf$/i, '')))
+    if (existing) return true
+    return confirmDiscoveryRequestDocuments([withLitigationAssignment({
+      matter_id: row.suggested_matter_id,
+      name: fileName.replace(/\.pdf$/i, ''),
+      file_name: fileName,
+      description: `Saved from Service Inbox: ${row.subject || ''}`,
+      notice_service_type: serviceEmailRowCategory(row) === 'notification_service' ? (row.notice_service_type || noticeServiceDocumentType(row)) : (row.accepted_service_type || acceptedServiceDocumentType(row)),
+      litigation_track_id: row.litigation_track_id || '',
+      discovery_side: row.discovery_side || '',
+      discovery_type: row.discovery_type || '',
+      discovery_document_kind: row.discovery_document_kind || 'request'
+    }, {})], litigationPlacements, documentCatalog)
+  }
+
   async function createServiceEmailDocumentRecord(row, fileName, blob, savedInfo = {}) {
     if (!row?.suggested_matter_id || !fileName) return null
     const existingDocument = documents.find((doc) => doc.source_service_email_id === row.id && (doc.file_name === fileName || doc.name === fileName.replace(/\.pdf$/i, ''))) || null
@@ -36673,6 +36701,7 @@ useEffect(() => {
       await saveMioStateKeyNow('caseControllerDocuments', JSON.stringify(safeExistingDocuments), { throwOnError: true })
       return existingDocument
     }
+    if (!savedInfo.discoveryRequestConfirmed && !confirmServiceDiscoveryRequest(row, fileName)) throw new Error('Discovery request was not added because duplicate confirmation was canceled.')
     const dataUrl = blob ? await blobToDataUrl(blob) : ''
     const rawDocumentRecord = {
       id: `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -36723,6 +36752,7 @@ useEffect(() => {
       litigation_party_id: row.litigation_party_id || '',
       discovery_side: row.discovery_side || '',
       discovery_type: row.discovery_type || '',
+      discovery_document_kind: row.discovery_document_kind || 'request',
       ...emptyDocumentAiReview
     }
     const documentRecord = withLitigationAssignment(rawDocumentRecord, {})
@@ -37671,6 +37701,8 @@ useEffect(() => {
     if (!actualFile.name) throw new Error(missingActualServiceFileNameMessage(currentRow))
     const targetFileName = actualFile.name
 
+    if (!confirmServiceDiscoveryRequest(currentRow, targetFileName)) return false
+
     let result
     try {
       result = await callMioLocalHelper('/save-efile-pdf', {
@@ -37714,7 +37746,7 @@ useEffect(() => {
       extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
       extracted_pdf_name_verified: true,
       filing_tag_ids: serviceEmailDocumentTagIds(currentRow)
-    }, savedFileName, blob)
+    }, savedFileName, blob, { discoveryRequestConfirmed: true })
 
     setServiceEmailRows((rows) => rows.map((item) => item.id === currentRow.id ? {
       ...item,
@@ -38323,6 +38355,8 @@ async function chooseAndSaveMatterEfileFolder(row) {
       return false
     }
 
+    if (!confirmServiceDiscoveryRequest(currentRow, fileName)) return false
+
     try {
       let savedInfo = await uploadServicePdfToOneDriveFolder(currentRow, fileName, blob)
 
@@ -38347,7 +38381,7 @@ async function chooseAndSaveMatterEfileFolder(row) {
         extracted_pdf_name_source: actualFile.source || 'existing_verified_name',
         extracted_pdf_name_verified: true,
         filing_tag_ids: serviceEmailDocumentTagIds(currentRow)
-      }, fileName, blob, savedInfo)
+      }, fileName, blob, { ...savedInfo, discoveryRequestConfirmed: true })
 
       setServiceEmailRows((rows) => rows.map((item) => item.id === currentRow.id ? {
         ...item,
@@ -61001,7 +61035,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </div>
 
                 <p style={{ color: '#475569', marginTop: -6 }}>
-                  Showing documents tagged with Case Filings &gt; Discovery &gt; Requests. The Our/Their side is stored separately on the document. Add New Requests opens the file picker, adds the selected files to Documents &gt; Bulk Upload Review with the request tag already applied, and lets you pick fields/tags or run the AI analyzer. Responses use Case Filings &gt; Discovery &gt; Responses.
+                  Showing requests assigned to a Discovery Litigation Track, with Our Requests or Their Requests and RFD, RFP, ROGGS, or RFA selected. Add New Requests opens Bulk Upload Review to choose the matter and track assignment. Responses stay linked to their request. A second request of the same type for the same matter requires confirmation.
                 </p>
                 {showDiscoveryRecoveryPanel && (
                   <div style={{ margin: '8px 0 12px', padding: 12, border: '2px solid #d97706', background: '#fffbeb', borderRadius: 6 }}>
@@ -61033,11 +61067,6 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', background: 'white', border: '1px solid #fde68a', padding: 8 }}>{JSON.stringify(discoveryRecoveryScan.candidates.slice(0, 30), null, 2)}</pre>
                       </details>
                     )}
-                  </div>
-                )}
-                {discoveryRows().some((row) => (row.legacyRequest && !row.document) || String(row.documentTitle || '').includes('Recovery:')) && (
-                  <div style={{ margin: '8px 0 12px', padding: 10, border: '1px solid #facc15', background: '#fefce8', color: '#854d0e', borderRadius: 6 }}>
-                    Recovery mode is showing saved Discovery Table rows because one or more rows do not have a linked tagged document. This prevents the page from going blank after a browser reset. The permanent fix is to move Documents, Tags, and Discovery rows into Supabase.
                   </div>
                 )}
             <div
