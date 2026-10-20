@@ -15,8 +15,9 @@ const matters=Array.from({length:73},(_,i)=>({id:'00000000-0000-4000-8000-'+Stri
 const workflows=new Map(matters.slice(0,3).map(m=>{const state=configureWorkflow(newWithdrawal(m.id,now,now),defaultWithdrawalDefinition(),now);return[m.id,{owner_id:owner,matter_id:m.id,revision:1,state}]}))
 matters[1].case_status='Closed'
 matters.forEach((m,i)=>{m.client_id='test-client-'+i;m.clients.id=m.client_id})
-const docs=['New','Old','Undated','Closed'].map((label,i)=>({id:'test-doc-'+i,matter_id:i===3?matters[1].id:matters[0].id,name:'RFP to us '+label+' '+'long document name '.repeat(12),file_name:'Request '+label+'.pdf',tag_ids:[],document_field_values:{},status:'Theirs',is_active:true}))
+const docs=['New','Old','Undated','Closed'].map((label,i)=>({id:'test-doc-'+i,matter_id:i===3?matters[1].id:matters[0].id,name:'RFP to us '+label+' '+'long document name '.repeat(12),file_name:'Request '+label+'.pdf',tag_ids:[],document_field_values:{},litigation_track_id:'lit-track-discovery-'+(i===3?matters[1].id:matters[0].id),discovery_side:'theirs',discovery_type:'rfp',status:'Theirs',is_active:true}))
 const requests=docs.map((doc,i)=>({id:'test-request-'+i,document_id:doc.id,matter_id:doc.matter_id,side:'their',response_due:['2026-09-30','2026-08-01','','2026-10-31'][i],responses:[]}))
+docs.push({id:'ordinary-w2',matter_id:matters[0].id,name:'W2 - Bates copy',tag_ids:[],discovery_side:'',discovery_type:'',document_field_values:{discovery_note:''}},{id:'tag-only',matter_id:matters[0].id,name:'Tag only RFP',tag_ids:['tag-case-filings-discovery-requests-rfp'],discovery_side:'theirs',discovery_type:'rfp'}, {...docs[0],id:'response-only',name:'RFP Response',discovery_document_kind:'response'})
 const legacy={[matters[0].id]:{clio_matter_id:'999',clio_display_number:''}}
 const alerts=[],writes=[]
 const extras=Object.fromEntries(matters.slice(0,3).map(m=>[m.id,{withdrawal_status:'withdrawing'}]))
@@ -71,6 +72,7 @@ try{
  const bounds=await table().boundingBox();assert.ok(bounds.x+bounds.width<=1600,'all thirteen columns fit desktop viewport')
  await table().locator('tbody tr[id]').first().getByRole('button',{name:'Doc',exact:true}).click()
  await page.getByRole('heading',{name:'Edit Document',exact:true}).waitFor()
+ assert.equal(await page.getByText('Discovery document',{exact:true}).count(),1,'document role selector renders inside the editor')
  await page.getByRole('button',{name:'Cancel',exact:true}).click()
  await table().getByRole('columnheader',{name:/^Response due/}).click()
  assert.deepEqual(await due(),['09/30/2026','08/01/2026','N/A'])

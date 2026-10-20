@@ -185,6 +185,8 @@ export default function mioV309ServiceEserviceBatch() {
         return section
       }, 'current PDF save flow')
 
+      code = replaceOnce(code, 'function confirmServiceDiscoveryRequest(row, fileName, documentCatalog = documents)', 'function confirmServiceDiscoveryRequest(row, fileName, documentCatalog = serviceV309DocumentsRef.current)', 'duplicate check uses latest batch catalog')
+
       // Sequential batch records must build on the latest catalog, not the render's
       // stale documents snapshot (which otherwise drops all but the last PDF).
       code = replaceSection(code, '  async function createServiceEmailDocumentRecord(row, fileName, blob, savedInfo = {}) {', '  function classifyLiveServiceEmail(source, message) {', (section) => {
