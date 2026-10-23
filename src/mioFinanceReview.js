@@ -11,6 +11,23 @@ export function passesTrustMinimum(trust, minimum) {
 }
 const dateFields = new Set(['created','sent','lastPayment','trustPaid','clientPaid','issued','due'])
 const moneyFields = new Set(['total','paidAmount','pendingAmount','balance'])
+// An expired action-required financing checkout is not an unsettled receipt.
+// Preserve the provider record/status; only exclude that checkout from pending
+// totals. Never infer cancellation from another successful payment or from age.
+export function isActivePendingLawPayPayment(transaction = {}, now = Date.now()) {
+  const status = String(transaction.status || '').trim().toUpperCase()
+  const type = String(transaction.transaction_type || '').trim().toUpperCase()
+  if (!/AUTHORIZ|PENDING|PROCESS|SUBMITTED/.test(status) || /REFUND|CHARGEBACK|REVERSAL/.test(type) || !(Number(transaction.amount_cents) > 0)) return false
+  const raw = transaction.raw || {}
+  const expiry = Number(raw.action?.checkout_expiry)
+  const expiredCheckout = status === 'PENDING'
+    && String(raw.method?.type || '').toLowerCase() === 'loan'
+    && String(raw.action?.type || '').toLowerCase() === 'affirm'
+    && Number.isFinite(expiry) && expiry > 0 && expiry <= now
+    && !raw.authorization_timestamp && !raw.completion_timestamp
+  return !expiredCheckout
+}
+
 export function compareInvoiceRows(a,b,sort,valueFor) {
   const compare = (field,direction) => {
     const av=valueFor(a,field),bv=valueFor(b,field),sign=direction==='desc'?-1:1

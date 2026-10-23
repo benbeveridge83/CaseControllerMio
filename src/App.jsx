@@ -16,6 +16,7 @@ import ProcessBuilderSettings from './process/ProcessBuilderSettings.jsx'
 import MioAgentPanel from './MioAgentPanel.jsx'
 import MatterClientInfo from './MatterClientInfo.jsx'
 import ManualRfpCoverEditor from './ManualRfpCoverEditor.jsx'
+import { isActivePendingLawPayPayment } from './mioFinanceReview.js'
 import { buildRfpCoverDocx, buildRfpCoverPdf, convertRfpDocuments, extractRfpDocxText, invalidateRfpConvertedFiles, rfpConversionKind, rfpFileName } from './manualRfpPreparation.js'
 
 const MIO_APP_VERSION = 'Mio V267'
@@ -28171,11 +28172,7 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function pendingLawPayPaymentsForMatter(matter) {
-    return lawPayTransactionsForMatter(matter).filter((transaction) => {
-      const status = String(transaction?.status || '').trim().toLowerCase()
-      const type = String(transaction?.transaction_type || '').trim().toLowerCase()
-      return /authoriz|pending|process|submitted/.test(status) && !/refund|chargeback|reversal/.test(type) && financeNumber(transaction?.amount_cents) > 0
-    })
+    return lawPayTransactionsForMatter(matter).filter((transaction) => isActivePendingLawPayPayment(transaction, Date.now()))
   }
 
   function pendingLawPayPaymentsForInvoice(invoice) {
@@ -28186,9 +28183,7 @@ async function updateTeamCell(memberId, field, value) {
       const request = lawPayRequestForTransaction(transaction)
       const transactionInvoiceNumber = lawPayTransactionInvoiceNumber(transaction) || String(request?.invoice_number || '').trim()
       const linkedMatterId = String(lawPayTransactionMatterId(transaction) || '')
-      const status = String(transaction?.status || '').trim().toLowerCase()
-      const type = String(transaction?.transaction_type || '').trim().toLowerCase()
-      return transactionInvoiceNumber === invoiceNumber && (!matterId || !linkedMatterId || linkedMatterId === matterId) && /authoriz|pending|process|submitted/.test(status) && !/refund|chargeback|reversal/.test(type) && financeNumber(transaction?.amount_cents) > 0
+      return transactionInvoiceNumber === invoiceNumber && (!matterId || !linkedMatterId || linkedMatterId === matterId) && isActivePendingLawPayPayment(transaction, Date.now())
     })
   }
 
@@ -29916,7 +29911,10 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   async function paySelectedOutstandingFromTrust(matterIds) {
-    const rows = (matterIds || []).map((id) => matters.find((matter) => String(matter.id) === String(id))).filter((matter) => matter && latestTrustSnapshotForMatter(matter))
+    // Matters opened in Mio have no imported opening record. The same current
+    // finance calculation used by the table decides whether their funds can pay work OBs.
+    const selectedIds = new Set((matterIds || []).map(String))
+    const rows = [...selectedIds].map((id) => matters.find((matter) => String(matter.id) === id)).filter(Boolean)
     const plans = rows.map(planMatterOutstandingFromTrust).filter((plan) => financeNumber(plan?.paid) > 0.005)
     const payable = plans.reduce((sum, plan) => sum + financeNumber(plan.paid), 0)
     if (payable <= 0.005) return alert('None of the selected matters has both an outstanding balance and available trust funds.')
