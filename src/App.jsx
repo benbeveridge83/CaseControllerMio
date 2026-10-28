@@ -13914,6 +13914,92 @@ function App() {
     )
   }
 
+  function renderClientDashboardFeeAgreement(matter) {
+    if (!matter) return null
+    const stage = pncStage(matter)
+    const w = mioPnc.rows[matter.id]
+    const s = w?.state || {}
+    const sig = s.signature || {}
+    const status = sig.status || 'not_sent'
+    const statusLabel = String(status).replaceAll('_', ' ')
+    const clientEmail = matter.clients?.email || ''
+    const fmt = (ts) => (ts ? new Date(ts).toLocaleString('en-US', { timeZone: 'America/Chicago' }) : 'Not recorded')
+
+    const run = (action, body) => mioPnc.run(action, body).catch((e) => window.alert(e.message))
+    const sendAgreement = () => {
+      if (!clientEmail) return window.alert('This client has no email address on file.')
+      if (!window.confirm('Send the fee agreement for e-signature to ' + clientEmail + '?')) return
+      run('send_signature', { matter_id: matter.id, confirmed: true }).then(() => window.alert('Fee agreement sent for e-signature.'))
+    }
+    const resendAgreement = () => {
+      if (!window.confirm('Send a signing reminder to ' + clientEmail + '?')) return
+      run('resend_signature', { matter_id: matter.id }).then(() => window.alert('Signing reminder sent.'))
+    }
+    const downloadAgreement = () => {
+      run('download_signature', { matter_id: matter.id }).then((data) => {
+        if (data?.download_url) window.open(data.download_url, '_blank')
+        else window.alert('The signed PDF is ready, but no download link was returned. Please try again.')
+      })
+    }
+    const printAgreement = () => {
+      const path = sig.signed_pdf_path || w?.config?.signature_pdf_path
+      if (!path) return window.alert('No fee agreement PDF is available for this matter yet.')
+      supabase.storage.from('fee-agreement-templates').createSignedUrl(path, 3600).then(({ data, error }) => {
+        if (error || !data?.signedUrl) return window.alert('Could not open the PDF: ' + (error?.message || 'missing URL'))
+        window.open(data.signedUrl, '_blank')
+      })
+    }
+
+    const badge = (tone) => ({
+      padding: '6px 12px', borderRadius: 999, fontWeight: 600, fontSize: 13, display: 'inline-block',
+      background: tone === 'green' ? '#e7f6ec' : tone === 'amber' ? '#fef3c7' : tone === 'red' ? '#fdecec' : '#eef2f6',
+      color: tone === 'green' ? '#166534' : tone === 'amber' ? '#92400e' : tone === 'red' ? '#991b1b' : '#334155'
+    })
+    const tone = status === 'signed' ? 'green' : status === 'awaiting_signature' ? 'amber' : ['declined', 'expired', 'revoked'].includes(status) ? 'red' : 'grey'
+
+    return (
+      <div style={{ border: '1px solid #cfd8e1', borderRadius: 6, padding: 16, background: '#fbfdff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>Fee agreement</h3>
+          {stage === 'engage' && <button type="button" onClick={() => mioPnc.open(matter, 'agreement')}>Open full editor</button>}
+        </div>
+
+        {!stage && <p style={{ color: '#64748b' }}>This matter is not in a new-client intake stage, so there is no e-signature workflow to manage here.</p>}
+
+        {stage && !w && (
+          <div style={{ marginBottom: 14 }}>
+            <p style={{ color: '#64748b' }}>The fee agreement workflow is not loaded for this matter yet.</p>
+            <button type="button" disabled={mioPnc.loading} onClick={() => mioPnc.load().catch((e) => window.alert(e.message))}>
+              {mioPnc.loading ? 'Loading...' : 'Load fee agreement status'}
+            </button>
+          </div>
+        )}
+
+        {stage && w && (
+          <>
+            <section aria-label="Fee agreement status" style={{ border: '1px solid #e0e6ed', borderRadius: 6, padding: 12, background: 'white', marginBottom: 14 }}>
+              <h4 style={{ marginTop: 0 }}>Status</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+                <div><div style={{ color: '#64748b', fontSize: 12 }}>Agreement status</div><div style={{ marginTop: 4 }}><span style={badge(tone)}>{statusLabel}</span></div></div>
+                <div><div style={{ color: '#64748b', fontSize: 12 }}>Sent to client</div><div style={{ marginTop: 4 }}>{fmt(sig.sent_at)}</div></div>
+                <div><div style={{ color: '#64748b', fontSize: 12 }}>Client email</div><div style={{ marginTop: 4 }}>{clientEmail || 'No email on file'}</div></div>
+                <div><div style={{ color: '#64748b', fontSize: 12 }}>Retainer</div><div style={{ marginTop: 4 }}>{String(s.retainer?.status || 'not_paid').replaceAll('_', ' ')}</div></div>
+              </div>
+            </section>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {!sig.id && stage === 'engage' && <button type="button" onClick={sendAgreement}>Send for signature</button>}
+              {!sig.id && stage === 'consult' && <span style={{ color: '#64748b' }}>Move the matter to "Consult- Need to Client" before sending the fee agreement.</span>}
+              {sig.id && status === 'awaiting_signature' && <button type="button" onClick={resendAgreement}>Resend reminder</button>}
+              {status === 'signed' && <button type="button" onClick={downloadAgreement}>Download signed PDF</button>}
+              <button type="button" onClick={printAgreement}>Print agreement</button>
+              <button type="button" onClick={() => run('refresh', { matter_id: matter.id, sync: true }).then(() => window.alert('Status refreshed.'))}>Refresh status</button>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
   function renderClientDashboardMatterInformation(matter) {
     if (!matter) return null
 
@@ -47314,6 +47400,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const billingClientEmail = clientEmailForMatter(billingContactMatter)
     const billingClientAddress = clientAddressForMatter(billingContactMatter)
     const showBillingClientContact = !!(billingClientPhone || billingClientEmail || billingClientAddress)
+    const billingClient = billingContactMatter?.clients || (billingContactMatter?.client_id ? clients.find((c) => String(c.id) === String(billingContactMatter.client_id)) : null) || null
     const shiftDailyBillingDate = (amount) => {
       setDailyBillingDate((current) => {
         const d = new Date(current || new Date().toISOString().slice(0, 10))
@@ -47349,11 +47436,19 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
               <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '7px 15px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
             </div>
             {isExpense && <div style={{ marginBottom: 12, padding: 9, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>The expense will remain in WIP until it is included on an invoice.</div>}
-            {showBillingClientContact && (
-              <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
-                {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
-                {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
-                {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+            {(showBillingClientContact || billingClient) && (
+              <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: showBillingClientContact ? 10 : 0 }}>
+                  <strong style={{ fontSize: 13 }}>Client contact</strong>
+                  {billingClient && <button type="button" onClick={() => editClient(billingClient)}>Edit client info</button>}
+                </div>
+                {showBillingClientContact && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
+                    {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
+                    {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
+                    {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+                  </div>
+                )}
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
@@ -47434,6 +47529,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const billingClientEmail = clientEmailForMatter(billingContactMatter)
     const billingClientAddress = clientAddressForMatter(billingContactMatter)
     const showBillingClientContact = !!(billingClientPhone || billingClientEmail || billingClientAddress)
+    const billingClient = billingContactMatter?.clients || (billingContactMatter?.client_id ? clients.find((c) => String(c.id) === String(billingContactMatter.client_id)) : null) || null
     return (
       <Modal title="Add Billing Entry" onClose={() => setShowBillingWindow(false)}>
         <form onSubmit={saveBillingEntry}>
@@ -47446,11 +47542,19 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
             <button type="button" role="tab" aria-selected={isExpense} onClick={() => updateBillingForm('entry_type', 'expense')} style={{ border: 0, borderRadius: 7, padding: '8px 16px', background: isExpense ? '#c2410c' : 'transparent', color: isExpense ? '#fff' : '#334155', fontWeight: 800 }}>＋ Expense</button>
           </div>
           {isExpense && <div style={{ marginBottom: 14, padding: 10, border: '1px solid #fed7aa', borderRadius: 8, background: '#fff7ed', color: '#9a3412' }}>This expense will be added to the matter’s WIP now and included on its next invoice.</div>}
-          {showBillingClientContact && (
-            <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
-              {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
-              {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
-              {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+          {(showBillingClientContact || billingClient) && (
+            <div style={{ marginBottom: 12, padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: showBillingClientContact ? 10 : 0 }}>
+                <strong style={{ fontSize: 13 }}>Client contact</strong>
+                {billingClient && <button type="button" onClick={() => editClient(billingClient)}>Edit client info</button>}
+              </div>
+              {showBillingClientContact && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, overflowWrap: 'anywhere' }}>
+                  {billingClientPhone && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client phone</div><a href={`tel:${billingClientPhone.replace(/[^+0-9]/g, '')}`}>{billingClientPhone}</a></div>}
+                  {billingClientEmail && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client email</div><a href={`mailto:${billingClientEmail}`}>{billingClientEmail}</a></div>}
+                  {billingClientAddress && <div><div style={{ fontSize: 12, color: '#64748b', fontWeight: 700 }}>Client address</div><span style={{ whiteSpace: 'pre-line' }}>{billingClientAddress}</span></div>}
+                </div>
+              )}
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(220px, 1fr))', gap: 12 }}>
@@ -59423,6 +59527,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                   </button>
                   <button
                     type="button"
+                    onClick={() => setClientDashboardTab('fee_agreement')}
+                    style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'fee_agreement' ? '#2f6584' : 'white', color: clientDashboardTab === 'fee_agreement' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'fee_agreement' ? 'bold' : 'normal' }}
+                  >
+                    Fee agreement
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setClientDashboardTab('finances')}
                     style={{ padding: '8px 14px', border: '1px solid #c8d0d8', borderLeft: 0, background: clientDashboardTab === 'finances' ? '#2f6584' : 'white', color: clientDashboardTab === 'finances' ? 'white' : '#1f2d3d', fontWeight: clientDashboardTab === 'finances' ? 'bold' : 'normal' }}
                   >
@@ -59531,6 +59642,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 </div>
 
                 {clientDashboardTab === 'matter_information' && renderClientDashboardMatterInformation(selectedTemplateMatter())}
+
+                {clientDashboardTab === 'fee_agreement' && renderClientDashboardFeeAgreement(selectedTemplateMatter())}
 
                 {clientDashboardTab === 'finances' && renderClientDashboardFinances(selectedTemplateMatter())}
 
@@ -63406,6 +63519,18 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               </>
             )}
           </>
+        )}
+
+        {page !== 'clients' && showClientWindow && (
+          <Modal title={editingClientId ? 'Edit Client' : 'Add Client'} onClose={closeClientWindow}>
+            <PersonForm
+              form={clientForm}
+              setForm={setClientForm}
+              onSubmit={saveClient}
+              editingId={editingClientId}
+              cancel={closeClientWindow}
+            />
+          </Modal>
         )}
 
         {page !== 'matters' && showMatterWindow && (

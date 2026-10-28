@@ -40,7 +40,7 @@ export function paymentEvidence(transactions,request){
   else if(result.paid_cents+result.processing_cents>0)result.status='partial'
   return result
 }
-export function signatureEvidence(r){const id=r?.documentId||'',st=r?.status||'';const status=st==='Completed'?'signed':st==='Declined'?'declined':st==='Expired'?'expired':st==='Revoked'?'revoked':(st==='InProgress'||st==='Scheduled'||st==='Draft'||id)?'awaiting_signature':'not_sent';return {id,status,url:''}}
+export function signatureEvidence(r,existing={}){const id=r?.documentId||existing?.id||'',st=r?.status||'';const status=st==='Completed'?'signed':st==='Declined'?'declined':st==='Expired'?'expired':st==='Revoked'?'revoked':(st==='InProgress'||st==='Scheduled'||st==='Draft'||id)?'awaiting_signature':'not_sent';const created=r?.createdDate??r?.created_date??r?.sentDate??r?.sent_date;let sent_at=existing?.sent_at||null;if(created!=null){const ms=Number(created),d=new Date(Number.isFinite(ms)?ms:created);if(!isNaN(d))sent_at=d.toISOString()}else if(id&&status!=='not_sent'&&!sent_at){sent_at=new Date().toISOString()}return {id,status,url:existing?.url||'',signed_pdf_path:existing?.signed_pdf_path||'',sent_at}}
 export const readyToClient=s=>s?.signature?.status==='signed'&&['paid','processing'].includes(s?.retainer?.status)
 // Convert a wall-clock consultation time without trusting the browser's time zone.
 export function zonedDateTime(local,zone='America/Chicago'){

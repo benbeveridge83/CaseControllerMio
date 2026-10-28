@@ -15,8 +15,12 @@ test('real React components render contact details, row controls, engagement opt
   for(const text of ['Edit','Close / remove from queue','Move to Consult- Need to Client'])assert.ok(row.includes(text),text)
   matter.matter_status='Consult- Need to Client'
   const ctrl={modal:{id:'test'},matters:[matter],rows:{test:{config:{},state:{},revision:0}},defaults:PNC_DEFAULTS,intakeTemplates:[]}
-  const dialog=renderToStaticMarkup(React.createElement(MioPncModal,{control:ctrl,caseTypes:[]}))
-  for(const text of ['value="5000"','Send fee agreement for e-signature','Send retainer payment link'])assert.ok(dialog.includes(text),text)
+  const agreement=renderToStaticMarkup(React.createElement(MioPncModal,{control:ctrl,caseTypes:[]}))
+  for(const text of ['value="5000"','Send for Signature'])assert.ok(agreement.includes(text),text)
+  ctrl.modal.mode='retainer'
+  const retainer=renderToStaticMarkup(React.createElement(MioPncModal,{control:ctrl,caseTypes:[]}))
+  for(const text of ['Retainer request','value="5000"','Retainer email'])assert.ok(retainer.includes(text),text)
+  ctrl.modal.mode='agreement'
   ctrl.rows.test.state={signature:{id:'sent-agreement'}}
   const locked=renderToStaticMarkup(React.createElement(MioPncModal,{control:ctrl,caseTypes:[]}))
   assert.match(locked,/<input[^>]*disabled[^>]*value="5000"/)
