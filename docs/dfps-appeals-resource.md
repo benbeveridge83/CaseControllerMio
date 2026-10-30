@@ -22,7 +22,7 @@ The updated catalog contains **162 issue guides in 16 sections**, with **439 aut
 | Jurisdiction, deadlines, and pleadings | 36 |
 | Findings, order, and appellate record | 21 |
 | Trial procedure, evidence, and counsel | 38 |
-| Sufficiency, predicates, best interest, special routes, and conservatorship | 54 |
+| Sufficiency, predicates, best interest, special routes, and conservatorship | 55 |
 | Briefing, harm, and remedies | 12 |
 
 Independent legal review specifically checked the 2023/2025 statutory transitions, current rule triggers, the 2026 J.D.H./C.S./K.N./H.S. decisions, and separate conservatorship relief. Review corrections include §161.101(a)'s statutory-language pleading permission, the Horrocks motion-for-new-trial limitation on rendition, the additional-party notice deadline, and two substantive ICWA guides. This review was not a comprehensive citator check.
