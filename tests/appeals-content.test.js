@@ -32,3 +32,18 @@ test('catalog expressly identifies statutory transitions and the newer appellate
   assert.match(text, /former.{0,50}\(O\)/i)
   assert.match(text, /161\.001\(f\)/)
 })
+
+
+test('CLE updates preserve current statutory transitions and local appellate conflicts', () => {
+  const issues = catalog.APPEAL_ISSUES
+  assert.ok(issues.length >= 162, 'supplemental issue guides joined the searchable catalog')
+  const find = id => issues.find(issue => issue.id === id)
+  for (const id of ['supp-icwa-concurrent-findings', 'supp-de-novo-witnesses', 'supp-withdrawn-jury-demand', 'supp-minor-parent-service', 'supp-foster-adoption-standing-2025', 'supp-ts-best-interest', 'supp-ldw-absent-service-plan', 'supp-brief-38-checklist']) {
+    assert.ok(find(id), id)
+  }
+  assert.match(find('supp-icwa-concurrent-findings').rule, /fourteenth|four sister/i)
+  assert.match(find('merits-icwa-serious-damage-expert').rule, /disagree/i)
+  assert.match(find('supp-foster-adoption-standing-2025').rule, /H\.B\. 2350/)
+  assert.match(find('supp-ldw-absent-service-plan').cautions.join(' '), /former.*O|2025/i)
+  assert.match(find('supp-ts-best-interest').cautions.join(' '), /September 27, 2022/)
+})
