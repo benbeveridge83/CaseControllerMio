@@ -1540,7 +1540,8 @@ export default [
     "review": "Heightened legal and factual sufficiency under the clear-and-convincing burden; keep the two analyses distinct.",
     "record": [
       "Court orders incorporating plans; versions and amendments; proof of notice.",
-      "Removal evidence, conservatorship dates, provider records and precise allegedly unmet requirement."
+      "Removal evidence, conservatorship dates, provider records and precise allegedly unmet requirement.",
+      "Check that the actual service plan was admitted and included in the appellate record, not simply mentioned by a caseworker (L.D.W. 2024)."
     ],
     "remedy": "Seek reversal of the challenged finding. Defeating one predicate does not undo termination if another valid predicate and best interest remain; address D/E collateral consequences separately.",
     "authorities": [
@@ -1578,6 +1579,13 @@ export default [
         "type": "case",
         "court": "Supreme Court of Texas",
         "year": 2013
+      },
+      {
+        "label": "In re L.D.W., No. 06-23-00097-CV (Tex. App.—Texarkana Apr. 19, 2024)",
+        "citation": "In re L.D.W., No. 06-23-00097-CV (Tex. App.—Texarkana Apr. 19, 2024)",
+        "url": "https://law.justia.com/cases/texas/sixth-court-of-appeals/2024/06-23-00097-cv.html",
+        "proposition": "Reversed Mother's former-O termination where the service plan was absent from evidence and the record.",
+        "type": "case"
       }
     ],
     "cautions": [
@@ -1764,6 +1772,13 @@ export default [
         "type": "case",
         "court": "Supreme Court of Texas",
         "year": 2026
+      },
+      {
+        "label": "In re W.H., No. 14-23-00287-CV (Tex. App.—Houston [14th Dist.] Oct. 19, 2023)",
+        "citation": "In re W.H., No. 14-23-00287-CV (Tex. App.—Houston [14th Dist.] Oct. 19, 2023)",
+        "url": "https://law.justia.com/cases/texas/fourteenth-court-of-appeals/2023/14-23-00287-cv.html",
+        "proposition": "Criminal charges and vague associations, without supported timing or risk, were insufficient on that record.",
+        "type": "case"
       }
     ],
     "cautions": [
@@ -2080,6 +2095,13 @@ export default [
         "type": "case",
         "court": "Supreme Court of Texas",
         "year": 2026
+      },
+      {
+        "label": "In re T.S. & E.S.S., No. 01-22-00054-CV (Tex. App.—Houston [1st Dist.] Sept. 27, 2022) (op. on reh'g)",
+        "citation": "In re T.S. & E.S.S., No. 01-22-00054-CV (Tex. App.—Houston [1st Dist.] Sept. 27, 2022) (op. on reh'g)",
+        "url": "https://law.justia.com/cases/texas/first-court-of-appeals/2022/01-22-00054-cv-0.html",
+        "proposition": "Best-interest finding legally sufficient but factually insufficient under full record review.",
+        "type": "case"
       }
     ],
     "cautions": [
@@ -2777,7 +2799,7 @@ export default [
     "subcategory": "ICWA substantive requirements",
     "title": "ICWA § 1912(f): serious-damage finding and qualified-expert proof",
     "summary": "Covered termination requires proof beyond a reasonable doubt of likely serious damage from continued custody, including qualified-expert testimony.",
-    "rule": "Section 1912(f) bars covered termination without a determination, supported beyond a reasonable doubt and including qualified-expert testimony, that continued custody by the parent or Indian custodian is likely to cause the child serious emotional or physical damage. Under 25 C.F.R. § 23.121, evidence must connect particular home conditions to likely serious damage to this child. Section 23.122 requires an expert qualified to address that risk; the expert should also be qualified concerning the tribe’s prevailing social and cultural standards. The child’s regularly assigned social worker may not serve as that qualified expert. Texas predicate and best-interest findings remain separate requirements.",
+    "rule": "Section 1912(f) bars covered termination without a determination, supported beyond a reasonable doubt and including qualified-expert testimony, that continued custody by the parent or Indian custodian is likely to cause the child serious emotional or physical damage. Under 25 C.F.R. § 23.121, evidence must connect particular home conditions to likely serious damage to this child. Section 23.122 requires an expert qualified to address that risk; the expert should also be qualified concerning the tribe’s prevailing social and cultural standards. The child’s regularly assigned social worker may not serve as that qualified expert. Texas appellate courts disagree whether concurrent §161.001 predicate and best-interest findings are authorized in ICWA cases: In re C.J.B. (Fourteenth Court) applies W.D.H. to hold those additional state findings erroneous but harmless on the record, while four sister courts require both state and ICWA findings. See the separate ICWA conflict guide; federal §1912(d)/(f) safeguards remain critical.",
     "appellant": [
       "Locate the actual federal finding and burden instruction. Separate failure to apply the beyond-a-reasonable-doubt standard, absence of any qualified-expert proof, and insufficiency of the entire harm record.",
       "Examine the expert’s qualifications, the foundation for the opinion, and the causal link to this child’s likely future damage. Under § 23.121(d), poverty, isolation, single parenthood, age, crowded or inadequate housing, substance abuse, or nonconforming behavior alone does not establish the required harm without that link.",
@@ -2864,13 +2886,21 @@ export default [
         "url": "https://www.law.cornell.edu/cfr/text/25/23.137",
         "proposition": "Identifies eligible invalidation petitioners and requires the court to determine whether invalidation is appropriate when a covered violation is shown.",
         "type": "rule"
+      },
+      {
+        "label": "In re C.J.B., 681 S.W.3d 778 (Tex. App.—Houston [14th Dist.] 2023)",
+        "citation": "In re C.J.B., 681 S.W.3d 778 (Tex. App.—Houston [14th Dist.] 2023)",
+        "url": "https://law.justia.com/cases/texas/fourteenth-court-of-appeals/2023/14-23-00186-cv.html",
+        "proposition": "Recognizes the conflict and affirms despite the additional state findings because no Rule 44.1 harm was shown.",
+        "type": "case"
       }
     ],
     "cautions": [
       "The federal beyond-a-reasonable-doubt harm determination supplements the Texas termination requirements; do not assume every Texas predicate or best-interest finding acquires that burden.",
       "Section 23.122 says the expert should have knowledge of prevailing tribal social and cultural standards. Do not rewrite that provision as an unconditional requirement of tribal membership or disregard the required expertise on serious-damage risk.",
       "Apply the current regulations to current cases. S.P. discusses earlier BIA guidance in its procedural setting; that discussion does not replace today’s regulatory text.",
-      "See the separate active-efforts issue under § 1912(d); successful notice compliance and an expert’s presence do not establish that all federal requirements were met."
+      "See the separate active-efforts issue under § 1912(d); successful notice compliance and an expert’s presence do not establish that all federal requirements were met.",
+      "IMPORTANT: In re C.J.B., 681 S.W.3d 778 (Tex. App.—Houston [14th Dist.] 2023) identifies a four-to-one split regarding simultaneous Texas Family Code and ICWA findings; do not characterize state-law findings as universally required in an ICWA termination."
     ],
     "tags": [
       "ICWA",
