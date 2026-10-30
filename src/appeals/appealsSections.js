@@ -1,4 +1,4 @@
-export const RESEARCH_DATE = 'October 29, 2026'
+export const RESEARCH_DATE = 'October 30, 2026'
 
 export const APPEAL_GROUPS = [
   { id: 'entry', label: 'Getting into the appeal', number: '01', description: 'Jurisdiction, deadlines, and the pleadings that frame the case.' },
