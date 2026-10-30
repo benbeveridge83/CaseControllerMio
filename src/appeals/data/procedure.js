@@ -1322,7 +1322,8 @@ export default [
       }
     ],
     "cautions": [
-      "Actual awareness of a suit does not by itself substitute for legally sufficient service. Conversely, appearing without preserving a service objection can change the analysis."
+      "Actual awareness of a suit does not by itself substitute for legally sufficient service. Conversely, appearing without preserving a service objection can change the analysis.",
+      "A parent served while underage may present an intra-state appellate split on whether later participation after reaching eighteen cures the defect; compare M.M.S. (14th) with J.M. (3rd)."
     ],
     "tags": [
       "citation",
@@ -1529,11 +1530,19 @@ export default [
         "url": "https://capitol.texas.gov/tlodocs/89R/billtext/html/SB02052F.htm",
         "proposition": "New affidavit and parental-presumption provisions apply to covered suits pending in the trial court or filed on/after September 1, 2025.",
         "type": "statute"
+      },
+      {
+        "label": "H.B. 2350, 89th Leg., R.S. (2025)",
+        "citation": "H.B. 2350, 89th Leg., R.S. (2025)",
+        "url": "https://capitol.texas.gov/tlodocs/89R/billtext/html/HB02350F.htm",
+        "proposition": "Narrowed §102.005 termination/adoption standing; transition requires review.",
+        "type": "statute"
       }
     ],
     "cautions": [
       "No directly on-point decision verified for this specific checklist item; the cited rule or statute supplies the governing requirement.",
-      "The exact application and preservation consequences of the new Section 102.0031 requirement require current, case-specific research. Do not automatically label every violation a subject-matter-jurisdiction defect."
+      "The exact application and preservation consequences of the new Section 102.0031 requirement require current, case-specific research. Do not automatically label every violation a subject-matter-jurisdiction defect.",
+      "Current §102.005 no longer contains the pre-2025 two-month-possession/substantial-past-contact adoption-standing categories; K.T.R. (2022) applied earlier law and must not be used for a currently governed petition."
     ],
     "tags": [
       "standing",
@@ -2584,7 +2593,8 @@ export default [
     "rule": "Section 201.015 generally requires a written request by the third working day after notice of the substance of the associate judge’s report, specification of the issues and notice to opposing counsel. Another party may request within three working days after the initial request. A proper request triggers a hearing within 30 days. Section 201.2042 adds filing requirements for covered child-protection associate judges.",
     "appellant": [
       "Establish exactly when the parent/counsel received notice of the substance, including any oral notice.",
-      "File in the proper referring court, identify the disputed termination/conservatorship issues, serve counsel and preserve denial of the hearing."
+      "File in the proper referring court, identify the disputed termination/conservatorship issues, serve counsel and preserve denial of the hearing.",
+      "The referring court may not limit the de novo hearing to newly discovered evidence or deny the chance to call witnesses merely because an associate judge heard the case."
     ],
     "appellee": [
       "Check timeliness, a valid prehearing waiver and the scope of specified issues.",
@@ -2609,6 +2619,13 @@ export default [
         "citation": "D.V. v. Texas Department of Family & Protective Services, No. 03-23-00098-CV (Tex. App.—Austin July 13, 2023)",
         "url": "https://law.justia.com/cases/texas/third-court-of-appeals/2023/03-23-00098-cv.html",
         "proposition": "Reversed denial of a de novo hearing where the request identified the associate judge’s termination ruling as the disputed issue.",
+        "type": "case"
+      },
+      {
+        "label": "In re A.C., No. 12-23-00232-CV (Tex. App.—Tyler Nov. 15, 2023)",
+        "citation": "In re A.C., No. 12-23-00232-CV (Tex. App.—Tyler Nov. 15, 2023)",
+        "url": "https://law.justia.com/cases/texas/twelfth-court-of-appeals/2023/12-23-00232-cv.html",
+        "proposition": "Cannot demand newly discovered evidence before de novo hearing or forbid parties from offering witnesses.",
         "type": "case"
       }
     ],
