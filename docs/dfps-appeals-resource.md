@@ -6,24 +6,32 @@ The staff sidebar entry is **DFPS / CPS Appeals**, at `#dfps_appeals`. Individua
 
 The catalog is separate from the interface:
 
+- `src/appeals/data/articleSupplement.js`: CLE-informed verified case updates, court-of-appeals conflicts, record and brief checklists.
+
 - `src/appeals/data/procedure.js`: jurisdiction, deadlines, petition/service, findings, and records.
 - `src/appeals/data/merits.js`: sufficiency, predicates, best interest, special statutory routes, and conservatorship.
 - `src/appeals/data/trialBrief.js`: evidence, trial procedure, counsel, briefs, harm, and remedies.
 - `src/appeals/appealsSections.js`: section/group navigation and research date.
 
-## Catalog snapshot — October 29, 2026
+## Catalog snapshot — October 30, 2026
 
-The initial catalog contains **150 issue guides in 16 sections**, with **401 authority references across 136 source URLs**. Ninety-one source URLs contain judicial opinions; a URL count is not a claim that each is a different decision. All guides have governing authority, and 112 include at least one judicial decision. Rule/statute-only entries identify the lack of a verified directly on-point decision where relevant.
+The updated catalog contains **162 issue guides in 16 sections**, with **439 authority references across 153 source URLs**. One hundred four source URLs contain judicial opinions; a URL count is not a claim that each is a different decision. All guides have governing authority, and 112 include at least one judicial decision. Rule/statute-only entries identify the lack of a verified directly on-point decision where relevant.
 
 | Research stage | Guides |
 | --- | ---: |
-| Jurisdiction, deadlines, and pleadings | 33 |
-| Findings, order, and appellate record | 20 |
-| Trial procedure, evidence, and counsel | 35 |
-| Sufficiency, predicates, best interest, special routes, and conservatorship | 51 |
-| Briefing, harm, and remedies | 11 |
+| Jurisdiction, deadlines, and pleadings | 36 |
+| Findings, order, and appellate record | 21 |
+| Trial procedure, evidence, and counsel | 38 |
+| Sufficiency, predicates, best interest, special routes, and conservatorship | 54 |
+| Briefing, harm, and remedies | 12 |
 
 Independent legal review specifically checked the 2023/2025 statutory transitions, current rule triggers, the 2026 J.D.H./C.S./K.N./H.S. decisions, and separate conservatorship relief. Review corrections include §161.101(a)'s statutory-language pleading permission, the Horrocks motion-for-new-trial limitation on rendition, the additional-party notice deadline, and two substantive ICWA guides. This review was not a comprehensive citator check.
+
+## October 30, 2026 CLE supplement
+
+Reviewed 18 PDFs (17 unique) covering child-protection appeals, preservation, evidence, briefing, case law and CPS process. This release adds 12 detailed issue guides and enriches the original guides with First/Fourteenth appellate authority. The two evidence-mistakes PDFs are identical. Source-derived CLE issue ideas are linked to primary judicial decisions and current rules; older papers should not be mistaken for controlling current text.
+
+Key differences: **In re C.J.B.** recognizes competing ICWA/Texas fact-finding approaches (Fourteenth Court vs four sister courts) and treats improper extra state findings as harmless on its facts; **H.B. 2350 (2025)** narrowed §102.005 adoption/termination standing and eliminated the former two-month-possession basis discussed in 2022 foster-parent cases; **H.B. 116 (2025)** eliminated former service-plan predicate (O) in covered cases. Historic O authorities including L.D.W. are explicitly version-limited. The resource includes de novo witness participation, jury-demand withdrawal, service on minor parents, interpreters, specific sufficiency cases and Rule 38 practice checklists. Wider agency/CASA workflow belongs in the separate CPS process resource rather than masquerading as a basis for appeal.
 
 ## Entry requirements
 
@@ -50,10 +58,10 @@ Run the project's existing unit suite with `node --test tests/*.test.js` and the
 - Final catalog/model/mount/render tests passed.
 - Targeted ESLint passed for the new source, mount plugin, unit tests, and fixture.
 - Production build passed; the appeals resource is a separate lazy-loaded chunk. Existing main-bundle size warnings remain.
-- Fixture browser checks passed with all 150 guides, no browser errors, and blocked external traffic.
+- Fixture browser checks passed with all 162 guides, no browser errors, and blocked external traffic.
 - Built-app integration checks passed at desktop and 390px widths, including actual sidebar navigation, print styling, leaving the route, and the outside-account guard. Synthetic auth and request interception prevented real external writes.
 - Full existing test suite: **544 passed / 545 total**. The sole failure is the pre-existing Formspree render assertion for “Send fee agreement for e-signature,” confirmed before feature integration. No Formspree/PNC implementation was changed.
 
 ## Deployment
 
-The implementation is prepared for review on a feature branch. The user's earlier Mio instruction requires separate approval before production merge/deployment.
+The user expressly authorized production merge and deployment on October 30, 2026. Record the final deployed commit and Vercel production status after completion.
