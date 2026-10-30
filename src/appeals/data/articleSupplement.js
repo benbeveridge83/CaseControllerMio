@@ -332,7 +332,7 @@ export default [
       {
         "label": "In re E.N.C., 384 S.W.3d 796 (Tex. 2012)",
         "citation": "In re E.N.C., 384 S.W.3d 796 (Tex. 2012)",
-        "url": "https://law.justia.com/cases/texas/supreme-court/2012/11-0713.html",
+        "url": "https://app.midpage.ai/document/in-re-enc-1590691",
         "proposition": "Rejects speculation that an unlawful act with theoretical incarceration necessarily proves endangerment.",
         "type": "case"
       }
@@ -375,7 +375,7 @@ export default [
       {
         "label": "In re C.H., 89 S.W.3d 17 (Tex. 2002)",
         "citation": "In re C.H., 89 S.W.3d 17 (Tex. 2002)",
-        "url": "https://law.justia.com/cases/texas/supreme-court/2002/01-0087.html",
+        "url": "https://app.midpage.ai/document/in-re-ch-1353786",
         "proposition": "Nonexclusive factors and sufficiency distinction.",
         "type": "case"
       }
@@ -455,7 +455,7 @@ export default [
       {
         "label": "Tex. R. Evid. 103",
         "citation": "Tex. R. Evid. 103",
-        "url": "https://www.txcourts.gov/media/1462829/texas-rules-of-evidence.pdf",
+        "url": "https://www.txcourts.gov/rules-forms/",
         "proposition": "Evidentiary objection and offer-of-proof requirements.",
         "type": "rule"
       },
@@ -465,13 +465,6 @@ export default [
         "url": "https://www.txcourts.gov/media/1463134/texas-rules-of-appellate-procedure-02062026.pdf",
         "proposition": "Preservation and reversible harm.",
         "type": "rule"
-      },
-      {
-        "label": "Chad Baruch & Lucy Forbes, Top Ten Ways to Make Your Appellate Lawyer Happy (2022)",
-        "citation": "Chad Baruch & Lucy Forbes, Top Ten Ways to Make Your Appellate Lawyer Happy (2022)",
-        "url": "https://www.txcourts.gov/rules-forms/",
-        "proposition": "CLE research prompt only; controlling rules linked above.",
-        "type": "guide"
       }
     ],
     "cautions": [
@@ -512,7 +505,7 @@ export default [
       {
         "label": "Crawford v. XTO Energy, Inc., 509 S.W.3d 906 (Tex. 2017)",
         "citation": "Crawford v. XTO Energy, Inc., 509 S.W.3d 906 (Tex. 2017)",
-        "url": "https://law.justia.com/cases/texas/supreme-court/2017/15-0498.html",
+        "url": "https://law.justia.com/cases/texas/supreme-court/2017/15-0142.html",
         "proposition": "Pretrial hearings ordinarily presumed nonevidentiary absent sufficiently specific indication.",
         "type": "case"
       },
@@ -558,13 +551,6 @@ export default [
         "url": "https://www.txcourts.gov/media/1463134/texas-rules-of-appellate-procedure-02062026.pdf",
         "proposition": "Current detailed brief requirements, appellee cross-points and liberal construction.",
         "type": "rule"
-      },
-      {
-        "label": "Kirk Cooper & Helen Turner, Greatest Hits: Common Appellate Issues (2023)",
-        "citation": "Kirk Cooper & Helen Turner, Greatest Hits: Common Appellate Issues (2023)",
-        "url": "https://www.txcourts.gov/rules-forms/",
-        "proposition": "Secondary checklist useful for organization; check 2026 rule text.",
-        "type": "guide"
       }
     ],
     "cautions": [
