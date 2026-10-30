@@ -41,7 +41,7 @@ export default [
       {
         "label": "25 U.S.C. §§ 1912(d), (f), 1914",
         "citation": "25 U.S.C. §§ 1912(d), (f), 1914",
-        "url": "https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title25-section1912&num=0&edition=prelim",
+        "url": "https://www.law.cornell.edu/uscode/text/25/1912",
         "proposition": "Federal safeguards, proof requirements and remedies.",
         "type": "statute"
       },
@@ -332,7 +332,7 @@ export default [
       {
         "label": "In re E.N.C., 384 S.W.3d 796 (Tex. 2012)",
         "citation": "In re E.N.C., 384 S.W.3d 796 (Tex. 2012)",
-        "url": "https://app.midpage.ai/document/in-re-enc-1590691",
+        "url": "https://law.justia.com/cases/texas/supreme-court/2012/11-0713.html",
         "proposition": "Rejects speculation that an unlawful act with theoretical incarceration necessarily proves endangerment.",
         "type": "case"
       }
