@@ -19,7 +19,8 @@ export default [
     "review": "Usually abuse of discretion on the evidentiary ruling, followed by TRAP 44.1 harm review; preservation is assessed from the actual record.",
     "record": [
       "Reporter’s record of the offer, objection, bench conference, and ruling.",
-      "Written motions and rulings, admitted exhibit, and every later use of the same evidence."
+      "Written motions and rulings, admitted exhibit, and every later use of the same evidence.",
+      "Prepare an evidence-by-evidence chart identifying repeated admissions and whether each was covered by a timely objection or running objection; distinguish objections to partially admissible documents."
     ],
     "remedy": "A preserved, harmful evidentiary error ordinarily supports a new trial. An unpreserved admission complaint ordinarily does not.",
     "authorities": [
@@ -988,10 +989,18 @@ export default [
         "type": "case",
         "court": "Supreme Court of Texas",
         "year": "2019"
+      },
+      {
+        "label": "In re R.C., No. 14-22-00384-CV (Tex. App.—Houston [14th Dist.] Dec. 6, 2022)",
+        "citation": "In re R.C., No. 14-22-00384-CV (Tex. App.—Houston [14th Dist.] Dec. 6, 2022)",
+        "url": "https://law.justia.com/cases/texas/fourteenth-court-of-appeals/2022/14-22-00384-cv.html",
+        "proposition": "After an adversary's paid jury demand, an objection to withdrawal preserves the nonrequesting parent's right to remain on the jury docket.",
+        "type": "case"
       }
     ],
     "cautions": [
-      "A de novo hearing is not automatically a second full trial with every procedural choice reset."
+      "A de novo hearing is not automatically a second full trial with every procedural choice reset.",
+      "Rule 220 protection generally requires an objection to the requesting party's withdrawal; an earlier demand alone is not enough."
     ],
     "tags": [
       "jury demand",
@@ -1362,10 +1371,18 @@ export default [
         "url": "https://www.txcourts.gov/media/1463074/texas-rules-of-evidence-updated-with-amendments-effective-07022026.pdf",
         "proposition": "Requires interpreter qualification and a translation oath or affirmation.",
         "type": "rule"
+      },
+      {
+        "label": "In re A.M.M., No. 13-21-00114-CV (Tex. App.—Corpus Christi–Edinburg Oct. 15, 2021)",
+        "citation": "In re A.M.M., No. 13-21-00114-CV (Tex. App.—Corpus Christi–Edinburg Oct. 15, 2021)",
+        "url": "https://law.justia.com/cases/texas/thirteenth-court-of-appeals/2021/13-21-00114-cv.html",
+        "proposition": "Where court recognized interpretation need but supplied it sporadically, parent's due process was violated and new trial ordered.",
+        "type": "case"
       }
     ],
     "cautions": [
-      "No directly on-point termination decision verified for this interpreter checklist. A separate criminal-law interpreter standard should not be assumed to control."
+      "No directly on-point termination decision verified for this interpreter checklist. A separate criminal-law interpreter standard should not be assumed to control.",
+      "A.M.M. explicitly rejected an absolute interpreter entitlement in every case; its holding is fact specific."
     ],
     "tags": [
       "interpreter",
