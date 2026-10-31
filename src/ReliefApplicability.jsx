@@ -33,7 +33,7 @@ export function ReliefFilterGroupSettings({ groups, onChange }) {
     if (!name) return
     onChange(groups.map(g => g.id !== group.id ? g : option ? { ...g, options: g.options.map(o => o.id === option.id ? { ...o, name } : o) } : { ...g, name }))
   }
-  return <section><h2>Requested Relief Filter Groups</h2><p>Add groups and their choices here. Row applicability and case filters use the same definitions. Renaming keeps existing assignments. Archiving a group stops filtering by that group; archiving a choice preserves its existing assignments.</p>
+  return <section><h2>Requested Relief Filter Groups</h2><p>Add groups and their choices here. The Order type choices also appear as Litigation Track types. Add Habeas Corpus, Discovery Orders, or any other type here once; it becomes available both on tracks and in row applicability. Final orders is assigned to each matter’s default Final Relief track. Proceeding supplies the choices in Edit Matter. Renaming keeps existing assignments. Archiving a group stops filtering by that group; archiving a choice preserves its existing assignments.</p>
     <button type="button" onClick={() => { const name = nameFrom('New filter group name'); if (name) onChange([...groups, { id: crypto.randomUUID(), name, options: [] }]) }}>+ Add filter group</button>
     {groups.map(group => <section key={group.id} style={{ marginTop: 12, padding: 12, border: '1px solid #cbd5e1', borderRadius: 6 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><strong>{group.name}{group.archived ? ' (archived)' : ''}</strong><button type="button" onClick={() => rename(group)}>Rename group</button><button type="button" onClick={() => onChange(groups.map(g => g.id === group.id ? { ...g, archived: !g.archived } : g))}>{group.archived ? 'Restore group' : 'Archive group'}</button>
@@ -64,4 +64,12 @@ export function ReliefInlineRowEditor({ row, parentName, groups, inherited, onCh
       <button type="button" onClick={onCancel}>Cancel</button>
     </div>
   </section>
+}
+
+export function ReliefContextSummary({ groups, value = {} }) {
+  return <div aria-label="Relief filters" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '8px 0', textAlign: 'left' }}>
+    {groups.filter(group => !group.archived).map(group => <span key={group.id} style={{ padding: '5px 9px', border: '1px solid #bfdbfe', borderRadius: 6, background: '#f8fbff' }}>
+      <strong>{group.name}: </strong>{!Object.hasOwn(value, group.id) ? 'All' : !value[group.id].length ? 'None' : value[group.id].map(id => group.options.find(option => option.id === id)?.name || id).join(', ')}
+    </span>)}
+  </div>
 }

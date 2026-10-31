@@ -1,6 +1,6 @@
 export const defaultReliefFilterGroups = [
   { id: 'proceeding', name: 'Proceeding', options: [{ id: 'original', name: 'Original' }, { id: 'modification', name: 'Modification' }] },
-  { id: 'order_type', name: 'Order type', options: [{ id: 'final', name: 'Final orders' }, { id: 'temporary', name: 'Temporary orders' }, { id: 'tro', name: 'TRO' }] }
+  { id: 'order_type', name: 'Order type', options: [{ id: 'final', name: 'Final orders' }, { id: 'temporary', name: 'Temporary orders' }, { id: 'tro', name: 'TRO' }, { id: 'other', name: 'Other litigation' }] }
 ]
 
 export function normalizeApplicability(value) {
@@ -13,8 +13,10 @@ export function normalizeReliefFilterGroups(value) {
   const seen = new Set()
   return value.filter(g => g && typeof g.id === 'string' && g.id && !seen.has(g.id) && seen.add(g.id)).map(g => {
     const optionIds = new Set()
+    const choices = Array.isArray(g.options) ? [...g.options] : []
+    if (g.id === 'order_type' && !choices.some(option => option?.id === 'other')) choices.push({ id: 'other', name: 'Other litigation' })
     return { id: g.id, name: String(g.name || 'Unnamed group'), archived: g.archived === true,
-      options: (Array.isArray(g.options) ? g.options : []).filter(o => o && typeof o.id === 'string' && o.id && !optionIds.has(o.id) && optionIds.add(o.id)).map(o => ({id: o.id, name: String(o.name || 'Unnamed option'), archived: o.archived === true})) }
+      options: choices.filter(o => o && typeof o.id === 'string' && o.id && !optionIds.has(o.id) && optionIds.add(o.id)).map(o => ({id: o.id, name: String(o.name || 'Unnamed option'), archived: o.archived === true})) }
   })
 }
 
