@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import React from 'react'
+import { initialReliefContext } from '../src/reliefTrackContext.js'
 import {transformWithOxc} from 'vite'
 import {normalizeApplicability,defaultReliefFilterGroups,visibleReliefIds,effectiveApplicability} from '../src/reliefApplicability.js'
 const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
@@ -10,7 +11,7 @@ async function load(name,globals={}) {
  const re=new RegExp('(^|\\n)(  )?function '+name+'\\('),match=re.exec(source);assert.ok(match,`${name} exists`)
  const start=match.index+match[1].length,indent=match[2]||'';const end=source.indexOf('\n'+indent+'}',start)+indent.length+2
  const code=(await transformWithOxc(source.slice(start,end),'function.jsx',{jsx:{runtime:'classic'}})).code
- const ctx={React,normalizeApplicability,visibleReliefIds,effectiveApplicability,requestedReliefFilterGroups:defaultReliefFilterGroups,...globals};vm.createContext(ctx);vm.runInContext(code,ctx);return ctx[name]
+ const ctx={React,initialReliefContext,requestedReliefDefaultContext:()=>({}),normalizeApplicability,visibleReliefIds,effectiveApplicability,requestedReliefFilterGroups:defaultReliefFilterGroups,...globals};vm.createContext(ctx);vm.runInContext(code,ctx);return ctx[name]
 }
 const plain=x=>JSON.parse(JSON.stringify(x))
 test('row normalizer preserves applicability across snapshot cloning',async()=>{const shape=await load('ensureRequestedReliefOptionShape');assert.deepEqual(plain(shape({id:'a',applicability:{proceeding:['modification']}}).applicability),{proceeding:['modification']})})
