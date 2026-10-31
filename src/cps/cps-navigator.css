@@ -1,0 +1,13 @@
+.mio-cps-navigator{width:100%;min-width:0;margin:16px auto 32px;text-align:left}
+.mio-cps-navigator-frame{display:block;width:100%;height:calc(100dvh - 120px);min-height:720px;border:1px solid #dce5e3;border-radius:12px;background:#f5f7f5;color-scheme:light}
+body.mio-cps-navigator-active main:has(>.mio-cps-navigator){min-width:0}
+@media(max-width:760px){
+  body.mio-cps-navigator-active #root div:has(>main>.mio-cps-navigator){flex-direction:column}
+  body.mio-cps-navigator-active #root div:has(>main>.mio-cps-navigator)>aside{display:flex;gap:18px;align-items:center;overflow-x:auto;min-height:0!important;width:100%!important;flex:0 0 auto!important;padding:12px!important;white-space:nowrap;margin-top:64px}
+  body.mio-cps-navigator-active #root div:has(>main>.mio-cps-navigator)>aside h3{display:none}
+  body.mio-cps-navigator-active #root div:has(>main>.mio-cps-navigator)>aside a{flex:0 0 auto;font-size:12px;margin:0!important}
+  body.mio-cps-navigator-active #root div:has(>main>.mio-cps-navigator)>aside button{margin:0!important}
+  body.mio-cps-navigator-active main:has(>.mio-cps-navigator){max-width:100vw!important;width:100%!important;padding:8px!important}
+  .mio-cps-navigator{margin-top:0}
+  .mio-cps-navigator-frame{min-height:680px;border-radius:8px}
+}
