@@ -1,5 +1,5 @@
 import { defaultReliefFilterGroups, normalizeReliefFilterGroups, normalizeApplicability, effectiveApplicability, visibleReliefIds } from './reliefApplicability.js'
-import { ReliefApplicabilityFields, ReliefFilterGroupSettings } from './ReliefApplicability.jsx'
+import { ReliefApplicabilityFields, ReliefFilterGroupSettings, ReliefInlineRowEditor } from './ReliefApplicability.jsx'
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
@@ -6374,6 +6374,7 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefTableExpandedIds') || '[]') }
     catch { return [] }
   })
+  const [requestedReliefInlineEditor, setRequestedReliefInlineEditor] = useState(null)
   const [requestedReliefOptionForm, setRequestedReliefOptionForm] = useState({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })
   const [requestedReliefMatterFilter, setRequestedReliefMatterFilter] = useState('all')
   const [requestedReliefMatterSearchText, setRequestedReliefMatterSearchText] = useState('')
@@ -47586,9 +47587,61 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
   function openRequestedReliefRowForm(parentId = '', isOption = false, optionType = 'non_exclusive') {
-    setRequestedReliefOptionForm({ id: '', parent_id: parentId, name: '', notes: '', is_active: true, is_relief_option: isOption, option_type: optionType, has_text_box: false, text_box_label: '', applicability: {} })
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: parentId, parentId, isOption, optionType })
+  }
+
+  function openRequestedReliefInlineEditor({ scope = 'settings', anchorId = '', parentId = '', isOption = false, optionType = 'non_exclusive', row = null, relation = 'child' } = {}) {
+    setRequestedReliefInlineEditor({ scope, anchorId, relation, row: row ? { ...row, applicability: normalizeApplicability(row.applicability) } : {
+      id: '', parent_id: parentId, name: '', notes: '', is_active: true, is_relief_option: isOption,
+      option_type: optionType, has_text_box: false, text_box_label: '', applicability: {}
+    } })
     if (parentId) setRequestedReliefExpandedIds(current => Array.from(new Set([...current, parentId])))
-    window.requestAnimationFrame(() => document.getElementById('rr-option-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+  }
+
+  function saveRequestedReliefInlineRow() {
+    const draft = requestedReliefInlineEditor
+    if (!draft) return
+    const name = draft.row.name.trim()
+    if (!name) return alert('Please name the issue / option row.')
+    const id = draft.row.id || crypto.randomUUID()
+    const updateRows = current => {
+      if (draft.row.id) return current.map(row => row.id === id ? { ...row, ...draft.row, name } : row)
+      const siblings = current.filter(row => String(row.parent_id || '') === String(draft.row.parent_id || ''))
+      const anchor = siblings.find(row => row.id === draft.anchorId)
+      const order = draft.relation === 'sibling' && anchor ? Number(anchor.sort_order || 0) + 1 : Math.max(0, ...siblings.map(row => Number(row.sort_order || 0))) + 1
+      const rows = current.map(row => String(row.parent_id || '') === String(draft.row.parent_id || '') && Number(row.sort_order || 0) >= order ? { ...row, sort_order: Number(row.sort_order || 0) + 1 } : row)
+      return resequenceRequestedReliefOptions([...rows, ensureRequestedReliefOptionShape({ ...draft.row, id, name, sort_order: order })])
+    }
+    if (draft.scope === 'settings') setRequestedReliefOptions(updateRows)
+    else setRequestedReliefBuilder(builder => {
+      if (!builder) return builder
+      const field = requestedReliefBuilderSelectionField()
+      const rows = requestedReliefWorkingRows(builder)
+      const previous = rows.find(row => row.id === id)
+      const issues = new Set(builder[field] || [])
+      const options = new Set(builder.selected_option_ids || [])
+      if (!draft.row.id) issues.add(draft.row.is_relief_option ? draft.row.parent_id : id)
+      else if (Boolean(previous?.is_relief_option) !== Boolean(draft.row.is_relief_option)) {
+        if (draft.row.is_relief_option) issues.delete(id)
+        else { issues.add(id); options.delete(id) }
+      }
+      return { ...builder, working_options: updateRows(rows),
+        [field]: Array.from(issues).filter(Boolean), selected_option_ids: Array.from(options), selection_locked: false }
+    })
+    setRequestedReliefInlineEditor(null)
+  }
+
+  function renderRequestedReliefInlineRow(scope, anchorId = '', depth = 0) {
+    const draft = requestedReliefInlineEditor
+    if (!draft || draft.scope !== scope || draft.anchorId !== anchorId) return null
+    const rows = scope === 'settings' ? requestedReliefOptions : requestedReliefWorkingRows()
+    const parent = rows.find(row => row.id === draft.row.parent_id)
+    return <div style={{ marginLeft: depth * 22, gridColumn: '1 / -1', flexBasis: '100%', minWidth: 0 }}>
+      <ReliefInlineRowEditor key={`${scope}:${anchorId}:${draft.row.id || 'new'}`} row={draft.row} parentName={parent?.name || ''} groups={requestedReliefFilterGroups}
+        inherited={parent ? effectiveApplicability(parent, rows, requestedReliefFilterGroups) : {}}
+        onChange={row => setRequestedReliefInlineEditor(current => current ? { ...current, row } : current)}
+        onSave={saveRequestedReliefInlineRow} onCancel={() => setRequestedReliefInlineEditor(null)} />
+    </div>
   }
 
   function activeRequestedReliefOptions() {
@@ -48014,58 +48067,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function editRequestedReliefBuilderRow(rowId) {
     const row = requestedReliefBuilderOptionById(rowId)
-    if (!row) return
-    const name = (window.prompt('Edit issue / option text:', row.name || '') || '').trim()
-    if (!name) return
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder).map((item) => String(item.id) === String(rowId) ? { ...item, name } : item)
-      return { ...builder, working_options: rows }
-    })
+    if (row) openRequestedReliefInlineEditor({ scope: 'builder', anchorId: rowId, row })
   }
 
   function addRequestedReliefBuilderIssueRelative(rowId = '', relation = 'child') {
     const row = requestedReliefBuilderOptionById(rowId)
-    const relationLabel = relation === 'sibling' ? 'sibling issue' : relation === 'top' ? 'top-level issue' : 'child issue'
-    const name = (window.prompt(`Name the new ${relationLabel}:`, '') || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-local-${Date.now()}`
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder)
-      const currentRow = rows.find((item) => String(item.id) === String(rowId))
-      const parentId = relation === 'top' ? '' : relation === 'sibling' ? (currentRow?.parent_id || '') : (currentRow?.id || '')
-      const siblings = rows.filter((item) => String(item.parent_id || '') === String(parentId || ''))
-      const nextRows = resequenceRequestedReliefOptions([
-        ...rows,
-        ensureRequestedReliefOptionShape({ id: newId, parent_id: parentId, name, notes: '', is_active: true, is_relief_option: false, sort_order: siblings.length + 1 }, rows.length)
-      ])
-      const field = requestedReliefBuilderSelectionField()
-      return { ...builder, working_options: nextRows, [field]: Array.from(new Set([...(builder[field] || []), newId])), selection_locked: false }
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, rowId, newId].filter(Boolean))))
-    setRequestedReliefActiveIssueId(newId)
+    openRequestedReliefInlineEditor({ scope: 'builder', anchorId: rowId,
+      parentId: relation === 'top' ? '' : relation === 'sibling' ? row?.parent_id || '' : rowId, relation })
   }
 
-  function addRequestedReliefBuilderOptionChoice(rowId, forcedType = '') {
-    const issue = requestedReliefBuilderOptionById(rowId)
-    if (!issue) return
-    const name = (window.prompt(`Name the new relief option under "${issue.name}":`, '') || '').trim()
-    if (!name) return
-    const optionType = forcedType || (window.confirm('Should this be an exclusive option?\n\nOK = exclusive. Cancel = non-exclusive.') ? 'exclusive' : 'non_exclusive')
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-local-option-${Date.now()}`
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder)
-      const siblings = rows.filter((item) => String(item.parent_id || '') === String(rowId || ''))
-      const nextRows = resequenceRequestedReliefOptions([
-        ...rows,
-        ensureRequestedReliefOptionShape({ id: newId, parent_id: rowId, name, notes: '', is_active: true, is_relief_option: true, option_type: optionType === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: false, text_box_label: '', sort_order: siblings.length + 1 }, rows.length)
-      ])
-      const field = requestedReliefBuilderSelectionField()
-      return { ...builder, working_options: nextRows, [field]: Array.from(new Set([...(builder[field] || []), rowId])), selection_locked: false }
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, rowId])))
+  function addRequestedReliefBuilderOptionChoice(rowId, forcedType = '', anchorId = rowId) {
+    if (!requestedReliefBuilderOptionById(rowId)) return
+    openRequestedReliefInlineEditor({ scope: 'builder', anchorId, parentId: rowId, isOption: true, optionType: forcedType || 'non_exclusive' })
   }
 
   function toggleRequestedReliefBuilderOptionTextBox(rowId) {
@@ -48219,7 +48232,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(issue.id, 'exclusive')} title="Add an exclusive requested-relief option">＋ Exclusive</button>
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(issue.id, 'non_exclusive')} title="Add a non-exclusive requested-relief option">＋ Non-exclusive</button>
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderTableUnderIssue(issue.id)} title="Insert a requested-relief table under this issue">▦ Table</button>
-        <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(issue.id)} title="Edit text">✎</button>
+        <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(issue.id)} title="Edit row details and applicability">✎</button>
         <button type="button" style={buttonStyle} onClick={() => moveRequestedReliefBuilderRow(issue.id, -1)} title="Move up">↑</button>
         <button type="button" style={buttonStyle} onClick={() => moveRequestedReliefBuilderRow(issue.id, 1)} title="Move down">↓</button>
         <button type="button" style={buttonStyle} onClick={() => indentRequestedReliefBuilderRow(issue.id)} title="Indent under the previous row">→</button>
@@ -48234,7 +48247,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const buttonStyle = compact ? { padding: '3px 6px', fontSize: 11, whiteSpace: 'nowrap' } : { padding: '4px 7px', fontSize: 12, whiteSpace: 'nowrap' }
     return (
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: compact ? 0 : 5 }} onClick={(e) => e.stopPropagation()}>
-        <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(option.parent_id || '', option.option_type || 'non_exclusive')} title="Add another option at this level">＋ Option</button>
+        <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(option.parent_id || '', option.option_type || 'non_exclusive', option.id)} title="Add another option at this level">＋ Option</button>
         <button type="button" style={buttonStyle} onClick={() => markRequestedReliefBuilderRowAsOption(option.id, false, option.option_type)} title="Turn this back into a regular issue/category row">Remove option status</button>
         <button type="button" style={buttonStyle} onClick={() => toggleRequestedReliefBuilderOptionTextBox(option.id)}>{option.has_text_box ? '− Text box' : '＋ Text box'}</button>
         <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(option.id)}>✎</button>
@@ -48484,6 +48497,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null, view = 'simple', sourceRelief = null } = {}) {
+    setRequestedReliefInlineEditor(null)
     const snapshotRows = template?.option_snapshot || issueSet?.option_snapshot || sourceRelief?.option_snapshot || []
     const workingOptions = snapshotRows.length ? requestedReliefSnapshotRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
     const workingBuilder = { working_options: workingOptions }
@@ -48594,6 +48608,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, sourceRelief = null, relief = null, useFullTree = false, startBlank = false, initialName = '', litigationTrackId = '', litigationPartyId = '', filingDocumentId = '', settingEventId = '' } = {}) {
+    setRequestedReliefInlineEditor(null)
     const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     const resolvedIssueSet = issueSet || (!relief && !template && !sourceRelief && !useFullTree && !startBlank ? latestRequestedReliefIssueSetForMatter(resolvedMatterId) : null)
     if (!relief && !resolvedIssueSet && !template && !sourceRelief && !useFullTree && !startBlank) {
@@ -49148,8 +49163,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function editRequestedReliefOption(option) {
-    setRequestedReliefOptionForm({ applicability: normalizeApplicability(option.applicability), id: option.id, parent_id: option.parent_id || '', name: option.name || '', notes: option.notes || '', is_active: option.is_active !== false, is_relief_option: option.is_relief_option === true, option_type: option.option_type === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: option.has_text_box === true, text_box_label: option.text_box_label || '' })
-    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: option.id, row: option })
   }
 
   function deleteRequestedReliefOption(optionId) {
@@ -49180,7 +49194,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function addRequestedReliefOptionRelative(option, relation) {
-    openRequestedReliefRowForm(relation === 'child' ? option.id : option.parent_id || '')
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: option.id, parentId: relation === 'child' ? option.id : option.parent_id || '', relation })
   }
 
 
@@ -49355,19 +49369,19 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             </div>
             {settingsLike ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
-                <button type="button" onClick={() => editRequestedReliefOption(option)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>
-                <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
-                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
-                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
+                <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionRelative(option, 'child') : addRequestedReliefBuilderIssueRelative(option.id, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'non_exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
                 {!isReliefOption && !option.is_relief_table && <button type="button" onClick={() => addRequestedReliefTableUnderIssue(option)} title="Insert one of the requested relief tables under this issue row">Add table</button>}
                 {isReliefOption && <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, false, option.option_type)} title="Make this row a regular issue/category again">Remove option status</button>}
                 {isReliefOption && <button type="button" onClick={() => toggleRequestedReliefOptionTextBox(option.id)}>{option.has_text_box ? 'Remove text box' : 'Add text box'}</button>}
-                <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionRelative(option, 'sibling') : addRequestedReliefBuilderIssueRelative(option.id, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
                 <button type="button" onClick={() => moveRequestedReliefOption(option.id, -1)}>Up</button>
                 <button type="button" onClick={() => moveRequestedReliefOption(option.id, 1)}>Down</button>
                 <button type="button" onClick={() => indentRequestedReliefOption(option.id)}>Indent</button>
                 <button type="button" onClick={() => outdentRequestedReliefOption(option.id)}>Outdent</button>
-                <button type="button" onClick={() => editRequestedReliefOption(option)}>Edit</button>
+                <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)}>Edit</button>
                 <button type="button" onClick={() => deleteRequestedReliefOption(option.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button>
               </div>
             ) : mode === 'issues_builder' ? (
@@ -49405,6 +49419,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
+          {renderRequestedReliefInlineRow(mode === 'settings' ? 'settings' : 'builder', option.id, depth + 1)}
           {expanded && renderRequestedReliefOptionTree({ parentId: option.id, depth: depth + 1, mode, builder, applicableIds })}
         </Fragment>
       )
@@ -49444,6 +49459,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <div style={{ fontWeight: 700, color: '#0f172a' }}>{option.name}</div>
           {option.notes ? <div style={{ marginTop: 3, color: '#64748b', fontSize: 12 }}>{option.notes}</div> : null}
           {renderRequestedReliefOptionEditTools(option)}
+          {renderRequestedReliefInlineRow('builder', option.id)}
           {option.has_text_box && (
             <input
               type="text"
@@ -49527,6 +49543,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
+          {renderRequestedReliefInlineRow('builder', row.id, depth + 1)}
           {expanded && renderRequestedReliefTemplateMakerTree({ parentId: row.id, depth: depth + 1, applicableIds })}
         </Fragment>
       )
@@ -49558,6 +49575,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <div style={{ textAlign: 'right' }}>Row controls</div>
         </div>
         <div style={{ maxHeight: '58vh', overflow: 'auto' }}>
+          {renderRequestedReliefInlineRow('builder')}
           {renderRequestedReliefTemplateMakerTree()}
           {!rows.length && <div style={{ padding: 20, color: '#64748b' }}>No rows yet. Click <strong>Top-level issue</strong> to begin.</div>}
         </div>
@@ -49583,6 +49601,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           </div>
           <div style={{ color: '#64748b', fontSize: 13, marginBottom: 10 }}>Select an issue to choose its requested-relief options. Turn on Add/Edit Issues to show controls on every row.</div>
           <div style={{ display: 'grid', gap: 8 }}>
+            {renderRequestedReliefInlineRow('builder')}
             {issueRows.map((issue) => {
               const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)).length
               const active = String(issue.id) === String(activeIssue?.id)
@@ -49597,6 +49616,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                     <span style={{ minWidth: 22, height: 22, borderRadius: 999, background: '#dbeafe', color: '#1d4ed8', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{count}</span>
                   </button>
                   {renderRequestedReliefBuilderRowTools(issue, { compact: true })}
+                  {renderRequestedReliefInlineRow('builder', issue.id)}
                 </div>
               )
             })}
@@ -49688,6 +49708,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                   </div>
                   <span style={{ color: '#64748b', fontSize: 12 }}>Issue / prompt</span>
                 </div>
+                {renderRequestedReliefInlineRow('builder', issue.id)}
                 {!requestedReliefBuilderHideOptions && options.length > 0 && (
                   <div style={{ display: 'grid', gap: 8, marginLeft: 36, maxWidth: 760 }}>
                     {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true, applicableIds }))}
@@ -50444,6 +50465,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
         <section style={{ marginBottom: 12 }}><strong>Preview tree for</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} value={requestedReliefSettingsFilters} onChange={setRequestedReliefSettingsFilters} /><small>All leaves a group unfiltered. None matches no rows. Hidden rows remain in the master tree.</small></section>
         <style>{`.rr-tree-row:hover{background:#eaf4ff!important}`}</style>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+          {renderRequestedReliefInlineRow('settings')}
           {renderRequestedReliefOptionTree({ mode: 'settings' })}
         </div>
         <h2 style={{ marginTop: 24 }}>Requested Relief Tables</h2>
