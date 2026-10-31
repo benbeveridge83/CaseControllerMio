@@ -1,3 +1,5 @@
+import { defaultReliefFilterGroups, normalizeReliefFilterGroups, normalizeApplicability, effectiveApplicability, visibleReliefIds } from './reliefApplicability.js'
+import { ReliefApplicabilityFields, ReliefFilterGroupSettings } from './ReliefApplicability.jsx'
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
@@ -4669,6 +4671,7 @@ const defaultRequestedReliefMatrixTable = ensureRequestedReliefMatrixShape({
 function ensureRequestedReliefOptionShape(option, index = 0) {
   return {
     id: option?.id || `rr-option-${Date.now()}-${index}`,
+    applicability: normalizeApplicability(option?.applicability),
     parent_id: option?.parent_id || '',
     name: option?.name || 'Unnamed Relief Option',
     notes: option?.notes || '',
@@ -6360,6 +6363,12 @@ function App() {
   })
   const [requestedReliefMatrixHideOptions, setRequestedReliefMatrixHideOptions] = useState(false)
   const [requestedReliefSettingsView, setRequestedReliefSettingsView] = useState('tree')
+  const [requestedReliefFilterGroups, setRequestedReliefFilterGroups] = useState(() => {
+    try { return normalizeReliefFilterGroups(JSON.parse(localStorage.getItem('caseMioRequestedReliefFilterGroups') || 'null')) }
+    catch { return normalizeReliefFilterGroups(null) }
+  })
+  const [requestedReliefSettingsFilters, setRequestedReliefSettingsFilters] = useState({})
+
 
   const [requestedReliefTableExpandedIds, setRequestedReliefTableExpandedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefTableExpandedIds') || '[]') }
@@ -7307,6 +7316,7 @@ function App() {
         setOrderFilters(next)
         return next
       }, kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
+      caseMioRequestedReliefFilterGroups: { setter: (value) => setRequestedReliefFilterGroups(normalizeReliefFilterGroups(value)), kind: 'array', fallback: defaultReliefFilterGroups },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
@@ -8908,6 +8918,10 @@ function App() {
 
 
   useEffect(() => {
+    try { saveMioStateKey('caseMioRequestedReliefFilterGroups', JSON.stringify(requestedReliefFilterGroups)) } catch {}
+  }, [requestedReliefFilterGroups])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefOptions', JSON.stringify(requestedReliefOptions)) } catch {}
   }, [requestedReliefOptions])
 
@@ -8979,7 +8993,7 @@ function App() {
     setRequestedReliefTemplates((current) => {
       let changed = false
       const next = current.map((template) => {
-        const workingOptions = Array.isArray(template.option_snapshot) && template.option_snapshot.length ? cloneRequestedReliefOptionRows(template.option_snapshot) : cloneRequestedReliefOptionRows(requestedReliefOptions)
+        const workingOptions = Array.isArray(template.option_snapshot) && template.option_snapshot.length ? requestedReliefSnapshotRows(template.option_snapshot) : cloneRequestedReliefOptionRows(requestedReliefOptions)
         const builder = { working_options: workingOptions }
         const sourceIssueIds = template.selected_issue_ids || template.issue_option_ids || []
         const sourceReliefIssueIds = template.issue_option_ids || template.selected_issue_ids || []
@@ -47548,8 +47562,42 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
+  function requestedReliefApplicabilityIds(builder = requestedReliefBuilder) {
+    const rows = builder?.working_options || requestedReliefOptions
+    return visibleReliefIds(rows, requestedReliefFilterGroups, builder?.filter_context || {})
+  }
+
+  function renderRequestedReliefContextFilters() {
+    if (!requestedReliefBuilder) return null
+    const visible = requestedReliefApplicabilityIds()
+    const excluded = (requestedReliefBuilder.selected_option_ids || []).filter(id => !visible.has(id))
+    const excludedIssues = (requestedReliefBuilder.selected_issue_ids || requestedReliefBuilder.issue_option_ids || []).filter(id => !visible.has(id))
+    return <section style={{ marginBottom: 12 }}>
+      <strong>Show issues and options for</strong>
+      <ReliefApplicabilityFields groups={requestedReliefFilterGroups} value={requestedReliefBuilder.filter_context || {}} onChange={filter_context => setRequestedReliefBuilder(b => ({ ...b, filter_context }))} />
+      <small>Choose within each group. All shows every context; None shows no matching rows. Filters do not delete existing selections.</small>
+      {(excluded.length > 0 || excludedIssues.length > 0) && <div role="status" style={{ padding: 10, background: '#fffbeb', color: '#78350f' }}>
+        {excludedIssues.length} included issue(s) and {excluded.length} selected option(s) are outside these filters and remain saved.{' '}
+        <details><summary>Review excluded rows</summary>{[...new Set([...excludedIssues, ...excluded])].map(id => <div key={id}>{requestedReliefBuilderOptionById(id)?.name || id}</div>)}</details>
+        <button type="button" onClick={() => setRequestedReliefBuilder(b => ({ ...b, filter_context: {} }))}>Show all to review</button>{' '}
+        <button type="button" disabled={!excluded.length} onClick={() => { if (window.confirm('Remove these excluded option selections? Text and row structure will be retained.')) setRequestedReliefBuilder(b => ({ ...b, selected_option_ids: (b.selected_option_ids || []).filter(id => !excluded.includes(id)) })) }}>Remove excluded option selections</button>
+      </div>}
+    </section>
+  }
+
+  function openRequestedReliefRowForm(parentId = '', isOption = false, optionType = 'non_exclusive') {
+    setRequestedReliefOptionForm({ id: '', parent_id: parentId, name: '', notes: '', is_active: true, is_relief_option: isOption, option_type: optionType, has_text_box: false, text_box_label: '', applicability: {} })
+    if (parentId) setRequestedReliefExpandedIds(current => Array.from(new Set([...current, parentId])))
+    window.requestAnimationFrame(() => document.getElementById('rr-option-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+  }
+
   function activeRequestedReliefOptions() {
     return requestedReliefOptions.filter((option) => option.is_active !== false)
+  }
+
+  function requestedReliefSnapshotRows(rows = []) {
+    const master = new Map(requestedReliefOptions.map(row => [String(row.id), row]))
+    return cloneRequestedReliefOptionRows(rows.map(row => Object.hasOwn(row, 'applicability') ? row : { ...row, applicability: master.get(String(row.id))?.applicability }))
   }
 
   function cloneRequestedReliefOptionRows(rows = []) {
@@ -47762,7 +47810,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function addIssueToRequestedReliefBuilder(optionId) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const issueIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const issueIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.issue_option_ids || [])
       issueIds.forEach((id) => selected.add(id))
       setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, optionId, ...issueIds, ...issueIds.flatMap((id) => requestedReliefBuilderAncestorIds(id, builder))])))
@@ -48234,7 +48282,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function addRequestedReliefOptionWhileBuilding() {
     if (!requestedReliefBuilder) return
     let issueId = requestedReliefActiveIssueId
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     if (!issueId || !issueRows.some((issue) => String(issue.id) === String(issueId))) issueId = issueRows[0]?.id || ''
     const issue = requestedReliefOptions.find((option) => String(option.id) === String(issueId))
     if (!issue) return alert('Select an issue/prompt first, then add the relief option under it.')
@@ -48436,7 +48485,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
 
   function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null, view = 'simple', sourceRelief = null } = {}) {
     const snapshotRows = template?.option_snapshot || issueSet?.option_snapshot || sourceRelief?.option_snapshot || []
-    const workingOptions = snapshotRows.length ? cloneRequestedReliefOptionRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
+    const workingOptions = snapshotRows.length ? requestedReliefSnapshotRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
     const workingBuilder = { working_options: workingOptions }
     const allIds = workingOptions.filter((option) => !option.is_relief_option).map((option) => option.id)
     const sourceSelectedIssueIds = issueSet?.selected_issue_ids || template?.selected_issue_ids || template?.issue_option_ids || sourceRelief?.issue_option_ids || allIds
@@ -48454,6 +48503,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefEditMenu(false)
     setRequestedReliefBuilder({
       id: issueSet?.id || '',
+      filter_context: normalizeApplicability(issueSet?.filter_context || template?.filter_context || sourceRelief?.filter_context),
       matter_id: resolvedMatterId,
       name: issueSet?.name || template?.name || sourceRelief?.name || (templateMode ? 'New Requested Relief Template' : 'Matter Issues'),
       selected_issue_ids: expandedSelectedIssueIds.filter((id) => allIds.includes(id)),
@@ -48551,7 +48601,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       return
     }
     const snapshotRows = relief?.option_snapshot || sourceRelief?.option_snapshot || template?.option_snapshot || resolvedIssueSet?.option_snapshot || []
-    const workingOptions = snapshotRows.length ? cloneRequestedReliefOptionRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
+    const workingOptions = snapshotRows.length ? requestedReliefSnapshotRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
     const workingBuilder = { working_options: workingOptions }
     const allCurrentIssueIds = workingOptions.filter((option) => !option.is_relief_option).map((option) => option.id)
     let rawIssueIds = []
@@ -48568,6 +48618,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setRequestedReliefBuilderMode('relief')
     setRequestedReliefBuilder({
       id: relief?.id || '',
+      filter_context: normalizeApplicability(relief?.filter_context || sourceRelief?.filter_context || template?.filter_context || resolvedIssueSet?.filter_context),
       matter_id: resolvedMatterId,
       issue_set_id: relief?.issue_set_id || resolvedIssueSet?.id || '',
       relief_type: relief?.relief_type || relief_type,
@@ -48617,7 +48668,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function toggleRequestedIssueSelection(optionId, checked) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.selected_issue_ids || [])
       relatedIds.forEach((id) => checked ? selected.add(id) : selected.delete(id))
       return { ...builder, selected_issue_ids: Array.from(selected) }
@@ -48627,10 +48678,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function toggleRequestedReliefIssueSelection(optionId, checked) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.issue_option_ids || [])
       relatedIds.forEach((id) => checked ? selected.add(id) : selected.delete(id))
-      const removedOptionIds = new Set(requestedReliefBuilderDescendantIds(optionId, builder).filter((id) => requestedReliefBuilderIsOptionRow(id, builder)))
+      const removedOptionIds = new Set(requestedReliefBuilderDescendantIds(optionId, builder).filter((id) => requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id)))
       return {
         ...builder,
         issue_option_ids: Array.from(selected),
@@ -48929,6 +48980,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const row = {
       id: requestedReliefBuilder.id || (crypto?.randomUUID ? crypto.randomUUID() : `issue-set-${Date.now()}`),
       matter_id: requestedReliefBuilder.matter_id,
+      filter_context: normalizeApplicability(requestedReliefBuilder.filter_context),
       name,
       selected_issue_ids: selectedIssueIds,
       selected_table_ids: requestedReliefBuilder.selected_table_ids || [],
@@ -48979,6 +49031,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       id: id || (crypto?.randomUUID ? crypto.randomUUID() : `relief-template-${Date.now()}`),
       name,
       mode: requestedReliefBuilderMode,
+      filter_context: normalizeApplicability(requestedReliefBuilder?.filter_context),
       selected_issue_ids: selectedIssueIds,
       issue_option_ids: reliefIssueIds,
       selected_table_ids: requestedReliefBuilder?.selected_table_ids || [],
@@ -49095,7 +49148,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function editRequestedReliefOption(option) {
-    setRequestedReliefOptionForm({ id: option.id, parent_id: option.parent_id || '', name: option.name || '', notes: option.notes || '', is_active: option.is_active !== false, is_relief_option: option.is_relief_option === true, option_type: option.option_type === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: option.has_text_box === true, text_box_label: option.text_box_label || '' })
+    setRequestedReliefOptionForm({ applicability: normalizeApplicability(option.applicability), id: option.id, parent_id: option.parent_id || '', name: option.name || '', notes: option.notes || '', is_active: option.is_active !== false, is_relief_option: option.is_relief_option === true, option_type: option.option_type === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: option.has_text_box === true, text_box_label: option.text_box_label || '' })
     window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
   }
 
@@ -49127,28 +49180,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function addRequestedReliefOptionRelative(option, relation) {
-    const name = (window.prompt(
-      relation === 'child'
-        ? `Name the child issue under ${option.name}:`
-        : `Name the sibling issue next to ${option.name}:`
-    ) || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
-    const parentId = relation === 'child' ? option.id : (option.parent_id || '')
-    setRequestedReliefOptions((current) => {
-      const next = current.map((item) => ({ ...item }))
-      const siblings = next.filter((item) => String(item.parent_id || '') === String(parentId || '')).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-      let insertOrder = siblings.length + 1
-      if (relation === 'sibling') {
-        const currentSibling = siblings.find((item) => item.id === option.id)
-        insertOrder = Number(currentSibling?.sort_order || siblings.length) + 1
-        siblings.forEach((item) => { if (Number(item.sort_order || 0) >= insertOrder) item.sort_order = Number(item.sort_order || 0) + 1 })
-      }
-      next.push(ensureRequestedReliefOptionShape({ id: newId, parent_id: parentId, name, notes: '', is_active: true, is_relief_option: false, sort_order: insertOrder }, next.length))
-      return resequenceRequestedReliefOptions(next)
-    })
-    setRequestedReliefExpandedIds((current) => relation === 'child' ? Array.from(new Set([...current, option.id])) : current)
+    openRequestedReliefRowForm(relation === 'child' ? option.id : option.parent_id || '')
   }
+
 
   function markRequestedReliefRowAsOption(optionId, isReliefOption = true, optionType = 'non_exclusive') {
     const scrollX = window.scrollX
@@ -49195,30 +49229,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function addRequestedReliefOptionChoice(parentOption, optionType = 'non_exclusive') {
-    const label = optionType === 'exclusive' ? 'exclusive' : 'non-exclusive'
-    const name = (window.prompt(`Name the ${label} relief option under ${parentOption.name}:`) || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
-    setRequestedReliefOptions((current) => {
-      const siblings = current.filter((item) => String(item.parent_id || '') === String(parentOption.id || ''))
-      return resequenceRequestedReliefOptions([
-        ...current,
-        ensureRequestedReliefOptionShape({
-          id: newId,
-          parent_id: parentOption.id,
-          name,
-          notes: '',
-          is_active: true,
-          is_relief_option: true,
-          option_type: optionType === 'exclusive' ? 'exclusive' : 'non_exclusive',
-          has_text_box: false,
-          text_box_label: '',
-          sort_order: siblings.length + 1
-        }, current.length)
-      ])
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, parentOption.id])))
+    openRequestedReliefRowForm(parentOption.id, true, optionType)
   }
+
 
   function toggleRequestedReliefOptionTextBox(optionId) {
     const scrollX = window.scrollX
@@ -49283,8 +49296,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     })
   }
 
-  function renderRequestedReliefOptionTree({ parentId = '', depth = 0, mode = 'builder', builder = requestedReliefBuilder } = {}) {
-    const children = requestedReliefChildren(parentId)
+  function renderRequestedReliefOptionTree({ parentId = '', depth = 0, mode = 'builder', builder = requestedReliefBuilder, applicableIds: inheritedApplicableIds = null } = {}) {
+    const contextRows = mode === 'settings' ? requestedReliefOptions : requestedReliefBuilderOptionRows(builder)
+    const applicableIds = inheritedApplicableIds || (mode === 'settings' ? visibleReliefIds(contextRows, requestedReliefFilterGroups, requestedReliefSettingsFilters) : requestedReliefApplicabilityIds(builder))
+    const children = (mode === 'settings' ? requestedReliefChildren(parentId) : requestedReliefBuilderChildren(parentId, builder)).filter(row => applicableIds.has(row.id))
     if (!children.length) return null
     const issueSelected = new Set(builder?.selected_issue_ids || [])
     const issueAllowed = new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
@@ -49296,7 +49311,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const matterSettingsMode = mode === 'matter_settings'
     return children.map((option) => {
       if (settingsLike && hideRequestedReliefOptionsInSettings && isRequestedReliefOptionRow(option)) return null
-      const childCount = requestedReliefChildren(option.id).length
+      const childCount = (mode === 'settings' ? requestedReliefChildren(option.id) : requestedReliefBuilderChildren(option.id, builder)).filter(row => applicableIds.has(row.id)).length
       const expanded = requestedReliefExpandedIds.includes(option.id)
       const isIssueSelected = issueSelected.has(option.id)
       const hasSelectedDescendant = requestedIssueHasSelectedDescendant(option.id, issueSelected)
@@ -49340,6 +49355,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             </div>
             {settingsLike ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
+                <button type="button" onClick={() => editRequestedReliefOption(option)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>
                 <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
                 <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
                 <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
@@ -49389,13 +49405,14 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
-          {expanded && renderRequestedReliefOptionTree({ parentId: option.id, depth: depth + 1, mode, builder })}
+          {expanded && renderRequestedReliefOptionTree({ parentId: option.id, depth: depth + 1, mode, builder, applicableIds })}
         </Fragment>
       )
     })
   }
 
-  function renderRequestedReliefOptionAnswer(option, index, { compact = false, letterMode = false } = {}) {
+  function renderRequestedReliefOptionAnswer(option, index, { compact = false, letterMode = false, applicableIds = requestedReliefApplicabilityIds() } = {}) {
+    if (!applicableIds.has(option.id)) return null
     const selected = (requestedReliefBuilder?.selected_option_ids || []).includes(option.id)
     const letter = requestedReliefChoiceLetter(index)
     const detail = requestedReliefBuilder?.option_text_by_option_id?.[option.id] || ''
@@ -49443,10 +49460,11 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     )
   }
 
-  function renderRequestedReliefTemplateMakerTree({ parentId = '', depth = 0 } = {}) {
+  function renderRequestedReliefTemplateMakerTree({ parentId = '', depth = 0, applicableIds: inheritedApplicableIds = null } = {}) {
     const builder = requestedReliefBuilder
     if (!builder) return null
-    const children = requestedReliefBuilderChildren(parentId, builder)
+    const applicableIds = inheritedApplicableIds || requestedReliefApplicabilityIds(builder)
+    const children = requestedReliefBuilderChildren(parentId, builder).filter(row => applicableIds.has(row.id))
     if (!children.length) return null
     const selectionField = requestedReliefBuilderMode === 'issues' ? 'selected_issue_ids' : 'issue_option_ids'
     const selectedIssueIds = new Set(builder[selectionField] || [])
@@ -49509,7 +49527,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
-          {expanded && renderRequestedReliefTemplateMakerTree({ parentId: row.id, depth: depth + 1 })}
+          {expanded && renderRequestedReliefTemplateMakerTree({ parentId: row.id, depth: depth + 1, applicableIds })}
         </Fragment>
       )
     })
@@ -49552,9 +49570,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function renderRequestedReliefSplitSelector() {
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     const activeIssue = issueRows.find((issue) => String(issue.id) === String(requestedReliefActiveIssueId)) || issueRows[0]
-    const options = activeIssue ? requestedReliefOptionsForBuilderIssue(activeIssue.id, requestedReliefBuilder) : []
+    const options = activeIssue ? requestedReliefOptionsForBuilderIssue(activeIssue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)) : []
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 430px) minmax(420px, 1fr)', gap: 16, border: '1px solid #dbeafe', borderRadius: 10, padding: 12, background: '#f8fafc', maxHeight: '60vh', overflow: 'auto' }}>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff' }}>
@@ -49565,7 +49584,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <div style={{ color: '#64748b', fontSize: 13, marginBottom: 10 }}>Select an issue to choose its requested-relief options. Turn on Add/Edit Issues to show controls on every row.</div>
           <div style={{ display: 'grid', gap: 8 }}>
             {issueRows.map((issue) => {
-              const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+              const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)).length
               const active = String(issue.id) === String(activeIssue?.id)
               const parts = requestedReliefPromptDisplayParts(issue, requestedReliefBuilder)
               return (
@@ -49600,7 +49619,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
               <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>Choose one or more options for this issue. Exclusive choices clear competing choices; non-exclusive choices may be combined.</div>
               <div style={{ display: 'grid', gap: 10 }}>
-                {!requestedReliefBuilderHideOptions && options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true }))}
+                {!requestedReliefBuilderHideOptions && options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, applicableIds }))}
                 {!requestedReliefBuilderHideOptions && !options.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 12, color: '#64748b' }}>No relief options are under this issue yet.</div>}
               </div>
             </>
@@ -49612,7 +49631,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
 
 
   function renderRequestedReliefMultipleChoiceSelector() {
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     const jumpToIssue = (issueId) => {
       setRequestedReliefActiveIssueId(issueId)
       window.requestAnimationFrame(() => {
@@ -49631,7 +49651,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
         issue,
         parts,
         number: requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder),
-        optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+        optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)).length
       }
     })
     const orderedIssueRows = tocRows.map((row) => row.issue)
@@ -49656,7 +49676,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
         </aside>
         <div id="rr-prompt-scroll-container" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', border: '1px solid #dbeafe', borderRadius: 10, scrollBehavior: 'smooth' }}>
           {orderedIssueRows.map((issue, issueIndex) => {
-            const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder)
+            const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id))
             return (
               <section id={`rr-prompt-${issue.id}`} key={issue.id} style={{ scrollMarginTop: 8, borderBottom: '1px solid #dbeafe', padding: 12, background: issueIndex % 2 ? '#fff' : '#f8fbff' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: options.length ? 10 : 2 }}>
@@ -49670,7 +49690,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                 </div>
                 {!requestedReliefBuilderHideOptions && options.length > 0 && (
                   <div style={{ display: 'grid', gap: 8, marginLeft: 36, maxWidth: 760 }}>
-                    {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true }))}
+                    {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true, applicableIds }))}
                   </div>
                 )}
               </section>
@@ -49687,7 +49707,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const isIssueBuilder = requestedReliefBuilderMode === 'issues'
     const field = isIssueBuilder ? 'selected_issue_ids' : 'issue_option_ids'
     const selected = new Set(requestedReliefBuilder[field] || [])
-    const rows = requestedReliefBuilderOptionRows(requestedReliefBuilder).filter((option) => !requestedReliefBuilderIsOptionRow(option, requestedReliefBuilder) && !selected.has(option.id))
+    const applicableIds = requestedReliefApplicabilityIds()
+    const rows = requestedReliefBuilderOptionRows(requestedReliefBuilder).filter((option) => applicableIds.has(option.id) && !requestedReliefBuilderIsOptionRow(option, requestedReliefBuilder) && !selected.has(option.id))
     return (
       <Modal title={isIssueBuilder ? 'Add Hidden / Unselected Issues' : 'Add Issues to This Relief'} onClose={() => setShowRequestedReliefRestoreWindow(false)}>
         <p>Choose any issue to add it and its child issue rows back into the current draft. This does not change the main Settings tree.</p>
@@ -49909,6 +49930,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     return (
       <Modal wide title={modalTitle} onClose={() => { setShowRequestedReliefBuilder(false); setRequestedReliefBuilder(null); setRequestedReliefDetailEditor(null) }}>
         <style>{`.rr-tree-row:hover,.rr-template-maker-row:hover{background:#eaf4ff!important}`}</style>
+        {renderRequestedReliefContextFilters()}
 
         <details open style={{ border: '1px solid #dbe3ea', borderRadius: 9, padding: 9, marginBottom: 10, background: '#fff' }}>
           <summary style={{ cursor: 'pointer', fontWeight: 850, color: '#1e3a8a' }}>{isTemplateBuilder ? 'Template name and save options' : 'Matter, track, party, and filing'}</summary>
@@ -50347,7 +50369,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const settingsTabButton = (value, label) => (
       <button type="button" onClick={() => setRequestedReliefSettingsView(value)} style={{ marginRight: 8, marginBottom: 10, fontWeight: requestedReliefSettingsView === value ? 900 : 600, background: requestedReliefSettingsView === value ? '#dbeafe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '7px 10px' }}>{label}</button>
     )
-    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('drafting_language', 'Drafting Language')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('filters', 'Filter groups')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('drafting_language', 'Drafting Language')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    if (requestedReliefSettingsView === 'filters') return <>{settingsTabs}<ReliefFilterGroupSettings groups={requestedReliefFilterGroups} onChange={setRequestedReliefFilterGroups} /></>
     if (requestedReliefSettingsView === 'drafting_language') {
       return <>{settingsTabs}{renderDraftingReliefLanguageSettings()}</>
     }
@@ -50392,7 +50415,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <button type="button" onClick={scanAndRestoreRequestedReliefBackups} style={{ marginLeft: 8, fontWeight: 700 }}>Scan / Restore Requested Relief Backups</button>
         </div>
         <p>Build the master tree here. Issue/category rows create the structure. Use <strong>Add exclusive option</strong> or <strong>Add non-exclusive option</strong> to create selectable relief choices under a row. Relief Option rows will not appear as issues; their parent row is the issue. Use <strong>Hide options</strong> when you want to focus only on the issue structure.</p>
-        <form onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
+        <form id="rr-option-form" onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
             <LabeledField label="Row name *"><input value={requestedReliefOptionForm.name} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, name: e.target.value })} /></LabeledField>
             <LabeledField label="Parent level"><select value={requestedReliefOptionForm.parent_id || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, parent_id: e.target.value })}><option value="">Top level</option>{parentChoices.map((option) => <option key={option.id} value={option.id}>{requestedReliefOptionPath(option.id)}</option>)}</select></LabeledField>
@@ -50407,6 +50430,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                 {requestedReliefOptionForm.has_text_box && <LabeledField label="Text box label"><input value={requestedReliefOptionForm.text_box_label || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, text_box_label: e.target.value })} placeholder="Example: Child support amount" /></LabeledField>}
               </>
             )}
+            <div style={{ flexBasis: '100%' }}><strong>Applies to</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} mode="row" value={requestedReliefOptionForm.applicability || {}} inherited={requestedReliefOptionForm.parent_id ? effectiveApplicability(requestedReliefOptions.find(r => r.id === requestedReliefOptionForm.parent_id), requestedReliefOptions, requestedReliefFilterGroups) : {}} onChange={applicability => setRequestedReliefOptionForm(current => ({ ...current, applicability }))} /><small>Inherit follows the parent (top-level rows apply everywhere). Choices narrow a branch. None excludes it when that group is filtered.</small></div>
             <button type="submit">{requestedReliefOptionForm.id ? 'Update Row' : 'Add Row'}</button>
             {requestedReliefOptionForm.id && <button type="button" onClick={() => setRequestedReliefOptionForm({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })}>Cancel</button>}
           </div>
@@ -50415,12 +50439,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <button type="button" onClick={() => setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))}>Expand all</button>{' '}
           <button type="button" onClick={() => setRequestedReliefExpandedIds([])}>Collapse all</button>{' '}
           <button type="button" onClick={() => setHideRequestedReliefOptionsInSettings((show) => !show)}>{hideRequestedReliefOptionsInSettings ? 'Show options' : 'Hide options'}</button>{' '}
-          <button type="button" onClick={() => {
-            const name = (window.prompt('Name the new top-level issue row:') || '').trim()
-            if (!name) return
-            setRequestedReliefOptions((current) => resequenceRequestedReliefOptions([...current, ensureRequestedReliefOptionShape({ id: crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`, parent_id: '', name, is_active: true, is_relief_option: false, sort_order: current.filter((item) => !item.parent_id).length + 1 }, current.length)]))
-          }}>+ Top-level row</button>
+          <button type="button" onClick={() => openRequestedReliefRowForm()}>+ Top-level row</button>
         </div>
+        <section style={{ marginBottom: 12 }}><strong>Preview tree for</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} value={requestedReliefSettingsFilters} onChange={setRequestedReliefSettingsFilters} /><small>All leaves a group unfiltered. None matches no rows. Hidden rows remain in the master tree.</small></section>
         <style>{`.rr-tree-row:hover{background:#eaf4ff!important}`}</style>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
           {renderRequestedReliefOptionTree({ mode: 'settings' })}
