@@ -14,6 +14,7 @@ export function normalizeReliefGroup(group, index = 0) {
     kind: group?.kind === 'general' ? 'general' : 'relief',
     label: String(group?.label || ''),
     issue_id: group?.issue_id ? String(group.issue_id) : '',
+    issue_ids: Array.isArray(group?.issue_ids) ? group.issue_ids.map(String) : [],
     option_id: group?.option_id ? String(group.option_id) : '',
     source_side: group?.source_side === 'theirs' ? 'theirs' : 'ours',
     roles: {

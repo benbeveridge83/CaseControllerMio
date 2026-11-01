@@ -32,21 +32,22 @@ export function mappingSideMatches(mapping, sourceSide = '') {
   return mapping.source_side === sourceSide
 }
 
-export function mappingMatches(mapping, { issueId = '', optionId = '', sourceSide = '' } = {}) {
+export function mappingMatches(mapping, { issueId = '', issueIds = [], optionId = '', sourceSide = '' } = {}) {
   if (!mapping || mapping.is_active === false) return false
   if (!mappingSideMatches(mapping, sourceSide)) return false
   if (mapping.option_id) {
     return Boolean(optionId) && String(mapping.option_id) === String(optionId)
   }
   if (mapping.issue_id) {
-    return Boolean(issueId) && String(mapping.issue_id) === String(issueId)
+    if (issueId && String(mapping.issue_id) === String(issueId)) return true
+    return (issueIds || []).some((id) => String(mapping.issue_id) === String(id))
   }
   return false
 }
 
-// A mapping matches a relief group when the group's option or issue is mapped
-// on the same side. Groups that have no option fall back to the issue.
+// A mapping matches a relief group when the group's option or any ancestor issue
+// is mapped on the same side. Groups that have no option fall back to the issue.
 export function mappingsForGroup(mappings, group) {
   return mappings.filter((mapping) =>
-    mappingMatches(mapping, { issueId: group?.issue_id, optionId: group?.option_id, sourceSide: group?.source_side }))
+    mappingMatches(mapping, { issueId: group?.issue_id, issueIds: group?.issue_ids || [], optionId: group?.option_id, sourceSide: group?.source_side }))
 }
