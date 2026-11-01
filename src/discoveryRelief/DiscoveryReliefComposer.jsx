@@ -9,6 +9,7 @@ export function DiscoveryReliefComposer({
   mappings = [],
   library = [],
   general = [],
+  extra = [],
   templateOptions = [],
   selectedTemplateId = '',
   onSelectTemplate,
@@ -19,7 +20,7 @@ export function DiscoveryReliefComposer({
   onShareClient,
   disabled = false
 }) {
-  const composed = composeOutgoingRequests({ groups, mappings, library, general })
+  const composed = composeOutgoingRequests({ groups, mappings, library, general, extra })
 
   return (
     <section className="dr-composer" aria-label="Discovery draft composer">

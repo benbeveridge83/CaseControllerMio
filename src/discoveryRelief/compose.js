@@ -38,6 +38,15 @@ export function composeOutgoingRequests(input = {}) {
   const mappings = (input.mappings || []).map((mapping, index) => normalizeReliefMapping(mapping, index)).filter((mapping) => mapping.is_active)
   const general = (input.general || []).map((ref) => (typeof ref === 'string' ? { id: ref } : ref))
   const groups = (input.groups || []).map(normalizeReliefGroup)
+  const extra = (input.extra || []).map((item, index) => ({
+    key: String(item?.key || `extra-${index}`),
+    group_id: String(item?.group_id || ''),
+    type: String(item?.type || ''),
+    text: String(item?.text || ''),
+    issue_id: String(item?.issue_id || ''),
+    option_id: String(item?.option_id || ''),
+    origin: 'matter'
+  }))
 
   const groupsOut = []
   const included = []
@@ -81,6 +90,36 @@ export function composeOutgoingRequests(input = {}) {
         mapping_id: mapping?.id || '',
         relief_links: [link],
         included: true,
+        origin: 'library',
+        number: 0
+      }
+      includedByKey.set(key, request)
+      groupRequests.push(request)
+      included.push(request)
+    }
+
+    // Matter-only requests (no library item) attach to their group the same way.
+    for (const extraItem of extra.filter((item) => item.group_id === group.id)) {
+      const key = exactDuplicateKey({ type: extraItem.type, text: extraItem.text, recipient: group.roles.responding })
+      const link = { group_id: group.id, issue_id: extraItem.issue_id, option_id: extraItem.option_id }
+      const existing = includedByKey.get(key)
+      if (existing) {
+        existing.relief_links.push(link)
+        groupReferences.push({ kind: 'duplicate', key, item_id: '', text: extraItem.text, reason: '' })
+        continue
+      }
+      const request = {
+        key,
+        item_id: '',
+        version: 1,
+        type: extraItem.type,
+        text: extraItem.text,
+        source_side: group.source_side,
+        roles: { ...group.roles },
+        mapping_id: '',
+        relief_links: [link],
+        included: true,
+        origin: 'matter',
         number: 0
       }
       includedByKey.set(key, request)
