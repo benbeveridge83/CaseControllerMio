@@ -10,6 +10,7 @@ export function DiscoveryReliefComposer({
   library = [],
   general = [],
   extra = [],
+  selections = [],
   templateOptions = [],
   selectedTemplateId = '',
   onSelectTemplate,
@@ -17,10 +18,9 @@ export function DiscoveryReliefComposer({
   onEditRequest,
   onAddRequest,
   onGenerate,
-  onShareClient,
   disabled = false
 }) {
-  const composed = composeOutgoingRequests({ groups, mappings, library, general, extra })
+  const composed = composeOutgoingRequests({ groups, mappings, library, general, extra, selections })
 
   return (
     <section className="dr-composer" aria-label="Discovery draft composer">
@@ -40,7 +40,6 @@ export function DiscoveryReliefComposer({
         </label>
         <div className="dr-actions">
           <button type="button" disabled={disabled || !composed.included.length} onClick={() => onGenerate?.(composed)}>Generate document</button>
-          <button type="button" disabled={disabled || !composed.included.length} onClick={() => onShareClient?.(composed)}>Share with client</button>
         </div>
       </header>
 

@@ -1,17 +1,22 @@
 // Texas family-law request-for-disclosure catalog (request-based initial disclosures).
 //
-// Grounded in Tex. Fam. Code §§ 301.051–301.052 and Tex. R. Civ. P. 194a.2,
-// effective September 1, 2023 (Acts 2023, 88th Leg., R.S., ch. 844 (H.B. 2850)),
-// as amended (Acts 2025, 89th Leg., R.S., ch. 616 (H.B. 3180)).
+// VERIFICATION STATUS (checked 2026-11-01):
+// - Tex. Fam. Code § 301.052(a)(1)–(11): VERIFIED verbatim against the Texas
+//   Legislature text (https://tcss.legis.texas.gov/resources/FA/htm/FA.301.htm).
+//   Eleven top-level categories; category 6 (testifying experts) nests (A)–(D).
+// - Tex. Fam. Code § 301.051 request language + 30-days-after-service deadline:
+//   VERIFIED (30 calendar days, not "business days").
+// - Tex. R. Civ. P. 194a.2(a)–(k) letter mapping: UNVERIFIED. The official TRCP
+//   PDF (https://www.txcourts.gov/media/1463426/texas-rules-of-civil-procedure.pdf)
+//   could not be extracted as text in this environment, so the (a)–(k) letters
+//   below follow the handoff and are keyed to § 301.052(a)(1)–(11) order. Spot-check
+//   the lettering against the current compilation before relying on it in a filing.
+// - Effective September 1, 2023 (Acts 2023, 88th Leg., R.S., ch. 844 (H.B. 2850)),
+//   as amended (Acts 2025, 89th Leg., R.S., ch. 616 (H.B. 3180)).
 //
-// § 301.052(a) enumerates 11 top-level categories (1)–(11); category 6
-// (testifying experts) nests sub-items. The (a)–(k) letter references below
-// follow the handoff's Rule 194a.2 mapping and should be spot-checked against
-// the current TRCP compilation before relying on them in a filing.
-//
-// The catalog is selectable per category and is NOT universal across case
-// types: applicability must be checked against the governing rule/regime for
-// the proceeding (family request-based vs. Rule 194 non-family, and filing date).
+// The catalog is selectable per category and is NOT universal across case types:
+// applicability must be checked against the governing rule/regime for the
+// proceeding (family request-based vs. Rule 194 non-family, and filing date).
 
 export const DISCLOSURE_CATALOG_VERSION = 1
 

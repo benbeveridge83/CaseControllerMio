@@ -20,6 +20,20 @@ export function discoveryDocxFileName(matter = {}) {
   return `Discovery Requests - ${base}.docx`.replace(/[\\/:*?"<>|]+/g, '-')
 }
 
+// Build the repeatable data array the drafting template consumes via a
+// `{{#each discovery_requests}}…{{/each}}` block (fields: number, text, type,
+// type_label, request). Keeps the template's caption/headings/definitions intact.
+export function buildDiscoveryRequestsData(composed = {}) {
+  const included = Array.isArray(composed?.included) ? composed.included : []
+  return included.map((request) => ({
+    number: request.number,
+    text: String(request.text || ''),
+    type: request.type,
+    type_label: discoveryTypeLabel(request.type),
+    request: `${discoveryTypeLabel(request.type)} ${request.number}. ${request.text}`
+  }))
+}
+
 export function buildDiscoveryDocxBodyXml(composed = {}) {
   const included = Array.isArray(composed?.included) ? composed.included : []
   const paragraphs = []

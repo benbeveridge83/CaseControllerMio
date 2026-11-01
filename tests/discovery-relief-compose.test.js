@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { composeOutgoingRequests } from '../src/discoveryRelief/compose.js'
+import { exactDuplicateKey } from '../src/discoveryRelief/dedupe.js'
 
 // Ellis-like pilot: our relief is 50-50 possession and neither parent paying support.
 const library = [
@@ -78,4 +79,23 @@ test('theirs-side mappings do not leak into ours groups', () => {
   })
   const support = result.groups.find((g) => g.id === 'g-support')
   assert.equal(support.requests.some((r) => r.item_id === 'lib-schedule'), false)
+})
+
+test('persisted selections toggle off a request and edit another, renumbering output', () => {
+  const incomeKey = exactDuplicateKey({ type: 'rfp', text: 'Produce all documents reflecting your income and earning capacity for the last twelve months.', recipient: 'Opposing Party', timePeriod: '', scope: '' })
+  const scheduleKey = exactDuplicateKey({ type: 'roggs', text: 'Describe your proposed work and caregiving schedule and the exchange logistics you propose.', recipient: 'Opposing Party', timePeriod: '', scope: '' })
+  const result = composeOutgoingRequests({
+    groups, mappings, library, general: [{ id: 'lib-general-contacts' }],
+    selections: [
+      { key: incomeKey, included: false },
+      { key: scheduleKey, text: 'Describe your proposed work schedule (edited).' }
+    ]
+  })
+  assert.equal(result.included.some((r) => r.item_id === 'lib-income'), false)
+  assert.ok(!result.counts.rfp)
+  const schedule = result.included.find((r) => r.item_id === 'lib-schedule')
+  assert.ok(schedule)
+  assert.equal(schedule.text, 'Describe your proposed work schedule (edited).')
+  assert.equal(schedule.number, 1)
+  assert.equal(result.counts.roggs, 2)
 })

@@ -130,22 +130,35 @@ export function composeOutgoingRequests(input = {}) {
     groupsOut.push({ ...group, requests: groupRequests, references: groupReferences })
   }
 
-  // Number each included request within its instrument type.
-  const counters = {}
+  // Overlay persisted selections (attorney toggles/edits) onto the composed requests.
+  const selections = new Map((input.selections || []).map((selection) => [String(selection.key), selection]))
   for (const request of included) {
+    const selection = selections.get(request.key)
+    if (!selection) continue
+    if (Object.prototype.hasOwnProperty.call(selection, 'text')) request.text = String(selection.text ?? request.text)
+    if (Object.prototype.hasOwnProperty.call(selection, 'included')) request.included = selection.included !== false
+  }
+
+  // Number only the included requests within each instrument type.
+  const counters = {}
+  const includedOut = []
+  for (const request of included) {
+    if (request.included === false) { request.number = 0; continue }
     counters[request.type] = (counters[request.type] || 0) + 1
     request.number = counters[request.type]
+    includedOut.push(request)
   }
 
   // Backfill duplicate reference text with the retained request number.
   for (const group of groupsOut) {
     for (const ref of group.references) {
       const retained = includedByKey.get(ref.key)
-      if (retained) ref.reason = `Included once as ${retained.type.toUpperCase()} ${retained.number}`
+      if (retained && retained.included !== false) ref.reason = `Included once as ${retained.type.toUpperCase()} ${retained.number}`
+      else ref.reason = 'Duplicate of an excluded request'
     }
   }
 
-  return { groups: groupsOut, included, references, counts: counters }
+  return { groups: groupsOut, included: includedOut, references, counts: counters }
 }
 
 export function includeCountsByType(included = []) {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildDiscoveryDocxBodyXml, buildDiscoveryDocxXml, discoveryDocxFileName } from '../src/discoveryRelief/generate.js'
+import { buildDiscoveryDocxBodyXml, buildDiscoveryDocxXml, buildDiscoveryRequestsData, discoveryDocxFileName } from '../src/discoveryRelief/generate.js'
 
 test('the docx body numbers requests by instrument and escapes text', () => {
   const composed = {
@@ -32,4 +32,16 @@ test('buildDiscoveryDocxXml wraps the body in a Word document', () => {
   const xml = buildDiscoveryDocxXml({ included: [{ type: 'rfp', number: 1, text: 'Produce X.' }] })
   assert.match(xml, /<w:document/)
   assert.match(xml, /Produce X\./)
+})
+
+test('buildDiscoveryRequestsData maps included requests to template block fields', () => {
+  const data = buildDiscoveryRequestsData({ included: [
+    { number: 1, text: 'Produce X.', type: 'rfp' },
+    { number: 2, text: 'Describe Y.', type: 'roggs' }
+  ] })
+  assert.equal(data.length, 2)
+  assert.equal(data[0].type_label, 'RFP')
+  assert.equal(data[0].request, 'RFP 1. Produce X.')
+  assert.equal(data[1].type_label, 'Roggs')
+  assert.equal(data[1].number, 2)
 })
