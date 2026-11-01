@@ -33,7 +33,7 @@ export function ReliefFilterGroupSettings({ groups, onChange }) {
     if (!name) return
     onChange(groups.map(g => g.id !== group.id ? g : option ? { ...g, options: g.options.map(o => o.id === option.id ? { ...o, name } : o) } : { ...g, name }))
   }
-  return <section><h2>Requested Relief Filter Groups</h2><p>Add groups and their choices here. The Order type choices also appear as Litigation Track types. Add Habeas Corpus, Discovery Orders, or any other type here once; it becomes available both on tracks and in row applicability. Final orders is assigned to each matter’s default Final Relief track. Proceeding supplies the choices in Edit Matter. Renaming keeps existing assignments. Archiving a group stops filtering by that group; archiving a choice preserves its existing assignments.</p>
+  return <section><h2>Requested Relief Filter Groups</h2><p>Add groups and their choices here. The Order type choices also appear as Litigation Track types. Add Habeas Corpus, Discovery Orders, or any other type here once; it becomes available both on tracks and in issue applicability. Final orders is assigned to each matter’s default Final Relief track. Proceeding supplies the choices in Edit Matter. Renaming keeps existing assignments. Archiving a group stops filtering by that group; archiving a choice preserves its existing assignments.</p>
     <button type="button" onClick={() => { const name = nameFrom('New filter group name'); if (name) onChange([...groups, { id: crypto.randomUUID(), name, options: [] }]) }}>+ Add filter group</button>
     {groups.map(group => <section key={group.id} style={{ marginTop: 12, padding: 12, border: '1px solid #cbd5e1', borderRadius: 6 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}><strong>{group.name}{group.archived ? ' (archived)' : ''}</strong><button type="button" onClick={() => rename(group)}>Rename group</button><button type="button" onClick={() => onChange(groups.map(g => g.id === group.id ? { ...g, archived: !g.archived } : g))}>{group.archived ? 'Restore group' : 'Archive group'}</button>
@@ -57,8 +57,10 @@ export function ReliefInlineRowEditor({ row, parentName, groups, inherited, onCh
       {row.is_relief_option && <label><input type="checkbox" checked={row.has_text_box === true} onChange={event => change({ has_text_box: event.target.checked })} /> Add text box</label>}
       {row.is_relief_option && row.has_text_box && <label>Text box label <input value={row.text_box_label || ''} onChange={event => change({ text_box_label: event.target.value })} /></label>}
     </div>
-    <strong>Applies to</strong>
-    <ReliefApplicabilityFields mode="row" groups={groups} inherited={inherited} value={row.applicability || {}} onChange={applicability => change({ applicability })} />
+    {!row.is_relief_option && <>
+      <strong>Applies to</strong>
+      <ReliefApplicabilityFields mode="row" groups={groups} inherited={inherited} value={row.applicability || {}} onChange={applicability => change({ applicability })} />
+    </>}
     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
       <button type="button" onClick={onSave}>{row.id ? 'Save changes' : 'Save row'}</button>
       <button type="button" onClick={onCancel}>Cancel</button>
