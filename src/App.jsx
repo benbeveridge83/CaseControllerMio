@@ -4674,7 +4674,7 @@ const defaultRequestedReliefMatrixTable = ensureRequestedReliefMatrixShape({
 function ensureRequestedReliefOptionShape(option, index = 0) {
   return {
     id: option?.id || `rr-option-${Date.now()}-${index}`,
-    applicability: normalizeApplicability(option?.applicability),
+    applicability: option?.is_relief_option === true ? {} : normalizeApplicability(option?.applicability),
     parent_id: option?.parent_id || '',
     name: option?.name || 'Unnamed Relief Option',
     notes: option?.notes || '',
@@ -47641,7 +47641,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     if (!name) return alert('Please name the issue / option row.')
     const id = draft.row.id || crypto.randomUUID()
     const updateRows = current => {
-      if (draft.row.id) return current.map(row => row.id === id ? { ...row, ...draft.row, name } : row)
+      if (draft.row.id) return current.map(row => row.id === id ? ensureRequestedReliefOptionShape({ ...row, ...draft.row, name }) : row)
       const siblings = current.filter(row => String(row.parent_id || '') === String(draft.row.parent_id || ''))
       const anchor = siblings.find(row => row.id === draft.anchorId)
       const order = draft.relation === 'sibling' && anchor ? Number(anchor.sort_order || 0) + 1 : Math.max(0, ...siblings.map(row => Number(row.sort_order || 0))) + 1
@@ -49406,7 +49406,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             </div>
             {settingsLike ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
-                <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>
+                {!isReliefOption && <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>}
                 <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionRelative(option, 'child') : addRequestedReliefBuilderIssueRelative(option.id, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
                 <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
                 <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'non_exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
@@ -50500,7 +50500,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                 {requestedReliefOptionForm.has_text_box && <LabeledField label="Text box label"><input value={requestedReliefOptionForm.text_box_label || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, text_box_label: e.target.value })} placeholder="Example: Child support amount" /></LabeledField>}
               </>
             )}
-            <div style={{ flexBasis: '100%' }}><strong>Applies to</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} mode="row" value={requestedReliefOptionForm.applicability || {}} inherited={requestedReliefOptionForm.parent_id ? effectiveApplicability(requestedReliefOptions.find(r => r.id === requestedReliefOptionForm.parent_id), requestedReliefOptions, requestedReliefFilterGroups) : {}} onChange={applicability => setRequestedReliefOptionForm(current => ({ ...current, applicability }))} /><small>Inherit follows the parent (top-level rows apply everywhere). Choices narrow a branch. None excludes it when that group is filtered.</small></div>
+            {!requestedReliefOptionForm.is_relief_option && <div style={{ flexBasis: '100%' }}><strong>Applies to</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} mode="row" value={requestedReliefOptionForm.applicability || {}} inherited={requestedReliefOptionForm.parent_id ? effectiveApplicability(requestedReliefOptions.find(r => r.id === requestedReliefOptionForm.parent_id), requestedReliefOptions, requestedReliefFilterGroups) : {}} onChange={applicability => setRequestedReliefOptionForm(current => ({ ...current, applicability }))} /><small>Inherit follows the parent (top-level rows apply everywhere). Choices narrow a branch. None excludes it when that group is filtered.</small></div>}
             <button type="submit">{requestedReliefOptionForm.id ? 'Update Row' : 'Add Row'}</button>
             {requestedReliefOptionForm.id && <button type="button" onClick={() => setRequestedReliefOptionForm({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })}>Cancel</button>}
           </div>

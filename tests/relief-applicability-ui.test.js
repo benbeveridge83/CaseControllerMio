@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import {transformWithOxc} from 'vite'
 import {defaultReliefFilterGroups} from '../src/reliefApplicability.js'
 const raw=fs.readFileSync(new URL('../src/ReliefApplicability.jsx',import.meta.url),'utf8').replace(/^import .*\n/gm,'').replace(/export function /g,'function ')
@@ -25,4 +26,16 @@ test('group manager creates custom groups/choices and renames without changing I
  const id=groups.at(-1).options[0].id;answer='Renamed choice';render().filter(n=>n.type==='button'&&n.props.children==='Rename').at(-1).props.onClick();assert.equal(groups.at(-1).options[0].id,id);assert.equal(groups.at(-1).options[0].name,'Renamed choice')
  render().filter(n=>n.type==='button'&&n.props.children==='Archive').at(-1).props.onClick();assert.equal(groups.at(-1).options[0].archived,true)
  render().find(n=>n.type==='button'&&n.props.children==='Restore').props.onClick();assert.equal(groups.at(-1).options[0].archived,false)
+})
+
+for(const isOption of [false,true]) for(const optionType of ['exclusive','non_exclusive']) test(`inline ${isOption ? optionType + ' option' : 'issue'} exposes only applicable controls`,()=>{
+ const html=renderToStaticMarkup(React.createElement(ctx.ReliefInlineRowEditor,{
+  row:{id:'row',name:'Row',is_relief_option:isOption,option_type:optionType,applicability:{proceeding:['original']}},
+  parentName:'Support',groups:defaultReliefFilterGroups,inherited:{proceeding:['modification']},onChange(){},onSave(){},onCancel(){}
+ }))
+ assert.equal(html.includes('Proceeding: Original'),!isOption)
+ assert.equal(html.includes('Order type: Final orders'),!isOption)
+ assert.ok(html.includes('Row name'))
+ assert.ok(html.includes('Notes'))
+ assert.ok(html.includes('Save changes'))
 })

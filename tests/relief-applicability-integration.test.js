@@ -25,6 +25,8 @@ const flatten=node=>!node||typeof node!=='object'?[]:[node,...React.Children.toA
 test('actual Settings tree form exposes row rules, preview filters, and configurable groups',async()=>{
  const Fields=()=>null;const GroupSettings=()=>null;let form={},filters={},tab
  const globals={requestedReliefOptionForm:{name:''},activeRequestedReliefOptions:()=>[],requestedReliefSettingsView:'tree',setRequestedReliefSettingsView:v=>tab=v,ReliefApplicabilityFields:Fields,ReliefFilterGroupSettings:GroupSettings,LabeledField:()=>null,scanAndRestoreRequestedReliefBackups(){},saveRequestedReliefOption(){},setRequestedReliefOptionForm:f=>form=f(form),requestedReliefOptions:[],requestedReliefSettingsFilters:{},setRequestedReliefSettingsFilters:v=>filters=v,hideRequestedReliefOptionsInSettings:false,addRequestedReliefTable(){},activeRequestedReliefTables:()=>[],renderRequestedReliefInlineRow:()=>null,renderRequestedReliefOptionTree:()=>null}
+ const optionRender=await load('renderRequestedReliefSettings',{...globals,requestedReliefOptionForm:{name:'Option',is_relief_option:true}});
+ assert.equal(flatten(optionRender()).filter(n=>n.type===Fields&&n.props.mode==='row').length,0,'Settings option form does not offer independent applicability');
  const render=await load('renderRequestedReliefSettings',globals),nodes=flatten(render());const fields=nodes.filter(n=>n.type===Fields);assert.equal(fields.length,2)
  fields.find(n=>n.props.mode==='row').props.onChange({proceeding:['modification']});assert.deepEqual(form.applicability,{proceeding:['modification']})
  fields.find(n=>!n.props.mode).props.onChange({order_type:['tro']});assert.deepEqual(filters,{order_type:['tro']})
@@ -35,4 +37,11 @@ test('relief save and reopen retain context and hidden selected option text',asy
  const save=await load('saveRequestedReliefBuilder',{requestedReliefBuilder:sourceBuilder,requestedReliefBuilderExpandIssueIds:x=>x,cloneRequestedReliefOptionRows:x=>x,requestedReliefOptions:rows,setRequestedReliefs:f=>saved=f([])[0],setShowRequestedReliefBuilder(){},setRequestedReliefBuilder(){},crypto:{randomUUID:()=> 'relief1'}});save()
  const open=await load('beginRequestedReliefBuilder',{setRequestedReliefInlineEditor(){},requestedReliefSnapshotRows:x=>x,requestedReliefBuilderExpandIssueIds:x=>x,requestedReliefBuilderLeafIdsWithin:()=>['option'],requestedReliefTables:[],setRequestedReliefBuilderMode(){},setRequestedReliefBuilder:b=>reopened=b,setRequestedReliefActiveIssueId(){},setRequestedReliefBuilderEditMode(){},setShowRequestedReliefEditMenu(){},setRequestedReliefExpandedIds(){},setShowRequestedReliefBuilder(){}});open({relief:saved})
  assert.deepEqual(plain(reopened.filter_context),sourceBuilder.filter_context);assert.deepEqual(plain(reopened.selected_option_ids),['option']);assert.deepEqual(plain(reopened.option_text_by_option_id),{option:'Preserve this'})
+})
+
+test('option normalization drops independent applicability while retaining option details',async()=>{
+ const shape=await load('ensureRequestedReliefOptionShape')
+ const saved=shape({id:'option',parent_id:'issue',name:'Choice',is_relief_option:true,option_type:'exclusive',has_text_box:true,notes:'Keep notes',applicability:{proceeding:[],order_type:['tro']}})
+ assert.deepEqual(plain(saved.applicability),{})
+ assert.equal(saved.parent_id,'issue');assert.equal(saved.name,'Choice');assert.equal(saved.notes,'Keep notes');assert.equal(saved.has_text_box,true);assert.equal(saved.option_type,'exclusive')
 })

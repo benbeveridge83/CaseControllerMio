@@ -16,3 +16,20 @@ test('all six proceeding/order combinations match only their own branch plus sha
  for(const p of ['original','modification'])for(const s of ['final','temporary','tro'])assert.deepEqual([...visibleReliefIds(r,groups,{proceeding:[p],order_type:[s]})],['shared',p+s])
 })
 test('future custom groups narrow matching without special-case code',()=>{const g=[...groups,{id:'custom',name:'Custom group',options:[{id:'x',name:'X'},{id:'y',name:'Y'}]}];assert.equal(visibleReliefIds([{id:'a',applicability:{custom:['x']}}],g,{custom:['y']}).size,0)})
+
+for (const optionType of ['exclusive', 'non_exclusive']) test(`${optionType} options follow the issue even with conflicting legacy tags`, () => {
+ const r = [
+  {id:'issue',applicability:{proceeding:['modification'],order_type:['temporary']}},
+  {id:'option',parent_id:'issue',is_relief_option:true,option_type:optionType,applicability:{proceeding:[],order_type:['final']}},
+  {id:'nested-option',parent_id:'option',is_relief_option:true,applicability:{proceeding:['original']}},
+  {id:'child-issue',parent_id:'option',applicability:{order_type:['tro']}}
+ ]
+ const before = JSON.stringify(r)
+ assert.deepEqual([...visibleReliefIds(r,groups,{proceeding:['modification'],order_type:['temporary']})],['issue','option','nested-option'])
+ assert.deepEqual([...visibleReliefIds(r,groups,{proceeding:['original']})],[])
+ assert.deepEqual(effectiveApplicability(r[1],r,groups),{proceeding:['modification'],order_type:['temporary']})
+ r[0].applicability = {proceeding:['original'],order_type:['final']}
+ assert.deepEqual([...visibleReliefIds(r,groups,{proceeding:['original'],order_type:['final']})],['issue','option','nested-option'])
+ r[0].applicability = JSON.parse(before)[0].applicability
+ assert.equal(JSON.stringify(r), before, 'filtering does not change saved selections or rows')
+})

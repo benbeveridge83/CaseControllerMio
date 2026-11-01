@@ -29,6 +29,8 @@ function effectiveWithIndex(row, byId, groups) {
   const seen = new Set()
   for (let current = row; current && !seen.has(String(current.id)); current = byId.get(String(current.parent_id))) {
     seen.add(String(current.id))
+    // Options follow their issue; ignore legacy option-level restrictions.
+    if (current.is_relief_option === true) continue
     const rules = normalizeApplicability(current.applicability)
     for (const id of Object.keys(result)) if (Object.hasOwn(rules, id)) result[id] = result[id].filter(v => rules[id].includes(v))
   }
