@@ -19,6 +19,6 @@
     }
   ],
   "crons": [
-    { "path": "/api/microsoft/sync", "schedule": "*/5 * * * *" }
+    { "path": "/api/microsoft/sync", "schedule": "0 1 * * *" }
   ]
 }
