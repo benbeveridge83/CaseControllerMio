@@ -19,7 +19,7 @@ export default async function handler(req, res) {
       loginHint: user.email,
       state
     })
-    return res.redirect(url)
+    return res.status(200).json({ ok: true, url })
   } catch (error) {
     return res.status(error.statusCode || 500).json({ ok: false, error: error.message || 'Microsoft OAuth could not start.' })
   }

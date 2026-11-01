@@ -17,5 +17,8 @@
       "source": "/api/client-intake",
       "destination": "/api/auth/callback?integration=client_intake"
     }
+  ],
+  "crons": [
+    { "path": "/api/microsoft/sync", "schedule": "*/5 * * * *" }
   ]
 }

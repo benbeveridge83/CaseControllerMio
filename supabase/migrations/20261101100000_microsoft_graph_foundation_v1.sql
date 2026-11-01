@@ -32,3 +32,13 @@ alter table public.mio_paralegal_reviews enable row level security;
 
 create index if not exists mio_paralegal_reviews_owner_idx on public.mio_paralegal_reviews (owner_id);
 create index if not exists mio_paralegal_reviews_expires_idx on public.mio_paralegal_reviews (expires_at);
+
+create table if not exists public.mio_microsoft_sync_state (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  folder text not null default 'inbox',
+  cursor text,
+  last_sync_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.mio_microsoft_sync_state enable row level security;

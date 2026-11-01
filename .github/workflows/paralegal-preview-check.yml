@@ -9,6 +9,7 @@ on:
       - 'src/App.jsx'
       - 'src/main.jsx'
       - 'api/paralegal.js'
+      - 'api/paralegal/**'
       - 'api/microsoft/**'
       - 'package.json'
       - 'package-lock.json'
@@ -20,6 +21,7 @@ on:
       - 'tests/paralegal*'
       - 'src/App.jsx'
       - 'api/paralegal.js'
+      - 'api/paralegal/**'
       - 'api/microsoft/**'
 concurrency:
   group: paralegal-preview-${{ github.ref }}
@@ -52,6 +54,12 @@ jobs:
           node --check api/microsoft/oauth-start.js
           node --check api/microsoft/callback.js
           node --check api/microsoft/status.js
+          node --check lib/paralegal/reviews.js
+          node --check lib/paralegal/emailCompose.js
+          node --check lib/paralegal/microsoft/sync.js
+          node --check lib/paralegal/microsoft/syncState.js
+          node --check api/microsoft/sync.js
+          node --check api/paralegal/calendar-actions.js
       - name: Require all Paralegal behavior tests
         run: node --test tests/paralegal*.test.mjs
       - name: Verify the application still builds

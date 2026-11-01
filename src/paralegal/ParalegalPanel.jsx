@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { askParalegal } from './paralegal-client.js'
+import OutlookConnect from './OutlookConnect.jsx'
 
 const QUICK_PROMPTS = [
   'What needs my attention first?',
@@ -37,6 +38,7 @@ export default function ParalegalPanel({getSnapshot}) {
     </button>
     {open&&<div style={{padding:14}}>
       <p style={{margin:'0 0 10px',color:'#475569',fontSize:13}}>Ask about Need to Set. This first preview can read the current workflow and suggest next steps; it cannot send email, change your calendar, file anything, or mark a step complete.</p>
+      <OutlookConnect />
       {!messages.length&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>{QUICK_PROMPTS.map((prompt)=><button type="button" key={prompt} disabled={busy} onClick={()=>submit(prompt)} style={{fontSize:12}}>{prompt}</button>)}</div>}
       {!!messages.length&&<div style={{maxHeight:320,overflowY:'auto',display:'grid',gap:8,marginBottom:10}}>{messages.map((item,index)=><div key={`${item.role}-${index}`} style={{justifySelf:item.role==='user'?'end':'start',maxWidth:'88%',padding:'8px 10px',borderRadius:10,whiteSpace:'pre-wrap',background:item.role==='user'?'#dbeafe':'#fff',border:'1px solid #dbe4ee'}}><strong style={{fontSize:11,color:'#64748b'}}>{item.role==='user'?'You':'Paralegal'}</strong><div>{item.content}</div></div>)}</div>}
       {error&&<p role="alert" style={{color:'#b91c1c',margin:'6px 0'}}>{error}</p>}
