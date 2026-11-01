@@ -9,6 +9,7 @@ on:
       - 'src/App.jsx'
       - 'src/main.jsx'
       - 'api/paralegal.js'
+      - 'api/microsoft/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/paralegal-preview-check.yml'
@@ -19,6 +20,7 @@ on:
       - 'tests/paralegal*'
       - 'src/App.jsx'
       - 'api/paralegal.js'
+      - 'api/microsoft/**'
 concurrency:
   group: paralegal-preview-${{ github.ref }}
   cancel-in-progress: true
@@ -41,6 +43,13 @@ jobs:
           node --check lib/paralegal/auth.js
           node --check lib/paralegal/claude.js
           node --check api/paralegal.js
+          node --check lib/paralegal/microsoft/oauth.js
+          node --check lib/paralegal/microsoft/graph.js
+          node --check lib/paralegal/microsoft/state.js
+          node --check lib/paralegal/microsoft/tokenStore.js
+          node --check api/microsoft/oauth-start.js
+          node --check api/microsoft/callback.js
+          node --check api/microsoft/status.js
       - name: Require all Paralegal behavior tests
         run: node --test tests/paralegal*.test.mjs
       - name: Install locked application dependencies
