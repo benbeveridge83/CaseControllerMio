@@ -6434,6 +6434,8 @@ function App() {
   const [showMatterWindow, setShowMatterWindow] = useState(false)
   const [showEventWindow, setShowEventWindow] = useState(false)
   const [isEventSaving, setIsEventSaving] = useState(false)
+  const [resetEventTarget, setResetEventTarget] = useState(null)
+  const [resetEventNewDate, setResetEventNewDate] = useState('')
   const [showTaskWindow, setShowTaskWindow] = useState(false)
   const [showMatterColumnsWindow, setShowMatterColumnsWindow] = useState(false)
   const [showMatterWidthControls, setShowMatterWidthControls] = useState(false)
@@ -25914,7 +25916,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     </div>
   }
 
-  async function resetEventToNeedDate(sourceEvent) {
+  function openResetEventDialog(sourceEvent) {
     const eventId = sourceEvent?.id || sourceEvent?.checklist_source_id || editingEventId
     if (!eventId) {
       alert('This event is not linked to a calendar event, so it cannot be reset.')
@@ -25925,9 +25927,20 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Could not find the original event.')
       return
     }
-    const ok = confirm('Reset this event? The current event will move to Completed as passed, and a duplicate event without a date will be added to Need to Set.')
-    if (!ok) return
+    setResetEventTarget(original)
+    setResetEventNewDate('')
+  }
 
+  async function performResetEvent(newDate) {
+    const original = resetEventTarget
+    const eventId = original?.id || original?.checklist_source_id
+    if (!original || !eventId) {
+      alert('Could not find the original event.')
+      setResetEventTarget(null)
+      return
+    }
+
+    const hasDate = Boolean(newDate)
     const resetRow = {
       matter_id: original.matter_id || null,
       assigned_to: original.assigned_to || null,
@@ -25937,9 +25950,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       description: original.description || original.checklist_description || '',
       // Supabase calendar_events.start_date is NOT NULL. Use the undated sentinel
       // so the item can live on the Need to Set tab without appearing on calendars/timelines.
-      start_date: UNDATED_EVENT_DATE,
+      start_date: hasDate ? newDate : UNDATED_EVENT_DATE,
       start_time: original.start_time || '09:00',
-      end_date: UNDATED_EVENT_DATE,
+      end_date: hasDate ? newDate : UNDATED_EVENT_DATE,
       end_time: original.end_time || original.start_time || '17:00',
       is_active: true
     }
@@ -25963,7 +25976,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
 
-    setChecklistTab('need_date')
+    setResetEventTarget(null)
+    setResetEventNewDate('')
+    // A dated reset creates a live event on the new date; an undated reset
+    // moves the event to Need to Set.
+    setChecklistTab(hasDate ? 'future' : 'need_date')
     resetChecklistCompletionForm()
     closeEventWindow()
     await fetchEvents()
@@ -60663,7 +60680,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         </button>
                         <button
                           type="button"
-                          onClick={() => resetEventToNeedDate(events.find((item) => item.id === editingEventId) || { ...eventForm, id: editingEventId })}
+                          onClick={() => openResetEventDialog(events.find((item) => item.id === editingEventId) || { ...eventForm, id: editingEventId })}
                           style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
                         >
                           Reset Event
@@ -60690,6 +60707,50 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               }}
             />
           </>
+        )}
+
+        {resetEventTarget && (
+          <Modal title="Reset Event" onClose={() => setResetEventTarget(null)} zIndex={1200}>
+            <div style={{ maxWidth: 560, margin: '0 auto' }}>
+              <div style={{ marginBottom: 14, padding: 12, border: '1px solid #d5dce3', borderRadius: 6, background: '#f8fafc' }}>
+                <strong>{resetEventTarget.title || resetEventTarget.checklist_title || '(No title)'}</strong>
+                <div style={{ marginTop: 6, color: '#475569', fontSize: 13 }}>
+                  The current event will be marked as passed. Enter a new date to create a new event, or move it to Need to Set if you don't know the date yet.
+                </div>
+              </div>
+
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+                <span style={{ fontWeight: 'bold', fontSize: 12 }}>New event date</span>
+                <input
+                  type="date"
+                  value={resetEventNewDate}
+                  onChange={(e) => setResetEventNewDate(e.target.value)}
+                  style={{ padding: 9, border: '1px solid #cbd5df', borderRadius: 5 }}
+                />
+              </label>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => setResetEventTarget(null)} style={{ border: 0, borderRadius: 5, padding: '9px 14px' }}>Cancel</button>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => performResetEvent('')}
+                    style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
+                  >
+                    Move to Need to Set
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => performResetEvent(resetEventNewDate)}
+                    disabled={!resetEventNewDate}
+                    style={{ background: resetEventNewDate ? '#2f6584' : '#94a3b8', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
+                  >
+                    Set New Date
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
         )}
 
         {showDocumentWindow && (
@@ -61058,7 +61119,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             {checklistTab !== 'completed' && checklistTab !== 'need_date' && checklistTab !== 'set' && (
                               <>
                                 <button type="button" onClick={() => openChecklistCompletionWindow(event)} style={{ background: '#15803d', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Mark as complete</button>
-                                <button type="button" onClick={() => resetEventToNeedDate(event)} style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Reset Event</button>
+                                <button type="button" onClick={() => openResetEventDialog(event)} style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Reset Event</button>
                               </>
                             )}
                             {checklistTab === 'need_date' && (
