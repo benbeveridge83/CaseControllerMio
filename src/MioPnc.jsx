@@ -58,31 +58,15 @@ export function useMioPnc({session,enabled,matters,clients,refreshMatters,refres
   if(previous?.status==='sending')throw Error('The prior email outcome is uncertain. Check Sent Items before retrying.')
   // Authentication must finish before claiming a delivery, so redirects never strand a send.
   await ensureEmailReady({interactive:kind!=='consult'})
-  let calendarWarning=''
   if(c.include_date&&kind==='consult'&&w.state.calendar_delivery?.status!=='sent'){
-   const start=zonedDateTime(c.consultation_start,c.time_zone||'America/Chicago'),duration=Number(c.duration||60);if(duration<5||duration>480)throw Error('Consultation duration must be 5 to 480 minutes.')
-   const end=new Date(start.getTime()+duration*60000)
-   try{if(!w.state.calendar_delivery||w.state.calendar_delivery.status==='failed'){
-    const overlap=await latest.current.graphFetch('/me/calendarView?startDateTime='+encodeURIComponent(start.toISOString())+'&endDateTime='+encodeURIComponent(end.toISOString())+'&$select=subject,start,end,showAs,isCancelled',{allowInteractive:false})
-    const conflicts=(overlap?.value||[]).filter(x=>!x.isCancelled&&x.showAs!=='free')
-    if(conflicts.length&&!window.confirm('Your calendar has '+conflicts.length+' overlapping event(s). Schedule this consultation anyway?'))throw Object.assign(new Error('Scheduling cancelled. No invitation was sent.'),{cancel:true})
-   }
-   w=(await run('claim_delivery',{matter_id:w.matter_id,kind:'calendar'})).workflow
-   const requestId=w.state.calendar_delivery.reference
-   const event=await latest.current.graphFetch('/me/events',{method:'POST',allowInteractive:false,maxRetries:0,body:JSON.stringify({transactionId:requestId,subject:'Consultation - '+m.name,body:{contentType:'Text',content:templateText(c.consultation_body,values(w,m))},start:{dateTime:start.toISOString(),timeZone:'UTC'},end:{dateTime:end.toISOString(),timeZone:'UTC'},location:{displayName:meetingInfo(c,w.state.zoom_meeting?.join_url).where},attendees:[{emailAddress:{address:m.clients.email,name:[m.clients.first_name,m.clients.last_name].join(' ')},type:'required'}]})});if(!event?.id)throw Error('Calendar did not return an event ID.')
-    w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'sent',reference:event.id,local_id:requestId})).workflow
-   }catch(e){
-    if(e.cancel)throw e
-    if(w.state.calendar_delivery?.status==='sending'){try{w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'failed',reference:w.state.calendar_delivery.reference||''})).workflow}catch{}}
-    calendarWarning=String(e.message||e)
-   }
-  }
-  // Save a separate calendar record only after Microsoft confirms the invitation.
-  if(kind==='consult'&&c.include_date&&w.state.calendar_delivery?.status==='sent'&&!w.state.calendar_delivery.local_saved){
-   const start=c.consultation_start,endLocal=new Date(new Date(start+'Z').getTime()+Number(c.duration||60)*60000).toISOString()
-   const event={id:w.state.calendar_delivery.local_id,matter_id:m.id,title:'Consultation - '+m.name,event_category:'Consultation',start_date:start.slice(0,10),start_time:start.slice(11,16),end_date:endLocal.slice(0,10),end_time:endLocal.slice(11,16),description:(c.location||'')+' / '+(c.time_zone||'America/Chicago')+' / Microsoft calendar event: '+w.state.calendar_delivery.reference,is_active:true}
-   const {error}=await latest.current.supabase.from('calendar_events').upsert(event,{onConflict:'id'});if(error)throw Error('Invitation was sent, but the Mio calendar copy failed. Retry will save the copy without sending another invitation. '+error.message)
-   latest.current.onCalendarSaved(event);w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'sent',reference:w.state.calendar_delivery.reference,local_id:event.id,local_saved:true})).workflow
+   const duration=Number(c.duration||60);if(duration<5||duration>480)throw Error('Consultation duration must be 5 to 480 minutes.')
+   if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(c.consultation_start||'')))throw Error('Set the consultation date and time first.')
+   const start=c.consultation_start,endLocal=new Date(new Date(start+'Z').getTime()+duration*60000).toISOString()
+   const id=w.state.calendar_delivery?.local_id||crypto.randomUUID()
+   const event={id,matter_id:m.id,title:'Consultation - '+m.name,event_category:'Consultation',start_date:start.slice(0,10),start_time:start.slice(11,16),end_date:endLocal.slice(0,10),end_time:endLocal.slice(11,16),description:(meetingInfo(c,w.state.zoom_meeting?.join_url).where||'')+' ('+(c.time_zone||'America/Chicago')+')',is_active:true}
+   const {error}=await latest.current.supabase.from('calendar_events').upsert(event,{onConflict:'id'});if(error)throw Error('Could not save the consultation to the Mio calendar: '+error.message)
+   latest.current.onCalendarSaved(event)
+   w=(await run('record_delivery',{matter_id:w.matter_id,kind:'calendar',status:'sent',reference:id,local_id:id,local_saved:true})).workflow
   }
   const v=values(w,m),subject=templateText(c[kind+'_subject'],v),text=templateText(c[kind+'_body'],v).replace(/\n{3,}/g,'\n\n'),sender=String(c.sender_email||'billing@beveridgelawfirm.com').trim(),signedIn=String(latest.current.emailAccount||latest.current.session?.user?.email||'').toLowerCase(),base=(!sender.toLowerCase()||sender.toLowerCase()===signedIn)?'/me':'/users/'+encodeURIComponent(sender)
   w=(await run('claim_delivery',{matter_id:w.matter_id,kind,resend,previous_reference:previous?.reference||'',recipient:m.clients.email,subject,body:text})).workflow
@@ -91,7 +75,6 @@ export function useMioPnc({session,enabled,matters,clients,refreshMatters,refres
   try{await latest.current.graphFetch(base+'/sendMail',{method:'POST',allowInteractive:false,maxRetries:0,body:JSON.stringify({message:{subject,body:{contentType:'HTML',content:emailHtml(text)},toRecipients:[{emailAddress:{address:claimed.recipient||m.clients.email}}]},saveToSentItems:true})})}catch(e){throw Error('Email delivery is uncertain. Check Sent Items before using the retry control; the payment and signature requests have been preserved. '+e.message)}
   let done;try{done=await run('record_delivery',{matter_id:w.matter_id,kind,status:'sent',reference:claimed.reference})}
   catch(e){throw Error('Microsoft accepted the email, but Mio could not save its final status. Check Sent Items before retrying. '+e.message)}
-  if(calendarWarning)throw Error('Email sent, but the calendar invitation failed ('+calendarWarning+'). Grant the Calendars.ReadWrite permission in Azure AD and resend to include it.')
   return done
  }
 
