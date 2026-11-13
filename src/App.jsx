@@ -34988,7 +34988,7 @@ async function updateTeamCell(memberId, field, value) {
 
 
 
-  const serviceGraphScopes = ['User.Read', 'Mail.ReadWrite', 'Mail.ReadWrite.Shared', 'Mail.Send', 'Mail.Send.Shared', 'Files.ReadWrite.All']
+  const serviceGraphScopes = ['User.Read', 'Mail.ReadWrite', 'Mail.ReadWrite.Shared', 'Mail.Send', 'Mail.Send.Shared', 'Files.ReadWrite.All', 'Calendars.ReadWrite']
 
   function updateServiceGraphConfig(field, value) {
     setServiceGraphConfig((config) => ({ ...config, [field]: value }))
