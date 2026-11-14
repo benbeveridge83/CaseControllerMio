@@ -114,3 +114,11 @@ test('zoom meeting link is generated for the scheduled consultation and reused',
   const before=f.providerCalls.length;assert.equal((await f.call('create_zoom_meeting')).code,200);assert.equal(f.providerCalls.length,before)
   f.w.config.consultation_start='';assert.equal((await f.call('create_zoom_meeting')).code,409)
 })
+
+test('meeting type persists with the consultation config and invalid values fall back',async()=>{
+  const f=fixture()
+  const a=await f.call('save',{revision:0,config:{meeting_type:'zoom'}})
+  assert.equal(a.code,200);assert.equal(f.w.config.meeting_type,'zoom')
+  const b=await f.call('save',{revision:f.w.revision,config:{meeting_type:'bogus'}})
+  assert.equal(b.code,200);assert.equal(f.w.config.meeting_type,'in_person')
+})
