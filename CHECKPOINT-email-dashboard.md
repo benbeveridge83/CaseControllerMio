@@ -51,13 +51,13 @@ Commit: `a177ae77449aa7c3aa02381af7bbe84aaecd8962`
   (all route correctly; none return "unknown action").
 
 ## Remaining blockers (require Ben)
-1. Apply migration `supabase/migrations/20261115000000_email_dashboard_v1.sql`
-   (`supabase db push`). Until then the folder/resolution tables do not exist.
-2. Server env vars (Vercel): `OPENAI_API_KEY`, `MICROSOFT_CLIENT_ID`,
-   `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_TENANT`, `MICROSOFT_OAUTH_STATE_SECRET`,
-   `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `EMAIL_REDIRECT_URI`
-   (default `https://case-controller-mio.vercel.app/api/email/dashboard?action=connect_callback`).
-   Add that redirect URI to the Azure AD app registration.
-3. Signed-in verification of the live dashboard (connect mailboxes, folders,
+1. Apply migration `supabase/migrations/20261115000000_email_dashboard_v1.sql`.
+   Easiest: paste its contents into the Supabase SQL editor, or run `supabase db push`.
+2. Signed-in verification of the live dashboard (connect mailboxes, folders,
    By Matter, multi-category resolution, calendar/OneDrive context) requires
    Ben's Microsoft session.
+
+Note: the dashboard now reuses the existing Microsoft OAuth redirect
+(`MICROSOFT_REDIRECT_URI` = /api/microsoft/callback), so **no new Azure redirect
+URI is required**. All required env vars are set (including
+`MICROSOFT_CLIENT_SECRET`, added by Ben).
