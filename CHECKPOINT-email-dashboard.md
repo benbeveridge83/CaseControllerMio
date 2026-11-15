@@ -30,7 +30,27 @@ workspace. The feature was reimplemented on top of `origin/main`.
   (`appeals-content`, `appeals-render`, `formspree-render`) are **pre-existing**:
   they fail identically on clean `origin/main` (`77b2a15`).
 
-## Remaining blockers
+## Deployment fix (12-function limit)
+The first production deploy was rejected: "No more than 12 Serverless Functions
+can be added to a Deployment on the Hobby plan." Fixed by consolidating the API
+into 11 functions while preserving every original URL via `vercel.json` rewrites:
+
+- `api/clio.js` — dispatches the 6 old `/api/clio/*` handlers (moved to `lib/clio/handlers/`)
+- `api/microsoft.js` — dispatches `/api/microsoft/callback|oauth-start|status`
+  (`/api/microsoft/sync` stays its own function so the cron is untouched)
+- `api/paralegal.js` — dispatches `/api/paralegal` + `calendar-actions` + `email-actions`
+
+Commit: `a177ae77449aa7c3aa02381af7bbe84aaecd8962`
+
+## Deployment (verified live)
+- Production deployment **READY**, commit `a177ae7` on `main` (matches the push).
+- Live `https://case-controller-mio.vercel.app` serves the new build
+  (`index-DFzcKrcp.js`), the EmailDashboard chunk returns HTTP 200.
+- Old URLs verified: `/api/microsoft/status` → 401, `/api/microsoft/callback` → 307
+  redirect, `/api/clio/matters` → 401, `/api/paralegal` → 405, `/api/paralegal/email-actions` → 405
+  (all route correctly; none return "unknown action").
+
+## Remaining blockers (require Ben)
 1. Apply migration `supabase/migrations/20261115000000_email_dashboard_v1.sql`
    (`supabase db push`). Until then the folder/resolution tables do not exist.
 2. Server env vars (Vercel): `OPENAI_API_KEY`, `MICROSOFT_CLIENT_ID`,
@@ -38,11 +58,6 @@ workspace. The feature was reimplemented on top of `origin/main`.
    `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`, and `EMAIL_REDIRECT_URI`
    (default `https://case-controller-mio.vercel.app/api/email/dashboard?action=connect_callback`).
    Add that redirect URI to the Azure AD app registration.
-3. Vercel CLI is not authenticated on this machine, so deployment status was not
-   inspected via CLI. Deploy is expected via the Vercel Git integration on push
-   to `main`.
-
-## Next command
-```
-git push origin feature/email-dashboard && git push origin feature/email-dashboard:main
-```
+3. Signed-in verification of the live dashboard (connect mailboxes, folders,
+   By Matter, multi-category resolution, calendar/OneDrive context) requires
+   Ben's Microsoft session.
