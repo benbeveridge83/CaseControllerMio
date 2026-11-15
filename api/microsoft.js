@@ -6,6 +6,8 @@ import { requireParalegalUser } from '../lib/paralegal/auth.js'
 import { buildAuthorizationUrl, exchangeCodeForToken, normalizeTokenResponse } from '../lib/paralegal/microsoft/oauth.js'
 import { signOAuthState, verifyOAuthState } from '../lib/paralegal/microsoft/state.js'
 import { createMicrosoftTokenStore } from '../lib/paralegal/microsoft/tokenStore.js'
+import { createEmailTokenStore } from '../lib/email/tokenStore.js'
+import { getMe as graphGetMe } from '../lib/email/graphMail.js'
 
 export default async function handler(req, res) {
   const action = String(req.query?.action || '')
@@ -15,11 +17,23 @@ export default async function handler(req, res) {
   return res.status(404).json({ ok: false, error: 'Unknown Microsoft action.' })
 }
 
+// The OAuth state carries `accountEmail` only for the email dashboard flow; the
+// paralegal flow carries only `userId`. Use it to route the redirect back to the
+// correct app view.
+function targetForState(state) {
+  try {
+    const payload = verifyOAuthState(state, process.env.MICROSOFT_OAUTH_STATE_SECRET)
+    if (payload?.accountEmail) return 'email'
+  } catch { /* fall through */ }
+  return 'microsoft'
+}
+
 async function callback(req, res) {
   res.setHeader('Cache-Control', 'no-store')
+  const state = req.query?.state
   try {
-    const { code, state, error, error_description } = req.query || {}
-    if (error) return res.redirect('/#microsoft?error=' + encodeURIComponent(error_description || error))
+    const { code, error, error_description } = req.query || {}
+    if (error) return res.redirect('/#' + targetForState(state) + '?error=' + encodeURIComponent(error_description || error))
     if (!code || !state) return res.redirect('/#microsoft?error=missing_code')
     const payload = verifyOAuthState(state, process.env.MICROSOFT_OAUTH_STATE_SECRET)
     if (!payload?.userId) return res.redirect('/#microsoft?error=invalid_state')
@@ -30,10 +44,22 @@ async function callback(req, res) {
       tenant: process.env.MICROSOFT_TENANT || 'common',
       code,
     })
+    if (payload.accountEmail) {
+      // Email dashboard flow: store into the multi-mailbox token table.
+      const normalized = normalizeTokenResponse(token, { accountEmail: payload.accountEmail })
+      const store = createEmailTokenStore()
+      let displayName = payload.accountEmail
+      try {
+        const me = await graphGetMe({ accessToken: normalized.accessToken })
+        displayName = me?.data?.displayName || me?.data?.mail || payload.accountEmail
+      } catch { /* keep account email */ }
+      await store.save(payload.userId, payload.accountEmail, { ...normalized, displayName })
+      return res.redirect('/#email?connected=1')
+    }
     await createMicrosoftTokenStore().save(payload.userId, normalizeTokenResponse(token))
     return res.redirect('/#microsoft?connected=1')
   } catch (error) {
-    return res.redirect('/#microsoft?error=' + encodeURIComponent(error.message || 'callback_failed'))
+    return res.redirect('/#' + targetForState(state) + '?error=' + encodeURIComponent(error.message || 'callback_failed'))
   }
 }
 

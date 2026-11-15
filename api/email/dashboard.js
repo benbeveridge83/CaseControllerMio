@@ -2,24 +2,24 @@
 //
 // Actions are dispatched by ?action= so the feature adds a single Vercel
 // function instead of many (the project already sits near Vercel's per-plan
-// function ceiling). Old Microsoft/Clio routes are untouched.
+// function ceiling). The Microsoft OAuth redirect reuses the existing
+// /api/microsoft/callback flow (no new Azure redirect URI is required).
 //
 //   status           GET    list connected mailboxes + scopes
 //   connect_start    POST   build a Microsoft OAuth URL for a mailbox
-//   connect_callback GET    OAuth redirect target (exchange code, save token)
 //   disconnect       POST   remove a connected mailbox
 //   folders          GET    list mail folders for the connected mailboxes
 //   messages         GET    list messages for the selected folders
 //   message          GET    one message (with body)
-//   classify         POST   AI classification (real DeepSeek + Graph context)
+//   classify         POST   AI classification (real OpenAI + Graph context)
 //   draft            POST   AI draft suggestion
 //   settings         GET/POST folder selection
 //   resolve          POST   set per-category resolution
 //   resolutions      GET    read resolution state
 
 import { requireParalegalUser } from '../../lib/paralegal/auth.js'
-import { buildAuthorizationUrl, exchangeCodeForToken, normalizeTokenResponse } from '../../lib/paralegal/microsoft/oauth.js'
-import { signOAuthState, verifyOAuthState } from '../../lib/paralegal/microsoft/state.js'
+import { buildAuthorizationUrl } from '../../lib/paralegal/microsoft/oauth.js'
+import { signOAuthState } from '../../lib/paralegal/microsoft/state.js'
 import { createEmailTokenStore } from '../../lib/email/tokenStore.js'
 import * as graphMail from '../../lib/email/graphMail.js'
 import { classifyEmail, draftReply } from '../../lib/email/classify.js'
@@ -31,28 +31,23 @@ import { PUBLIC_SUPABASE_URL } from '../../src/mioSupabasePublic.js'
 const PRIMARY_MAILBOX = 'ben@beveridgelawfirm.com'
 export const DEFAULT_MAILBOXES = ['ben@beveridgelawfirm.com', 'service@beveridgelawfirm.com', 'office@beveridgelawfirm.com', 'billing@beveridgelawfirm.com']
 
-// Mail.Read / Mail.Read.Shared for reading any mailbox; Mail.ReadWrite / Send for
-// future send (gated by an explicit user action — this task never auto-sends);
-// Calendars.Read + Files.Read.All power classification/draft context.
+// Read-only Graph scopes for the dashboard: own + shared mailboxes, calendar and
+// OneDrive context. No send scopes — this task never sends automatically.
 const EMAIL_GRAPH_SCOPES = [
   'openid', 'profile', 'email', 'offline_access',
-  'Mail.Read', 'Mail.ReadWrite', 'Mail.Read.Shared', 'Mail.ReadWrite.Shared', 'Mail.Send',
+  'Mail.Read', 'Mail.Read.Shared',
   'Calendars.Read', 'Files.Read.All',
 ]
 
+// Reuse the existing Microsoft OAuth redirect (the same one the service inbox /
+// paralegal connection uses), so no new redirect URI must be registered in Azure.
 function redirectUri(env = process.env) {
-  const explicit = String(env.EMAIL_REDIRECT_URI || '').trim().replace(/\/$/, '')
-  if (explicit) return explicit + '?action=connect_callback'
-  // Vercel injects VERCEL_URL (the deployment host) automatically; fall back to
-  // the production domain. The exact value must be registered in Azure AD.
-  const host = String(env.VERCEL_URL || 'case-controller-mio.vercel.app').trim().replace(/\/$/, '')
-  return `https://${host}/api/email/dashboard?action=connect_callback`
+  return String(env.MICROSOFT_REDIRECT_URI || '').trim()
 }
 
 function clientConfig(env = process.env) {
   return {
     clientId: env.MICROSOFT_CLIENT_ID || '',
-    clientSecret: env.MICROSOFT_CLIENT_SECRET || '',
     tenant: env.MICROSOFT_TENANT || 'common',
   }
 }
@@ -96,7 +91,6 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store')
   const action = String((req.query && req.query.action) || 'status')
   try {
-    if (action === 'connect_callback') return connectCallback(req, res)
     const user = await requireParalegalUser(req)
     if (action === 'connect_start') return connectStart(req, res, user)
     switch (action) {
@@ -142,39 +136,18 @@ async function connectStart(req, res, user) {
   const account = String((req.body && req.body.account) || PRIMARY_MAILBOX).trim().toLowerCase()
   if (!account.endsWith('@beveridgelawfirm.com')) return res.status(400).json({ ok: false, error: 'Only @beveridgelawfirm.com mailboxes can be connected.' })
   const { clientId, tenant } = clientConfig()
-  if (!clientId) return res.status(503).json({ ok: false, error: 'Microsoft OAuth is not configured on the server.' })
+  const redirectUriValue = redirectUri()
+  if (!clientId || !redirectUriValue) return res.status(503).json({ ok: false, error: 'Microsoft OAuth is not configured on the server.' })
   const state = signOAuthState({ userId: user.id, accountEmail: account })
   const url = buildAuthorizationUrl({
     clientId,
-    redirectUri: redirectUri(),
+    redirectUri: redirectUriValue,
     tenant,
     scopes: EMAIL_GRAPH_SCOPES,
     state,
     loginHint: account,
   })
   return res.status(200).json({ ok: true, url })
-}
-
-async function connectCallback(req, res) {
-  const { code, state, error, error_description } = req.query || {}
-  const back = (q) => res.redirect('/#email' + q)
-  if (error) return back('?error=' + encodeURIComponent(error_description || error))
-  if (!code || !state) return back('?error=missing_code')
-  const payload = verifyOAuthState(state, process.env.MICROSOFT_OAUTH_STATE_SECRET)
-  if (!payload?.userId || !payload?.accountEmail) return back('?error=invalid_state')
-  const { clientId, clientSecret, tenant } = clientConfig()
-  const token = await exchangeCodeForToken({
-    clientId, clientSecret, redirectUri: redirectUri(), tenant, code,
-  })
-  const normalized = normalizeTokenResponse(token, { accountEmail: payload.accountEmail })
-  const store = createEmailTokenStore()
-  let displayName = payload.accountEmail
-  try {
-    const me = await graphMail.getMe({ accessToken: normalized.accessToken })
-    displayName = me?.data?.displayName || me?.data?.mail || payload.accountEmail
-  } catch { /* keep account email */ }
-  await store.save(payload.userId, payload.accountEmail, { ...normalized, displayName })
-  return back('?connected=1')
 }
 
 async function disconnect(req, res, user) {
