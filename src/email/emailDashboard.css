@@ -1,0 +1,45 @@
+.mio-email-dashboard { padding: 16px; font-family: inherit; }
+.mio-email-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.mio-email-header h2 { margin: 0; }
+.mio-email-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.mio-email-tabs button { padding: 6px 12px; border: 1px solid #d1d5db; background: #fff; border-radius: 6px; cursor: pointer; }
+.mio-email-tabs button.active { background: #17675e; color: #fff; border-color: #17675e; }
+.mio-email-error { background: #fdecea; color: #b3261e; padding: 8px 12px; border-radius: 6px; margin: 10px 0; }
+.mio-email-loading, .mio-email-empty { color: #6b7280; padding: 12px 0; }
+.mio-email-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+.mio-email-filters select { padding: 4px 8px; }
+.mio-email-note { color: #6b7280; font-size: 12px; }
+.mio-email-help { color: #374151; margin: 0 0 12px; }
+.mio-email-mailbox { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.mio-email-mailbox-head { display: flex; align-items: center; gap: 10px; }
+.mio-email-mailbox-name { font-weight: 600; }
+.mio-email-connected { color: #17675e; font-size: 12px; }
+.mio-email-warn { color: #9a6700; font-size: 12px; margin-top: 6px; }
+.mio-email-folders { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.mio-email-folder { display: inline-flex; align-items: center; gap: 4px; }
+.mio-email-folder-actions { width: 100%; margin-top: 6px; }
+.mio-email-list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-weight: 600; }
+.mio-email-row { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; display: flex; justify-content: space-between; gap: 10px; }
+.mio-email-row-main { flex: 1; text-align: left; background: none; border: 0; cursor: pointer; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mio-email-subject { font-weight: 600; }
+.mio-email-meta { color: #6b7280; font-size: 12px; }
+.mio-email-preview { color: #4b5563; font-size: 12px; }
+.mio-email-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.mio-email-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.mio-email-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d1d5db; }
+.mio-email-badge.open { background: #fef3c7; border-color: #f59e0b; }
+.mio-email-badge.resolved { background: #d1fae5; border-color: #10b981; color: #065f46; }
+.mio-email-bymatter .mio-email-matter { margin-bottom: 16px; }
+.mio-email-matter-name { border-bottom: 2px solid #17675e; padding-bottom: 4px; }
+.mio-email-topic-name { color: #374151; margin: 10px 0 4px; }
+.mio-email-detail { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+.mio-email-detail { flex-direction: column; }
+.mio-email-detail { padding: 16px; }
+.mio-email-detail > * { max-width: 720px; width: 100%; background: #fff; border-radius: 10px; }
+.mio-email-detail-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+.mio-email-detail-head h3 { margin: 0; }
+.mio-email-detail-meta { padding: 12px 16px; color: #374151; font-size: 13px; }
+.mio-email-detail-cats { padding: 8px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+.mio-email-detail-body { padding: 12px 16px; white-space: pre-wrap; max-height: 40vh; overflow: auto; border-top: 1px solid #e5e7eb; }
+.mio-email-detail-draft { padding: 12px 16px; border-top: 1px solid #e5e7eb; }
+.mio-email-draft { background: #f3f4f6; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
