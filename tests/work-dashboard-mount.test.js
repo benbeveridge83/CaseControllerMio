@@ -92,3 +92,28 @@ test('each native task queue carries the linked client name separately from the 
  assert.deepEqual(Array.from(rows,r=>r.kind),['settings','orders','service'])
  for(const row of rows){assert.equal(row.clientName,'Jane Adams');assert.equal(row.matterName,'SAPCR/Modification 12345')}
 })
+
+test('global clock summary reuses coverage while typing, and refreshes after a saved entry',async()=>{
+ const React=await import('react'),{JSDOM}=await import('jsdom'),{createRoot}=await import('react-dom/client')
+ const plugin=fs.readFileSync('mio-v313-pnc-daily-trust.js','utf8')
+ const memo=plugin.match(/  const mioDailyCoverageValue=useMemo[^\n]+/)[0]
+ assert.match(plugin,/const coverage = mioDailyCoverageValue/)
+ assert.match(plugin,/bulkFinanceByMatterId.get/)
+ const context={useMemo:React.useMemo}
+ for(const name of memo.match(/,\[([^\]]+)\]/)[1].split(','))context[name]=null
+ let calculations=0
+ Object.assign(context,{showDailyBillingWindow:true,mioDailyCoverage:()=>{calculations++;return {total:123}}})
+ vm.createContext(context);vm.runInContext('this.read=function(){'+memo+';return mioDailyCoverageValue}',context)
+ const dom=new JSDOM('<div id="clock-root"></div>'),previousWindow=globalThis.window,previousDocument=globalThis.document
+ globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true
+ const root=createRoot(document.getElementById('clock-root'))
+ function Harness({draft}){context.billingForm={description:draft};return React.createElement('span',null,context.read()?.total)}
+ try{
+  for(const draft of ['','Review','Review hearing order'])await React.act(async()=>root.render(React.createElement(Harness,{draft})))
+  assert.equal(calculations,1)
+  context.billingEntries=[];await React.act(async()=>root.render(React.createElement(Harness,{draft:'saved'})))
+  assert.equal(calculations,2)
+  context.dailyBillingDate='2026-11-17';await React.act(async()=>root.render(React.createElement(Harness,{draft:'saved'})))
+  assert.equal(calculations,3)
+ }finally{await React.act(async()=>root.unmount());dom.window.close();globalThis.window=previousWindow;globalThis.document=previousDocument}
+})

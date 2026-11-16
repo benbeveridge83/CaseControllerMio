@@ -32,8 +32,10 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
     })().catch(error=>{if(!cancelled){setDailyCoverageFinanceReady(false);setDailyCoverageFinanceError(error?.message||String(error))}})
     return()=>{cancelled=true}
   },[showDailyBillingWindow,session?.user?.id])
+  // Billing drafts must not recalculate trust coverage on every keystroke.
+  const mioDailyCoverageValue=useMemo(()=>showDailyBillingWindow?mioDailyCoverage():null,[showDailyBillingWindow,dailyBillingDate,dailyCoverageScope,billingEntries,matters,bulkFinanceByMatterId,lawPayTransactions,lawPayPaymentRequests,lawPayAttribution,currentTeamMember,team,session])
   function mioDailyCoverage() { return dailyTrustSummary({date:dailyBillingDate,entries:(dailyCoverageScope==='me'?billingEntries.filter((entry)=>String(entry.user_id||'')===String(currentBillingUserId())):billingEntries),matters,pendingFor:pendingLawPayAmountForMatter,financeFor: matter => {
-    const f=clientFinanceNumbers(matter)
+    const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)
     const normalized=f.serviceInvoices.map(i=>({...i,balance:invoiceBalanceAmount(i),amount_paid:invoicePaidAmount(i)}))
     const unsettledManual=f.currentLedgerRows.filter(r=>r.source!=='LawPay'&&r.direction!=='out'&&/pending|processing|submitted|authorized/i.test(String(r.status||''))).reduce((v,r)=>v+Number(r.amount||0),0)
     const hasRefund=lawPayTransactionsForMatter(matter).some(t=>financeRowAfterSnapshot(t,f.snapshot)&&(/refund|chargeback|reversal/.test(String(t.transaction_type||'').toLowerCase())||Number(t.amount_refunded_cents)>0))
@@ -45,7 +47,7 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
  code=once(code,"const [dailyBillingDate, setDailyBillingDate] = useState(() => new Date().toISOString().slice(0, 10))","const [dailyBillingDate, setDailyBillingDate] = useState(() => firmDate())",'firm date')
  code=once(code,'function openDailyBillingWindow(dateValue = new Date().toISOString().slice(0, 10))','function openDailyBillingWindow(dateValue = firmDate())','open date')
  const start=code.indexOf('  function renderDailyBillingModal() {'),end=code.indexOf('\n  function ',start+10);let part=code.slice(start,end)
- part=once(part,'    const totals = billingTotals(entries)','    const coverage = mioDailyCoverage()\n    const totals = {...billingTotals(entries),amount:coverage.total/100}','total same definition')
+ part=once(part,'    const totals = billingTotals(entries)','    const coverage = mioDailyCoverageValue\n    const totals = {...billingTotals(entries),amount:coverage.total/100}','total same definition')
  part=part.replace('new Date(current || new Date().toISOString().slice(0, 10))',"new Date((current || firmDate())+'T12:00:00Z')").replace('d.setDate(d.getDate() + amount)','d.setUTCDate(d.getUTCDate() + amount)').replace('setDailyDateAndForm(new Date().toISOString().slice(0, 10))','setDailyDateAndForm(firmDate())')
  part=once(part,'        <section style={{ border:', '        <button type="button" onClick={() => setShowDailyBillingWindow(false)} style={{position:"absolute",right:25,top:20}}>Close</button>\n        <MioDailyTrust summary={coverage} date={dailyBillingDate} loading={!dailyCoverageFinanceReady&&!dailyCoverageFinanceError} error={dailyCoverageFinanceError} scope={dailyCoverageScope} onScopeChange={setDailyCoverageScope} />\n        <section style={{ border:','coverage card')
  code=code.slice(0,start)+part+code.slice(end)
