@@ -7,21 +7,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { emailClient } from './emailClient.js'
 import { supabase } from '../supabaseClient.js'
-import { EMAIL_CATEGORIES, CATEGORY_LABELS, normalizeCategories } from '../../lib/email/categories.js'
+import { EMAIL_CATEGORIES, CATEGORY_LABELS, normalizeCategories, labelFor, keywordCategories } from '../../lib/email/categories.js'
+import { loadCategories,saveCategories } from './categoryCache.js'
+import { messageKey as emailMessageKey } from '../dashboard/model.js'
 import { buildMatterIndex, matchMessageToMatters, matterDisplayName, matterContactEmails } from '../../lib/email/matching.js'
 import { categoryStatesFor, setResolved } from '../../lib/email/resolution.js'
 import './emailDashboard.css'
 
 const DEFAULT_MAILBOXES = ['ben@beveridgelawfirm.com', 'service@beveridgelawfirm.com', 'office@beveridgelawfirm.com', 'billing@beveridgelawfirm.com']
-const CATEGORY_CACHE_KEY = 'mio-email-categorizations-v1'
+const VIEWS=['configuration','settings','orders','drafts','service','general','bymatter']
 
-function loadCatCache() {
-  try { return JSON.parse(window.localStorage.getItem(CATEGORY_CACHE_KEY) || '{}') } catch { return {} }
-}
-
-function saveCatCache(cache) {
-  try { window.localStorage.setItem(CATEGORY_CACHE_KEY, JSON.stringify(cache)) } catch { /* ignore quota */ }
-}
 
 export default function EmailDashboard({ userId }) {
   const [view, setView] = useState('orders')
@@ -31,7 +26,7 @@ export default function EmailDashboard({ userId }) {
   const [messages, setMessages] = useState([])
   const [resolutions, setResolutions] = useState({})
   const [matters, setMatters] = useState([])
-  const [catCache, setCatCache] = useState(loadCatCache)
+  const [catCache, setCatCache] = useState(()=>loadCategories(userId))
   const [drafts, setDrafts] = useState({})
   const [selectedMessage, setSelectedMessage] = useState(null)
   const [filters, setFilters] = useState({ matter: '', client: '', counsel: '' })
@@ -74,10 +69,10 @@ export default function EmailDashboard({ userId }) {
 
   const categorized = useMemo(() => {
     return messages.map((message) => {
-      const entry = catCache[message.id] || {}
+      const entry = catCache[emailMessageKey(message)] || {}
       return {
         ...message,
-        categories: normalizeCategories(entry.categories),
+        categories: normalizeCategories([...(entry.categories||keywordCategories(message.subject,message.bodyPreview)),...(message.isDraft?['drafts']:[])]),
         topics: entry.topics || {},
         matterHint: entry.matterHint || '',
         ai: Boolean(entry.ai),
@@ -87,7 +82,7 @@ export default function EmailDashboard({ userId }) {
   }, [messages, catCache, matters, matterIndex])
 
   async function classifyPending() {
-    const pending = categorized.filter((m) => !catCache[m.id])
+    const pending = categorized.filter((m) => !catCache[emailMessageKey(m)])
     if (!pending.length) return
     setClassifying(true)
     const next = { ...catCache }
@@ -95,13 +90,13 @@ export default function EmailDashboard({ userId }) {
       try {
         const matterName = (message.matches && message.matches[0] && message.matches[0].matterName) || ''
         const result = await emailClient.classify(message, matterName)
-        next[message.id] = { categories: result.categories, topics: result.topics, matterHint: result.matterHint, ai: result.ai }
+        next[emailMessageKey(message)] = { categories: result.categories, topics: result.topics, matterHint: result.matterHint, ai: result.ai }
       } catch {
-        next[message.id] = { categories: ['general'], topics: { general: 'General' }, matterHint: '', ai: false }
+        next[emailMessageKey(message)] = { categories: keywordCategories(message.subject,message.bodyPreview), topics: { general: 'General' }, matterHint: '', ai: false }
       }
     }
     setCatCache(next)
-    saveCatCache(next)
+    saveCategories(userId,next)
     setClassifying(false)
   }
 
@@ -227,7 +222,7 @@ export default function EmailDashboard({ userId }) {
     return [...groups.values()].map((g) => ({ key: g.key, name: g.name, topics: [...g.topics.entries()].map(([topic, items]) => ({ topic, items })) }))
   }, [filtered])
 
-  const pendingCount = categorized.filter((m) => !catCache[m.id]).length
+  const pendingCount = categorized.filter((m) => !catCache[emailMessageKey(m)]).length
 
   return (
     <div className="mio-email-dashboard">
@@ -236,7 +231,7 @@ export default function EmailDashboard({ userId }) {
         <div className="mio-email-tabs" role="tablist">
           {VIEWS.map((v) => (
             <button key={v} role="tab" aria-selected={view === v} className={view === v ? 'active' : ''} onClick={() => setView(v)}>
-              {v === 'bymatter' ? 'By Matter' : CATEGORY_LABELS[v] || v}
+              {v === 'bymatter' ? 'By Matter' : v==='configuration'?'Mailbox settings':v==='settings'?'Need to set':CATEGORY_LABELS[v] || v}
             </button>
           ))}
         </div>
@@ -248,7 +243,7 @@ export default function EmailDashboard({ userId }) {
         <p className="mio-email-loading">Loading email dashboard…</p>
       ) : (
         <>
-          {view === 'settings' ? (
+          {view === 'configuration' ? (
             <SettingsView
               status={status}
               folders={folders}

@@ -31,6 +31,7 @@ export const emailClient = {
   folders: () => request('folders'),
   messages: () => request('messages'),
   message: (id, accountEmail) => request('message', { params: { id, accountEmail } }),
+  thread: (conversationId,accountEmail) => request('thread',{params:{conversationId,accountEmail}}),
   classify: (message, matterName) => request('classify', { method: 'POST', body: { message, matterName } }),
   draft: (message, matterName) => request('draft', { method: 'POST', body: { message, matterName } }),
   getSettings: () => request('settings'),

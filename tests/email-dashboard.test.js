@@ -13,7 +13,7 @@ test('categories: normalize, multi-category, and fallback', () => {
   assert.deepEqual(normalizeCategories(['orders', 'settings']), ['orders', 'settings'])
   assert.deepEqual(normalizeCategories([]), ['general'])
   assert.deepEqual(normalizeCategories(['orders', 'bogus']), ['orders', 'general'])
-  assert.deepEqual(EMAIL_CATEGORIES, ['orders', 'settings', 'general'])
+  assert.deepEqual(EMAIL_CATEGORIES, ['orders', 'settings', 'drafts', 'service', 'general'])
   assert.equal(labelFor('orders'), 'Orders')
 })
 
@@ -74,6 +74,15 @@ test('folders: all, none, and partial selections filter the message set', () => 
     { account_email: 'service@beveridgelawfirm.com', folder_id: 'junk', enabled: false },
   ])
   assert.deepEqual(normalized['service@beveridgelawfirm.com'], ['inbox'])
+})
+
+test('saving no selected folders preserves an explicit empty account',()=>{
+ assert.deepEqual(normalizeFolderSettings([{account_email:'ben@firm.test',folder_id:'inbox',enabled:false}]),{'ben@firm.test':[]})
+})
+
+test('service and drafted emails have distinct dashboard categories',()=>{
+ assert.ok(keywordClassify('Process server: need to serve petition','').categories.includes('service'))
+ assert.ok(keywordClassify('Draft reply for review','').categories.includes('drafts'))
 })
 
 test('resolution: independent per category and survives a reload reindex', () => {

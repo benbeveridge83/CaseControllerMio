@@ -25,6 +25,7 @@ import * as graphMail from '../../lib/email/graphMail.js'
 import { classifyEmail, draftReply } from '../../lib/email/classify.js'
 import { EMAIL_CATEGORIES, normalizeCategories } from '../../lib/email/categories.js'
 import { toIndex } from '../../lib/email/resolution.js'
+import { normalizeFolderSettings } from '../../lib/email/folders.js'
 import { createClient } from '@supabase/supabase-js'
 import { PUBLIC_SUPABASE_URL } from '../../src/mioSupabasePublic.js'
 
@@ -74,6 +75,9 @@ function normalizeMessage(raw, accountEmail, folderId) {
     bodyPreview: String(raw.bodyPreview || ''),
     body: String(raw.body?.content || ''),
     bodyType: String(raw.body?.contentType || ''),
+    conversationId: String(raw.conversationId || ''),
+    isDraft: Boolean(raw.isDraft),
+    webLink: String(raw.webLink || ''),
   }
 }
 
@@ -99,6 +103,7 @@ export default async function handler(req, res) {
       case 'folders': return folders(req, res, user)
       case 'messages': return messages(req, res, user)
       case 'message': return message(req, res, user)
+      case 'thread': return thread(req, res, user)
       case 'classify': return classify(req, res, user)
       case 'draft': return draft(req, res, user)
       case 'settings': return settings(req, res, user)
@@ -182,7 +187,7 @@ async function messages(req, res, user) {
   for (const accountEmail of DEFAULT_MAILBOXES) {
     const connection = await tokenForMailbox(store, user.id, accountEmail)
     if (!connection) continue
-    const chosen = settings[accountEmail] && settings[accountEmail].length ? settings[accountEmail] : ['inbox']
+    const chosen = Object.hasOwn(settings,accountEmail) ? settings[accountEmail] : ['inbox']
     for (const folderId of chosen) {
       let page
       try {
@@ -193,8 +198,9 @@ async function messages(req, res, user) {
       }
       for (const raw of page.data.value || []) {
         const msg = normalizeMessage(raw, accountEmail, folderId)
-        if (!msg.id || seen.has(msg.id)) continue
-        seen.add(msg.id)
+        const key=`${accountEmail}::${msg.id}`
+        if (!msg.id || seen.has(key)) continue
+        seen.add(key)
         out.push(msg)
       }
     }
@@ -213,6 +219,16 @@ async function message(req, res, user) {
   if (!token) return res.status(409).json({ ok: false, error: 'Connect a mailbox first.' })
   const { data } = await graphMail.getMessage({ accessToken: token.accessToken, accountEmail: connection?.base === '/me' ? '' : accountEmail, messageId: id })
   return res.status(200).json({ ok: true, message: normalizeMessage(data, accountEmail, data.parentFolderId || '') })
+}
+
+async function thread(req,res,user){
+ const accountEmail=String(req.query?.accountEmail||'').trim().toLowerCase(),conversationId=String(req.query?.conversationId||'')
+ if(!DEFAULT_MAILBOXES.includes(accountEmail)||!conversationId)return res.status(400).json({error:'A connected mailbox and conversation id are required.'})
+ const connection=await tokenForMailbox(createEmailTokenStore(),user.id,accountEmail)
+ if(!connection)return res.status(409).json({error:'Connect this mailbox first.'})
+ const {data}=await graphMail.listConversation({accessToken:connection.token.accessToken,accountEmail:connection.base==='/me'?'':accountEmail,conversationId})
+ const messages=(data.value||[]).map(m=>normalizeMessage(m,accountEmail,m.parentFolderId)).sort((a,b)=>a.receivedDateTime.localeCompare(b.receivedDateTime))
+ return res.status(200).json({ok:true,messages,truncated:Boolean(data['@odata.nextLink'])})
 }
 
 async function buildContext(user, message, matterName) {
@@ -256,16 +272,7 @@ async function draft(req, res, user) {
 }
 
 function toSettingsMap(rows = []) {
-  const settings = {}
-  for (const row of rows) {
-    const account = String(row.account_email).trim().toLowerCase()
-    const folderId = String(row.folder_id)
-    if (!account || !folderId) continue
-    if (row.enabled === false) continue
-    if (!settings[account]) settings[account] = []
-    settings[account].push(folderId)
-  }
-  return settings
+  return normalizeFolderSettings(rows)
 }
 
 async function readSettings(db, userId) {
@@ -293,6 +300,7 @@ async function settings(req, res, user) {
       enabled: s.enabled !== false,
       updated_at: new Date().toISOString(),
     }))
+    if(!rows.length)rows.push({user_id:user.id,account_email:accountEmail,folder_id:'inbox',folder_name:'Inbox',enabled:false,updated_at:new Date().toISOString()})
     const { error: delErr } = await db.from('mio_email_folder_settings').delete().eq('user_id', user.id).eq('account_email', accountEmail)
     if (delErr) throw Object.assign(new Error('Could not clear folder settings.'), { statusCode: 500 })
     if (rows.length) {
