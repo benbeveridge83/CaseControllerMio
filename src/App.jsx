@@ -1,4 +1,8 @@
+import { litigationOrderType, reliefTypeChoices, reliefContextDefaults, initialReliefContext } from './reliefTrackContext.js'
+import { defaultReliefFilterGroups, normalizeReliefFilterGroups, normalizeApplicability, effectiveApplicability, visibleReliefIds } from './reliefApplicability.js'
+import { ReliefApplicabilityFields, ReliefFilterGroupSettings, ReliefInlineRowEditor, ReliefContextSummary } from './ReliefApplicability.jsx'
 import React, { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import ParalegalPanel from './paralegal/ParalegalPanel.jsx'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import * as XLSX from 'xlsx'
@@ -1107,6 +1111,7 @@ function ensureLitigationTrackShape(track = {}, index = 0) {
     matter_id: track?.matter_id || '',
     name: track?.name || (type === 'discovery' ? 'Discovery' : 'Final Relief'),
     type,
+    order_type_id: litigationOrderType(track),
     color: track?.color || LITIGATION_TRACK_COLORS[index % LITIGATION_TRACK_COLORS.length],
     sort_order: Number(track?.sort_order || index + 1),
     view_mode: LITIGATION_TRACK_VIEW_OPTIONS.some((option) => option.value === track?.view_mode) ? track.view_mode : (type === 'discovery' ? 'filings_equal' : 'sections'),
@@ -1955,6 +1960,7 @@ const DEFAULT_COURT_PEOPLE = [
 ]
 
 const emptyMatterExtraInfo = {
+  proceeding_id: '',
   assigned_attorney_id: '',
   mediator_email: '',
   litigation_parties: [],
@@ -4669,6 +4675,7 @@ const defaultRequestedReliefMatrixTable = ensureRequestedReliefMatrixShape({
 function ensureRequestedReliefOptionShape(option, index = 0) {
   return {
     id: option?.id || `rr-option-${Date.now()}-${index}`,
+    applicability: option?.is_relief_option === true ? {} : normalizeApplicability(option?.applicability),
     parent_id: option?.parent_id || '',
     name: option?.name || 'Unnamed Relief Option',
     notes: option?.notes || '',
@@ -6360,11 +6367,18 @@ function App() {
   })
   const [requestedReliefMatrixHideOptions, setRequestedReliefMatrixHideOptions] = useState(false)
   const [requestedReliefSettingsView, setRequestedReliefSettingsView] = useState('tree')
+  const [requestedReliefFilterGroups, setRequestedReliefFilterGroups] = useState(() => {
+    try { return normalizeReliefFilterGroups(JSON.parse(localStorage.getItem('caseMioRequestedReliefFilterGroups') || 'null')) }
+    catch { return normalizeReliefFilterGroups(null) }
+  })
+  const [requestedReliefSettingsFilters, setRequestedReliefSettingsFilters] = useState({})
+
 
   const [requestedReliefTableExpandedIds, setRequestedReliefTableExpandedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem('caseMioRequestedReliefTableExpandedIds') || '[]') }
     catch { return [] }
   })
+  const [requestedReliefInlineEditor, setRequestedReliefInlineEditor] = useState(null)
   const [requestedReliefOptionForm, setRequestedReliefOptionForm] = useState({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })
   const [requestedReliefMatterFilter, setRequestedReliefMatterFilter] = useState('all')
   const [requestedReliefMatterSearchText, setRequestedReliefMatterSearchText] = useState('')
@@ -6420,6 +6434,8 @@ function App() {
   const [showMatterWindow, setShowMatterWindow] = useState(false)
   const [showEventWindow, setShowEventWindow] = useState(false)
   const [isEventSaving, setIsEventSaving] = useState(false)
+  const [resetEventTarget, setResetEventTarget] = useState(null)
+  const [resetEventNewDate, setResetEventNewDate] = useState('')
   const [showTaskWindow, setShowTaskWindow] = useState(false)
   const [showMatterColumnsWindow, setShowMatterColumnsWindow] = useState(false)
   const [showMatterWidthControls, setShowMatterWidthControls] = useState(false)
@@ -7307,6 +7323,7 @@ function App() {
         setOrderFilters(next)
         return next
       }, kind: 'object', fallback: { type: 'all', holder: 'all', search: '', completed: 'open' } },
+      caseMioRequestedReliefFilterGroups: { setter: (value) => setRequestedReliefFilterGroups(normalizeReliefFilterGroups(value)), kind: 'array', fallback: defaultReliefFilterGroups },
       caseMioRequestedReliefOptions: { setter: (value) => setRequestedReliefOptions(recoverSafeRequestedReliefOptions(value)), kind: 'array', fallback: defaultRequestedReliefOptions },
       caseMioRequestedReliefs: { setter: setRequestedReliefs, kind: 'array', fallback: [] },
       caseMioRequestedReliefIssueSets: { setter: (value) => setRequestedReliefIssueSets(recoverSafeRequestedReliefArray(value, 'caseMioRequestedReliefIssueSets', requestedReliefIssueSets)), kind: 'array', fallback: [] },
@@ -8908,6 +8925,10 @@ function App() {
 
 
   useEffect(() => {
+    try { saveMioStateKey('caseMioRequestedReliefFilterGroups', JSON.stringify(requestedReliefFilterGroups)) } catch {}
+  }, [requestedReliefFilterGroups])
+
+  useEffect(() => {
     try { saveMioStateKey('caseMioRequestedReliefOptions', JSON.stringify(requestedReliefOptions)) } catch {}
   }, [requestedReliefOptions])
 
@@ -8979,7 +9000,7 @@ function App() {
     setRequestedReliefTemplates((current) => {
       let changed = false
       const next = current.map((template) => {
-        const workingOptions = Array.isArray(template.option_snapshot) && template.option_snapshot.length ? cloneRequestedReliefOptionRows(template.option_snapshot) : cloneRequestedReliefOptionRows(requestedReliefOptions)
+        const workingOptions = Array.isArray(template.option_snapshot) && template.option_snapshot.length ? requestedReliefSnapshotRows(template.option_snapshot) : cloneRequestedReliefOptionRows(requestedReliefOptions)
         const builder = { working_options: workingOptions }
         const sourceIssueIds = template.selected_issue_ids || template.issue_option_ids || []
         const sourceReliefIssueIds = template.issue_option_ids || template.selected_issue_ids || []
@@ -11683,6 +11704,28 @@ function App() {
     return { ...timing, rowDays, rowColor, stepDays: timing.days, stepColor: timing.color, stepName: step?.name || 'No step selected', timeDays: timeStatus.days, timeColor: timeStatus.color, lastTimeEntryAt: timeStatus.lastAt }
   }
 
+  function needToSetParalegalSnapshot() {
+    return filteredChecklistEvents('need_date').map((event) => {
+      const matter = checklistMatterForEvent(event) || {}
+      const status = currentNeedToSetStatus(event)
+      const record = settingCenterRecord(event)
+      return {
+        id: checklistNeedToSetRowId(event),
+        matterId: matter.id || event.matter_id || '',
+        matterName: checklistMatterLabel(event),
+        clientName: matterClientName(matter),
+        category: checklistEventCategoryLabel(event),
+        stage: settingCenterStageLabel(record.stage),
+        waitingOn: record.waiting_on || 'You',
+        currentStep: status.stepName,
+        latestUpdate: record.latest_update || '',
+        nextAction: settingCenterStageLabel(record.stage),
+        ageDays: status.rowDays,
+        hasNewEmail: needToSetEventHasNewEmail(event)
+      }
+    })
+  }
+
   function checklistWorkspaceContextForEvent(event = {}) {
     const matter = checklistMatterForEvent(event)
     const eventId = event?.id || event?.checklist_source_id || ''
@@ -14038,7 +14081,8 @@ function App() {
             <MatterInfoLine label="Matter Name" value={matter.name} />
             <MatterInfoLine label="Cause Number" value={matter.cause_number} />
             <MatterInfoLine label="Hire Date" value={matter.hire_date} />
-            <MatterInfoLine label="Case Type" value={matter.matter_type} />
+            <MatterInfoLine label="Case Category" value={matter.matter_type} />
+            <MatterInfoLine label="Proceeding" value={reliefTypeChoices(requestedReliefFilterGroups, 'proceeding', extra.proceeding_id).find(option => option.id === extra.proceeding_id)?.name || 'Not specified'} />
             <MatterInfoLine label="Case Subtype" value={matter.matter_subtype} />
             <MatterInfoLine label="Client Status" value={matter.client_status} />
             <MatterInfoLine label="Case Status" value={matter.case_status} />
@@ -18176,7 +18220,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!matterId) return alert('Select a matter first.')
     pendingLitigationTrackAssignmentRef.current = typeof onCreated === 'function' ? onCreated : null
     const count = litigationTracksForMatter(matterId, { includeArchived: true }).length
-    setLitigationTrackModal({ mode: 'new', id: '', matter_id: matterId, name: '', type: 'general', color: LITIGATION_TRACK_COLORS[count % LITIGATION_TRACK_COLORS.length], view_mode: 'filings_timeline', event_id: '' })
+    setLitigationTrackModal({ mode: 'new', id: '', matter_id: matterId, name: '', type: 'general', order_type_id: '', color: LITIGATION_TRACK_COLORS[count % LITIGATION_TRACK_COLORS.length], view_mode: 'filings_timeline', event_id: '' })
   }
 
   function openEditLitigationTrackModal(track) {
@@ -18190,16 +18234,17 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     if (!litigationTrackModal?.matter_id) return alert('Select the matter for this track.')
     const name = String(litigationTrackModal.name || '').trim()
     if (!name) return alert('Name the Litigation Track.')
+    if (litigationTrackModal.mode === 'new' && !litigationTrackModal.order_type_id) return alert('Choose the track / order type.')
     let createdTrackId = ''
     const currentTracks = (litigationTracks || []).map(ensureLitigationTrackShape)
     let nextTracks = currentTracks
     if (litigationTrackModal.mode === 'edit' && litigationTrackModal.id) {
-      nextTracks = currentTracks.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track)
+      nextTracks = currentTracks.map((track) => String(track.id) === String(litigationTrackModal.id) ? ensureLitigationTrackShape({ ...track, name, type: litigationTrackModal.type, order_type_id: litigationTrackModal.order_type_id || '', color: litigationTrackModal.color, view_mode: litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', rows: litigationTrackModal.type === 'discovery' ? [] : track.rows, updated_at: new Date().toISOString() }) : track)
     } else {
       const matterTracks = currentTracks.filter((track) => String(track.matter_id || '') === String(litigationTrackModal.matter_id || ''))
       const id = crypto?.randomUUID ? `lit-track-${crypto.randomUUID()}` : `lit-track-${Date.now()}-${Math.random().toString(36).slice(2)}`
       createdTrackId = id
-      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
+      const nextTrack = ensureLitigationTrackShape({ id, matter_id: litigationTrackModal.matter_id, name, type: litigationTrackModal.type, order_type_id: litigationTrackModal.order_type_id || '', color: litigationTrackModal.color, view_mode: litigationTrackModal.type === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode, event_id: litigationTrackModal.event_id || '', sort_order: matterTracks.length + 1, rows: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, matterTracks.length)
       nextTracks = [...currentTracks, nextTrack]
     }
     try {
@@ -18208,7 +18253,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       const assignAfterCreate = pendingLitigationTrackAssignmentRef.current
       pendingLitigationTrackAssignmentRef.current = null
       setLitigationTrackModal(null)
-      if (createdTrackId && typeof assignAfterCreate === 'function') window.setTimeout(() => assignAfterCreate(createdTrackId), 0)
+      if (createdTrackId && typeof assignAfterCreate === 'function') window.setTimeout(() => assignAfterCreate(createdTrackId, nextTracks.find(track => track.id === createdTrackId)), 0)
       setServiceEmailScanNote(createdTrackId ? `Created and saved Litigation Track “${name}”. The current filing is assigned to it and can now be saved.` : `Saved Litigation Track “${name}”.`)
     } catch (error) {
       alert(`The Litigation Track was not created because Mio could not save it to the backend: ${error.message || error}`)
@@ -19169,7 +19214,21 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         <form onSubmit={saveLitigationTrackModal} style={{ display: 'grid', gap: 12 }}>
           <LabeledField label="Matter"><div style={{ fontWeight: 700 }}>{matterName(litigationTrackModal.matter_id) || matterLabel(litigationTrackModal.matter_id)}</div></LabeledField>
           <LabeledField label="Track / event name *"><input autoFocus value={litigationTrackModal.name || ''} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, name: event.target.value })} placeholder="Example: Temporary Orders Hearing" /></LabeledField>
-          <LabeledField label="Track type"><select value={litigationTrackModal.type || 'general'} onChange={(event) => setLitigationTrackModal({ ...litigationTrackModal, type: event.target.value, view_mode: event.target.value === 'discovery' ? 'filings_timeline' : litigationTrackModal.view_mode || 'filings_timeline' })}><option value="general">Petition / motion / other procedural track</option><option value="discovery" disabled={litigationTrackModal.mode !== 'edit' && litigationTracksForMatter(litigationTrackModal.matter_id, { includeArchived: true }).some((track) => track.type === 'discovery')}>Discovery track</option></select></LabeledField>
+          {litigationTrackModal.type === 'discovery' ? <LabeledField label="Track type"><div>Discovery requests and responses</div></LabeledField> : (
+            <LabeledField label="Track type / order type">
+              <select aria-label="Track type / order type" value={litigationTrackModal.order_type_id || ''} disabled={litigationTrackModal.is_default === true} onChange={event => {
+                const value = event.target.value
+                const choices = reliefTypeChoices(requestedReliefFilterGroups, 'order_type', litigationTrackModal.order_type_id)
+                const previousName = choices.find(option => option.id === litigationTrackModal.order_type_id)?.name
+                const nextName = choices.find(option => option.id === value)?.name || ''
+                setLitigationTrackModal({ ...litigationTrackModal, order_type_id: value, name: !litigationTrackModal.name || litigationTrackModal.name === previousName ? nextName : litigationTrackModal.name })
+              }}>
+                <option value="">{litigationTrackModal.mode === 'new' ? 'Choose type' : 'Not classified — all order types'}</option>
+                {reliefTypeChoices(requestedReliefFilterGroups, 'order_type', litigationTrackModal.order_type_id).filter(option => option.id !== 'final' || litigationTrackModal.order_type_id === 'final').map(option => <option key={option.id} value={option.id}>{option.name}{option.archived ? ' (archived)' : ''}</option>)}
+              </select>
+              <small>Final Relief is already provided for this matter. Manage these choices in Settings → Requested Relief → Filter groups → Order type.</small>
+            </LabeledField>
+          )}
           <LabeledField label="Linked hearing / trial / event">
             <select value={litigationTrackModal.event_id || ''} onChange={(event) => {
               const eventId = event.target.value
@@ -25943,7 +26002,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     </div>
   }
 
-  async function resetEventToNeedDate(sourceEvent) {
+  function openResetEventDialog(sourceEvent) {
     const eventId = sourceEvent?.id || sourceEvent?.checklist_source_id || editingEventId
     if (!eventId) {
       alert('This event is not linked to a calendar event, so it cannot be reset.')
@@ -25954,9 +26013,20 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       alert('Could not find the original event.')
       return
     }
-    const ok = confirm('Reset this event? The current event will move to Completed as passed, and a duplicate event without a date will be added to Need to Set.')
-    if (!ok) return
+    setResetEventTarget(original)
+    setResetEventNewDate('')
+  }
 
+  async function performResetEvent(newDate) {
+    const original = resetEventTarget
+    const eventId = original?.id || original?.checklist_source_id
+    if (!original || !eventId) {
+      alert('Could not find the original event.')
+      setResetEventTarget(null)
+      return
+    }
+
+    const hasDate = Boolean(newDate)
     const resetRow = {
       matter_id: original.matter_id || null,
       assigned_to: original.assigned_to || null,
@@ -25966,9 +26036,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       description: original.description || original.checklist_description || '',
       // Supabase calendar_events.start_date is NOT NULL. Use the undated sentinel
       // so the item can live on the Need to Set tab without appearing on calendars/timelines.
-      start_date: UNDATED_EVENT_DATE,
+      start_date: hasDate ? newDate : UNDATED_EVENT_DATE,
       start_time: original.start_time || '09:00',
-      end_date: UNDATED_EVENT_DATE,
+      end_date: hasDate ? newDate : UNDATED_EVENT_DATE,
       end_time: original.end_time || original.start_time || '17:00',
       is_active: true
     }
@@ -25992,7 +26062,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
 
-    setChecklistTab('need_date')
+    setResetEventTarget(null)
+    setResetEventNewDate('')
+    // A dated reset creates a live event on the new date; an undated reset
+    // moves the event to Need to Set.
+    setChecklistTab(hasDate ? 'future' : 'need_date')
     resetChecklistCompletionForm()
     closeEventWindow()
     await fetchEvents()
@@ -47652,8 +47726,111 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   }
 
 
+  function requestedReliefDefaultContext(matterId, trackId = '', createdTrack = null) {
+    const track = createdTrack || litigationTrackForId(trackId)
+    return reliefContextDefaults(matterExtraFor(matterId), track && String(track.matter_id) === String(matterId) ? track : {}, requestedReliefFilterGroups)
+  }
+
+  function patchRequestedReliefBuilderContext(builder, patch, createdTrack = null) {
+    const next = { ...builder, ...patch }
+    if (!builder.id && !builder.filter_context_custom && builder.builder_scope !== 'template') {
+      next.filter_context = initialReliefContext({ sourceContext: builder.filter_context, defaults: requestedReliefDefaultContext(next.matter_id, next.litigation_track_id, createdTrack) })
+    }
+    return next
+  }
+
+  function requestedReliefApplicabilityIds(builder = requestedReliefBuilder) {
+    const rows = builder?.working_options || requestedReliefOptions
+    return visibleReliefIds(rows, requestedReliefFilterGroups, builder?.filter_context || {})
+  }
+
+  function renderRequestedReliefContextFilters() {
+    if (!requestedReliefBuilder) return null
+    const visible = requestedReliefApplicabilityIds()
+    const excluded = (requestedReliefBuilder.selected_option_ids || []).filter(id => !visible.has(id))
+    const excludedIssues = (requestedReliefBuilder.selected_issue_ids || requestedReliefBuilder.issue_option_ids || []).filter(id => !visible.has(id))
+    return <section style={{ marginBottom: 12 }}>
+      <ReliefContextSummary groups={requestedReliefFilterGroups} value={requestedReliefBuilder.filter_context || {}} />
+      <details key={`${requestedReliefBuilder.id || 'new'}:${requestedReliefBuilder.builder_scope || ''}`} style={{ marginTop: 8 }}>
+        <summary style={{ cursor: 'pointer' }}>Change filters for this {requestedReliefBuilder.builder_scope === 'template' ? 'template' : 'relief'}</summary>
+        <ReliefApplicabilityFields groups={requestedReliefFilterGroups} value={requestedReliefBuilder.filter_context || {}} onChange={filter_context => setRequestedReliefBuilder(b => ({ ...b, filter_context, filter_context_custom: true }))} />
+        {requestedReliefBuilder.matter_id && <button type="button" onClick={() => setRequestedReliefBuilder(b => ({ ...b, filter_context: initialReliefContext({ sourceContext: b.filter_context, defaults: requestedReliefDefaultContext(b.matter_id, b.litigation_track_id) }), filter_context_custom: false }))}>Use matter + track defaults</button>}
+        <small style={{ display: 'block' }}>Changes apply to this set only. All leaves a group unfiltered; None matches no rows. Existing selections and text remain saved.</small>
+      </details>
+      {(excluded.length > 0 || excludedIssues.length > 0) && <div role="status" style={{ padding: 10, background: '#fffbeb', color: '#78350f' }}>
+        {excludedIssues.length} included issue(s) and {excluded.length} selected option(s) are outside these filters and remain saved.{' '}
+        <details><summary>Review excluded rows</summary>{[...new Set([...excludedIssues, ...excluded])].map(id => <div key={id}>{requestedReliefBuilderOptionById(id)?.name || id}</div>)}</details>
+        <button type="button" onClick={() => setRequestedReliefBuilder(b => ({ ...b, filter_context: {}, filter_context_custom: true }))}>Show all to review</button>{' '}
+        <button type="button" disabled={!excluded.length} onClick={() => { if (window.confirm('Remove these excluded option selections? Text and row structure will be retained.')) setRequestedReliefBuilder(b => ({ ...b, selected_option_ids: (b.selected_option_ids || []).filter(id => !excluded.includes(id)) })) }}>Remove excluded option selections</button>
+      </div>}
+    </section>
+  }
+
+  function openRequestedReliefRowForm(parentId = '', isOption = false, optionType = 'non_exclusive') {
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: parentId, parentId, isOption, optionType })
+  }
+
+  function openRequestedReliefInlineEditor({ scope = 'settings', anchorId = '', parentId = '', isOption = false, optionType = 'non_exclusive', row = null, relation = 'child' } = {}) {
+    setRequestedReliefInlineEditor({ scope, anchorId, relation, row: row ? { ...row, applicability: normalizeApplicability(row.applicability) } : {
+      id: '', parent_id: parentId, name: '', notes: '', is_active: true, is_relief_option: isOption,
+      option_type: optionType, has_text_box: false, text_box_label: '', applicability: {}
+    } })
+    if (parentId) setRequestedReliefExpandedIds(current => Array.from(new Set([...current, parentId])))
+  }
+
+  function saveRequestedReliefInlineRow() {
+    const draft = requestedReliefInlineEditor
+    if (!draft) return
+    const name = draft.row.name.trim()
+    if (!name) return alert('Please name the issue / option row.')
+    const id = draft.row.id || crypto.randomUUID()
+    const updateRows = current => {
+      if (draft.row.id) return current.map(row => row.id === id ? ensureRequestedReliefOptionShape({ ...row, ...draft.row, name }) : row)
+      const siblings = current.filter(row => String(row.parent_id || '') === String(draft.row.parent_id || ''))
+      const anchor = siblings.find(row => row.id === draft.anchorId)
+      const order = draft.relation === 'sibling' && anchor ? Number(anchor.sort_order || 0) + 1 : Math.max(0, ...siblings.map(row => Number(row.sort_order || 0))) + 1
+      const rows = current.map(row => String(row.parent_id || '') === String(draft.row.parent_id || '') && Number(row.sort_order || 0) >= order ? { ...row, sort_order: Number(row.sort_order || 0) + 1 } : row)
+      return resequenceRequestedReliefOptions([...rows, ensureRequestedReliefOptionShape({ ...draft.row, id, name, sort_order: order })])
+    }
+    if (draft.scope === 'settings') setRequestedReliefOptions(updateRows)
+    else setRequestedReliefBuilder(builder => {
+      if (!builder) return builder
+      const field = requestedReliefBuilderSelectionField()
+      const rows = requestedReliefWorkingRows(builder)
+      const previous = rows.find(row => row.id === id)
+      const issues = new Set(builder[field] || [])
+      const options = new Set(builder.selected_option_ids || [])
+      if (!draft.row.id) issues.add(draft.row.is_relief_option ? draft.row.parent_id : id)
+      else if (Boolean(previous?.is_relief_option) !== Boolean(draft.row.is_relief_option)) {
+        if (draft.row.is_relief_option) issues.delete(id)
+        else { issues.add(id); options.delete(id) }
+      }
+      return { ...builder, working_options: updateRows(rows),
+        [field]: Array.from(issues).filter(Boolean), selected_option_ids: Array.from(options), selection_locked: false }
+    })
+    setRequestedReliefInlineEditor(null)
+  }
+
+  function renderRequestedReliefInlineRow(scope, anchorId = '', depth = 0) {
+    const draft = requestedReliefInlineEditor
+    if (!draft || draft.scope !== scope || draft.anchorId !== anchorId) return null
+    const rows = scope === 'settings' ? requestedReliefOptions : requestedReliefWorkingRows()
+    const parent = rows.find(row => row.id === draft.row.parent_id)
+    return <div style={{ marginLeft: depth * 22, gridColumn: '1 / -1', flexBasis: '100%', minWidth: 0 }}>
+      <ReliefInlineRowEditor key={`${scope}:${anchorId}:${draft.row.id || 'new'}`} row={draft.row} parentName={parent?.name || ''} groups={requestedReliefFilterGroups}
+        inherited={parent ? effectiveApplicability(parent, rows, requestedReliefFilterGroups) : {}}
+        onChange={row => setRequestedReliefInlineEditor(current => current ? { ...current, row } : current)}
+        onSave={saveRequestedReliefInlineRow} onCancel={() => setRequestedReliefInlineEditor(null)} />
+    </div>
+  }
+
   function activeRequestedReliefOptions() {
     return requestedReliefOptions.filter((option) => option.is_active !== false)
+  }
+
+  function requestedReliefSnapshotRows(rows = []) {
+    const master = new Map(requestedReliefOptions.map(row => [String(row.id), row]))
+    return cloneRequestedReliefOptionRows(rows.map(row => Object.hasOwn(row, 'applicability') ? row : { ...row, applicability: master.get(String(row.id))?.applicability }))
   }
 
   function cloneRequestedReliefOptionRows(rows = []) {
@@ -47866,7 +48043,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
   function addIssueToRequestedReliefBuilder(optionId) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const issueIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const issueIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.issue_option_ids || [])
       issueIds.forEach((id) => selected.add(id))
       setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, optionId, ...issueIds, ...issueIds.flatMap((id) => requestedReliefBuilderAncestorIds(id, builder))])))
@@ -48070,58 +48247,18 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
 
   function editRequestedReliefBuilderRow(rowId) {
     const row = requestedReliefBuilderOptionById(rowId)
-    if (!row) return
-    const name = (window.prompt('Edit issue / option text:', row.name || '') || '').trim()
-    if (!name) return
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder).map((item) => String(item.id) === String(rowId) ? { ...item, name } : item)
-      return { ...builder, working_options: rows }
-    })
+    if (row) openRequestedReliefInlineEditor({ scope: 'builder', anchorId: rowId, row })
   }
 
   function addRequestedReliefBuilderIssueRelative(rowId = '', relation = 'child') {
     const row = requestedReliefBuilderOptionById(rowId)
-    const relationLabel = relation === 'sibling' ? 'sibling issue' : relation === 'top' ? 'top-level issue' : 'child issue'
-    const name = (window.prompt(`Name the new ${relationLabel}:`, '') || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-local-${Date.now()}`
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder)
-      const currentRow = rows.find((item) => String(item.id) === String(rowId))
-      const parentId = relation === 'top' ? '' : relation === 'sibling' ? (currentRow?.parent_id || '') : (currentRow?.id || '')
-      const siblings = rows.filter((item) => String(item.parent_id || '') === String(parentId || ''))
-      const nextRows = resequenceRequestedReliefOptions([
-        ...rows,
-        ensureRequestedReliefOptionShape({ id: newId, parent_id: parentId, name, notes: '', is_active: true, is_relief_option: false, sort_order: siblings.length + 1 }, rows.length)
-      ])
-      const field = requestedReliefBuilderSelectionField()
-      return { ...builder, working_options: nextRows, [field]: Array.from(new Set([...(builder[field] || []), newId])), selection_locked: false }
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, rowId, newId].filter(Boolean))))
-    setRequestedReliefActiveIssueId(newId)
+    openRequestedReliefInlineEditor({ scope: 'builder', anchorId: rowId,
+      parentId: relation === 'top' ? '' : relation === 'sibling' ? row?.parent_id || '' : rowId, relation })
   }
 
-  function addRequestedReliefBuilderOptionChoice(rowId, forcedType = '') {
-    const issue = requestedReliefBuilderOptionById(rowId)
-    if (!issue) return
-    const name = (window.prompt(`Name the new relief option under "${issue.name}":`, '') || '').trim()
-    if (!name) return
-    const optionType = forcedType || (window.confirm('Should this be an exclusive option?\n\nOK = exclusive. Cancel = non-exclusive.') ? 'exclusive' : 'non_exclusive')
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-local-option-${Date.now()}`
-    setRequestedReliefBuilder((builder) => {
-      if (!builder) return builder
-      const rows = requestedReliefWorkingRows(builder)
-      const siblings = rows.filter((item) => String(item.parent_id || '') === String(rowId || ''))
-      const nextRows = resequenceRequestedReliefOptions([
-        ...rows,
-        ensureRequestedReliefOptionShape({ id: newId, parent_id: rowId, name, notes: '', is_active: true, is_relief_option: true, option_type: optionType === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: false, text_box_label: '', sort_order: siblings.length + 1 }, rows.length)
-      ])
-      const field = requestedReliefBuilderSelectionField()
-      return { ...builder, working_options: nextRows, [field]: Array.from(new Set([...(builder[field] || []), rowId])), selection_locked: false }
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, rowId])))
+  function addRequestedReliefBuilderOptionChoice(rowId, forcedType = '', anchorId = rowId) {
+    if (!requestedReliefBuilderOptionById(rowId)) return
+    openRequestedReliefInlineEditor({ scope: 'builder', anchorId, parentId: rowId, isOption: true, optionType: forcedType || 'non_exclusive' })
   }
 
   function toggleRequestedReliefBuilderOptionTextBox(rowId) {
@@ -48275,7 +48412,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(issue.id, 'exclusive')} title="Add an exclusive requested-relief option">＋ Exclusive</button>
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(issue.id, 'non_exclusive')} title="Add a non-exclusive requested-relief option">＋ Non-exclusive</button>
         <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderTableUnderIssue(issue.id)} title="Insert a requested-relief table under this issue">▦ Table</button>
-        <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(issue.id)} title="Edit text">✎</button>
+        <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(issue.id)} title="Edit row details and applicability">✎</button>
         <button type="button" style={buttonStyle} onClick={() => moveRequestedReliefBuilderRow(issue.id, -1)} title="Move up">↑</button>
         <button type="button" style={buttonStyle} onClick={() => moveRequestedReliefBuilderRow(issue.id, 1)} title="Move down">↓</button>
         <button type="button" style={buttonStyle} onClick={() => indentRequestedReliefBuilderRow(issue.id)} title="Indent under the previous row">→</button>
@@ -48290,7 +48427,7 @@ create index if not exists mio_service_inbox_rows_received_idx on public.mio_ser
     const buttonStyle = compact ? { padding: '3px 6px', fontSize: 11, whiteSpace: 'nowrap' } : { padding: '4px 7px', fontSize: 12, whiteSpace: 'nowrap' }
     return (
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: compact ? 0 : 5 }} onClick={(e) => e.stopPropagation()}>
-        <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(option.parent_id || '', option.option_type || 'non_exclusive')} title="Add another option at this level">＋ Option</button>
+        <button type="button" style={buttonStyle} onClick={() => addRequestedReliefBuilderOptionChoice(option.parent_id || '', option.option_type || 'non_exclusive', option.id)} title="Add another option at this level">＋ Option</button>
         <button type="button" style={buttonStyle} onClick={() => markRequestedReliefBuilderRowAsOption(option.id, false, option.option_type)} title="Turn this back into a regular issue/category row">Remove option status</button>
         <button type="button" style={buttonStyle} onClick={() => toggleRequestedReliefBuilderOptionTextBox(option.id)}>{option.has_text_box ? '− Text box' : '＋ Text box'}</button>
         <button type="button" style={buttonStyle} onClick={() => editRequestedReliefBuilderRow(option.id)}>✎</button>
@@ -48338,7 +48475,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function addRequestedReliefOptionWhileBuilding() {
     if (!requestedReliefBuilder) return
     let issueId = requestedReliefActiveIssueId
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     if (!issueId || !issueRows.some((issue) => String(issue.id) === String(issueId))) issueId = issueRows[0]?.id || ''
     const issue = requestedReliefOptions.find((option) => String(option.id) === String(issueId))
     if (!issue) return alert('Select an issue/prompt first, then add the relief option under it.')
@@ -48539,8 +48677,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function beginRequestedIssueBuilder({ matter_id = '', issueSet = null, template = null, view = 'simple', sourceRelief = null } = {}) {
+    setRequestedReliefInlineEditor(null)
     const snapshotRows = template?.option_snapshot || issueSet?.option_snapshot || sourceRelief?.option_snapshot || []
-    const workingOptions = snapshotRows.length ? cloneRequestedReliefOptionRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
+    const workingOptions = snapshotRows.length ? requestedReliefSnapshotRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
     const workingBuilder = { working_options: workingOptions }
     const allIds = workingOptions.filter((option) => !option.is_relief_option).map((option) => option.id)
     const sourceSelectedIssueIds = issueSet?.selected_issue_ids || template?.selected_issue_ids || template?.issue_option_ids || sourceRelief?.issue_option_ids || allIds
@@ -48558,6 +48697,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setShowRequestedReliefEditMenu(false)
     setRequestedReliefBuilder({
       id: issueSet?.id || '',
+      filter_context: templateMode ? normalizeApplicability(template?.filter_context) : initialReliefContext({ saved: issueSet, sourceContext: template?.filter_context || sourceRelief?.filter_context, defaults: requestedReliefDefaultContext(resolvedMatterId) }),
       matter_id: resolvedMatterId,
       name: issueSet?.name || template?.name || sourceRelief?.name || (templateMode ? 'New Requested Relief Template' : 'Matter Issues'),
       selected_issue_ids: expandedSelectedIssueIds.filter((id) => allIds.includes(id)),
@@ -48582,7 +48722,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       return
     }
     const matterIssueSet = latestRequestedReliefIssueSetForMatter(resolvedMatterId)
-    const defaultTrack = litigationTracksForMatter(resolvedMatterId).find((track) => track.type !== 'discovery') || null
+    const defaultTrack = litigationTracksForMatter(resolvedMatterId).find((track) => track.type !== 'discovery' && track.is_default) || null
     setRequestedReliefSetupDraft({
       relief_id: relief?.id || '',
       matter_id: resolvedMatterId,
@@ -48648,6 +48788,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function beginRequestedReliefBuilder({ matter_id = '', relief_type = 'client_relief', issueSet = null, template = null, sourceRelief = null, relief = null, useFullTree = false, startBlank = false, initialName = '', litigationTrackId = '', litigationPartyId = '', filingDocumentId = '', settingEventId = '' } = {}) {
+    setRequestedReliefInlineEditor(null)
     const resolvedMatterId = relief?.matter_id || matter_id || (requestedReliefMatterFilter !== 'all' ? requestedReliefMatterFilter : '')
     const resolvedIssueSet = issueSet || (!relief && !template && !sourceRelief && !useFullTree && !startBlank ? latestRequestedReliefIssueSetForMatter(resolvedMatterId) : null)
     if (!relief && !resolvedIssueSet && !template && !sourceRelief && !useFullTree && !startBlank) {
@@ -48655,7 +48796,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       return
     }
     const snapshotRows = relief?.option_snapshot || sourceRelief?.option_snapshot || template?.option_snapshot || resolvedIssueSet?.option_snapshot || []
-    const workingOptions = snapshotRows.length ? cloneRequestedReliefOptionRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
+    const workingOptions = snapshotRows.length ? requestedReliefSnapshotRows(snapshotRows) : cloneRequestedReliefOptionRows(activeRequestedReliefOptions())
     const workingBuilder = { working_options: workingOptions }
     const allCurrentIssueIds = workingOptions.filter((option) => !option.is_relief_option).map((option) => option.id)
     let rawIssueIds = []
@@ -48672,6 +48813,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     setRequestedReliefBuilderMode('relief')
     setRequestedReliefBuilder({
       id: relief?.id || '',
+      filter_context: initialReliefContext({ saved: relief, sourceContext: sourceRelief?.filter_context || template?.filter_context || resolvedIssueSet?.filter_context, defaults: requestedReliefDefaultContext(resolvedMatterId, relief?.litigation_track_id || litigationTrackId) }),
+      filter_context_custom: Boolean(relief?.filter_context_custom),
       matter_id: resolvedMatterId,
       issue_set_id: relief?.issue_set_id || resolvedIssueSet?.id || '',
       relief_type: relief?.relief_type || relief_type,
@@ -48721,7 +48864,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function toggleRequestedIssueSelection(optionId, checked) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.selected_issue_ids || [])
       relatedIds.forEach((id) => checked ? selected.add(id) : selected.delete(id))
       return { ...builder, selected_issue_ids: Array.from(selected) }
@@ -48731,10 +48874,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function toggleRequestedReliefIssueSelection(optionId, checked) {
     setRequestedReliefBuilder((builder) => {
       if (!builder) return builder
-      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder))
+      const relatedIds = [optionId, ...requestedReliefBuilderDescendantIds(optionId, builder)].filter((id) => !requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id))
       const selected = new Set(builder.issue_option_ids || [])
       relatedIds.forEach((id) => checked ? selected.add(id) : selected.delete(id))
-      const removedOptionIds = new Set(requestedReliefBuilderDescendantIds(optionId, builder).filter((id) => requestedReliefBuilderIsOptionRow(id, builder)))
+      const removedOptionIds = new Set(requestedReliefBuilderDescendantIds(optionId, builder).filter((id) => requestedReliefBuilderIsOptionRow(id, builder) && requestedReliefApplicabilityIds(builder).has(id)))
       return {
         ...builder,
         issue_option_ids: Array.from(selected),
@@ -49033,6 +49176,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const row = {
       id: requestedReliefBuilder.id || (crypto?.randomUUID ? crypto.randomUUID() : `issue-set-${Date.now()}`),
       matter_id: requestedReliefBuilder.matter_id,
+      filter_context: normalizeApplicability(requestedReliefBuilder.filter_context),
       name,
       selected_issue_ids: selectedIssueIds,
       selected_table_ids: requestedReliefBuilder.selected_table_ids || [],
@@ -49083,6 +49227,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
       id: id || (crypto?.randomUUID ? crypto.randomUUID() : `relief-template-${Date.now()}`),
       name,
       mode: requestedReliefBuilderMode,
+      filter_context: normalizeApplicability(requestedReliefBuilder?.filter_context),
       selected_issue_ids: selectedIssueIds,
       issue_option_ids: reliefIssueIds,
       selected_table_ids: requestedReliefBuilder?.selected_table_ids || [],
@@ -49199,8 +49344,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function editRequestedReliefOption(option) {
-    setRequestedReliefOptionForm({ id: option.id, parent_id: option.parent_id || '', name: option.name || '', notes: option.notes || '', is_active: option.is_active !== false, is_relief_option: option.is_relief_option === true, option_type: option.option_type === 'exclusive' ? 'exclusive' : 'non_exclusive', has_text_box: option.has_text_box === true, text_box_label: option.text_box_label || '' })
-    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }))
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: option.id, row: option })
   }
 
   function deleteRequestedReliefOption(optionId) {
@@ -49231,28 +49375,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function addRequestedReliefOptionRelative(option, relation) {
-    const name = (window.prompt(
-      relation === 'child'
-        ? `Name the child issue under ${option.name}:`
-        : `Name the sibling issue next to ${option.name}:`
-    ) || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
-    const parentId = relation === 'child' ? option.id : (option.parent_id || '')
-    setRequestedReliefOptions((current) => {
-      const next = current.map((item) => ({ ...item }))
-      const siblings = next.filter((item) => String(item.parent_id || '') === String(parentId || '')).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
-      let insertOrder = siblings.length + 1
-      if (relation === 'sibling') {
-        const currentSibling = siblings.find((item) => item.id === option.id)
-        insertOrder = Number(currentSibling?.sort_order || siblings.length) + 1
-        siblings.forEach((item) => { if (Number(item.sort_order || 0) >= insertOrder) item.sort_order = Number(item.sort_order || 0) + 1 })
-      }
-      next.push(ensureRequestedReliefOptionShape({ id: newId, parent_id: parentId, name, notes: '', is_active: true, is_relief_option: false, sort_order: insertOrder }, next.length))
-      return resequenceRequestedReliefOptions(next)
-    })
-    setRequestedReliefExpandedIds((current) => relation === 'child' ? Array.from(new Set([...current, option.id])) : current)
+    openRequestedReliefInlineEditor({ scope: 'settings', anchorId: option.id, parentId: relation === 'child' ? option.id : option.parent_id || '', relation })
   }
+
 
   function markRequestedReliefRowAsOption(optionId, isReliefOption = true, optionType = 'non_exclusive') {
     const scrollX = window.scrollX
@@ -49299,30 +49424,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function addRequestedReliefOptionChoice(parentOption, optionType = 'non_exclusive') {
-    const label = optionType === 'exclusive' ? 'exclusive' : 'non-exclusive'
-    const name = (window.prompt(`Name the ${label} relief option under ${parentOption.name}:`) || '').trim()
-    if (!name) return
-    const newId = crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`
-    setRequestedReliefOptions((current) => {
-      const siblings = current.filter((item) => String(item.parent_id || '') === String(parentOption.id || ''))
-      return resequenceRequestedReliefOptions([
-        ...current,
-        ensureRequestedReliefOptionShape({
-          id: newId,
-          parent_id: parentOption.id,
-          name,
-          notes: '',
-          is_active: true,
-          is_relief_option: true,
-          option_type: optionType === 'exclusive' ? 'exclusive' : 'non_exclusive',
-          has_text_box: false,
-          text_box_label: '',
-          sort_order: siblings.length + 1
-        }, current.length)
-      ])
-    })
-    setRequestedReliefExpandedIds((current) => Array.from(new Set([...current, parentOption.id])))
+    openRequestedReliefRowForm(parentOption.id, true, optionType)
   }
+
 
   function toggleRequestedReliefOptionTextBox(optionId) {
     const scrollX = window.scrollX
@@ -49387,8 +49491,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     })
   }
 
-  function renderRequestedReliefOptionTree({ parentId = '', depth = 0, mode = 'builder', builder = requestedReliefBuilder } = {}) {
-    const children = requestedReliefChildren(parentId)
+  function renderRequestedReliefOptionTree({ parentId = '', depth = 0, mode = 'builder', builder = requestedReliefBuilder, applicableIds: inheritedApplicableIds = null } = {}) {
+    const contextRows = mode === 'settings' ? requestedReliefOptions : requestedReliefBuilderOptionRows(builder)
+    const applicableIds = inheritedApplicableIds || (mode === 'settings' ? visibleReliefIds(contextRows, requestedReliefFilterGroups, requestedReliefSettingsFilters) : requestedReliefApplicabilityIds(builder))
+    const children = (mode === 'settings' ? requestedReliefChildren(parentId) : requestedReliefBuilderChildren(parentId, builder)).filter(row => applicableIds.has(row.id))
     if (!children.length) return null
     const issueSelected = new Set(builder?.selected_issue_ids || [])
     const issueAllowed = new Set(requestedReliefIssueRowIds(builder?.issue_option_ids || []))
@@ -49400,7 +49506,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const matterSettingsMode = mode === 'matter_settings'
     return children.map((option) => {
       if (settingsLike && hideRequestedReliefOptionsInSettings && isRequestedReliefOptionRow(option)) return null
-      const childCount = requestedReliefChildren(option.id).length
+      const childCount = (mode === 'settings' ? requestedReliefChildren(option.id) : requestedReliefBuilderChildren(option.id, builder)).filter(row => applicableIds.has(row.id)).length
       const expanded = requestedReliefExpandedIds.includes(option.id)
       const isIssueSelected = issueSelected.has(option.id)
       const hasSelectedDescendant = requestedIssueHasSelectedDescendant(option.id, issueSelected)
@@ -49444,18 +49550,19 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             </div>
             {settingsLike ? (
               <div className="rr-row-controls" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap', visibility: 'visible' }}>
-                <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
-                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
-                <button type="button" onClick={() => addRequestedReliefOptionChoice(option, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
+                {!isReliefOption && <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)} title="Edit applicability checkboxes">Applies to: {Object.keys(option.applicability || {}).length ? 'Custom' : 'Inherited'}</button>}
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionRelative(option, 'child') : addRequestedReliefBuilderIssueRelative(option.id, 'child')} title="Add a child issue/category under this row">+ Child Issue</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'exclusive')} title="Add a new exclusive selectable relief option under this row">Add exclusive option</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionChoice(option, 'non_exclusive') : addRequestedReliefBuilderOptionChoice(option.id, 'non_exclusive')} title="Add a new non-exclusive selectable relief option under this row">Add non-exclusive option</button>
                 {!isReliefOption && !option.is_relief_table && <button type="button" onClick={() => addRequestedReliefTableUnderIssue(option)} title="Insert one of the requested relief tables under this issue row">Add table</button>}
                 {isReliefOption && <button type="button" onClick={() => markRequestedReliefRowAsOption(option.id, false, option.option_type)} title="Make this row a regular issue/category again">Remove option status</button>}
                 {isReliefOption && <button type="button" onClick={() => toggleRequestedReliefOptionTextBox(option.id)}>{option.has_text_box ? 'Remove text box' : 'Add text box'}</button>}
-                <button type="button" onClick={() => addRequestedReliefOptionRelative(option, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
+                <button type="button" onClick={() => mode === 'settings' ? addRequestedReliefOptionRelative(option, 'sibling') : addRequestedReliefBuilderIssueRelative(option.id, 'sibling')} title="Add another issue/category at this same level">+ Sibling Issue</button>
                 <button type="button" onClick={() => moveRequestedReliefOption(option.id, -1)}>Up</button>
                 <button type="button" onClick={() => moveRequestedReliefOption(option.id, 1)}>Down</button>
                 <button type="button" onClick={() => indentRequestedReliefOption(option.id)}>Indent</button>
                 <button type="button" onClick={() => outdentRequestedReliefOption(option.id)}>Outdent</button>
-                <button type="button" onClick={() => editRequestedReliefOption(option)}>Edit</button>
+                <button type="button" onClick={() => mode === 'settings' ? editRequestedReliefOption(option) : editRequestedReliefBuilderRow(option.id)}>Edit</button>
                 <button type="button" onClick={() => deleteRequestedReliefOption(option.id)} style={{ background: '#fee2e2', border: '1px solid #fecaca' }}>Delete</button>
               </div>
             ) : mode === 'issues_builder' ? (
@@ -49493,13 +49600,15 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
-          {expanded && renderRequestedReliefOptionTree({ parentId: option.id, depth: depth + 1, mode, builder })}
+          {renderRequestedReliefInlineRow(mode === 'settings' ? 'settings' : 'builder', option.id, depth + 1)}
+          {expanded && renderRequestedReliefOptionTree({ parentId: option.id, depth: depth + 1, mode, builder, applicableIds })}
         </Fragment>
       )
     })
   }
 
-  function renderRequestedReliefOptionAnswer(option, index, { compact = false, letterMode = false } = {}) {
+  function renderRequestedReliefOptionAnswer(option, index, { compact = false, letterMode = false, applicableIds = requestedReliefApplicabilityIds() } = {}) {
+    if (!applicableIds.has(option.id)) return null
     const selected = (requestedReliefBuilder?.selected_option_ids || []).includes(option.id)
     const letter = requestedReliefChoiceLetter(index)
     const detail = requestedReliefBuilder?.option_text_by_option_id?.[option.id] || ''
@@ -49531,6 +49640,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <div style={{ fontWeight: 700, color: '#0f172a' }}>{option.name}</div>
           {option.notes ? <div style={{ marginTop: 3, color: '#64748b', fontSize: 12 }}>{option.notes}</div> : null}
           {renderRequestedReliefOptionEditTools(option)}
+          {renderRequestedReliefInlineRow('builder', option.id)}
           {option.has_text_box && (
             <input
               type="text"
@@ -49547,10 +49657,11 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     )
   }
 
-  function renderRequestedReliefTemplateMakerTree({ parentId = '', depth = 0 } = {}) {
+  function renderRequestedReliefTemplateMakerTree({ parentId = '', depth = 0, applicableIds: inheritedApplicableIds = null } = {}) {
     const builder = requestedReliefBuilder
     if (!builder) return null
-    const children = requestedReliefBuilderChildren(parentId, builder)
+    const applicableIds = inheritedApplicableIds || requestedReliefApplicabilityIds(builder)
+    const children = requestedReliefBuilderChildren(parentId, builder).filter(row => applicableIds.has(row.id))
     if (!children.length) return null
     const selectionField = requestedReliefBuilderMode === 'issues' ? 'selected_issue_ids' : 'issue_option_ids'
     const selectedIssueIds = new Set(builder[selectionField] || [])
@@ -49613,7 +49724,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
             )}
           </div>
-          {expanded && renderRequestedReliefTemplateMakerTree({ parentId: row.id, depth: depth + 1 })}
+          {renderRequestedReliefInlineRow('builder', row.id, depth + 1)}
+          {expanded && renderRequestedReliefTemplateMakerTree({ parentId: row.id, depth: depth + 1, applicableIds })}
         </Fragment>
       )
     })
@@ -49644,6 +49756,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <div style={{ textAlign: 'right' }}>Row controls</div>
         </div>
         <div style={{ maxHeight: '58vh', overflow: 'auto' }}>
+          {renderRequestedReliefInlineRow('builder')}
           {renderRequestedReliefTemplateMakerTree()}
           {!rows.length && <div style={{ padding: 20, color: '#64748b' }}>No rows yet. Click <strong>Top-level issue</strong> to begin.</div>}
         </div>
@@ -49656,9 +49769,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   }
 
   function renderRequestedReliefSplitSelector() {
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     const activeIssue = issueRows.find((issue) => String(issue.id) === String(requestedReliefActiveIssueId)) || issueRows[0]
-    const options = activeIssue ? requestedReliefOptionsForBuilderIssue(activeIssue.id, requestedReliefBuilder) : []
+    const options = activeIssue ? requestedReliefOptionsForBuilderIssue(activeIssue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)) : []
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 430px) minmax(420px, 1fr)', gap: 16, border: '1px solid #dbeafe', borderRadius: 10, padding: 12, background: '#f8fafc', maxHeight: '60vh', overflow: 'auto' }}>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 10, background: '#fff' }}>
@@ -49668,8 +49782,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           </div>
           <div style={{ color: '#64748b', fontSize: 13, marginBottom: 10 }}>Select an issue to choose its requested-relief options. Turn on Add/Edit Issues to show controls on every row.</div>
           <div style={{ display: 'grid', gap: 8 }}>
+            {renderRequestedReliefInlineRow('builder')}
             {issueRows.map((issue) => {
-              const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+              const count = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)).length
               const active = String(issue.id) === String(activeIssue?.id)
               const parts = requestedReliefPromptDisplayParts(issue, requestedReliefBuilder)
               return (
@@ -49682,6 +49797,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                     <span style={{ minWidth: 22, height: 22, borderRadius: 999, background: '#dbeafe', color: '#1d4ed8', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{count}</span>
                   </button>
                   {renderRequestedReliefBuilderRowTools(issue, { compact: true })}
+                  {renderRequestedReliefInlineRow('builder', issue.id)}
                 </div>
               )
             })}
@@ -49704,7 +49820,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               </div>
               <div style={{ color: '#64748b', fontSize: 13, marginBottom: 14 }}>Choose one or more options for this issue. Exclusive choices clear competing choices; non-exclusive choices may be combined.</div>
               <div style={{ display: 'grid', gap: 10 }}>
-                {!requestedReliefBuilderHideOptions && options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true }))}
+                {!requestedReliefBuilderHideOptions && options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, applicableIds }))}
                 {!requestedReliefBuilderHideOptions && !options.length && <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 12, color: '#64748b' }}>No relief options are under this issue yet.</div>}
               </div>
             </>
@@ -49716,7 +49832,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
 
 
   function renderRequestedReliefMultipleChoiceSelector() {
-    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder)
+    const applicableIds = requestedReliefApplicabilityIds()
+    const issueRows = requestedReliefBuilderIssueRows(requestedReliefBuilder).filter(row => applicableIds.has(row.id))
     const jumpToIssue = (issueId) => {
       setRequestedReliefActiveIssueId(issueId)
       window.requestAnimationFrame(() => {
@@ -49735,7 +49852,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
         issue,
         parts,
         number: requestedReliefIssueDecimalNumber(issue.id, requestedReliefBuilder),
-        optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).length
+        optionCount: requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id)).length
       }
     })
     const orderedIssueRows = tocRows.map((row) => row.issue)
@@ -49760,7 +49877,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
         </aside>
         <div id="rr-prompt-scroll-container" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', border: '1px solid #dbeafe', borderRadius: 10, scrollBehavior: 'smooth' }}>
           {orderedIssueRows.map((issue, issueIndex) => {
-            const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder)
+            const options = requestedReliefOptionsForBuilderIssue(issue.id, requestedReliefBuilder).filter(row => applicableIds.has(row.id))
             return (
               <section id={`rr-prompt-${issue.id}`} key={issue.id} style={{ scrollMarginTop: 8, borderBottom: '1px solid #dbeafe', padding: 12, background: issueIndex % 2 ? '#fff' : '#f8fbff' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: options.length ? 10 : 2 }}>
@@ -49772,9 +49889,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                   </div>
                   <span style={{ color: '#64748b', fontSize: 12 }}>Issue / prompt</span>
                 </div>
+                {renderRequestedReliefInlineRow('builder', issue.id)}
                 {!requestedReliefBuilderHideOptions && options.length > 0 && (
                   <div style={{ display: 'grid', gap: 8, marginLeft: 36, maxWidth: 760 }}>
-                    {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true }))}
+                    {options.map((option, index) => renderRequestedReliefOptionAnswer(option, index, { compact: true, letterMode: true, applicableIds }))}
                   </div>
                 )}
               </section>
@@ -49791,7 +49909,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const isIssueBuilder = requestedReliefBuilderMode === 'issues'
     const field = isIssueBuilder ? 'selected_issue_ids' : 'issue_option_ids'
     const selected = new Set(requestedReliefBuilder[field] || [])
-    const rows = requestedReliefBuilderOptionRows(requestedReliefBuilder).filter((option) => !requestedReliefBuilderIsOptionRow(option, requestedReliefBuilder) && !selected.has(option.id))
+    const applicableIds = requestedReliefApplicabilityIds()
+    const rows = requestedReliefBuilderOptionRows(requestedReliefBuilder).filter((option) => applicableIds.has(option.id) && !requestedReliefBuilderIsOptionRow(option, requestedReliefBuilder) && !selected.has(option.id))
     return (
       <Modal title={isIssueBuilder ? 'Add Hidden / Unselected Issues' : 'Add Issues to This Relief'} onClose={() => setShowRequestedReliefRestoreWindow(false)}>
         <p>Choose any issue to add it and its child issue rows back into the current draft. This does not change the main Settings tree.</p>
@@ -49853,6 +49972,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
   function renderRequestedReliefSetupModal() {
     if (!showRequestedReliefSetupWindow || !requestedReliefSetupDraft) return null
     const draft = requestedReliefSetupDraft
+    const savedRelief = requestedReliefs.find(item => item.id === draft.relief_id)
+    const defaults = requestedReliefDefaultContext(draft.matter_id, draft.litigation_track_id)
+    const setupContext = initialReliefContext({ saved: savedRelief, defaults })
     const settings = requestedReliefMatterSettings(draft.matter_id)
     const matterIssueSet = latestRequestedReliefIssueSetForMatter(draft.matter_id)
     const reliefPartyOptions = litigationTrackPartyOptions(draft.matter_id, { includeUnassigned: true })
@@ -49861,9 +49983,17 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     return (
       <Modal title="New Requested Relief" onClose={() => { setShowRequestedReliefSetupWindow(false); setRequestedReliefSetupDraft(null) }}>
         <div style={{ display: 'grid', gap: 14 }}>
+          <section aria-label="Prefilled relief context" style={{ padding: 12, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8 }}>
+            <strong>{matterName(draft.matter_id)}</strong>
+            <div>{litigationTrackForId(draft.litigation_track_id)?.name || 'No track selected'} · {reliefPartyOptions.find(party => party.id === draft.litigation_party_id) ? litigationPartyDisplay(reliefPartyOptions.find(party => party.id === draft.litigation_party_id)) : requestedReliefKindLabel(draft.relief_type)}</div>
+            <ReliefContextSummary groups={requestedReliefFilterGroups} value={setupContext} />
+            <small>{savedRelief && Object.hasOwn(savedRelief, 'filter_context') ? 'Using the saved relief filters.' : 'Proceeding comes from the matter; order type comes from the track.'} You can change filters when choosing relief.</small>
+          </section>
+          <details open={!draft.litigation_track_id}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Change matter, track, party, name or filing</summary>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             <LabeledField label="Matter">
-              <select value={draft.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery'); setRequestedReliefSetupDraft({ ...draft, matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', litigation_party_id: '', filing_document_id: '', setting_event_id: '', issue_source: latestRequestedReliefIssueSetForMatter(nextMatterId) ? 'matter' : draft.issue_source }) }}>
+              <select value={draft.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery' && track.is_default); setRequestedReliefSetupDraft({ ...draft, matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', litigation_party_id: '', filing_document_id: '', setting_event_id: '', issue_source: latestRequestedReliefIssueSetForMatter(nextMatterId) ? 'matter' : draft.issue_source }) }}>
                 <option value="">Select matter</option>
                 {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
               </select>
@@ -49882,17 +50012,17 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           </div>
 
           <section style={{ border: '1px solid #bfdbfe', borderRadius: 8, padding: 12, background: '#eff6ff' }}>
-            <h3 style={{ marginTop: 0 }}>1. Attach this relief to a Litigation Track</h3>
+            <h3 style={{ marginTop: 0 }}>Litigation track</h3>
             <p style={{ color: '#475569', marginTop: 0 }}>The relief belongs to the petition, motion, or other procedural track. A hearing or trial can move without changing this association.</p>
             <select value={draft.litigation_track_id || ''} onChange={(e) => setRequestedReliefSetupDraft({ ...draft, litigation_track_id: e.target.value, filing_document_id: '' })} style={{ width: '100%' }}>
               <option value="">General / not attached to a track</option>
               {litigationTracksForMatter(draft.matter_id).filter((track) => track.type !== 'discovery').map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
             </select>
-            <div style={{ marginTop: 8 }}><button type="button" onClick={() => openNewLitigationTrackModal(draft.matter_id)}>+ Create Litigation Track</button></div>
+            <div style={{ marginTop: 8 }}><button type="button" onClick={() => openNewLitigationTrackModal(draft.matter_id, trackId => setRequestedReliefSetupDraft(current => current ? { ...current, litigation_track_id: trackId, filing_document_id: '' } : current))}>+ Create Litigation Track</button></div>
           </section>
 
           <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#fff' }}>
-            <h3 style={{ marginTop: 0 }}>2. Choose the party and source filing</h3>
+            <h3 style={{ marginTop: 0 }}>Party and source filing</h3>
             <p style={{ color: '#64748b', marginTop: 0 }}>This ties the relief to the party column and, when appropriate, the petition or motion that requests it.</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
               <LabeledField label="Party / position">
@@ -49910,8 +50040,9 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             </div>
           </section>
 
-          <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
-            <h3 style={{ marginTop: 0 }}>3. Optionally attach to a setting/event</h3>
+          </details>
+          <details style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>Hearing or setting (optional){draft.setting_event_id ? ` · ${requestedReliefSettingLabel(draft.setting_event_id)}` : ''}</summary>
             <p style={{ color: '#64748b', marginTop: 0 }}>Choose an existing setting connected to this matter, create a new setting, or leave this relief unattached.</p>
             <label style={{ display: 'block', padding: '8px 10px', border: !draft.setting_event_id ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 6, marginBottom: 8, background: !draft.setting_event_id ? '#eff6ff' : 'white' }}>
               <input type="radio" checked={!draft.setting_event_id} onChange={() => setRequestedReliefSetupDraft({ ...draft, setting_event_id: '' })} /> Not attached to a setting/event
@@ -49926,10 +50057,10 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_active')}>New unknown date - begin setting</button>
               <button type="button" onClick={() => openRequestedReliefNewSettingWindow('unknown_paused')}>New unknown date - paused</button>
             </div>
-          </section>
+          </details>
 
           <section style={{ border: '1px solid #dbe3ea', borderRadius: 8, padding: 12, background: 'white' }}>
-            <h3 style={{ marginTop: 0 }}>4. Choose a starting point</h3>
+            <h3 style={{ marginTop: 0 }}>Choose a starting point</h3>
             <p style={{ color: '#64748b', marginTop: 0 }}>Start fresh or reuse work you already completed. This only supplies the issue/relief structure; the new relief stays attached to the matter, track, and party selected above.</p>
             <div style={{ display: 'grid', gap: 8 }}>
               <label style={{ display: 'block', padding: 9, border: draft.issue_source === 'blank' ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: 8, background: draft.issue_source === 'blank' ? '#eff6ff' : '#fff' }}>
@@ -50013,13 +50144,14 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     return (
       <Modal wide title={modalTitle} onClose={() => { setShowRequestedReliefBuilder(false); setRequestedReliefBuilder(null); setRequestedReliefDetailEditor(null) }}>
         <style>{`.rr-tree-row:hover,.rr-template-maker-row:hover{background:#eaf4ff!important}`}</style>
+        {renderRequestedReliefContextFilters()}
 
-        <details open style={{ border: '1px solid #dbe3ea', borderRadius: 9, padding: 9, marginBottom: 10, background: '#fff' }}>
+        <details open={isTemplateBuilder || !requestedReliefBuilder.matter_id} style={{ border: '1px solid #dbe3ea', borderRadius: 9, padding: 9, marginBottom: 10, background: '#fff' }}>
           <summary style={{ cursor: 'pointer', fontWeight: 850, color: '#1e3a8a' }}>{isTemplateBuilder ? 'Template name and save options' : 'Matter, track, party, and filing'}</summary>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10, alignItems: 'end' }}>
             {!isTemplateBuilder && (
               <LabeledField label="Matter *">
-                <select value={requestedReliefBuilder.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery'); setRequestedReliefBuilder({ ...requestedReliefBuilder, matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', litigation_party_id: '', filing_document_ids: [], setting_event_id: '' }) }}>
+                <select value={requestedReliefBuilder.matter_id || ''} onChange={(e) => { const nextMatterId = e.target.value; const defaultTrack = litigationTracksForMatter(nextMatterId).find((track) => track.type !== 'discovery' && track.is_default); setRequestedReliefBuilder(patchRequestedReliefBuilderContext(requestedReliefBuilder, { matter_id: nextMatterId, litigation_track_id: defaultTrack?.id || '', litigation_party_id: '', filing_document_ids: [], setting_event_id: '' })) }}>
                   <option value="">Select matter</option>
                   {matters.map((matter) => <option key={matter.id} value={matter.id}>{matterName(matter.id)}</option>)}
                 </select>
@@ -50041,11 +50173,11 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
             {!isIssueBuilder && (
               <LabeledField label="Litigation Track">
                 <div style={{ display: 'flex', gap: 5 }}>
-                  <select value={requestedReliefBuilder.litigation_track_id || ''} onChange={(e) => setRequestedReliefBuilder({ ...requestedReliefBuilder, litigation_track_id: e.target.value, filing_document_ids: [] })} style={{ flex: 1 }}>
+                  <select value={requestedReliefBuilder.litigation_track_id || ''} onChange={(e) => setRequestedReliefBuilder(patchRequestedReliefBuilderContext(requestedReliefBuilder, { litigation_track_id: e.target.value, filing_document_ids: [] }))} style={{ flex: 1 }}>
                     <option value="">General / unassigned</option>
                     {litigationTracksForMatter(requestedReliefBuilder.matter_id).filter((track) => track.type !== 'discovery').map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
                   </select>
-                  <button type="button" onClick={() => openNewLitigationTrackModal(requestedReliefBuilder.matter_id)} title="Create Litigation Track">＋</button>
+                  <button type="button" onClick={() => openNewLitigationTrackModal(requestedReliefBuilder.matter_id, (trackId, createdTrack) => setRequestedReliefBuilder(current => current ? patchRequestedReliefBuilderContext(current, { litigation_track_id: trackId, filing_document_ids: [] }, createdTrack) : current))} title="Create Litigation Track">＋</button>
                 </div>
               </LabeledField>
             )}
@@ -50451,7 +50583,8 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
     const settingsTabButton = (value, label) => (
       <button type="button" onClick={() => setRequestedReliefSettingsView(value)} style={{ marginRight: 8, marginBottom: 10, fontWeight: requestedReliefSettingsView === value ? 900 : 600, background: requestedReliefSettingsView === value ? '#dbeafe' : '#fff', border: '1px solid #cbd5e1', borderRadius: 6, padding: '7px 10px' }}>{label}</button>
     )
-    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('drafting_language', 'Drafting Language')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    const settingsTabs = <div style={{ marginBottom: 12 }}>{settingsTabButton('tree', 'Issue / option tree')}{settingsTabButton('filters', 'Filter groups')}{settingsTabButton('templates', 'Templates')}{settingsTabButton('drafting_language', 'Drafting Language')}{settingsTabButton('matrix', 'Requested Relief Table')}{settingsTabButton('tables', 'Other relief tables')}</div>
+    if (requestedReliefSettingsView === 'filters') return <>{settingsTabs}<ReliefFilterGroupSettings groups={requestedReliefFilterGroups} onChange={setRequestedReliefFilterGroups} /></>
     if (requestedReliefSettingsView === 'drafting_language') {
       return <>{settingsTabs}{renderDraftingReliefLanguageSettings()}</>
     }
@@ -50496,7 +50629,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <button type="button" onClick={scanAndRestoreRequestedReliefBackups} style={{ marginLeft: 8, fontWeight: 700 }}>Scan / Restore Requested Relief Backups</button>
         </div>
         <p>Build the master tree here. Issue/category rows create the structure. Use <strong>Add exclusive option</strong> or <strong>Add non-exclusive option</strong> to create selectable relief choices under a row. Relief Option rows will not appear as issues; their parent row is the issue. Use <strong>Hide options</strong> when you want to focus only on the issue structure.</p>
-        <form onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
+        <form id="rr-option-form" onSubmit={saveRequestedReliefOption} style={{ border: '1px solid #dbe3ea', padding: 12, borderRadius: 6, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'end' }}>
             <LabeledField label="Row name *"><input value={requestedReliefOptionForm.name} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, name: e.target.value })} /></LabeledField>
             <LabeledField label="Parent level"><select value={requestedReliefOptionForm.parent_id || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, parent_id: e.target.value })}><option value="">Top level</option>{parentChoices.map((option) => <option key={option.id} value={option.id}>{requestedReliefOptionPath(option.id)}</option>)}</select></LabeledField>
@@ -50511,6 +50644,7 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
                 {requestedReliefOptionForm.has_text_box && <LabeledField label="Text box label"><input value={requestedReliefOptionForm.text_box_label || ''} onChange={(e) => setRequestedReliefOptionForm({ ...requestedReliefOptionForm, text_box_label: e.target.value })} placeholder="Example: Child support amount" /></LabeledField>}
               </>
             )}
+            {!requestedReliefOptionForm.is_relief_option && <div style={{ flexBasis: '100%' }}><strong>Applies to</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} mode="row" value={requestedReliefOptionForm.applicability || {}} inherited={requestedReliefOptionForm.parent_id ? effectiveApplicability(requestedReliefOptions.find(r => r.id === requestedReliefOptionForm.parent_id), requestedReliefOptions, requestedReliefFilterGroups) : {}} onChange={applicability => setRequestedReliefOptionForm(current => ({ ...current, applicability }))} /><small>Inherit follows the parent (top-level rows apply everywhere). Choices narrow a branch. None excludes it when that group is filtered.</small></div>}
             <button type="submit">{requestedReliefOptionForm.id ? 'Update Row' : 'Add Row'}</button>
             {requestedReliefOptionForm.id && <button type="button" onClick={() => setRequestedReliefOptionForm({ id: '', parent_id: '', name: '', notes: '', is_active: true, is_relief_option: false, option_type: 'non_exclusive', has_text_box: false, text_box_label: '' })}>Cancel</button>}
           </div>
@@ -50519,14 +50653,12 @@ OK = add under that issue. Cancel = add as a top-level issue.`) : false
           <button type="button" onClick={() => setRequestedReliefExpandedIds(activeRequestedReliefOptions().map((option) => option.id))}>Expand all</button>{' '}
           <button type="button" onClick={() => setRequestedReliefExpandedIds([])}>Collapse all</button>{' '}
           <button type="button" onClick={() => setHideRequestedReliefOptionsInSettings((show) => !show)}>{hideRequestedReliefOptionsInSettings ? 'Show options' : 'Hide options'}</button>{' '}
-          <button type="button" onClick={() => {
-            const name = (window.prompt('Name the new top-level issue row:') || '').trim()
-            if (!name) return
-            setRequestedReliefOptions((current) => resequenceRequestedReliefOptions([...current, ensureRequestedReliefOptionShape({ id: crypto?.randomUUID ? crypto.randomUUID() : `rr-option-${Date.now()}`, parent_id: '', name, is_active: true, is_relief_option: false, sort_order: current.filter((item) => !item.parent_id).length + 1 }, current.length)]))
-          }}>+ Top-level row</button>
+          <button type="button" onClick={() => openRequestedReliefRowForm()}>+ Top-level row</button>
         </div>
+        <section style={{ marginBottom: 12 }}><strong>Preview tree for</strong><ReliefApplicabilityFields groups={requestedReliefFilterGroups} value={requestedReliefSettingsFilters} onChange={setRequestedReliefSettingsFilters} /><small>All leaves a group unfiltered. None matches no rows. Hidden rows remain in the master tree.</small></section>
         <style>{`.rr-tree-row:hover{background:#eaf4ff!important}`}</style>
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+          {renderRequestedReliefInlineRow('settings')}
           {renderRequestedReliefOptionTree({ mode: 'settings' })}
         </div>
         <h2 style={{ marginTop: 24 }}>Requested Relief Tables</h2>
@@ -59259,7 +59391,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       <input type="date" value={matterForm.hire_date} onChange={(e) => setMatterForm({ ...matterForm, hire_date: e.target.value })} />
                     </LabeledField>
 
-                    <LabeledField label="Case Type">
+                    <LabeledField label="Case Category">
                       <select value={matterForm.matter_type} onChange={(e) => setMatterForm({ ...matterForm, matter_type: e.target.value, matter_subtype: '' })}>
                         <option value="">Matter Type</option>
                         {options('matter_type').map((o) => (
@@ -59268,6 +59400,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       </select>
                     </LabeledField>
 
+                    <LabeledField label="Proceeding">
+                      <select aria-label="Matter proceeding" value={matterExtraDraft.proceeding_id || ''} onChange={event => updateMatterExtraDraftField('proceeding_id', event.target.value)}>
+                        <option value="">Not specified — all proceedings</option>
+                        {reliefTypeChoices(requestedReliefFilterGroups, 'proceeding', matterExtraDraft.proceeding_id).map(option => <option key={option.id} value={option.id}>{option.name}{option.archived ? ' (archived)' : ''}</option>)}
+                      </select>
+                      <small>Default for new requested relief. Each relief set can override it.</small>
+                    </LabeledField>
                     <LabeledField label="Case Subtype">
                       <select value={matterForm.matter_subtype} onChange={(e) => setMatterForm({ ...matterForm, matter_subtype: e.target.value })} disabled={!matterForm.matter_type}>
                         <option value="">Matter Subtype</option>
@@ -60654,7 +60793,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         </button>
                         <button
                           type="button"
-                          onClick={() => resetEventToNeedDate(events.find((item) => item.id === editingEventId) || { ...eventForm, id: editingEventId })}
+                          onClick={() => openResetEventDialog(events.find((item) => item.id === editingEventId) || { ...eventForm, id: editingEventId })}
                           style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
                         >
                           Reset Event
@@ -60681,6 +60820,50 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               }}
             />
           </>
+        )}
+
+        {resetEventTarget && (
+          <Modal title="Reset Event" onClose={() => setResetEventTarget(null)} zIndex={1200}>
+            <div style={{ maxWidth: 560, margin: '0 auto' }}>
+              <div style={{ marginBottom: 14, padding: 12, border: '1px solid #d5dce3', borderRadius: 6, background: '#f8fafc' }}>
+                <strong>{resetEventTarget.title || resetEventTarget.checklist_title || '(No title)'}</strong>
+                <div style={{ marginTop: 6, color: '#475569', fontSize: 13 }}>
+                  The current event will be marked as passed. Enter a new date to create a new event, or move it to Need to Set if you don't know the date yet.
+                </div>
+              </div>
+
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
+                <span style={{ fontWeight: 'bold', fontSize: 12 }}>New event date</span>
+                <input
+                  type="date"
+                  value={resetEventNewDate}
+                  onChange={(e) => setResetEventNewDate(e.target.value)}
+                  style={{ padding: 9, border: '1px solid #cbd5df', borderRadius: 5 }}
+                />
+              </label>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => setResetEventTarget(null)} style={{ border: 0, borderRadius: 5, padding: '9px 14px' }}>Cancel</button>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => performResetEvent('')}
+                    style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
+                  >
+                    Move to Need to Set
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => performResetEvent(resetEventNewDate)}
+                    disabled={!resetEventNewDate}
+                    style={{ background: resetEventNewDate ? '#2f6584' : '#94a3b8', color: 'white', border: 0, borderRadius: 5, padding: '9px 14px', fontWeight: 'bold' }}
+                  >
+                    Set New Date
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Modal>
         )}
 
         {showDocumentWindow && (
@@ -60837,6 +61020,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           <>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, flexWrap:'wrap' }}><div><h1 style={{ marginBottom:4 }}>Need to Set</h1><p style={{ marginTop:0, color:'#64748b' }}>Events waiting to be set, confirmed, or completed. Connected Outlook threads refresh automatically when this page opens.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" onClick={openAddUndatedEventWindow} style={{background:'#2f6584',color:'#fff',fontWeight:800}}>+ Add Event That Needs to Be Set</button><button type="button" onClick={()=>{ setPage('settings'); setSettingsTab('options'); setSettingsFilter('checklist_setting_step') }}>Open Full Settings</button></div></div>
             <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-start',margin:'10px 0 14px'}}><ChecklistCheckboxFilter kind="case" title="Case Status"/><ChecklistCheckboxFilter kind="matter" title="Matter Status"/><ChecklistCheckboxFilter kind="category" title="Case Type / Event Category"/></div>
+            <ParalegalPanel getSnapshot={needToSetParalegalSnapshot} />
             <div style={{ display:'flex', gap:6, marginBottom:12, borderBottom:'1px solid #cbd5e1' }}><button type="button" onClick={()=>setNeedToSetPageTab('current')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='current'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='current'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='current'?900:700}}>Current View</button><button type="button" onClick={()=>setNeedToSetPageTab('activities')} style={{padding:'8px 14px',border:'1px solid #cbd5e1',borderBottom:needToSetPageTab==='activities'?'3px solid #2563eb':'1px solid #cbd5e1',background:needToSetPageTab==='activities'?'#eff6ff':'#fff',fontWeight:needToSetPageTab==='activities'?900:700}}>Activities (Trial)</button></div>
             {needToSetPageTab==='activities' ? renderNeedToSetActivitiesPage() : renderNeedToSetCardDashboard()}
           </>
@@ -61048,7 +61232,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                             {checklistTab !== 'completed' && checklistTab !== 'need_date' && checklistTab !== 'set' && (
                               <>
                                 <button type="button" onClick={() => openChecklistCompletionWindow(event)} style={{ background: '#15803d', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Mark as complete</button>
-                                <button type="button" onClick={() => resetEventToNeedDate(event)} style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Reset Event</button>
+                                <button type="button" onClick={() => openResetEventDialog(event)} style={{ background: '#7c3aed', color: 'white', border: 0, borderRadius: 5, padding: '5px 8px' }}>Reset Event</button>
                               </>
                             )}
                             {checklistTab === 'need_date' && (
@@ -63606,7 +63790,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       <input type="date" value={matterForm.hire_date} onChange={(e) => setMatterForm({ ...matterForm, hire_date: e.target.value })} />
                     </LabeledField>
 
-                    <LabeledField label="Case Type">
+                    <LabeledField label="Case Category">
                       <select value={matterForm.matter_type} onChange={(e) => setMatterForm({ ...matterForm, matter_type: e.target.value, matter_subtype: '' })}>
                         <option value="">Matter Type</option>
                         {options('matter_type').map((o) => (
@@ -63615,6 +63799,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                       </select>
                     </LabeledField>
 
+                    <LabeledField label="Proceeding">
+                      <select aria-label="Matter proceeding" value={matterExtraDraft.proceeding_id || ''} onChange={event => updateMatterExtraDraftField('proceeding_id', event.target.value)}>
+                        <option value="">Not specified — all proceedings</option>
+                        {reliefTypeChoices(requestedReliefFilterGroups, 'proceeding', matterExtraDraft.proceeding_id).map(option => <option key={option.id} value={option.id}>{option.name}{option.archived ? ' (archived)' : ''}</option>)}
+                      </select>
+                      <small>Default for new requested relief. Each relief set can override it.</small>
+                    </LabeledField>
                     <LabeledField label="Case Subtype">
                       <select value={matterForm.matter_subtype} onChange={(e) => setMatterForm({ ...matterForm, matter_subtype: e.target.value })} disabled={!matterForm.matter_type}>
                         <option value="">Matter Subtype</option>

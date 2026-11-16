@@ -7,11 +7,11 @@ export function entryCents(entry) {
 export function firmDate(value = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {timeZone:'America/Chicago',year:'numeric',month:'2-digit',day:'2-digit'}).format(value)
 }
-export function dailyTrustSummary({date, entries=[], matters=[], financeFor, pendingFor=()=>0}) {
+export function dailyTrustSummary({date, dateTo=date, entries=[], matters=[], financeFor, pendingFor=()=>0}) {
   const byMatter=new Map(matters.map(m=>[String(m.id),m])), grouped=new Map()
   const result={total:0,dfps:0,nonDfps:0,covered:0,uncovered:0,paid:0,unknown:0,rows:[]}
   const seen=new Set()
-  for(const e of entries){if(String(e.date||e.entry_date||'').slice(0,10)!==date)continue
+  for(const e of entries){const day=String(e.date||e.entry_date||'').slice(0,10);if(day<date||day>dateTo)continue
     if(e.id&&seen.has(String(e.id)))continue;if(e.id)seen.add(String(e.id))
     const amount=entryCents(e);if(!amount)continue
     const id=String(e.matter_id||'');if(!grouped.has(id))grouped.set(id,[]);grouped.get(id).push(e)

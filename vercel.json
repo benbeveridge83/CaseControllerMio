@@ -16,6 +16,53 @@
     {
       "source": "/api/client-intake",
       "destination": "/api/auth/callback?integration=client_intake"
+    },
+    {
+      "source": "/api/clio/balance-history",
+      "destination": "/api/clio.js?action=balance_history"
+    },
+    {
+      "source": "/api/clio/client-billing-fields",
+      "destination": "/api/clio.js?action=client_billing_fields"
+    },
+    {
+      "source": "/api/clio/financial-field-acquisition",
+      "destination": "/api/clio.js?action=financial_field_acquisition"
+    },
+    {
+      "source": "/api/clio/matters",
+      "destination": "/api/clio.js?action=matters"
+    },
+    {
+      "source": "/api/clio/report-snapshots",
+      "destination": "/api/clio.js?action=report_snapshots"
+    },
+    {
+      "source": "/api/clio/trust-management-report",
+      "destination": "/api/clio.js?action=trust_management_report"
+    },
+    {
+      "source": "/api/microsoft/callback",
+      "destination": "/api/microsoft.js?action=callback"
+    },
+    {
+      "source": "/api/microsoft/oauth-start",
+      "destination": "/api/microsoft.js?action=oauth_start"
+    },
+    {
+      "source": "/api/microsoft/status",
+      "destination": "/api/microsoft.js?action=status"
+    },
+    {
+      "source": "/api/paralegal/calendar-actions",
+      "destination": "/api/paralegal.js?action=calendar_actions"
+    },
+    {
+      "source": "/api/paralegal/email-actions",
+      "destination": "/api/paralegal.js?action=email_actions"
     }
+  ],
+  "crons": [
+    { "path": "/api/microsoft/sync", "schedule": "0 1 * * *" }
   ]
 }
