@@ -21,6 +21,7 @@ import { requireParalegalUser } from '../../lib/paralegal/auth.js'
 import { buildAuthorizationUrl } from '../../lib/paralegal/microsoft/oauth.js'
 import { signOAuthState } from '../../lib/paralegal/microsoft/state.js'
 import { createEmailTokenStore } from '../../lib/email/tokenStore.js'
+import { usableEmailToken } from '../../lib/email/connection.js'
 import * as graphMail from '../../lib/email/graphMail.js'
 import { classifyEmail, draftReply } from '../../lib/email/classify.js'
 import { EMAIL_CATEGORIES, normalizeCategories } from '../../lib/email/categories.js'
@@ -82,10 +83,10 @@ function normalizeMessage(raw, accountEmail, folderId) {
 }
 
 async function tokenForMailbox(store, userId, mailbox) {
-  const own = await store.load(userId, mailbox)
+  const own = await usableEmailToken(store, userId, mailbox)
   if (own) return { token: own, base: '/me' }
   if (mailbox !== PRIMARY_MAILBOX) {
-    const primary = await store.load(userId, PRIMARY_MAILBOX)
+    const primary = await usableEmailToken(store, userId, PRIMARY_MAILBOX)
     if (primary) return { token: primary, base: `/users/${mailbox}` }
   }
   return null
@@ -118,8 +119,8 @@ export default async function handler(req, res) {
 
 function missingScopes(scopes = []) {
   const have = new Set((scopes || []).map((s) => s.toLowerCase()))
-  const required = ['Mail.Read', 'Calendars.Read', 'Files.Read.All']
-  return required.filter((s) => !have.has(s.toLowerCase()))
+  const required = ['Mail.Read', 'Mail.Read.Shared', 'Calendars.Read', 'Files.Read.All']
+  return required.filter((s) => !have.has(s.toLowerCase()) && !(s === 'Mail.Read' && have.has('mail.readwrite')))
 }
 
 async function status(_req, res, user) {
@@ -184,8 +185,11 @@ async function messages(req, res, user) {
   const settings = toSettingsMap(settingsRows)
   const out = []
   const seen = new Set()
+  const warnings = []
   for (const accountEmail of DEFAULT_MAILBOXES) {
-    const connection = await tokenForMailbox(store, user.id, accountEmail)
+    let connection
+    try { connection = await tokenForMailbox(store, user.id, accountEmail) }
+    catch (err) { warnings.push({ accountEmail, error: err.message }); continue }
     if (!connection) continue
     const chosen = Object.hasOwn(settings,accountEmail) ? settings[accountEmail] : ['inbox']
     for (const folderId of chosen) {
@@ -193,8 +197,8 @@ async function messages(req, res, user) {
       try {
         page = await graphMail.listFolderMessages({ accessToken: connection.token.accessToken, accountEmail: connection.base === '/me' ? '' : accountEmail, folderId })
       } catch (err) {
-        if (String(err.statusCode) === '404') continue
-        throw err
+        warnings.push({ accountEmail, error: [401, 403].includes(Number(err.statusCode)) ? 'Outlook access is unavailable. Connect or reconnect this mailbox in Mailbox settings.' : 'Could not load the selected Outlook folder. Check Mailbox settings and refresh.' })
+        continue
       }
       for (const raw of page.data.value || []) {
         const msg = normalizeMessage(raw, accountEmail, folderId)
@@ -206,7 +210,7 @@ async function messages(req, res, user) {
     }
   }
   out.sort((a, b) => (b.receivedDateTime || '').localeCompare(a.receivedDateTime || ''))
-  return res.status(200).json({ ok: true, messages: out })
+  return res.status(200).json({ ok: true, messages: out, warnings })
 }
 
 async function message(req, res, user) {

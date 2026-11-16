@@ -32,25 +32,32 @@ export default function EmailDashboard({ userId }) {
   const [filters, setFilters] = useState({ matter: '', client: '', counsel: '' })
   const [loading, setLoading] = useState(true)
   const [classifying, setClassifying] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() => {
+    const params = new URLSearchParams(window.location.hash.split('?')[1] || '')
+    return params.get('error') || ''
+  })
+  const [warnings, setWarnings] = useState([])
+  const [connecting, setConnecting] = useState(false)
   const classifyRef = useRef(null)
 
   async function refresh() {
     setLoading(true)
-    setError('')
     try {
-      const [statusData, folderData, settingsData, resolutionData, messageData] = await Promise.all([
-        emailClient.status(),
-        emailClient.folders(),
-        emailClient.getSettings(),
-        emailClient.resolutions(),
-        emailClient.messages(),
-      ])
+      const statusData = await emailClient.status()
       setStatus(statusData)
+      if (!(statusData.accounts || []).length) setView('configuration')
+      const results = await Promise.allSettled([
+        emailClient.folders(), emailClient.getSettings(),
+        emailClient.resolutions(), emailClient.messages(),
+      ])
+      const [folderData, settingsData, resolutionData, messageData] = results.map((result) => result.status === 'fulfilled' ? result.value : {})
       setFolders(folderData.folders || [])
       setSettings(settingsData.settings || {})
       setResolutions(resolutionData.resolutions || {})
       setMessages(messageData.messages || [])
+      setWarnings(messageData.warnings || [])
+      const failures = results.filter((result) => result.status === 'rejected')
+      if (failures.length) setError([...new Set(failures.map((result) => result.reason.message || 'Could not load email data.'))].join(' '))
       const { data: matterRows } = await supabase
         .from('matters')
         .select('*, clients(first_name, last_name, email)')
@@ -142,11 +149,13 @@ export default function EmailDashboard({ userId }) {
 
   async function connect(account) {
     setError('')
+    setConnecting(true)
     try {
       const { url } = await emailClient.connectStart(account)
       window.location.assign(url)
     } catch (err) {
       setError(err.message || 'Could not start the connection.')
+      setConnecting(false)
     }
   }
 
@@ -228,6 +237,7 @@ export default function EmailDashboard({ userId }) {
     <div className="mio-email-dashboard">
       <div className="mio-email-header">
         <h2>Email Dashboard</h2>
+        <button onClick={() => { setError(''); refresh() }} disabled={loading}>Refresh emails</button>
         <div className="mio-email-tabs" role="tablist">
           {VIEWS.map((v) => (
             <button key={v} role="tab" aria-selected={view === v} className={view === v ? 'active' : ''} onClick={() => setView(v)}>
@@ -237,7 +247,15 @@ export default function EmailDashboard({ userId }) {
         </div>
       </div>
 
-      {error && <div className="mio-email-error">{error}</div>}
+      {error && <div className="mio-email-error" role="alert">{error}</div>}
+      {warnings.map((warning, i) => <div key={i} className="mio-email-error" role="alert">{warning.accountEmail}: {warning.error}</div>)}
+      {!loading && !(status.accounts || []).length && (
+        <div className="mio-email-connection" role="status">
+          <strong>Connect Outlook to load your emails</strong>
+          <p>No Microsoft mailbox is connected to this dashboard yet. Sign in with ben@beveridgelawfirm.com to load your Inbox and any shared mailboxes you can access.</p>
+          <button disabled={connecting} onClick={() => connect(DEFAULT_MAILBOXES[0])}>{connecting ? 'Opening Microsoft sign-in…' : 'Connect Outlook'}</button>
+        </div>
+      )}
 
       {loading ? (
         <p className="mio-email-loading">Loading email dashboard…</p>
@@ -268,7 +286,7 @@ export default function EmailDashboard({ userId }) {
                   {filterOptions.counsel.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
                 <span className="mio-email-note">
-                  {classifying ? 'Classifying…' : pendingCount ? `${pendingCount} unclassified — classifying…` : 'AI classification up to date'}
+                  {!messages.length ? 'No emails loaded' : classifying ? 'Classifying…' : pendingCount ? `${pendingCount} unclassified — classifying…` : 'AI classification up to date'}
                 </span>
               </div>
 
@@ -313,25 +331,25 @@ function SettingsView({ status, folders, settings, onConnect, onDisconnect, onSa
 
   function accountFolders(account) {
     const found = folders.find((f) => f.accountEmail === account)
-    const list = (found && found.folders) || []
+    const list = [...((found && found.folders) || [])]
     const ids = new Set(list.map((f) => f.id))
     if (!ids.has('inbox')) list.unshift({ id: 'inbox', name: 'Inbox', childFolderCount: 0, accountEmail: account })
     return list
   }
 
   function isChecked(account, folderId) {
-    const sel = draftSelections[account] !== undefined ? draftSelections[account] : (settings[account] || [])
+    const sel = draftSelections[account] !== undefined ? draftSelections[account] : (Object.hasOwn(settings, account) ? settings[account] : ['inbox'])
     return sel.includes(folderId)
   }
 
   function toggle(account, folderId) {
-    const current = draftSelections[account] !== undefined ? draftSelections[account] : (settings[account] || [])
+    const current = draftSelections[account] !== undefined ? draftSelections[account] : (Object.hasOwn(settings, account) ? settings[account] : ['inbox'])
     const next = current.includes(folderId) ? current.filter((id) => id !== folderId) : [...current, folderId]
     setDraftSelections((d) => ({ ...d, [account]: next }))
   }
 
   function save(account) {
-    const sel = draftSelections[account] !== undefined ? draftSelections[account] : (settings[account] || [])
+    const sel = draftSelections[account] !== undefined ? draftSelections[account] : (Object.hasOwn(settings, account) ? settings[account] : ['inbox'])
     const selections = sel.map((folderId) => {
       const f = accountFolders(account).find((x) => x.id === folderId)
       return { folderId, folderName: f ? f.name : folderId, enabled: true }
@@ -363,7 +381,7 @@ function SettingsView({ status, folders, settings, onConnect, onDisconnect, onSa
             </div>
             {isConnected && missing.length > 0 && (
               <div className="mio-email-warn">
-                Missing scopes for full context: {missing.join(', ')}.
+                Additional Outlook permissions needed: {missing.join(', ')}. <button onClick={() => onConnect(account)}>Reconnect</button>
               </div>
             )}
             {isConnected && (
