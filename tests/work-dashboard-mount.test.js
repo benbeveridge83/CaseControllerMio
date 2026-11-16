@@ -20,3 +20,21 @@ test('dashboard mount remains staff only and native order selection is by exact 
  assert.ok(code.includes('String(row.id)===String(focusedOrderId)'))
  assert.throws(()=>applyWorkDashboardMount(code),/already mounted/)
 })
+
+test('dashboard evaluates saved withdrawal workflows with its actual imported bindings',async()=>{
+ const bindings={}
+ for(const match of code.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"](\.\/mio(?:WorkflowBlocks|WithdrawalWorkflow)\.js)['"]/g)){
+  const module=await import(new URL('../src/'+match[2].slice(2),import.meta.url))
+  for(const specifier of match[1].split(',')){const [name,alias]=specifier.trim().split(/\s+as\s+/);bindings[alias||name]=module[name]}
+ }
+ const state={status:'active',definition:{steps:[{id:'drafting',name:'Prepare withdrawal motion',input_slots:[]}]},steps:{drafting:{status:'needs_action',attention_since:'2026-11-16T10:00:00Z'}}}
+ const context={...bindings,canOpenPage:()=>true,withdrawalMatters:[{id:'m1'}],mioWithdrawalSnapshot:{rows:{m1:{state}}},matters:[{id:'m1',name:'Saved withdrawal matter'}]}
+ vm.runInNewContext(nativeFunction('mioDeskWithdrawals')+'\nthis.getWithdrawals=mioDeskWithdrawals',context)
+ let result=context.getWithdrawals()
+ assert.equal(result[0].status,'Needs action')
+ assert.equal(result[0].next,'Prepare withdrawal motion')
+ state.steps.drafting={status:'waiting',waiting_on:'Client signature'}
+ result=context.getWithdrawals();assert.equal(result[0].status,'Waiting');assert.equal(result[0].next,'Client signature')
+ state.status='complete';assert.equal(context.getWithdrawals()[0].status,'Complete')
+ state.status='active';state.paused=true;assert.equal(context.getWithdrawals()[0].status,'Paused')
+})

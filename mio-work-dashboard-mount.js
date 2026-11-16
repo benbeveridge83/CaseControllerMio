@@ -3,7 +3,7 @@ const bridge=fs.readFileSync(new URL('./src/dashboard/appBridge.inc',import.meta
 function once(code,anchor,replacement,label){if(code.split(anchor).length!==2)throw new Error(`Work dashboard mount anchor changed: ${label}`);return code.replace(anchor,()=>replacement)}
 export function applyWorkDashboardMount(source){
  if(source.includes('function mioDeskRows()'))throw new Error('Work dashboard already mounted')
- let code="import {workflowAttention as mioDeskLegacyWithdrawalAttention} from './mioWithdrawalWorkflow.js'\nimport MioWorkDashboard from './dashboard/WorkDashboard.jsx'\nimport {periodSummary as mioDeskPeriodSummary,weekStart as mioDeskWeekStart,sortedTrust as mioDeskSortedTrust,billingMarker as mioDeskBillingMarker,linkedThreadRecords as mioDeskLinkedThreads} from './dashboard/model.js'\n"+source
+ let code="import {workflowBlockAttention as mioDeskBlockWithdrawalAttention} from './mioWorkflowBlocks.js'\nimport {workflowAttention as mioDeskLegacyWithdrawalAttention} from './mioWithdrawalWorkflow.js'\nimport MioWorkDashboard from './dashboard/WorkDashboard.jsx'\nimport {periodSummary as mioDeskPeriodSummary,weekStart as mioDeskWeekStart,sortedTrust as mioDeskSortedTrust,billingMarker as mioDeskBillingMarker,linkedThreadRecords as mioDeskLinkedThreads} from './dashboard/model.js'\n"+source
  code=code.replace("useMioWithdrawals(session?.user?.id,page==='withdrawals')","useMioWithdrawals(session?.user?.id,page==='withdrawals'||page==='dashboard')")
  code=once(code,'const appPages = [',"const appPages = [\n  { value: 'dashboard', label: 'Dashboard' },",'registration')
  const nav="        {canOpenPage('documents') && ("

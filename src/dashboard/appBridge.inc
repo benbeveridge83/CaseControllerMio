@@ -61,7 +61,7 @@
   function mioDeskWithdrawals(){
     if(!canOpenPage('withdrawals'))return []
     const ids=new Set([...withdrawalMatters.map(m=>String(m.id)),...Object.keys(mioWithdrawalSnapshot.rows)])
-    return matters.filter(m=>ids.has(String(m.id))).map(m=>{const state=mioWithdrawalSnapshot.rows[String(m.id)]?.state,attention=state?.definition?workflowBlockAttention(state):mioDeskLegacyWithdrawalAttention(state),kind=attention?.kind||'needs_action';return {id:String(m.id),name:m.name||'Matter',kind,status:({needs:'Needs action',needs_action:'Needs action',needs_approval:'Needs review',waiting:'Waiting',paused:'Paused',complete:'Complete',released:'Released'})[kind]||'Review',next:attention?.next||'Review withdrawal progress'}}).sort((a,b)=>Number(/needs/.test(b.kind))-Number(/needs/.test(a.kind))||a.name.localeCompare(b.name))
+    return matters.filter(m=>ids.has(String(m.id))).map(m=>{const state=mioWithdrawalSnapshot.rows[String(m.id)]?.state,attention=state?.definition?mioDeskBlockWithdrawalAttention(state):mioDeskLegacyWithdrawalAttention(state),kind=attention?.kind||'needs_action';return {id:String(m.id),name:m.name||'Matter',kind,status:({needs:'Needs action',needs_action:'Needs action',needs_approval:'Needs review',waiting:'Waiting',paused:'Paused',complete:'Complete',released:'Released'})[kind]||'Review',next:attention?.next||'Review withdrawal progress'}}).sort((a,b)=>Number(/needs/.test(b.kind))-Number(/needs/.test(a.kind))||a.name.localeCompare(b.name))
   }
   function renderMioWorkDashboard(){
     const today=mioDeskToday,rows=mioDeskRows(),eligible=matters.filter(m=>checklistMatterOpenClosedValue(m)==='open')
