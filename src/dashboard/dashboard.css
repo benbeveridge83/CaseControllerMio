@@ -4,3 +4,28 @@
 @media(max-width:650px){.desk-finance,.desk-work{grid-template-columns:1fr}.desk-title{align-items:flex-start;gap:7px}.desk-title>div:last-child{flex-wrap:wrap}.desk-workflow{max-height:180px}.desk-workflow label{font-size:12px}.desk-trust-scroll{height:150px;grid-auto-rows:30px}.desk-trust-scroll button{height:30px}.desk-email-categories{grid-template-columns:1fr 1fr}.desk-planning>header [role=tablist]{flex-wrap:wrap}.desk-finance .desk-billing>header,.desk-stat{grid-template-columns:minmax(0,1fr) 80px 80px}.desk-stat b{font-size:14px}}
 
 .desk-finance{grid-template-columns:200px minmax(0,1fr) 330px}.desk-withdrawals>header{background:#79334b}.desk-withdrawal-scroll{max-height:132px;overflow:auto}.desk-withdrawal-scroll>button{display:grid;grid-template-columns:1fr auto;width:100%;gap:3px;text-align:left;border:0;border-bottom:1px solid #cfdae8;background:#fff;color:#14263c;padding:5px 7px}.desk-withdrawal-scroll strong{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.desk-withdrawal-scroll small{grid-column:1/-1;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.desk-withdrawal-status{font-size:10px;font-weight:700;background:#fff0d8;color:#85410b;padding:1px 4px;border-radius:3px}.desk-withdrawal-status.waiting{background:#e1ecff;color:#204c89}.desk-withdrawal-status.complete,.desk-withdrawal-status.released{background:#dbf3e1;color:#195b33}.desk-withdrawal-status.paused{background:#ece7f6;color:#593d7c}@media(max-width:1200px){.desk-finance{grid-template-columns:175px minmax(0,1fr) 290px}.desk-finance .desk-billing>header,.desk-stat{grid-template-columns:minmax(0,1fr) 78px 78px;gap:5px}.desk-stat b{font-size:14px}.desk-billing header h2{font-size:12px}}@media(max-width:950px){.desk-finance{grid-template-columns:1fr 1fr}.desk-billing{grid-column:2;grid-row:1/span 2}.desk-trust{grid-column:1}.desk-withdrawals{grid-column:1}.desk-withdrawal-scroll{max-height:110px}}@media(max-width:650px){.desk-finance{grid-template-columns:1fr}.desk-billing,.desk-trust,.desk-withdrawals{grid-column:auto;grid-row:auto}}
+
+/* Compact top band: room for client names, without stretching the earnings table. */
+.desk-finance{grid-template-columns:minmax(250px,1fr) minmax(360px,440px) minmax(400px,1.35fr);align-items:start}
+.desk-withdrawal-scroll{height:220px;max-height:220px;overflow:auto}
+.desk-withdrawal-scroll>button{grid-template-columns:minmax(0,1fr) auto;align-items:start;position:relative;padding-right:9px}
+.desk-withdrawal-scroll strong{grid-column:1;grid-row:1;white-space:normal;overflow:visible;overflow-wrap:anywhere}
+.desk-withdrawal-scroll .desk-matter-reference{grid-column:1;grid-row:2;font-size:10px;overflow-wrap:anywhere}
+.desk-withdrawal-status{grid-column:2;grid-row:1;white-space:nowrap}
+.desk-withdrawal-scroll small{white-space:normal;overflow-wrap:anywhere}
+.desk-stat{padding:3px 8px}.desk-stat b{font-size:14px}
+.desk-finance .desk-billing>header,.desk-stat{grid-template-columns:minmax(0,1fr) 85px 85px;gap:5px}
+.desk-finance-note{font-size:10px!important}
+.desk-trust-scroll{height:220px;grid-auto-rows:minmax(44px,auto)}
+.desk-trust-scroll button{height:auto;min-height:44px;padding:3px 5px;font-size:11px;align-items:center}
+.desk-trust-scroll span{white-space:normal;overflow:visible;overflow-wrap:anywhere;text-align:left;flex:1;min-width:0}
+.desk-trust-scroll strong{font-size:11px;line-height:1.15;display:block}
+.desk-trust-scroll small{display:block;font-size:9px;color:#435a72;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.desk-trust-scroll b{flex-shrink:0;font-size:11px}
+.desk-task-open strong{white-space:normal;overflow:visible;overflow-wrap:anywhere}
+.desk-task-open .desk-matter-reference{font-size:10px;color:#52677f}
+.desk-queue-scroll{height:210px;max-height:210px}
+.desk-workflow{max-height:242px}
+@media(max-width:1300px){.desk-finance{grid-template-columns:minmax(220px,1fr) minmax(310px,1fr) minmax(300px,1.2fr)}.desk-trust-scroll{grid-template-columns:1fr;height:220px;grid-auto-rows:minmax(22px,auto)}.desk-trust-scroll button{height:auto;min-height:22px}.desk-trust-scroll small{display:none}.desk-finance .desk-billing>header,.desk-stat{grid-template-columns:minmax(0,1fr) 75px 75px}}
+@media(max-width:1050px){.desk-finance{grid-template-columns:1fr 1fr}.desk-withdrawals{grid-column:1;grid-row:1/span 2}.desk-billing{grid-column:2;grid-row:1}.desk-trust{grid-column:2;grid-row:2}.desk-withdrawal-scroll{height:360px;max-height:360px}.desk-trust-scroll{height:220px}}
+@media(max-width:650px){.desk-finance{grid-template-columns:1fr}.desk-withdrawals,.desk-billing,.desk-trust{grid-column:auto;grid-row:auto}.desk-withdrawal-scroll{height:220px;max-height:220px}.desk-trust-scroll{grid-auto-rows:minmax(22px,auto)}.desk-trust-scroll button{height:auto}}

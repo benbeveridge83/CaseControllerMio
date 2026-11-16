@@ -47,3 +47,17 @@ export function sortedTrust(matters,financeFor){
  return matters.map(m=>{const f=financeFor(m);return {id:String(m.id),name:m.name||'Matter',trust:f?.financialSnapshotResolved===false?null:Number(f?.trust||0)}}).sort((a,b)=>(b.trust??-Infinity)-(a.trust??-Infinity)||a.name.localeCompare(b.name))
 }
 export function classifyTimeline(item){return /deadline|due|designation|exchange|discovery.end/i.test(item.type||item.kind||item.title||'')?'deadlines':'settings'}
+
+// Matter labels are often only a case type/cause number. Resolve the linked client
+// independently, including records loaded without the nested Supabase join.
+export function clientNameForMatter(matter={},clients=[]){
+ const joined=Array.isArray(matter.clients)?matter.clients[0]:matter.clients
+ const linked=clients.find(c=>String(c.id)===String(matter.client_id))
+ for(const client of [joined,linked]){
+  if(!client)continue
+  const name=[client.first_name,client.last_name].filter(Boolean).join(' ').trim()
+  if(name)return name
+  if(client.name?.trim())return client.name.trim()
+ }
+ return String(matter.client_name||'').trim()||'Client not linked'
+}

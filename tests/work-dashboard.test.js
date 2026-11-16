@@ -47,3 +47,11 @@ test('native linked threads use mailbox_email, include replies and ignore empty 
  const reply={id:'reply',accountEmail:'ben@firm.test',conversationId:'native',categories:['general'],matches:[]}
  assert.deepEqual(taskMessages(nativeRow,[reply],[nativeRow]).map(m=>m.id),['reply'])
 })
+
+test('client labels resolve joined and separately loaded records instead of case numbers',async()=>{
+ const {clientNameForMatter}=await import('../src/dashboard/model.js')
+ assert.equal(clientNameForMatter({name:'Divorce 123',clients:{first_name:'Jane',last_name:'Adams'}}),'Jane Adams')
+ assert.equal(clientNameForMatter({name:'SAPCR 456',client_id:'c1'},[{id:'c1',first_name:'Brent',last_name:'Bay'}]),'Brent Bay')
+ assert.equal(clientNameForMatter({clients:[{first_name:'Nayelly',last_name:'Garcia'}]}),'Nayelly Garcia')
+ assert.equal(clientNameForMatter({name:'Divorce 123'}),'Client not linked')
+})

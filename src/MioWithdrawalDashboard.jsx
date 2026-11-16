@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState,useSyncExternalStore} from 'react'
+import React,{useEffect,useRef,useState,useMemo,useSyncExternalStore} from 'react'
 import {mioWithdrawalStore as store} from './mioWithdrawalRuntime.js'
 import {WITHDRAWAL_STEPS,STATUS_LABELS,workflowAttention,sortWithdrawalRows,ageLabel} from './mioWithdrawalWorkflow.js'
 import './mioWithdrawalDashboard.css'
@@ -7,7 +7,8 @@ export function useMioWithdrawals(owner,active){
  const snapshot=useSyncExternalStore(store.subscribe,store.getSnapshot,()=>EMPTY)
  useEffect(()=>{store.account(owner||'');if(owner)void store.load(owner).catch(()=>{})},[owner])
  useEffect(()=>{if(!owner||!active)return;const refresh=()=>{if(document.visibilityState==='visible')void store.load(owner).catch(()=>{})};refresh();const timer=setInterval(refresh,60000);window.addEventListener('focus',refresh);return()=>{clearInterval(timer);window.removeEventListener('focus',refresh)}},[owner,active])
- return{...snapshot,rows:Object.fromEntries(Object.entries(snapshot.rows).filter(([,row])=>row.owner_id===owner))}
+ const rows=useMemo(()=>Object.fromEntries(Object.entries(snapshot.rows).filter(([,row])=>row.owner_id===owner)),[snapshot.rows,owner])
+ return{...snapshot,rows}
 }
 const when=v=>v?new Date(v).toLocaleString():'Not recorded'
 const dateInput=v=>v?new Date(new Date(v).getTime()-new Date(v).getTimezoneOffset()*60000).toISOString().slice(0,16):''
