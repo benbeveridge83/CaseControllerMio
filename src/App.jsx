@@ -22,6 +22,14 @@ import MatterClientInfo from './MatterClientInfo.jsx'
 import ManualRfpCoverEditor from './ManualRfpCoverEditor.jsx'
 import { isActivePendingLawPayPayment } from './mioFinanceReview.js'
 import { buildRfpCoverDocx, buildRfpCoverPdf, convertRfpDocuments, extractRfpDocxText, invalidateRfpConvertedFiles, rfpConversionKind, rfpFileName } from './manualRfpPreparation.js'
+import { DiscoveryReliefComposer } from './discoveryRelief/DiscoveryReliefComposer.jsx'
+import { composeOutgoingRequests } from './discoveryRelief/compose.js'
+import { buildReliefGroups } from './discoveryRelief/buildReliefGroups.js'
+import { normalizeMatterDiscoverySet, discoverySetKey } from './discoveryRelief/persist.js'
+import { SEED_LIBRARY, SEED_MAPPINGS, SEED_GENERAL } from './discoveryRelief/seed.js'
+import { DISCLOSURE_CATEGORIES } from './discoveryRelief/catalog.js'
+import { discoveryTypeLabel } from './discoveryRelief/types.js'
+import { generateDiscoveryDocx, buildDiscoveryRequestsData } from './discoveryRelief/generate.js'
 
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
@@ -5417,6 +5425,240 @@ function App() {
     catch { return [] }
   })
   const [draftingReliefClauseForm, setDraftingReliefClauseForm] = useState(() => draftingNormalizeReliefClause({ id: '', name: '', relief_option_ids: [], language: '', document_roles: [], case_type_patterns: [], practice_manual_form: '', practice_manual_section: '', notes: '', is_active: true }))
+
+  // --- Discovery from requested relief ---
+  const [discoveryReliefLibrary, setDiscoveryReliefLibrary] = useState(() => {
+    try { const stored = JSON.parse(localStorage.getItem('caseMioDiscoveryReliefLibraryV1') || 'null'); return Array.isArray(stored) && stored.length ? stored : SEED_LIBRARY.map((item) => ({ ...item })) }
+    catch { return SEED_LIBRARY.map((item) => ({ ...item })) }
+  })
+  const [discoveryReliefMappings, setDiscoveryReliefMappings] = useState(() => {
+    try { const stored = JSON.parse(localStorage.getItem('caseMioDiscoveryReliefMappingsV1') || 'null'); return Array.isArray(stored) && stored.length ? stored : SEED_MAPPINGS.map((mapping) => ({ ...mapping })) }
+    catch { return SEED_MAPPINGS.map((mapping) => ({ ...mapping })) }
+  })
+  const [discoveryReliefGeneral, setDiscoveryReliefGeneral] = useState(() => SEED_GENERAL.map((ref) => ({ ...ref })))
+  const [discoveryReliefSets, setDiscoveryReliefSets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioDiscoveryReliefSetsV1') || '{}') || {} }
+    catch { return {} }
+  })
+  const [discoveryReliefComposer, setDiscoveryReliefComposer] = useState(null) // { matterId, direction, instrument }
+
+  function openDiscoveryReliefComposer(matterId, direction = 'requests') {
+    if (direction === 'responses') { alert('The response workflow is not available yet. Use "Draft Requests from Relief" for outgoing discovery requests.'); return }
+    const resolvedMatterId = matterId ? String(matterId) : (draftingSelection.matter_id || '')
+    setDiscoveryReliefComposer({ matterId: resolvedMatterId, direction: 'requests', instrument: '' })
+  }
+  function closeDiscoveryReliefComposer() { setDiscoveryReliefComposer(null) }
+
+  function discoveryReliefGroupsFor(matterId, direction) {
+    const parties = litigationTrackPartyOptions(matterId)
+    return buildReliefGroups({ reliefs: requestedReliefs, options: requestedReliefOptions, matterId, direction, parties })
+  }
+
+  function discoveryReliefSetFor(matterId, direction) {
+    return normalizeMatterDiscoverySet(discoveryReliefSets[discoverySetKey(matterId, direction)] || { matter_id: matterId, direction })
+  }
+
+  function saveDiscoveryReliefSet(matterId, direction, patch) {
+    const key = discoverySetKey(matterId, direction)
+    const current = discoveryReliefSetFor(matterId, direction)
+    const next = normalizeMatterDiscoverySet({ ...current, ...patch, matter_id: matterId, direction, updated_at: new Date().toISOString() })
+    setDiscoveryReliefSets((all) => {
+      const updated = { ...(all || {}), [key]: next }
+      try { localStorage.setItem('caseMioDiscoveryReliefSetsV1', JSON.stringify(updated)) } catch {}
+      return updated
+    })
+    return next
+  }
+
+  function discoveryReliefTemplateOptions() {
+    return draftingTemplates.filter((item) => item.is_active !== false && item.status !== 'retired').map((item) => ({ id: item.id, label: draftingTemplateLabel(item) }))
+  }
+
+  function discoveryReliefExtraFor(set) {
+    return (set.selections || []).filter((sel) => sel.origin === 'matter' && sel.included).map((sel) => ({
+      key: sel.key,
+      group_id: String(sel.relief_links?.[0]?.group_id || ''),
+      type: sel.type,
+      text: sel.text,
+      issue_id: String(sel.relief_links?.[0]?.issue_id || ''),
+      option_id: String(sel.relief_links?.[0]?.option_id || '')
+    }))
+  }
+
+  function discoveryReliefSelectionsFor(set) {
+    return (set.selections || []).map((sel) => ({ key: sel.key, included: sel.included !== false, text: sel.text }))
+  }
+
+  function discoveryReliefComposed(matterId, direction) {
+    const groups = discoveryReliefGroupsFor(matterId, direction)
+    const set = discoveryReliefSetFor(matterId, direction)
+    return composeOutgoingRequests({ groups, mappings: discoveryReliefMappings, library: discoveryReliefLibrary, general: discoveryReliefGeneral, extra: discoveryReliefExtraFor(set), selections: discoveryReliefSelectionsFor(set) })
+  }
+
+  function discoveryReliefRequestByKey(matterId, direction, key) {
+    const composed = discoveryReliefComposed(matterId, direction)
+    return composed.groups.flatMap((group) => group.requests).find((request) => request.key === key) || null
+  }
+
+  function toggleDiscoveryReliefRequest(key) {
+    const composer = discoveryReliefComposer
+    if (!composer) return
+    const set = discoveryReliefSetFor(composer.matterId, composer.direction)
+    const request = discoveryReliefRequestByKey(composer.matterId, composer.direction, key)
+    const existing = set.selections.find((sel) => sel.key === key)
+    let nextSelections
+    if (existing) {
+      nextSelections = set.selections.map((sel) => sel.key === key ? { ...sel, included: !sel.included } : sel)
+    } else if (request) {
+      nextSelections = [...set.selections, { key, item_id: request.item_id, version: request.version, type: request.type, text: request.text, included: false, origin: request.origin, number: request.number, relief_links: request.relief_links, roles: request.roles }]
+    } else return
+    saveDiscoveryReliefSet(composer.matterId, composer.direction, { selections: nextSelections, status: 'selected' })
+  }
+
+  function editDiscoveryReliefRequest(key, text) {
+    const composer = discoveryReliefComposer
+    if (!composer) return
+    const set = discoveryReliefSetFor(composer.matterId, composer.direction)
+    const request = discoveryReliefRequestByKey(composer.matterId, composer.direction, key)
+    const existing = set.selections.find((sel) => sel.key === key)
+    let nextSelections
+    if (existing) {
+      nextSelections = set.selections.map((sel) => sel.key === key ? { ...sel, text } : sel)
+    } else if (request) {
+      nextSelections = [...set.selections, { key, item_id: request.item_id, version: request.version, type: request.type, text, included: request.included !== false, origin: request.origin, number: request.number, relief_links: request.relief_links, roles: request.roles }]
+    } else return
+    saveDiscoveryReliefSet(composer.matterId, composer.direction, { selections: nextSelections, status: 'selected' })
+  }
+
+  function addDiscoveryReliefRequest(group) {
+    const composer = discoveryReliefComposer
+    if (!composer) return
+    const type = (window.prompt('Discovery type (rfp, roggs, rfa, rfd):', group.kind === 'general' ? 'roggs' : 'rfp') || '').trim().toLowerCase()
+    if (!['rfp', 'rfd', 'roggs', 'rfa'].includes(type)) { alert('Choose rfp, roggs, rfa, or rfd.'); return }
+    const text = (window.prompt('Request text:', '') || '').trim()
+    if (!text) return
+    const saveToLibrary = window.confirm('Save this request to the reusable library for future matters?\n\nOK = reusable library item\nCancel = matter-only edit (this matter only)')
+    if (saveToLibrary) {
+      const item = { id: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, version: 1, type, text, author: 'attorney', source: 'library' }
+      const nextLibrary = [...discoveryReliefLibrary, item]
+      setDiscoveryReliefLibrary(nextLibrary)
+      try { localStorage.setItem('caseMioDiscoveryReliefLibraryV1', JSON.stringify(nextLibrary)) } catch {}
+      if (group.kind === 'general') {
+        setDiscoveryReliefGeneral([...discoveryReliefGeneral, { id: item.id }])
+      } else {
+        const nextMappings = [...discoveryReliefMappings, { issue_id: group.issue_id, option_id: group.option_id, source_side: group.source_side, library_item_id: item.id }]
+        setDiscoveryReliefMappings(nextMappings)
+        try { localStorage.setItem('caseMioDiscoveryReliefMappingsV1', JSON.stringify(nextMappings)) } catch {}
+      }
+    } else {
+      const set = discoveryReliefSetFor(composer.matterId, composer.direction)
+      const selection = { key: `matter-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, item_id: '', version: 1, type, text, included: true, origin: 'matter', number: 0, relief_links: [{ group_id: group.id, issue_id: group.issue_id || '', option_id: group.option_id || '' }], roles: group.roles || {} }
+      saveDiscoveryReliefSet(composer.matterId, composer.direction, { selections: [...set.selections, selection] })
+    }
+  }
+
+  async function generateDiscoveryReliefDocument() {
+    const composer = discoveryReliefComposer
+    if (!composer) return
+    const composed = discoveryReliefComposed(composer.matterId, composer.direction)
+    if (!composed.included.length) { alert('No discovery requests are selected to generate.'); return }
+    const matter = matters.find((item) => String(item.id) === String(composer.matterId)) || {}
+    const set = discoveryReliefSetFor(composer.matterId, composer.direction)
+    const template = draftingTemplates.find((item) => String(item.id) === String(set.template_id)) || null
+    const templateFile = (template?.files || []).find((file) => /\.docx$/i.test(String(file.name || ''))) || (template?.files || [])[0] || null
+    try {
+      await ensureDraftingZipLibrary()
+      let result
+      if (template && templateFile) {
+        // Inject into the selected drafting template, preserving its caption,
+        // headings, definitions, and formatting. The template needs a
+        // `{{#each discovery_requests}}` block (use {{number}}/{{text}}/{{request}}).
+        const baseData = buildDraftingAssemblyData(template, matter, {})
+        const data = { ...baseData, discovery_requests: buildDiscoveryRequestsData(composed) }
+        result = await generateDocxFromTemplateFile(templateFile, data, matter, template)
+      } else {
+        result = await generateDiscoveryDocx(composed, matter, window.JSZip)
+      }
+      const url = URL.createObjectURL(result.blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = result.name
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+      saveDiscoveryReliefSet(composer.matterId, composer.direction, { status: 'drafted', selections: composed.included.map((request) => ({ key: request.key, item_id: request.item_id, version: request.version, type: request.type, text: request.text, included: true, origin: request.origin === 'matter' ? 'matter' : 'library', number: request.number, relief_links: request.relief_links, roles: request.roles })) })
+    } catch (error) {
+      alert(`Could not generate the discovery document: ${error?.message || error}`)
+    }
+  }
+
+  function renderDiscoveryReliefComposer() {
+    const composer = discoveryReliefComposer
+    if (!composer) return null
+    const matterId = composer.matterId
+    const matter = matters.find((item) => String(item.id) === String(matterId)) || null
+    const direction = composer.direction
+    const groups = discoveryReliefGroupsFor(matterId, direction)
+    const set = discoveryReliefSetFor(matterId, direction)
+    const composed = discoveryReliefComposed(matterId, direction)
+    const templateOptions = discoveryReliefTemplateOptions()
+    const instruments = [
+      { id: '', label: 'All instruments (combined)' },
+      { id: 'rfp', label: 'Requests for Production' },
+      { id: 'roggs', label: 'Interrogatories' },
+      { id: 'rfa', label: 'Requests for Admission' },
+      { id: 'rfd', label: 'Requests for Disclosure' }
+    ]
+    const selectedCategories = Array.isArray(set.disclosure_category_ids) ? set.disclosure_category_ids : []
+    const previewGroups = ['rfp', 'roggs', 'rfa', 'rfd'].map((type) => ({ type, requests: composed.included.filter((request) => request.type === type) })).filter((group) => group.requests.length)
+
+    const toggleCategory = (categoryId) => {
+      const next = selectedCategories.includes(categoryId) ? selectedCategories.filter((id) => id !== categoryId) : [...selectedCategories, categoryId]
+      saveDiscoveryReliefSet(matterId, direction, { disclosure_category_ids: next })
+    }
+
+    return (
+      <div role="dialog" aria-modal="true" aria-label={`Draft discovery ${direction}`} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', zIndex: 2000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflow: 'auto', padding: '24px 12px' }}>
+        <div style={{ background: '#fff', borderRadius: 12, maxWidth: 1100, width: '100%', padding: 18, boxShadow: '0 20px 60px rgba(0,0,0,0.35)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <h2 style={{ margin: 0 }}>Draft discovery {direction === 'responses' ? 'responses' : 'requests'}</h2>
+            <button type="button" onClick={closeDiscoveryReliefComposer}>Close</button>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <label style={{ display: 'grid', gap: 3, flex: '1 1 240px' }}>Matter<SmartMatterSelect value={matterId} onChange={(value) => value && setDiscoveryReliefComposer({ ...composer, matterId: String(value) })} placeholder="Matter" /></label>
+            <label style={{ display: 'grid', gap: 3 }}>Direction<select value="requests" disabled title="The response workflow is not available yet."><option value="requests">Our requests</option></select></label>
+            <label style={{ display: 'grid', gap: 3 }}>Instrument<select value={composer.instrument} onChange={(event) => setDiscoveryReliefComposer({ ...composer, instrument: event.target.value })}>{instruments.map((instrument) => <option key={instrument.id} value={instrument.id}>{instrument.label}</option>)}</select></label>
+          </div>
+          {composer.instrument === 'rfd' && (
+            <section style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, marginBottom: 12 }}>
+              <h3 style={{ marginTop: 0 }}>Disclosure categories (Tex. Fam. Code § 301.052 / Rule 194a.2)</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 6 }}>
+                {DISCLOSURE_CATEGORIES.map((category) => <label key={category.id} style={{ display: 'flex', gap: 7, alignItems: 'flex-start' }}><input type="checkbox" checked={selectedCategories.includes(category.id)} onChange={() => toggleCategory(category.id)} /><span><strong>{category.number}. {category.label}</strong><span style={{ color: '#64748b', fontSize: 12 }}> {category.statute_ref}</span></span></label>)}
+              </div>
+            </section>
+          )}
+          {matter ? <p style={{ color: '#475569', margin: '0 0 10px' }}>{matterName(matterId)}{composer.instrument ? ` · ${discoveryTypeLabel(composer.instrument)}` : ''} · {composed.included.length} request(s) selected</p> : null}
+          {previewGroups.length > 0 && (
+            <details open style={{ marginBottom: 12, border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#f8fafc' }}>
+              <summary style={{ fontWeight: 700 }}>Document preview — {composed.included.length} request(s)</summary>
+              <div style={{ fontFamily: 'Georgia, serif', whiteSpace: 'pre-wrap', marginTop: 8 }}>
+                {previewGroups.map((group) => (
+                  <div key={group.type} style={{ marginBottom: 8 }}>
+                    <strong>{discoveryTypeLabel(group.type).toUpperCase()}</strong>
+                    {group.requests.map((request) => <div key={request.key}>{discoveryTypeLabel(request.type)} {request.number}. {request.text}</div>)}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          <DiscoveryReliefComposer groups={groups} mappings={discoveryReliefMappings} library={discoveryReliefLibrary} general={discoveryReliefGeneral} extra={discoveryReliefExtraFor(set)} selections={discoveryReliefSelectionsFor(set)} templateOptions={templateOptions} selectedTemplateId={set.template_id} onSelectTemplate={(templateId) => saveDiscoveryReliefSet(matterId, direction, { template_id: templateId })} onToggleRequest={toggleDiscoveryReliefRequest} onEditRequest={editDiscoveryReliefRequest} onAddRequest={addDiscoveryReliefRequest} onGenerate={generateDiscoveryReliefDocument} />
+        </div>
+      </div>
+    )
+  }
+
+
   const [draftingIntakeTemplates, setDraftingIntakeTemplates] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('caseMioDraftingIntakeTemplates') || 'null')
@@ -59815,7 +60057,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
                 {clientDashboardTab === 'documents' && renderDocumentRepository({ matterId: selectedTemplateMatter().id, showBulkReview: true })}
 
-                {clientDashboardTab === 'drafting' && renderDraftingPage({ lockedMatterId: selectedTemplateMatter().id, embedded: true })}
+                {clientDashboardTab === 'drafting' && (
+                  <>
+                    <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => openDiscoveryReliefComposer(selectedTemplateMatter()?.id || '', 'requests')} style={{ padding: '8px 12px', fontWeight: 'bold', border: '1px solid #0e7490', borderRadius: 8, background: '#ecfeff', color: '#0e7490' }}>Draft Discovery Requests from Relief</button>
+                    </div>
+                    {renderDraftingPage({ lockedMatterId: selectedTemplateMatter().id, embedded: true })}
+                  </>
+                )}
 
                 {clientDashboardTab === 'filings' && renderMatterFilingsPanel(selectedTemplateMatter())}
 
@@ -59823,7 +60072,14 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
 
                 {clientDashboardTab === 'requested_relief' && renderMatterRequestedReliefPanel(selectedTemplateMatter().id)}
 
-                {clientDashboardTab === 'discovery' && renderRespondingDiscoveryDashboard({ matterId: selectedTemplateMatter().id })}
+                {clientDashboardTab === 'discovery' && (
+                  <>
+                    <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => openDiscoveryReliefComposer(selectedTemplateMatter()?.id || '', 'requests')} style={{ padding: '8px 12px', fontWeight: 'bold', border: '1px solid #0e7490', borderRadius: 8, background: '#ecfeff', color: '#0e7490' }}>Draft Discovery Requests from Relief</button>
+                    </div>
+                    {renderRespondingDiscoveryDashboard({ matterId: selectedTemplateMatter().id })}
+                  </>
+                )}
 
                 {clientDashboardTab === 'manual_rfp_responses' && renderManualRfpResponses(selectedTemplateMatter())}
 
@@ -61300,6 +61556,8 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               >
                 Discovery Table
               </button>
+              <button type="button" onClick={() => openDiscoveryReliefComposer(draftingSelection.matter_id || '', 'requests')} style={{ padding: '9px 14px', border: '1px solid #0e7490', borderRadius: 8, background: '#ecfeff', color: '#0e7490', fontWeight: 'bold' }}>Draft Requests from Relief</button>
+              <button type="button" disabled title="The response workflow is not available yet." style={{ padding: '9px 14px', border: '1px solid #cbd5e1', borderRadius: 8, background: '#f1f5f9', color: '#94a3b8', fontWeight: 'bold', cursor: 'not-allowed' }}>Responses (unavailable)</button>
             </div>
 
             {discoveryPageMode === 'responding' ? renderRespondingDiscoveryDashboard() : discoveryPageMode === 'matrix' ? renderDiscoveryResponseMatrix() : (
@@ -61667,7 +61925,17 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
           </>
         )}
 
-        {page === 'drafting' && canOpenPage('drafting') && renderDraftingPage()}
+        {page === 'drafting' && canOpenPage('drafting') && (
+          <>
+            <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => openDiscoveryReliefComposer(draftingSelection.matter_id || '', 'requests')} style={{ padding: '8px 12px', fontWeight: 'bold' }}>Draft Discovery Requests</button>
+              <button type="button" disabled title="The response workflow is not available yet." style={{ padding: '8px 12px', fontWeight: 'bold', color: '#94a3b8', cursor: 'not-allowed' }}>Responses (unavailable)</button>
+            </div>
+            {renderDraftingPage()}
+          </>
+        )}
+
+        {discoveryReliefComposer && renderDiscoveryReliefComposer()}
 
         {page === 'onedrive_files' && canOpenPage('onedrive_files') && renderOneDriveFilesPage()}
 
