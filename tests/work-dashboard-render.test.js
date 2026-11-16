@@ -38,6 +38,20 @@ test('dashboard opens the exact task, shows client names without fetching mail, 
   assert.match(document.querySelector('.desk-trust-scroll').textContent,/Client 15/)
   assert.equal(document.querySelector('.desk-email-queues'),null)
   assert.equal(mailRequests,0)
+  const opened=[];window.open=(...args)=>{opened.push(args);return null}
+  for(const [panel,page] of [['.desk-queue.settings','need_to_set'],['.desk-queue.orders','orders'],['.desk-queue.service','matters'],['.desk-withdrawals','withdrawals'],['.desk-workflow','workflow'],['.desk-trust','billing'],['.desk-billing','billing']]){
+   const link=document.querySelector(`${panel} .desk-open-page`)
+   assert.equal(link.hash,`#${page}`);assert.equal(link.target,'_blank');assert.match(link.rel,/noopener/)
+   await act(async()=>link.click())
+   const [url,target,features]=opened.at(-1)
+   assert.equal(new URL(url).hash,`#${page}`);assert.equal(target,'_blank');assert.match(features,/popup=yes/);assert.match(features,/noopener/)
+  }
+  for(const [label,page] of [['Calendar','calendar'],['Matter timelines','matter_timelines'],['Checklist','checklist']]){
+   await act(async()=>[...document.querySelectorAll('[role=tab]')].find(t=>t.textContent===label).click())
+   const link=document.querySelector('.desk-planning .desk-open-page');assert.equal(link.hash,`#${page}`)
+   await act(async()=>link.click());assert.equal(new URL(opened.at(-1)[0]).hash,`#${page}`)
+  }
+  assert.equal(window.location.hash,'')
   const entry={id:'b1',matter_id:'m1',user_id:'u1',date:today,billing_time:.3,matter_step:billingMarker(row),dashboard_save_state:'pending'}
   await act(async()=>root.render(React.createElement(Dashboard,{...props,billingEntries:[entry]})));assert.equal(document.querySelector('.desk-task').classList.contains('worked'),false)
   await act(async()=>root.render(React.createElement(Dashboard,{...props,billingEntries:[{...entry,dashboard_save_state:'saved'}]})));assert.equal(document.querySelector('.desk-task').classList.contains('worked'),true)

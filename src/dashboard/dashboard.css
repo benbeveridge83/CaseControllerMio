@@ -29,3 +29,9 @@
 @media(max-width:1300px){.desk-finance{grid-template-columns:minmax(220px,1fr) minmax(310px,1fr) minmax(300px,1.2fr)}.desk-trust-scroll{grid-template-columns:1fr;height:220px;grid-auto-rows:minmax(22px,auto)}.desk-trust-scroll button{height:auto;min-height:22px}.desk-trust-scroll small{display:none}.desk-finance .desk-billing>header,.desk-stat{grid-template-columns:minmax(0,1fr) 75px 75px}}
 @media(max-width:1050px){.desk-finance{grid-template-columns:1fr 1fr}.desk-withdrawals{grid-column:1;grid-row:1/span 2}.desk-billing{grid-column:2;grid-row:1}.desk-trust{grid-column:2;grid-row:2}.desk-withdrawal-scroll{height:360px;max-height:360px}.desk-trust-scroll{height:220px}}
 @media(max-width:650px){.desk-finance{grid-template-columns:1fr}.desk-withdrawals,.desk-billing,.desk-trust{grid-column:auto;grid-row:auto}.desk-withdrawal-scroll{height:220px;max-height:220px}.desk-trust-scroll{grid-auto-rows:minmax(22px,auto)}.desk-trust-scroll button{height:auto}}
+
+.mio-work-dashboard .desk-open-page{display:inline-block;flex-shrink:0;white-space:nowrap;border:1px solid #c5d6e8;border-radius:3px;padding:2px 5px;background:#fff;color:#173c62;text-decoration:none;font-size:10px;font-weight:650;line-height:1.3}
+.mio-work-dashboard .desk-open-page:hover{background:#dbedff}
+.mio-work-dashboard .desk-open-page:focus-visible{outline:3px solid #ed8b22;outline-offset:2px}
+.desk-workflow>header{flex-wrap:wrap;gap:4px}
+.desk-billing>header h2 .desk-open-page{margin-left:4px}
