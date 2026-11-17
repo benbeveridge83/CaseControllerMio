@@ -43,3 +43,22 @@
 .desk-queue>header{flex-wrap:wrap;gap:5px}
 
 .desk-task-actions .desk-matter-trust{font-size:11px;font-weight:700;color:#145640;white-space:nowrap;text-align:right}
+
+/* Trust belongs on the matter's heading line, without adding row height. */
+.desk-task-open .desk-task-heading,.desk-withdrawal-heading{display:flex;align-items:baseline;gap:7px;min-width:0;white-space:normal;overflow:visible}
+.desk-task-heading>strong,.desk-withdrawal-heading>strong{flex:1;min-width:0}
+.desk-task-open .desk-matter-trust,.desk-withdrawal-heading>.desk-matter-trust{flex-shrink:0;white-space:nowrap;font-size:11px;font-weight:700;color:#145640;overflow:visible}
+.desk-withdrawal-heading{grid-column:1/-1}
+.desk-withdrawal-heading>.desk-withdrawal-status{flex-shrink:0}
+.desk-withdrawal-scroll .desk-matter-reference{grid-column:1/-1;grid-row:auto}
+.desk-withdrawal-finance{display:flex;flex-wrap:wrap;gap:2px 7px;border-top:0;margin-top:0;padding-top:0}
+.desk-withdrawal-bill{display:inline;line-height:1.3}
+
+/* One physical line per matter; full matter, phase and billing detail is on hover. */
+.desk-task-open{padding:6px 7px}
+.desk-task-open .desk-task-heading,.desk-withdrawal-heading{flex-wrap:nowrap;align-items:center;white-space:nowrap}
+.desk-task-heading>strong,.desk-withdrawal-heading>strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
+.desk-task-open .desk-row-phase{max-width:32%;min-width:0;font-size:10px;color:#425a76;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk-task-actions{display:flex;align-items:center}
+.desk-withdrawal-scroll>button{display:block;padding:6px 7px}
+.desk-bill-indicator{flex-shrink:0;font-size:10px;color:#41566c;font-weight:700;white-space:nowrap}

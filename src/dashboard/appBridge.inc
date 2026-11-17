@@ -70,7 +70,14 @@
   function mioDeskWithdrawals(){
     if(!canOpenPage('withdrawals'))return []
     const ids=new Set([...withdrawalMatters.map(m=>String(m.id)),...Object.keys(mioWithdrawalSnapshot.rows)])
-    return matters.filter(m=>ids.has(String(m.id))&&checklistMatterOpenClosedValue(m)==='open').map(m=>{const state=mioWithdrawalSnapshot.rows[String(m.id)]?.state,attention=state?.definition?mioDeskBlockWithdrawalAttention(state):mioDeskLegacyWithdrawalAttention(state),kind=attention?.kind||'needs_action';return {id:String(m.id),name:m.name||'Matter',clientName:mioDeskClientName(m,clients),kind,status:({needs:'Needs action',needs_action:'Needs action',needs_approval:'Needs review',waiting:'Waiting',paused:'Paused',complete:'Complete',released:'Released'})[kind]||'Review',next:attention?.next||'Review withdrawal progress'}}).sort((a,b)=>Number(/needs/.test(b.kind))-Number(/needs/.test(a.kind))||a.name.localeCompare(b.name))
+    return matters.filter(m=>ids.has(String(m.id))&&checklistMatterOpenClosedValue(m)==='open'&&mioWithdrawalSnapshot.rows[String(m.id)]?.state?.status!=='released').map(m=>{const state=mioWithdrawalSnapshot.rows[String(m.id)]?.state,attention=state?.definition?mioDeskBlockWithdrawalAttention(state):mioDeskLegacyWithdrawalAttention(state),kind=attention?.kind||'needs_action';return {id:String(m.id),name:m.name||'Matter',clientName:mioDeskClientName(m,clients),kind,status:({needs:'Needs action',needs_action:'Needs action',needs_approval:'Needs review',waiting:'Waiting',paused:'Paused',complete:'Complete',released:'Released'})[kind]||'Review',next:attention?.next||'Review withdrawal progress'}}).filter(w=>w.kind!=='released').sort((a,b)=>Number(/needs/.test(b.kind))-Number(/needs/.test(a.kind))||a.name.localeCompare(b.name))
+  }
+  function mioDeskBillSends(matterId){
+    return mioDeskRecentBillSends(matterId,mioInvoices).map(bill=>{
+      const invoice=mioInvoices.find(i=>String(i.id)===String(bill.invoiceId))
+      const total=invoice?.total!==null&&invoice?.total!==undefined&&invoice?.total!==''&&Number.isFinite(Number(invoice.total))?Math.max(0,Number(invoice.total)):null
+      return {...bill,total,paid:total===null?null:invoicePaidAmount(invoice),balance:total===null?null:invoiceBalanceAmount(invoice)}
+    })
   }
   function mioDeskBuildData(){
     const today=mioDeskToday,rows=mioDeskRows(),eligible=matters.filter(m=>checklistMatterOpenClosedValue(m)==='open')
@@ -83,7 +90,7 @@
     const activity=canOpenPage('documents')?documents.filter(d=>d.matter_id&&byId.has(String(d.matter_id))&&checklistMatterOpenClosedValue(byId.get(String(d.matter_id)))==='open'&&(d.upload_date||d.date)).map(d=>({id:`document:${d.id}`,matterId:String(d.matter_id),name:byId.get(String(d.matter_id))?.name||'Matter',date:String(d.upload_date||d.date).slice(0,10),title:d.name||'Document',lane:'activity'})):[]
     const trust=finance.ready&&canOpenPage('billing')?mioDeskSortedTrust(eligible,financeFor).map(m=>({...m,clientName:mioDeskClientName(byId.get(m.id),clients)})):[]
     const trustDetails=matter=>{const visible=canOpenPage('billing'),f=visible&&finance.ready&&matter?financeFor(matter):null;return {financeVisible:visible,trust:f&&f.financialSnapshotResolved!==false?f.trust:null}}
-    return {today,rows:rows.map(row=>({...row,...trustDetails(byId.get(String(row.matterId)))})),eligible,finance,trust,activity,withdrawals:mioDeskWithdrawals().map(w=>({...w,...trustDetails(byId.get(String(w.id))),billSends:canOpenPage('billing')?mioDeskRecentBillSends(w.id,mioInvoices):[]}))}
+    return {today,rows:rows.map(row=>({...row,...trustDetails(byId.get(String(row.matterId)))})),eligible,finance,trust,activity,withdrawals:mioDeskWithdrawals().map(w=>({...w,...trustDetails(byId.get(String(w.id))),billSends:canOpenPage('billing')?mioDeskBillSends(w.id):[]}))}
   }
   function renderMioWorkDashboard(){
     if(!mioDeskData)return null

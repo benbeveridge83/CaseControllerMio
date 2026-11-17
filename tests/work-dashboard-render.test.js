@@ -24,20 +24,23 @@ test('dashboard opens the exact task, shows client names without fetching mail, 
  try{
   const {default:Dashboard}=await import(componentPath.href)
   const props={userId:'u1',billingUserId:'u1',matters:[{id:'m1',name:'Adams',clients:{email:'client@test'}}],rows:[row,{...row,key:'orders:o1',kind:'orders',sourceId:'o1',trust:0},{...row,key:'service:m1',kind:'service',sourceId:'m1',trust:null}],billingEntries:[],finance:{ready:true,day:{},week:{}},trust:Array.from({length:16},(_,i)=>({id:String(i),name:`Matter ${i}`,clientName:`Client ${i}`,trust:160-i})),workflow:[{id:'w1',name:'Review orders',checked:false}],timeline:[],onWorkflow:()=>{},onOpen:r=>calls.push(['open',r.key]),onTime:r=>calls.push(['time',r?.key]),onMatter:()=>{},onAddNeedToSet:()=>calls.push(['addNeedToSet']),onNavigate:()=>{},onLegacyMail:()=>{},renderNativePlanning:view=>React.createElement('p',null,view)}
-  props.withdrawals=[{id:'withdraw1',name:'Divorce 12345',clientName:'Withdrawal client',kind:'waiting',status:'Waiting',next:'Client signature',trust:2345.67,billSends:[{key:'i1:sent',invoiceNumber:'INV-1',issueDate:'2026-11-01',sentAt:'2026-11-03T01:00:00Z'}]}]
+  props.withdrawals=[{id:'withdraw1',name:'Divorce 12345',clientName:'Withdrawal client',kind:'waiting',status:'Waiting',next:'Client signature',trust:2345.67,billSends:[{key:'i1:sent',invoiceNumber:'INV-1',issueDate:'2026-11-01',sentAt:'2026-11-03T01:00:00Z',total:100,paid:25,balance:75}]}]
   props.onWithdrawal=id=>calls.push(['withdrawal',id])
   await act(async()=>root.render(React.createElement(Dashboard,props)))
   assert.match(document.querySelector('.desk-withdrawals').textContent,/Waiting/)
   assert.equal(document.querySelector('.desk-finance').firstElementChild.classList.contains('desk-withdrawals'),true)
   await act(async()=>document.querySelector('.desk-withdrawal-scroll button').click());assert.deepEqual(calls.pop(),['withdrawal','withdraw1'])
-  assert.match(document.querySelector('.desk-withdrawal-finance').textContent,/Trust: \$2,345.67/)
-  assert.match(document.querySelector('.desk-withdrawal-finance').textContent,/INV-1 · bill 11\/1\/26 · sent 11\/2\/26/)
+  assert.match(document.querySelector('.desk-withdrawal-heading').textContent,/Trust: \$2,345.67/)
+  assert.match(document.querySelector('.desk-withdrawal-scroll button').title,/INV-1 · bill 11\/1\/26 · sent 11\/2\/26/)
+  assert.match(document.querySelector('.desk-withdrawal-scroll button').title,/paid \$25.00 of \$100.00 · balance \$75.00/)
+  assert.equal(document.querySelector('.desk-withdrawal-finance'),null,'bill details stay in hover text, not extra rows')
+  assert.equal(document.querySelector('.desk-task-open small'),null,'task details do not add another row')
   const add=[...document.querySelectorAll('.desk-queue.settings button')].find(b=>b.textContent.includes('Add need to set'))
   await act(async()=>add.click());assert.deepEqual(calls.pop(),['addNeedToSet'])
   assert.equal(document.querySelectorAll('.desk-trust-scroll button').length,16)
   await act(async()=>document.querySelector('.desk-task-open').click());assert.deepEqual(calls[0],['open','settings:e1'])
   assert.equal(document.querySelector('.desk-task-open strong').textContent,'Adams')
-  assert.match(document.querySelector('.desk-task-open').textContent,/12345/)
+  assert.match(document.querySelector('.desk-task-open').title,/12345/)
   assert.match(document.querySelector('.desk-withdrawal-scroll').textContent,/Withdrawal client/)
   assert.match(document.querySelector('.desk-trust-scroll').textContent,/Client 15/)
   assert.equal(document.querySelector('.desk-email-queues'),null)
@@ -45,6 +48,13 @@ test('dashboard opens the exact task, shows client names without fetching mail, 
   assert.equal(document.querySelector('.desk-queue.settings .desk-matter-trust').textContent,'Trust: $456.78')
   assert.equal(document.querySelector('.desk-queue.orders .desk-matter-trust').textContent,'Trust: $0.00')
   assert.equal(document.querySelector('.desk-queue.service .desk-matter-trust').textContent,'Trust: Review')
+  for(const selector of ['.desk-queue.settings .desk-task-heading','.desk-queue.orders .desk-task-heading','.desk-queue.service .desk-task-heading','.desk-withdrawal-heading']){
+   const heading=document.querySelector(selector)
+   assert.ok(heading.querySelector('strong'))
+   assert.equal(heading.querySelector('.desk-matter-trust').parentElement,heading,'name and trust share one heading line')
+  }
+  assert.equal(document.querySelector('.desk-withdrawal-finance .desk-matter-trust'),null)
+  assert.equal(document.querySelector('.desk-task-actions .desk-matter-trust'),null)
   await act(async()=>root.render(React.createElement(Dashboard,{...props,finance:{ready:false}})))
   assert.equal(document.querySelector('.desk-queue.settings .desk-matter-trust').textContent,'Trust: Refreshing…')
   await act(async()=>root.render(React.createElement(Dashboard,{...props,rows:props.rows.map(r=>({...r,financeVisible:false}))})))

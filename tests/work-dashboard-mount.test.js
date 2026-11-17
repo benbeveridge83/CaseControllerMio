@@ -38,6 +38,8 @@ test('dashboard evaluates saved withdrawal workflows with its actual imported bi
  result=context.getWithdrawals();assert.equal(result[0].status,'Waiting');assert.equal(result[0].next,'Client signature')
  state.status='complete';assert.equal(context.getWithdrawals()[0].status,'Complete')
  state.status='active';state.paused=true;assert.equal(context.getWithdrawals()[0].status,'Paused')
+ state.status='released';assert.equal(context.getWithdrawals().length,0)
+ delete state.definition;assert.equal(context.getWithdrawals().length,0,'legacy released records also stay hidden')
 })
 
 test('dashboard memo skips timeline and finance rebuilds while time-entry drafts change',async()=>{
@@ -153,7 +155,7 @@ test('dashboard calendar omits points from closed and inactive matters',()=>{
 test('task and withdrawal rows share the same matter trust without recomputing balances per task',async()=>{
  const {sortedTrust}=await import('../src/dashboard/model.js')
  let calculations=0
- const context={mioDeskToday:'2026-11-17',mioDeskFinanceState:{ready:true},matters:[{id:'m1',name:'Matter one'},{id:'m2',name:'Matter two'}],clients:[],billingEntries:[],mioInvoices:[],documents:[],canOpenPage:()=>true,checklistMatterOpenClosedValue:()=> 'open',currentBillingUserId:()=> 'u1',pendingLawPayAmountForMatter:()=>0,mioDeskWeekStart:d=>d,mioDeskPeriodSummary:()=>({}),mioDeskSortedTrust:sortedTrust,mioDeskClientName:()=> 'Example client',mioDeskRecentBillSends:()=>[],mioDeskRows:()=>[{matterId:'m1',kind:'settings'},{matterId:'m1',kind:'orders'},{matterId:'m2',kind:'service'}],mioDeskWithdrawals:()=>[{id:'m1'}],mioDeskFinanceFor:m=>{calculations++;return {trust:250,financialSnapshotResolved:m.id!=='m2'}}}
+ const context={mioDeskToday:'2026-11-17',mioDeskFinanceState:{ready:true},matters:[{id:'m1',name:'Matter one'},{id:'m2',name:'Matter two'}],clients:[],billingEntries:[],mioInvoices:[],documents:[],canOpenPage:()=>true,checklistMatterOpenClosedValue:()=> 'open',currentBillingUserId:()=> 'u1',pendingLawPayAmountForMatter:()=>0,mioDeskWeekStart:d=>d,mioDeskPeriodSummary:()=>({}),mioDeskSortedTrust:sortedTrust,mioDeskClientName:()=> 'Example client',mioDeskBillSends:()=>[],mioDeskRows:()=>[{matterId:'m1',kind:'settings'},{matterId:'m1',kind:'orders'},{matterId:'m2',kind:'service'}],mioDeskWithdrawals:()=>[{id:'m1'}],mioDeskFinanceFor:m=>{calculations++;return {trust:250,financialSnapshotResolved:m.id!=='m2'}}}
  vm.runInNewContext(nativeFunction('mioDeskBuildData')+';this.build=mioDeskBuildData',context)
  const data=context.build()
  assert.deepEqual(Array.from(data.rows,r=>r.trust),[250,250,null])
@@ -164,4 +166,15 @@ test('task and withdrawal rows share the same matter trust without recomputing b
  assert.ok(restricted.rows.every(r=>r.financeVisible===false&&r.trust===null))
  assert.equal(restricted.withdrawals[0].financeVisible,false)
  assert.equal(calculations,2)
+})
+
+test('bill hover details use native recorded and trust-applied payment totals without double counting',async()=>{
+ const {recentBillSends}=await import('../src/dashboard/model.js')
+ const invoice={id:'i1',matter_id:'m1',invoice_number:'INV-1',total:100,amount_paid:20,emailed_at:'2026-11-17T15:00:00Z'}
+ const context={mioInvoices:[invoice],mioDeskRecentBillSends:recentBillSends,financeNumber:value=>Number(value)||0,activeTrustPaymentsForInvoice:()=>[{amount:30}]}
+ vm.runInNewContext(nativeFunction('invoicePaidAmount')+'\n'+nativeFunction('invoiceBalanceAmount')+'\n'+nativeFunction('mioDeskBillSends')+';this.read=mioDeskBillSends',context)
+ let bill=context.read('m1')[0]
+ assert.equal(bill.total,100);assert.equal(bill.paid,30);assert.equal(bill.balance,70)
+ invoice.amount_paid=100;bill=context.read('m1')[0];assert.equal(bill.paid,100);assert.equal(bill.balance,0)
+ delete invoice.total;bill=context.read('m1')[0];assert.equal(bill.paid,null);assert.equal(bill.balance,null)
 })
