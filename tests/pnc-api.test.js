@@ -114,6 +114,14 @@ test('zoom meeting link is generated for the scheduled consultation and reused',
   const before=f.providerCalls.length;assert.equal((await f.call('create_zoom_meeting')).code,200);assert.equal(f.providerCalls.length,before)
   f.w.config.consultation_start='';assert.equal((await f.call('create_zoom_meeting')).code,409)
 })
+test('fee agreement blocks sending when the evergreen field is mapped but blank',async()=>{
+  const f=fixture();f.m.matter_status=model.CONSULT_STATUS
+  f.w.config.signature_pdf_fields='[{"semantic":"client_name","type":"text","page":0,"x":10,"y":20,"width":100,"height":20},{"semantic":"evergreen_minimum_balance","type":"text","page":0,"x":10,"y":50,"width":100,"height":20}]'
+  f.w.config.evergreen_minimum_balance=''
+  assert.equal((await f.call('send_signature',{confirmed:true})).code,409)
+  f.w.config.evergreen_minimum_balance='2000'
+  assert.equal((await f.call('send_signature',{confirmed:true})).code,200)
+})
 
 test('meeting type persists with the consultation config and invalid values fall back',async()=>{
   const f=fixture()
