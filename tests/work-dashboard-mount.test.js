@@ -149,3 +149,19 @@ test('dashboard calendar omits points from closed and inactive matters',()=>{
  vm.runInNewContext(nativeFunction('checklistMatterOpenClosedValue')+'\n'+memo+';this.timeline=mioDeskTimeline',context)
  assert.deepEqual(Array.from(context.timeline,r=>r.matterId),['open'])
 })
+
+test('task and withdrawal rows share the same matter trust without recomputing balances per task',async()=>{
+ const {sortedTrust}=await import('../src/dashboard/model.js')
+ let calculations=0
+ const context={mioDeskToday:'2026-11-17',mioDeskFinanceState:{ready:true},matters:[{id:'m1',name:'Matter one'},{id:'m2',name:'Matter two'}],clients:[],billingEntries:[],mioInvoices:[],documents:[],canOpenPage:()=>true,checklistMatterOpenClosedValue:()=> 'open',currentBillingUserId:()=> 'u1',pendingLawPayAmountForMatter:()=>0,mioDeskWeekStart:d=>d,mioDeskPeriodSummary:()=>({}),mioDeskSortedTrust:sortedTrust,mioDeskClientName:()=> 'Example client',mioDeskRecentBillSends:()=>[],mioDeskRows:()=>[{matterId:'m1',kind:'settings'},{matterId:'m1',kind:'orders'},{matterId:'m2',kind:'service'}],mioDeskWithdrawals:()=>[{id:'m1'}],mioDeskFinanceFor:m=>{calculations++;return {trust:250,financialSnapshotResolved:m.id!=='m2'}}}
+ vm.runInNewContext(nativeFunction('mioDeskBuildData')+';this.build=mioDeskBuildData',context)
+ const data=context.build()
+ assert.deepEqual(Array.from(data.rows,r=>r.trust),[250,250,null])
+ assert.equal(data.withdrawals[0].trust,250)
+ assert.equal(calculations,2)
+ context.canOpenPage=page=>page!=='billing'
+ const restricted=context.build()
+ assert.ok(restricted.rows.every(r=>r.financeVisible===false&&r.trust===null))
+ assert.equal(restricted.withdrawals[0].financeVisible,false)
+ assert.equal(calculations,2)
+})
