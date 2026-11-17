@@ -23,13 +23,17 @@ test('dashboard opens the exact task, shows client names without fetching mail, 
  const root=createRoot(document.getElementById('root'));const calls=[]
  try{
   const {default:Dashboard}=await import(componentPath.href)
-  const props={userId:'u1',billingUserId:'u1',matters:[{id:'m1',name:'Adams',clients:{email:'client@test'}}],rows:[row],billingEntries:[],finance:{ready:true,day:{},week:{}},trust:Array.from({length:16},(_,i)=>({id:String(i),name:`Matter ${i}`,clientName:`Client ${i}`,trust:160-i})),workflow:[{id:'w1',name:'Review orders',checked:false}],timeline:[],onWorkflow:()=>{},onOpen:r=>calls.push(['open',r.key]),onTime:r=>calls.push(['time',r?.key]),onMatter:()=>{},onNavigate:()=>{},onLegacyMail:()=>{},renderNativePlanning:view=>React.createElement('p',null,view)}
-  props.withdrawals=[{id:'withdraw1',name:'Divorce 12345',clientName:'Withdrawal client',kind:'waiting',status:'Waiting',next:'Client signature'}]
+  const props={userId:'u1',billingUserId:'u1',matters:[{id:'m1',name:'Adams',clients:{email:'client@test'}}],rows:[row],billingEntries:[],finance:{ready:true,day:{},week:{}},trust:Array.from({length:16},(_,i)=>({id:String(i),name:`Matter ${i}`,clientName:`Client ${i}`,trust:160-i})),workflow:[{id:'w1',name:'Review orders',checked:false}],timeline:[],onWorkflow:()=>{},onOpen:r=>calls.push(['open',r.key]),onTime:r=>calls.push(['time',r?.key]),onMatter:()=>{},onAddNeedToSet:()=>calls.push(['addNeedToSet']),onNavigate:()=>{},onLegacyMail:()=>{},renderNativePlanning:view=>React.createElement('p',null,view)}
+  props.withdrawals=[{id:'withdraw1',name:'Divorce 12345',clientName:'Withdrawal client',kind:'waiting',status:'Waiting',next:'Client signature',trust:2345.67,billSends:[{key:'i1:sent',invoiceNumber:'INV-1',issueDate:'2026-11-01',sentAt:'2026-11-03T01:00:00Z'}]}]
   props.onWithdrawal=id=>calls.push(['withdrawal',id])
   await act(async()=>root.render(React.createElement(Dashboard,props)))
   assert.match(document.querySelector('.desk-withdrawals').textContent,/Waiting/)
   assert.equal(document.querySelector('.desk-finance').firstElementChild.classList.contains('desk-withdrawals'),true)
   await act(async()=>document.querySelector('.desk-withdrawal-scroll button').click());assert.deepEqual(calls.pop(),['withdrawal','withdraw1'])
+  assert.match(document.querySelector('.desk-withdrawal-finance').textContent,/Trust: \$2,345.67/)
+  assert.match(document.querySelector('.desk-withdrawal-finance').textContent,/INV-1 · bill 11\/1\/26 · sent 11\/2\/26/)
+  const add=[...document.querySelectorAll('.desk-queue.settings button')].find(b=>b.textContent.includes('Add need to set'))
+  await act(async()=>add.click());assert.deepEqual(calls.pop(),['addNeedToSet'])
   assert.equal(document.querySelectorAll('.desk-trust-scroll button').length,16)
   await act(async()=>document.querySelector('.desk-task-open').click());assert.deepEqual(calls[0],['open','settings:e1'])
   assert.equal(document.querySelector('.desk-task-open strong').textContent,'Adams')
@@ -57,7 +61,7 @@ test('dashboard opens the exact task, shows client names without fetching mail, 
   await act(async()=>root.render(React.createElement(Dashboard,{...props,billingEntries:[{...entry,dashboard_save_state:'saved'}]})));assert.equal(document.querySelector('.desk-task').classList.contains('worked'),true)
   await act(async()=>document.querySelector('[aria-label="Add time: Adams, Temporary orders"]').click());assert.deepEqual(calls.at(-1),['time','settings:e1'])
   const tab=[...document.querySelectorAll('[role=tab]')].find(b=>b.textContent==='Matter timelines');await act(async()=>tab.click());assert.match(document.querySelector('.desk-planning-content').textContent,/matter_timelines/)
-  const count=document.querySelector('.desk-queue.settings header button');await act(async()=>count.click());assert.ok(document.querySelector('[role=dialog]'))
+  const count=document.querySelector('[aria-label="Expand Need to set queue"]');await act(async()=>count.click());assert.ok(document.querySelector('[role=dialog]'))
   await act(async()=>document.querySelector('.mio-desk-modal .desk-task-open').click());assert.equal(document.querySelector('[role=dialog]'),null)
  }finally{await act(async()=>root.unmount());await fs.unlink(componentPath);const {supabase}=await import('../src/supabaseClient.js');await supabase.auth.getSession();await supabase.auth.stopAutoRefresh();supabase.auth.broadcastChannel?.close();dom.window.close()}
 })

@@ -28,9 +28,10 @@ test('dashboard evaluates saved withdrawal workflows with its actual imported bi
   for(const specifier of match[1].split(',')){const [name,alias]=specifier.trim().split(/\s+as\s+/);bindings[alias||name]=module[name]}
  }
  const state={status:'active',definition:{steps:[{id:'drafting',name:'Prepare withdrawal motion',input_slots:[]}]},steps:{drafting:{status:'needs_action',attention_since:'2026-11-16T10:00:00Z'}}}
- const context={...bindings,mioDeskClientName:()=> 'Withdrawal client',clients:[],canOpenPage:()=>true,withdrawalMatters:[{id:'m1'}],mioWithdrawalSnapshot:{rows:{m1:{state}}},matters:[{id:'m1',name:'Saved withdrawal matter'}]}
- vm.runInNewContext(nativeFunction('mioDeskWithdrawals')+'\nthis.getWithdrawals=mioDeskWithdrawals',context)
+ const context={...bindings,mioDeskClientName:()=> 'Withdrawal client',clients:[],canOpenPage:()=>true,withdrawalMatters:[{id:'m1'},{id:'closed'}],mioWithdrawalSnapshot:{rows:{m1:{state},archived:{state}}},matters:[{id:'m1',name:'Saved withdrawal matter'},{id:'closed',name:'Closed withdrawal',case_status:'Closed',is_active:true},{id:'archived',name:'Archived withdrawal',is_active:false}]}
+ vm.runInNewContext(nativeFunction('checklistMatterOpenClosedValue')+'\n'+nativeFunction('mioDeskWithdrawals')+'\nthis.getWithdrawals=mioDeskWithdrawals',context)
  let result=context.getWithdrawals()
+ assert.equal(result.length,1,'closed and archived matters must not be revived by withdrawal records')
  assert.equal(result[0].status,'Needs action')
  assert.equal(result[0].next,'Prepare withdrawal motion')
  state.steps.drafting={status:'waiting',waiting_on:'Client signature'}
@@ -116,4 +117,35 @@ test('global clock summary reuses coverage while typing, and refreshes after a s
   context.dailyBillingDate='2026-11-17';await React.act(async()=>root.render(React.createElement(Harness,{draft:'saved'})))
   assert.equal(calculations,3)
  }finally{await React.act(async()=>root.unmount());dom.window.close();globalThis.window=previousWindow;globalThis.document=previousDocument}
+})
+
+test('dashboard add setting uses the native undated event form without leaving the page',()=>{
+ const context={emptyEventForm:{matter_id:'',title:'',start_date:'today'},setEditingEventId:v=>context.editing=v,setEventForm:v=>context.form=v,setShowEventWindow:v=>context.open=v}
+ vm.runInNewContext(nativeFunction('openAddEventWindow')+'\n'+nativeFunction('openAddUndatedEventWindow')+';this.add=openAddUndatedEventWindow',context)
+ context.add()
+ assert.equal(context.form.start_date,'');assert.equal(context.form.end_date,'');assert.equal(context.open,true)
+ assert.ok(code.includes("onAddNeedToSet={canOpenPage('need_to_set')?openAddUndatedEventWindow:null}"))
+ assert.ok(code.includes("<SmartMatterSelect activeOnly={page==='dashboard'}"))
+})
+test('embedded planning is restricted to open cases while full-page filters keep their defaults',()=>{
+ assert.ok(code.includes('function renderMatterTimelinesPage(openOnly = false)'))
+ assert.ok(code.includes("(!openOnly || checklistMatterOpenClosedValue(row.matter)==='open')"))
+ assert.ok(code.includes('function renderChecklistTimelineView(openOnly = false)'))
+ assert.ok(code.includes("(!openOnly || checklistMatterOpenClosedValue(checklistMatterForEvent(event)||{is_active:false})==='open')"))
+ assert.ok(code.includes('renderMatterTimelinesPage(true)'))
+ assert.ok(code.includes('renderChecklistTimelineView(true)'))
+})
+
+test('dashboard calendar omits points from closed and inactive matters',()=>{
+ const bridge=fs.readFileSync('src/dashboard/appBridge.inc','utf8')
+ const start=bridge.indexOf('  const mioDeskTimeline=useMemo('),end=bridge.indexOf('  const mioDeskData=useMemo(',start),memo=bridge.slice(start,end)
+ const context={}
+ for(const name of memo.match(/,\[([^\]]+)\]/)[1].split(','))context[name]=null
+ Object.assign(context,{page:'dashboard',session:{user:{id:'u1'}},isFirmStaffMember:()=>true,canOpenPage:()=>true,useMemo:calculate=>calculate(),allMatterTimelineData:()=>[
+  {matter:{id:'open',case_status:'Client'},points:[{sourceId:'e1',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Open hearing'}]},
+  {matter:{id:'closed',case_status:'Closed'},points:[{sourceId:'e2',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Closed hearing'}]},
+  {matter:{id:'inactive',is_active:false},points:[{sourceId:'e3',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Inactive hearing'}]}
+ ]})
+ vm.runInNewContext(nativeFunction('checklistMatterOpenClosedValue')+'\n'+memo+';this.timeline=mioDeskTimeline',context)
+ assert.deepEqual(Array.from(context.timeline,r=>r.matterId),['open'])
 })

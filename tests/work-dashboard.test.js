@@ -55,3 +55,22 @@ test('client labels resolve joined and separately loaded records instead of case
  assert.equal(clientNameForMatter({clients:[{first_name:'Nayelly',last_name:'Garcia'}]}),'Nayelly Garcia')
  assert.equal(clientNameForMatter({name:'Divorce 123'}),'Client not linked')
 })
+
+test('withdrawal bill history uses the latest three actual sends for the same matter',async()=>{
+ const {recentBillSends}=await import('../src/dashboard/model.js')
+ const invoices=[
+  {id:'i1',matter_id:'m1',invoice_number:'INV-1',issue_date:'2026-10-01',emailed_at:'2026-11-03T16:00:00Z',email_history:[{sent_at:'2026-11-01T16:00:00Z'},{sent_at:'2026-11-03T16:00:00Z'}]},
+  {id:'i2',matter_id:'m1',invoice_number:'INV-2',issue_date:'2026-11-05',email_history:[{sent_at:'2026-11-06T16:00:00Z'},{sent_at:'2026-11-07T16:00:00Z',status:'failed'},{sent_at:'invalid'}]},
+  {id:'draft',matter_id:'m1',issue_date:'2026-11-17',updated_at:'2026-11-17T16:00:00Z'},
+  {id:'trust',matter_id:'m1',invoice_type:'trust_request',emailed_at:'2026-11-17T16:00:00Z'},
+  {id:'other',matter_id:'m2',emailed_at:'2026-11-17T16:00:00Z'}
+ ]
+ const sends=recentBillSends('m1',invoices)
+ assert.deepEqual(sends.map(s=>s.invoiceNumber),['INV-2','INV-1','INV-1'])
+ assert.deepEqual(sends.map(s=>s.sentAt),['2026-11-06T16:00:00Z','2026-11-03T16:00:00Z','2026-11-01T16:00:00Z'])
+ assert.equal(sends[0].issueDate,'2026-11-05')
+ assert.deepEqual(recentBillSends('m3',invoices),[])
+ invoices.push({id:'latest',matter_id:'m1',emailed_at:'2026-11-16T16:00:00Z'})
+ assert.equal(recentBillSends('m1',invoices).length,3)
+ assert.equal(recentBillSends('m1',invoices)[0].invoiceId,'latest')
+})

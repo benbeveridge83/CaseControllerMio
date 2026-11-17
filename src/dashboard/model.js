@@ -61,3 +61,24 @@ export function clientNameForMatter(matter={},clients=[]){
  }
  return String(matter.client_name||'').trim()||'Client not linked'
 }
+
+// Send history is evidence of delivery attempts accepted by the mail provider.
+// An issue/due date or a draft's updated_at is not a send date.
+export function recentBillSends(matterId,invoices=[]){
+ const sends=[],seen=new Set()
+ for(const invoice of invoices){
+  if(String(invoice.matter_id)!==String(matterId)||invoice.invoice_type==='trust_request')continue
+  const history=[...(Array.isArray(invoice.email_history)?invoice.email_history:[])]
+  if(invoice.emailed_at)history.push({sent_at:invoice.emailed_at})
+  for(const entry of history){
+   if(entry.error||entry.status==='failed')continue
+   const time=Date.parse(entry.sent_at)
+   if(!Number.isFinite(time))continue
+   const key=`${invoice.id}:${time}`
+   if(seen.has(key))continue
+   seen.add(key)
+   sends.push({key,invoiceId:invoice.id,invoiceNumber:invoice.invoice_number||'Invoice',issueDate:invoice.issue_date||'',sentAt:entry.sent_at,time})
+  }
+ }
+ return sends.sort((a,b)=>b.time-a.time||a.key.localeCompare(b.key)).slice(0,3)
+}
