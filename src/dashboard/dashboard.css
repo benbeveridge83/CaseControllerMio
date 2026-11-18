@@ -62,3 +62,25 @@
 .desk-task-actions{display:flex;align-items:center}
 .desk-withdrawal-scroll>button{display:block;padding:6px 7px}
 .desk-bill-indicator{flex-shrink:0;font-size:10px;color:#41566c;font-weight:700;white-space:nowrap}
+
+/* Firm-wide task list */
+.mio-todo-card,.mio-todo-page{background:#fff;border:1px solid #d9e0e8;border-radius:10px;padding:13px;margin:0 0 14px;color:#172033;text-align:left}
+.mio-todo-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:9px}
+.mio-todo-head h2{font-size:15px;margin:0;color:#172033}
+.mio-todo-head small,.mio-todo-row small,.mio-todo-more{display:block;color:#64748b;font-size:11px}
+.mio-todo-head button,.mio-todo-form button{border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;padding:5px 9px;font-size:12px}
+.mio-todo-row{display:flex;align-items:center;gap:9px;border-top:1px solid #edf0f4;padding:7px 2px;min-width:0}
+.mio-todo-check{border:1px solid #cbd5e1;background:#fff;border-radius:4px;width:23px;height:23px;flex-shrink:0;color:#16834a}
+.mio-todo-main{display:flex;flex-direction:column;min-width:0;flex:1}
+.mio-todo-main strong{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mio-todo-priority{font-size:10px;border-radius:10px;padding:2px 7px;background:#eef2f7;white-space:nowrap}
+.mio-todo-priority.urgent,.mio-todo-priority.high{background:#fee2e2;color:#991b1b}
+.mio-todo-priority.low{background:#f1f5f9;color:#64748b}
+.mio-todo-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:10px 0}
+.mio-todo-form input,.mio-todo-form select{min-width:0;width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:5px;padding:7px;font-size:12px;background:#fff;color:#172033}
+.mio-todo-empty{font-size:12px;color:#64748b;padding:10px 0}
+.mio-todo-error{font-size:11px;color:#b91c1c;margin:5px 0}
+.mio-todo-more{margin-top:7px}
+.mio-todo-expanded{margin-top:10px;max-height:460px;overflow:auto;border-top:1px solid #e2e8f0;padding-top:8px}
+.mio-todo-expanded .mio-todo-card{border:0;padding:0;margin:0}
+@media(max-width:650px){.mio-todo-form{grid-template-columns:1fr 1fr}.mio-todo-head{align-items:flex-start}}
