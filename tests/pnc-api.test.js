@@ -17,7 +17,7 @@ function fixture(){
   return q
  }
  const db={from,storage:{from:()=>({async download(){return {data:{arrayBuffer:async()=>new ArrayBuffer(4)},error:null}},async upload(path){f.uploads.push(path);return {error:null}},async createSignedUrl(path){f.signedUrls.push(path);return {data:{signedUrl:'https://storage.invalid/'+path},error:null}}})},auth:{getUser:async()=>({data:{user:f.user},error:null})},functions:{async invoke(name,{body}){if(name==='pnc-payment-status')return {data:{ok:true,transactions:f.transactions},error:null};assert.equal(name,'lawpay-gateway');assert.equal(body.action,'create_link');f.requests.push({...body,id:'request-'+f.requests.length,created_by:uid,payment_url:body.payment_page_url+'?amount='+body.amount_cents,created_at:'2026-01-01'});return {data:{url:f.requests.at(-1).payment_url},error:null}}}}
- const provider=async(url,options)=>{f.providerCalls.push({url,options});if(f.failProvider)throw Error('Synthetic provider outage');const respond=data=>({ok:true,json:async()=>data,text:async()=>JSON.stringify(data)});if(url.includes('/v1/document/properties'))return respond({documentId:'doc',status:f.signComplete?'Completed':'InProgress'});if(url.includes('/v1/document/send'))return respond({documentId:'doc'});if(url.includes('/v1/document/download'))return {ok:true,status:200,arrayBuffer:async()=>new ArrayBuffer(16),text:async()=>''};if(url.includes('/v1/document/remind'))return respond({ok:true});if(url.includes('zoom.us/oauth/token'))return respond({access_token:'zoom-test-token',token_type:'bearer',expires_in:3600});if(url.includes('api.zoom.us/v2/users/'))return respond({id:123456789,join_url:'https://zoom.us/j/123456789',start_url:'https://zoom.us/s/123456789',start_time:'2026-11-14T14:00:00Z'});return respond({})}
+ const provider=async(url,options)=>{f.providerCalls.push({url,options});if(f.failProvider)throw Error('Synthetic provider outage');const respond=data=>({ok:true,json:async()=>data,text:async()=>JSON.stringify(data)});if(url.includes('/v1/document/properties'))return respond({documentId:'doc',status:f.signComplete?'Completed':'InProgress'});if(url.includes('/v1/document/send'))return respond({documentId:'doc'});if(url.includes('/v1/document/download'))return {ok:true,status:200,arrayBuffer:async()=>new ArrayBuffer(16),text:async()=>''};if(url.includes('/v1/document/remind'))return respond({ok:true});if(url.includes('/v1/document/revoke'))return respond({ok:true});if(url.includes('zoom.us/oauth/token'))return respond({access_token:'zoom-test-token',token_type:'bearer',expires_in:3600});if(url.includes('api.zoom.us/v2/users/'))return respond({id:123456789,join_url:'https://zoom.us/j/123456789',start_url:'https://zoom.us/s/123456789',start_time:'2026-11-14T14:00:00Z'});return respond({})}
  const args={createClient:()=>db,randomBytes:crypto.randomBytes,randomUUID:crypto.randomUUID,createHash:crypto.createHash,...model,...config,fetch:provider,process:{env:{SUPABASE_URL:'https://db.invalid',SUPABASE_ANON_KEY:'public-test-only',boldsignapi:'test-only',ZOOM_ACCOUNT_ID:'acct',ZOOM_CLIENT_ID:'cid',ZOOM_CLIENT_SECRET:'secret',ZOOM_USER_ID:'office@beveridgelawfirm.com'}}}
  const handler=new Function(...Object.keys(args),raw+'\nreturn pncHandler')(...Object.values(args))
  f.w=w;f.m=m;f.tables=tables;f.call=async(action,body={},headers={authorization:'Bearer test-only',host:'example.invalid'})=>{let response;const res={setHeader(){},status(n){res.code=n;return res},json(data){response={code:res.code,body:data};return response}};await handler({method:'POST',query:{integration:'pnc'},body:{action,matter_id:mid,...body},headers},res);return response};return f
@@ -129,4 +129,17 @@ test('meeting type persists with the consultation config and invalid values fall
   assert.equal(a.code,200);assert.equal(f.w.config.meeting_type,'zoom')
   const b=await f.call('save',{revision:f.w.revision,config:{meeting_type:'bogus'}})
   assert.equal(b.code,200);assert.equal(f.w.config.meeting_type,'in_person')
+})
+
+test('voiding a sent fee agreement clears it so a revised one can be sent',async()=>{
+  const f=fixture();f.m.matter_status=model.CONSULT_STATUS
+  await f.call('send_signature',{confirmed:true})
+  assert.equal(f.w.state.signature.id,'doc')
+  const r=await f.call('revoke_signature',{confirmed:true})
+  assert.equal(r.code,200)
+  assert.equal(f.w.state.signature.status,'not_sent')
+  assert.equal(f.w.state.signature_history.length,1)
+  assert.equal(f.w.state.signature_history[0].status,'revoked')
+  assert.ok(f.providerCalls.some(x=>x.url.includes('/v1/document/revoke')))
+  assert.equal((await f.call('send_signature',{confirmed:true})).code,200)
 })
