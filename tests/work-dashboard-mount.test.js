@@ -28,15 +28,18 @@ test('dashboard evaluates saved withdrawal workflows with its actual imported bi
   for(const specifier of match[1].split(',')){const [name,alias]=specifier.trim().split(/\s+as\s+/);bindings[alias||name]=module[name]}
  }
  const state={status:'active',definition:{steps:[{id:'drafting',name:'Prepare withdrawal motion',input_slots:[]}]},steps:{drafting:{status:'needs_action',attention_since:'2026-11-16T10:00:00Z'}}}
- const context={...bindings,mioDeskClientName:()=> 'Withdrawal client',clients:[],canOpenPage:()=>true,withdrawalMatters:[{id:'m1'}],mioWithdrawalSnapshot:{rows:{m1:{state}}},matters:[{id:'m1',name:'Saved withdrawal matter'}]}
- vm.runInNewContext(nativeFunction('mioDeskWithdrawals')+'\nthis.getWithdrawals=mioDeskWithdrawals',context)
+ const context={...bindings,mioDeskClientName:()=> 'Withdrawal client',clients:[],canOpenPage:()=>true,withdrawalMatters:[{id:'m1'},{id:'closed'}],mioWithdrawalSnapshot:{rows:{m1:{state},archived:{state}}},matters:[{id:'m1',name:'Saved withdrawal matter'},{id:'closed',name:'Closed withdrawal',case_status:'Closed',is_active:true},{id:'archived',name:'Archived withdrawal',is_active:false}]}
+ vm.runInNewContext(nativeFunction('checklistMatterOpenClosedValue')+'\n'+nativeFunction('mioDeskWithdrawals')+'\nthis.getWithdrawals=mioDeskWithdrawals',context)
  let result=context.getWithdrawals()
+ assert.equal(result.length,1,'closed and archived matters must not be revived by withdrawal records')
  assert.equal(result[0].status,'Needs action')
  assert.equal(result[0].next,'Prepare withdrawal motion')
  state.steps.drafting={status:'waiting',waiting_on:'Client signature'}
  result=context.getWithdrawals();assert.equal(result[0].status,'Waiting');assert.equal(result[0].next,'Client signature')
  state.status='complete';assert.equal(context.getWithdrawals()[0].status,'Complete')
  state.status='active';state.paused=true;assert.equal(context.getWithdrawals()[0].status,'Paused')
+ state.status='released';assert.equal(context.getWithdrawals().length,0)
+ delete state.definition;assert.equal(context.getWithdrawals().length,0,'legacy released records also stay hidden')
 })
 
 test('dashboard memo skips timeline and finance rebuilds while time-entry drafts change',async()=>{
@@ -116,4 +119,62 @@ test('global clock summary reuses coverage while typing, and refreshes after a s
   context.dailyBillingDate='2026-11-17';await React.act(async()=>root.render(React.createElement(Harness,{draft:'saved'})))
   assert.equal(calculations,3)
  }finally{await React.act(async()=>root.unmount());dom.window.close();globalThis.window=previousWindow;globalThis.document=previousDocument}
+})
+
+test('dashboard add setting uses the native undated event form without leaving the page',()=>{
+ const context={emptyEventForm:{matter_id:'',title:'',start_date:'today'},setEditingEventId:v=>context.editing=v,setEventForm:v=>context.form=v,setShowEventWindow:v=>context.open=v}
+ vm.runInNewContext(nativeFunction('openAddEventWindow')+'\n'+nativeFunction('openAddUndatedEventWindow')+';this.add=openAddUndatedEventWindow',context)
+ context.add()
+ assert.equal(context.form.start_date,'');assert.equal(context.form.end_date,'');assert.equal(context.open,true)
+ assert.ok(code.includes("onAddNeedToSet={canOpenPage('need_to_set')?openAddUndatedEventWindow:null}"))
+ assert.ok(code.includes("<SmartMatterSelect activeOnly={page==='dashboard'}"))
+})
+test('embedded planning is restricted to open cases while full-page filters keep their defaults',()=>{
+ assert.ok(code.includes('function renderMatterTimelinesPage(openOnly = false)'))
+ assert.ok(code.includes("(!openOnly || checklistMatterOpenClosedValue(row.matter)==='open')"))
+ assert.ok(code.includes('function renderChecklistTimelineView(openOnly = false)'))
+ assert.ok(code.includes("(!openOnly || checklistMatterOpenClosedValue(checklistMatterForEvent(event)||{is_active:false})==='open')"))
+ assert.ok(code.includes('renderMatterTimelinesPage(true)'))
+ assert.ok(code.includes('renderChecklistTimelineView(true)'))
+})
+
+test('dashboard calendar omits points from closed and inactive matters',()=>{
+ const bridge=fs.readFileSync('src/dashboard/appBridge.inc','utf8')
+ const start=bridge.indexOf('  const mioDeskTimeline=useMemo('),end=bridge.indexOf('  const mioDeskData=useMemo(',start),memo=bridge.slice(start,end)
+ const context={}
+ for(const name of memo.match(/,\[([^\]]+)\]/)[1].split(','))context[name]=null
+ Object.assign(context,{page:'dashboard',session:{user:{id:'u1'}},isFirmStaffMember:()=>true,canOpenPage:()=>true,useMemo:calculate=>calculate(),allMatterTimelineData:()=>[
+  {matter:{id:'open',case_status:'Client'},points:[{sourceId:'e1',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Open hearing'}]},
+  {matter:{id:'closed',case_status:'Closed'},points:[{sourceId:'e2',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Closed hearing'}]},
+  {matter:{id:'inactive',is_active:false},points:[{sourceId:'e3',type:'hearing',sourceType:'event',date:'2026-11-18',label:'Inactive hearing'}]}
+ ]})
+ vm.runInNewContext(nativeFunction('checklistMatterOpenClosedValue')+'\n'+memo+';this.timeline=mioDeskTimeline',context)
+ assert.deepEqual(Array.from(context.timeline,r=>r.matterId),['open'])
+})
+
+test('task and withdrawal rows share the same matter trust without recomputing balances per task',async()=>{
+ const {sortedTrust}=await import('../src/dashboard/model.js')
+ let calculations=0
+ const context={mioDeskToday:'2026-11-17',mioDeskFinanceState:{ready:true},matters:[{id:'m1',name:'Matter one'},{id:'m2',name:'Matter two'}],clients:[],billingEntries:[],mioInvoices:[],documents:[],canOpenPage:()=>true,checklistMatterOpenClosedValue:()=> 'open',currentBillingUserId:()=> 'u1',pendingLawPayAmountForMatter:()=>0,mioDeskWeekStart:d=>d,mioDeskPeriodSummary:()=>({}),mioDeskSortedTrust:sortedTrust,mioDeskClientName:()=> 'Example client',mioDeskBillSends:()=>[],mioDeskRows:()=>[{matterId:'m1',kind:'settings'},{matterId:'m1',kind:'orders'},{matterId:'m2',kind:'service'}],mioDeskWithdrawals:()=>[{id:'m1'}],mioDeskFinanceFor:m=>{calculations++;return {trust:250,financialSnapshotResolved:m.id!=='m2'}}}
+ vm.runInNewContext(nativeFunction('mioDeskBuildData')+';this.build=mioDeskBuildData',context)
+ const data=context.build()
+ assert.deepEqual(Array.from(data.rows,r=>r.trust),[250,250,null])
+ assert.equal(data.withdrawals[0].trust,250)
+ assert.equal(calculations,2)
+ context.canOpenPage=page=>page!=='billing'
+ const restricted=context.build()
+ assert.ok(restricted.rows.every(r=>r.financeVisible===false&&r.trust===null))
+ assert.equal(restricted.withdrawals[0].financeVisible,false)
+ assert.equal(calculations,2)
+})
+
+test('bill hover details use native recorded and trust-applied payment totals without double counting',async()=>{
+ const {recentBillSends}=await import('../src/dashboard/model.js')
+ const invoice={id:'i1',matter_id:'m1',invoice_number:'INV-1',total:100,amount_paid:20,emailed_at:'2026-11-17T15:00:00Z'}
+ const context={mioInvoices:[invoice],mioDeskRecentBillSends:recentBillSends,financeNumber:value=>Number(value)||0,activeTrustPaymentsForInvoice:()=>[{amount:30}]}
+ vm.runInNewContext(nativeFunction('invoicePaidAmount')+'\n'+nativeFunction('invoiceBalanceAmount')+'\n'+nativeFunction('mioDeskBillSends')+';this.read=mioDeskBillSends',context)
+ let bill=context.read('m1')[0]
+ assert.equal(bill.total,100);assert.equal(bill.paid,30);assert.equal(bill.balance,70)
+ invoice.amount_paid=100;bill=context.read('m1')[0];assert.equal(bill.paid,100);assert.equal(bill.balance,0)
+ delete invoice.total;bill=context.read('m1')[0];assert.equal(bill.paid,null);assert.equal(bill.balance,null)
 })
