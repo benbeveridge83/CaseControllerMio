@@ -110,3 +110,13 @@ test('invoice packet identifies exact WIP IDs and refuses changed records',()=>{
  assert.equal(validateWeeklyInvoiceSnapshot(packet,original.map(x=>x.id==='2'?{...x,payload:{invoice_id:'other'}}:x)),false)
  assert.equal(validateWeeklyInvoiceSnapshot(packet,[...original,{id:'4',matter_id:'a',amount:20,payload:{}}]),false)
 })
+
+test('sharing is a source restriction: disabling destination sharing does not block receiving authorized funds',()=>{
+ const p=createWeeklyBillingProposal({matters:rows.map(x=>x.id==='b'?{...x,shareTrust:false}:x),authorizations:{a:true}})
+ assert.equal(p.payments.some(x=>x.sourceMatterId==='a'&&x.destinationMatterId==='b'),true)
+})
+test('the default Share Trust flag is checked even for appointed matters, while billing remains excluded',()=>{
+ const defaults=weeklyBillingDefaults({appointed:true})
+ assert.equal(defaults.included,false)
+ assert.equal(defaults.shareTrust,true)
+})
