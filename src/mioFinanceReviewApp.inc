@@ -148,7 +148,7 @@
     let sentCount=0,failedCount=0
     try {
       for(const row of rows) {
-        let sendStarted=false
+        let sendStarted=false, sendClaim=null
         try {
           const amount=Number(row.amount)
           if(!Number.isFinite(amount)||amount<0)throw new Error('Enter a valid nonnegative amount.')
@@ -181,6 +181,12 @@
           const outstanding=[...work,...plan.previouslyIssued]
           if(outstanding.some(i=>!/^https:\/\/[^\s]+$/i.test(String(i.payment_url||''))))
             throw new Error('One or more unpaid invoices lack a verified HTTPS payment link. Resolve them before consolidated sending.')
+          const fingerprint=await replenishmentFingerprint({
+            matterId:row.matter_id,kind:amount===0?'reminder':'new',amount,trust,target,
+            invoices:fresh.filter(i=>String(i.matter_id)===String(row.matter_id)&&i.invoice_type==='trust_request')
+          })
+          sendClaim={userId:session.user.id,matterId:row.matter_id,fingerprint}
+          await claimReplenishmentSend(supabase,{...sendClaim,kind:amount===0?'reminder':'new'})
           if(amount===0){
             // Reminder-only: reuse an existing invoice and do not issue any new trust request.
             const reminderInvoice=plan.previouslyIssued[0]||work[0]
@@ -198,6 +204,7 @@
               recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,
               subject:'Outstanding work invoices and trust replenishment reminder',message:combined
             })
+            await finishReplenishmentClaim(supabase,{...sendClaim,status:'sent',invoiceId:reminderSent.id})
             sentCount++;updateReplenishmentRow(row.id,{invoice:reminderSent,send_status:'sent',included:false,send_error:''})
             continue
           }
@@ -222,8 +229,10 @@
           // Earlier invoice links must already be verified; never fabricate URLs.
           sendStarted=true
           const sent=await sendInvoiceDocumentEmail(matter,approved,{recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,subject:replaceTokens(row.subject),message:combined})
+          await finishReplenishmentClaim(supabase,{...sendClaim,status:'sent',invoiceId:sent.id})
           sentCount++;updateReplenishmentRow(row.id,{invoice:sent,send_status:'sent',included:false,send_error:''})
         } catch(error) {
+          if(sendClaim){try{await finishReplenishmentClaim(supabase,{...sendClaim,status:'needs_review'})}catch{/* Claim stays locked pending manual review. */}}
           failedCount++
           updateReplenishmentRow(row.id,{send_status:sendStarted?'uncertain':'error',send_error:`${error?.message||error}${sendStarted?' Sending did not finish cleanly. Check Sent Items and the invoice email history before retrying; Mio will not automatically send it again.':''}`})
         }
