@@ -6,6 +6,8 @@ on:
       - 'src/mioWeeklyBillingModel.js'
       - 'mio-weekly-billing-review-mount.js'
       - 'tests/weekly-billing-review.test.js'
+      - 'tests/weekly-billing-withdrawal.test.js'
+      - 'src/mioWeeklyWithdrawal.inc'
       - 'vite.config.js'
       - '.github/workflows/weekly-billing-review.yml'
   push:
@@ -27,6 +29,6 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - name: Weekly billing decision engine tests
-        run: node --test tests/weekly-billing-review.test.js
+        run: node --test tests/weekly-billing-review.test.js tests/weekly-billing-withdrawal.test.js
       - name: Production build syntax check
         run: npm run build
