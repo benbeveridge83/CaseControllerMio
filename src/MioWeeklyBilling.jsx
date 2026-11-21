@@ -8,13 +8,14 @@ const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,backg
 const KEY='mioWeeklyBillingSettingsV1'
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
   const [invoicePacket,setInvoicePacket]=useState(null)
   const [packetBusy,setPacketBusy]=useState(false)
+  const [ownPaymentExcluded,setOwnPaymentExcluded]=useState([])
   const [selected,setSelected]=useState(null)
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
@@ -155,6 +156,20 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         {suggestions.map(p=><div key={p.id} style={{marginBottom:8}}><strong>{p.sourceName}</strong> → {p.destinationName} · up to {USD(p.amount)} (unverified)</div>)}
       </section>}
       {eligiblePayments.length===0&&<p>No verified payments available. Trust balances are deliberately unavailable until the live trust-availability integration is tested.</p>}
+      <section style={{border:'1px solid #cbd5e1',borderRadius:8,padding:12,margin:'12px 0'}}>
+        <strong>Same-matter trust payment approvals</strong>
+        <p style={small}>Only existing outstanding invoices are eligible. These displayed balances are indications, not authorization. Mio will recalculate and ask you to confirm the actual amount before posting.</p>
+        {rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005).map(m=><div key={m.id} style={{padding:7,borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+          <label><input type="checkbox" checked={!ownPaymentExcluded.includes(m.id)} onChange={e=>setOwnPaymentExcluded(previous=>e.target.checked?previous.filter(id=>id!==m.id):[...new Set([...previous,m.id])])}/> {m.name}</label>
+          <span style={small}>Work OB {USD(m.workOB)} · Displayed trust {USD(m.displayTrust)}</span>
+        </div>)}
+        {onPayOwnMatterTrust&&<button style={button} onClick={()=>{
+          const ids=rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005&&!ownPaymentExcluded.includes(m.id)).map(m=>m.id)
+          if(ids.length)onPayOwnMatterTrust(ids)
+          else setNotice('No approved matters have both existing Work OB and displayed trust.')
+        }}>Review & confirm same-matter trust payments in Mio</button>}
+        <p style={small}>Cross-matter payments are NOT included in this action. Individual invoice-level payments remain available in Mio's invoice detail workflow.</p>
+      </section>
       {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8}}>
         <div><strong>{p.destinationName} — {USD(p.amount)}</strong>{p.crossMatter&&<strong style={{color:'#a16207'}}> · CROSS-MATTER</strong>}</div>
         <div style={small}>Funds from {p.sourceName} → invoice of {p.destinationName}</div>
