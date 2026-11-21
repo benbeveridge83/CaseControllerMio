@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding} from '../src/mioWeeklyBillingModel.js'
-import {summarizeWeeklyBillingEntries} from '../src/mioWeeklyBillingData.js'
+import {summarizeWeeklyBillingEntries,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from '../src/mioWeeklyBillingData.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
  {id:'b',name:'Client — Other',clientId:'client1',wip:180,workOB:400,availableTrust:0,included:true,shareTrust:true},
@@ -73,10 +73,10 @@ test('isolated matter never shares funds as a source or destination',()=>{
 
 test('WIP comes only from uninvoiced, billable entries and Work OB excludes trust requests',()=>{
  const summary=summarizeWeeklyBillingEntries([
-  {matter_id:'a',amount:110,do_not_bill:false,payload:{}},
-  {matter_id:'a',amount:40,do_not_bill:false,payload:{invoice_id:'already-invoiced'}},
-  {matter_id:'a',amount:70,do_not_bill:true,payload:{}},
-  {matter_id:'b',amount:50,do_not_bill:false,payload:{non_billable:true}}
+  {id:'1',matter_id:'a',amount:110,do_not_bill:false,payload:{}},
+  {id:'2',matter_id:'a',amount:40,do_not_bill:false,payload:{invoice_id:'already-invoiced'}},
+  {id:'3',matter_id:'a',amount:70,do_not_bill:true,payload:{}},
+  {id:'4',matter_id:'b',amount:50,do_not_bill:false,payload:{non_billable:true}}
  ],[
   {matter_id:'a',invoice_type:'services',status:'outstanding',balance:80,issue_date:'2026-01-03'},
   {matter_id:'a',invoice_type:'trust_request',status:'outstanding',balance:500,issue_date:'2025-01-01'},
@@ -96,4 +96,17 @@ test('two funding sources do not double-count the same destination obligation',(
   {id:'c',name:'Owed C',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
  ])
  assert.equal(candidates.filter(x=>x.destinationMatterId==='c').reduce((sum,x)=>sum+x.amount,0),600)
+})
+
+test('invoice packet identifies exact WIP IDs and refuses changed records',()=>{
+ const original=[
+  {id:'1',matter_id:'a',amount:110,description:'review',entry_date:'2026-11-01',payload:{}},
+  {id:'2',matter_id:'a',amount:50,description:'drafting',entry_date:'2026-11-02',payload:{}},
+  {id:'3',matter_id:'b',amount:90,description:'other matter',entry_date:'2026-11-02',payload:{}}
+ ]
+ const packet=prepareWeeklyInvoiceDrafts(original,['a'])
+ assert.deepEqual(packet.map(x=>({matter:x.matterId,ids:x.entryIds,total:x.totalCents})),[{matter:'a',ids:['1','2'],total:16000}])
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,original),true)
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,original.map(x=>x.id==='2'?{...x,payload:{invoice_id:'other'}}:x)),false)
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,[...original,{id:'4',matter_id:'a',amount:20,payload:{}}]),false)
 })
