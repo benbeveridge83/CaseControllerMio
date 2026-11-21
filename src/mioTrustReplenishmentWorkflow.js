@@ -36,7 +36,8 @@ export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
     // previously issued requests or silently subtracted from the shortfall.
     const trust=unpaid.filter(i=>isTrust(i)&&String(i.status||'').toLowerCase()!=='draft').map(desc);
     const unsentTrustDrafts=unpaid.filter(i=>isTrust(i)&&String(i.status||'').toLowerCase()==='draft').map(desc);
-    const work=unpaid.filter(isWork).map(desc);
+    const unsentWorkDrafts=unpaid.filter(i=>isWork(i)&&String(i.status||'').toLowerCase()==='draft').map(desc);
+    const work=unpaid.filter(i=>isWork(i)&&String(i.status||'').toLowerCase()!=='draft').map(desc);
     const target=Number(cfg.target_trust ?? m.target_trust ?? m.initial_retainer ?? m.minimum_balance ?? 0);
     const balance=Number(m.current_trust ?? m.trust_balance ?? 0);
     const outstandingTrust=sum(trust.map(i=>({remaining_balance:i.remaining})));
@@ -46,7 +47,7 @@ export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
       current_trust:balance,minimum_trust:Number(cfg.minimum_trust ?? m.minimum_trust ?? m.minimum_balance),
       target_trust:target,replenishment_enabled:cfg.replenishment_enabled!==false,
       withdrawal_flagged:cfg.withdrawal_flagged===true,
-      unpaid_work_invoices:work,prior_trust_invoices:trust,unsent_trust_drafts:unsentTrustDrafts,
+      unpaid_work_invoices:work,prior_trust_invoices:trust,unsent_trust_drafts:unsentTrustDrafts,unsent_work_drafts:unsentWorkDrafts,
       outstanding_work:sum(work.map(i=>({remaining_balance:i.remaining}))),
       outstanding_trust:outstandingTrust,
       new_replenishment:newAmount,
@@ -79,6 +80,7 @@ export function buildReplenishmentEmailPreview(row, newInvoice=null) {
 export function validateReplenishmentSend(row) {
   const errors=[];
   if(!row?.recipient_email)errors.push('Recipient email missing');
+  if(row?.financial_data_incomplete)errors.push('Review requires current, complete financial data');
   if(!row?.verified_current_balances)errors.push('Balances and invoice statuses not freshly verified');
   if(!row?.trust_payment_routing_verified)errors.push('Trust payment routing not verified');
   if(!row?.operating_payment_routing_verified && (row.unpaid_work_invoices||[]).length)errors.push('Operating payment routing not verified');
