@@ -1,19 +1,34 @@
-import React, {useMemo, useState} from 'react'
+import React, {useEffect, useMemo, useState} from 'react'
 import {createWeeklyBillingProposal, weeklyBillingDefaults} from './mioWeeklyBillingModel.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
 const cell={padding:'8px 6px',textAlign:'left',borderBottom:'1px solid #e2e8f0'}
 const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,background:'#fff',cursor:'pointer'}
-const KEY='mio_weekly_billing_v1'
+const KEY='mioWeeklyBillingSettingsV1'
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',onClose=()=>{}}) {
   const [step,setStep]=useState('wip')
   const [settings,setSettings]=useState(()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch{return {}}})
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
   const [selected,setSelected]=useState(null)
   const [notice,setNotice]=useState('')
+  const [cloudReady,setCloudReady]=useState(false)
+  const [cloudError,setCloudError]=useState('')
+  useEffect(()=>{
+    if(!supabase||!userId){setCloudError('Cloud settings unavailable: sign in to persist preferences.');return}
+    let cancelled=false
+    setCloudReady(false)
+    supabase.from('case_mio_user_state').select('json_value,updated_at').eq('user_id',userId).eq('key',KEY).maybeSingle()
+      .then(({data,error})=>{
+        if(cancelled)return
+        if(error){setCloudError(error.message);return}
+        if(data?.json_value&&typeof data.json_value==='object')setSettings(data.json_value)
+        setCloudReady(true)
+      }).catch(error=>{if(!cancelled)setCloudError(error?.message||String(error))})
+    return()=>{cancelled=true}
+  },[supabase,userId])
   const minimum=Number(settings.minimumWip??150)
   const rows=useMemo(()=>matters.map(m=>{
     const defaults=weeklyBillingDefaults(m)
@@ -31,9 +46,13 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,onClose
   const eligibility=useMemo(()=>rows.filter(m=>m.included),[rows])
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
-  const save=()=>{
+  const save=async()=>{
+    if(!cloudReady||!supabase||!userId){setNotice('Settings not saved: cloud is unavailable.');return}
     const next={...settings,matters:{...(settings.matters||{}),...changes}}
-    localStorage.setItem(KEY,JSON.stringify(next));setSettings(next);setChanges({});setNotice('Saved in this browser only. Cloud synchronization is not yet connected.')
+    setNotice('Saving...')
+    const {error}=await supabase.from('case_mio_user_state').upsert({user_id:userId,key:KEY,json_value:next,raw_value:JSON.stringify(next),origin:'weekly_billing_review',updated_at:new Date().toISOString()},{onConflict:'user_id,key'})
+    if(error){setNotice('Settings not saved: '+error.message);return}
+    setSettings(next);setChanges({});setNotice('Billing preferences saved to Mio cloud settings.')
   }
   const first=rows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
   const chosen=selected??first
@@ -46,6 +65,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,onClose
     <nav style={{display:'flex',gap:8,flexWrap:'wrap',margin:'18px 0'}}>
       {['wip','payments','unpaid','settings'].map((s,i)=><button key={s} style={{...button,background:step===s?'#dbeafe':'white',fontWeight:step===s?700:400}} onClick={()=>setStep(s)}>{i+1}. {({wip:'WIP Review',payments:'Payment Preview',unpaid:'Unpaid Balances',settings:'Settings'})[s]}</button>)}
     </nav>
+    {cloudError&&<p role="alert" style={{color:'#991b1b'}}>Settings connection: {cloudError}</p>}
     {notice&&<p role="status" style={{background:'#eff6ff',padding:8}}>{notice}</p>}
     {step==='wip'&&<>
       <h3>Work in progress — largest first</h3>
@@ -89,7 +109,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,onClose
         <td style={cell}><input aria-label={'Billing '+m.name} type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/></td>
         <td style={cell}><input aria-label={'Share trust '+m.name} type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/></td>
       </tr>)}</tbody></table>
-      <p><button style={button} onClick={save}>Save browser-only draft settings</button></p>
+      <p><button style={button} onClick={save} disabled={!cloudReady}>Save Billing Settings</button></p>
     </>}
   </div>
 }
