@@ -1,6 +1,7 @@
 import React, {useEffect, useRef} from 'react'
 import {createPortal} from 'react-dom'
 import {calculateTrustReplenishment, invoiceOutstanding, recentTrustHistory} from './mioTrustReplenishmentCalculations.js'
+import MioReplenishmentEmailSections from './MioReplenishmentEmailSections.jsx'
 const money = value => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(value)||0)
 const getNumber = (...values) => { for (const v of values) if(v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v))) return Number(v); return null }
 const dateLabel = value => value ? new Date(value).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Date unavailable'
@@ -65,6 +66,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
   </div>
 })()}
         {Number(row.amount||0)<=0&&(row.prior_trust_invoices||[]).length>0&&<p style={{fontSize:12,color:'#92400e'}}>No additional trust invoice is needed. Previous unpaid invoices remain outstanding; reminder-only delivery is not connected to this send button yet.</p>}
+        <MioReplenishmentEmailSections row={row}/>
         {row.reason&&<p>{row.reason}</p>}
         {row.send_error&&<p role="alert" style={{color:'#b91c1c'}}>{row.send_error}</p>}
         {row.send_status!=='blocked'&&<>
