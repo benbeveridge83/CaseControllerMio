@@ -28,6 +28,15 @@
     return()=>{window.clearInterval(timer);window.removeEventListener('focus',load)}
   },[page,session?.user?.id])
 
+  function relatedReplenishmentMatterIds(primary,cfg={}) {
+    const ids=new Set([String(primary.id)])
+    for(const id of cfg.covered_matter_ids||[]){
+      const related=matters.find(m=>String(m.id)===String(id))
+      if(related&&primary.client_id&&String(related.client_id)===String(primary.client_id)
+        &&related.is_active!==false)ids.add(String(id))
+    }
+    return ids
+  }
   async function changeReplenishmentSetting(id,patch) {
     if(!session?.user?.id)throw new Error('Sign in before changing replenishment settings.')
     const saved=await saveReplenishmentSettings(supabase,session.user.id,id,patch)
@@ -92,7 +101,8 @@
         }
         const invoice=null
         const prior=plan.previouslyIssued||[]
-        const work=invoices.filter(i=>String(i.matter_id)===id&&i.invoice_type==='services'
+        const relatedIds=relatedReplenishmentMatterIds(matter,pref)
+        const work=invoices.filter(i=>relatedIds.has(String(i.matter_id))&&i.invoice_type==='services'
           &&!['paid','void','draft'].includes(i.status)&&Number(i.balance||0)>0)
         const template=renderBillingTemplate(invoices.some(i=>String(i.matter_id)===id&&i.invoice_type==='trust_request')?'replenishment':'initial_trust',{
           client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',invoice_number:'[invoice number]',amount:'[amount]',
@@ -153,7 +163,8 @@
           if(plan.blocked)throw new Error(plan.reason)
           if(Math.round(plan.additional*100)!==Math.round(amount*100))throw new Error('Trust balance or outstanding invoices changed. Reopen review to recalculate.')
           const current=null
-          const work=fresh.filter(i=>String(i.matter_id)===String(row.matter_id)&&i.invoice_type==='services'
+          const relatedIds=relatedReplenishmentMatterIds(matter,pref)
+          const work=fresh.filter(i=>relatedIds.has(String(i.matter_id))&&i.invoice_type==='services'
             &&!['draft','paid','void'].includes(i.status)&&Number(i.balance||0)>0)
           const outstanding=[...work,...plan.previouslyIssued]
           if(outstanding.some(i=>!/^https:\/\/[^\s]+$/i.test(String(i.payment_url||''))))
