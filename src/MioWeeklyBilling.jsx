@@ -50,7 +50,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     const trust=Number.isFinite(Number(f.availableTrust))?Number(f.availableTrust):0
     const wip=financeSnapshot?.wipByMatter?.[String(m.id)]??0
     const workOB=financeSnapshot?.workOBByMatter?.[String(m.id)]??0
-    return {id:String(m.id),name:m.name||'Matter '+m.id, clientId:String(m.client_id||m.client?.id||''),
+    return {id:String(m.id),name:m.name||'Matter '+m.id, clientId:String(m.client_id||m.client?.id||''),withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
       shareTrust:override.shareTrust??defaults.shareTrust,
       wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
@@ -119,7 +119,11 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     {step==='unpaid'&&<>
       <h3>Projected unpaid balances — manual review</h3>
       <p style={small}>These projections include selected WIP that has not been invoiced. Withdrawal changes are not enabled in preview mode. No appointment-based withdrawal recommendation is made.</p>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=><tr key={m.id}><td style={cell}>{m.name}</td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{m.appointed?'Appointed — excluded from withdrawal automation':'Review before withdrawal status'}</td></tr>)}</tbody></table>
+      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr><th style={cell}>Matter</th><th style={cell}>Projected unpaid</th><th style={cell}>Withdrawal status</th></tr></thead><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=>{
+        const original=rows.find(x=>x.id===m.id)
+        const status=original?.withdrawalStatus
+        return <tr key={m.id} style={{background:status==='active'?'#fff1f2':'transparent'}}><td style={cell}>{m.name}</td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{status==='active'?'Already in withdrawal':status==='released'?'Released — no active withdrawal':status==='complete'?'Completed':m.appointed?'Appointed — exempt':'Requires trust verification before any withdrawal action'}</td></tr>
+      })}</tbody></table>
     </>}
     {step==='settings'&&<>
       <h3>Weekly Billing Settings</h3>
