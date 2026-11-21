@@ -44,7 +44,29 @@ export function compareInvoiceRows(a,b,sort,valueFor) {
   if(secondary&&secondary!==sort.field){const result=compare(secondary,sort.secondaryDirection||'asc');if(result)return result}
   return String(a.invoice?.id||a.id||'').localeCompare(String(b.invoice?.id||b.id||''))
 }
-export function replenishmentCandidate(matterId,invoices,amount) {
+// A previously sent trust request is a client debt, not a reason to prevent
+// an additional replenishment request when subsequent work reduces the trust balance.
+export function replenishmentPlan(matterId,invoices=[],{trust,target}={}) {
+  const matching=(invoices||[]).filter(i=>String(i.matter_id)===String(matterId)&&i.invoice_type==='trust_request');
+  const open=matching.filter(i=>!['void','voided','cancelled','canceled','paid'].includes(String(i.status||'').toLowerCase()));
+  const amountDue=i=>Math.max(0,Math.round(Number(i.balance??(Number(i.total||0)-Number(i.amount_paid||0)))*100))/100;
+  const drafts=open.filter(i=>i.status==='draft'&&amountDue(i)>0);
+  const previouslyIssued=open.filter(i=>i.status!=='draft'&&amountDue(i)>0);
+  const outstanding=Math.round(previouslyIssued.reduce((n,i)=>n+Math.round(amountDue(i)*100),0))/100;
+  const trustAmount=Number(trust),targetAmount=Number(target);
+  if(!Number.isFinite(trustAmount)||!Number.isFinite(targetAmount)||trustAmount<0||targetAmount<0)
+    return {blocked:true,reason:'Verified trust balance and replenishment target are required.',drafts,previouslyIssued,outstanding,additional:0};
+  const additional=Math.max(0,Math.round(targetAmount*100)-Math.round(trustAmount*100)-Math.round(outstanding*100))/100;
+  // Reuse or resolve drafts explicitly; never create a duplicate beside them.
+  return {blocked:drafts.length>0,reason:drafts.length?'An unsent trust request draft exists. Review or reuse it before creating a new request.':'',
+    drafts,previouslyIssued,outstanding,additional,needsReminder:previouslyIssued.length>0};
+}
+export function replenishmentCandidate(matterId,invoices,amount,options={}) {
+  if(options.allowAdditional===true){
+    const plan=replenishmentPlan(matterId,invoices,{trust:options.trust,target:options.target});
+    if(plan.blocked)return {...plan,invoice:null,amount:0};
+    return {...plan,invoice:null,amount:plan.additional,blocked:plan.additional<=0,reason:plan.additional>0?'':'No additional replenishment is due; prior invoices can be resent separately.'};
+  }
   const active=invoices.filter(i=>String(i.matter_id)===String(matterId)&&i.invoice_type==='trust_request'&&!['void','paid'].includes(i.status)&&number(i.balance??(number(i.total)-number(i.amount_paid)))>0.005)
   if(active.length>1)return {blocked:true,reason:'Multiple open trust requests already exist. Review them in All invoices before creating another.'}
   if(active.length) {
