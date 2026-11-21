@@ -119,7 +119,7 @@
         let sendStarted=false
         try {
           const amount=Number(row.amount)
-          if(!Number.isFinite(amount)||amount<=0||Math.round(amount*100)<=0)throw new Error('Enter a positive amount.')
+          if(!Number.isFinite(amount)||amount<0)throw new Error('Enter a valid nonnegative amount.')
           if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.recipient_email.trim()))throw new Error('Enter a valid recipient email.')
           if(!row.subject.trim()||!row.message.trim())throw new Error('Complete the subject and message.')
           const matter=matters.find(m=>String(m.id)===row.matter_id)
@@ -146,6 +146,26 @@
           const outstanding=[...work,...plan.previouslyIssued]
           if(outstanding.some(i=>!/^https:\/\/[^\s]+$/i.test(String(i.payment_url||''))))
             throw new Error('One or more unpaid invoices lack a verified HTTPS payment link. Resolve them before consolidated sending.')
+          if(amount===0){
+            // Reminder-only: reuse an existing invoice and do not issue any new trust request.
+            const reminderInvoice=plan.previouslyIssued[0]||work[0]
+            if(!reminderInvoice)throw new Error('There is no outstanding invoice to remind the client about.')
+            const section=(label,items)=>[label,...items.map(i=>'Invoice '+(i.invoice_number||i.id)+': '+money(i.balance)+' due — '+i.payment_url)].join('\n')
+            const combined=[
+              'Please review your outstanding invoices. No new trust replenishment invoice is being issued.','',
+              section('1. Invoices for previous work performed',work),'',
+              section('2. Previously issued trust replenishment invoices',plan.previouslyIssued),'',
+              '3. New trust replenishment invoice: None.'
+            ].join('\n')
+            updateReplenishmentRow(row.id,{send_status:'sending',send_error:''})
+            sendStarted=true
+            const reminderSent=await sendInvoiceDocumentEmail(matter,reminderInvoice,{
+              recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,
+              subject:'Outstanding work invoices and trust replenishment reminder',message:combined
+            })
+            sentCount++;updateReplenishmentRow(row.id,{invoice:reminderSent,send_status:'sent',included:false,send_error:''})
+            continue
+          }
           updateReplenishmentRow(row.id,{send_status:'sending',send_error:''})
           const now=new Date(),date=firmDate(),due=new Date(`${date}T12:00:00Z`);due.setUTCDate(due.getUTCDate()+10)
           const invoiceNumber=current?.invoice_number||row.invoice?.invoice_number||await reserveMioInvoiceNumber()
