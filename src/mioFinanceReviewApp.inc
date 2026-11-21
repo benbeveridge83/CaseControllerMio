@@ -123,13 +123,28 @@
           if(!row.subject.trim()||!row.message.trim())throw new Error('Complete the subject and message.')
           const matter=matters.find(m=>String(m.id)===row.matter_id)
           if(!matter)throw new Error('Matter no longer exists.')
+          // Fail closed until the shared appointed flag exists on the matter.
+          // Never use a missing flag as permission to request private-client funds.
+          if(matter.appointed!==false && matter.is_appointed!==false)throw new Error('Confirm this is a non-appointed matter before sending. The shared Appointed setting is not yet available.')
+          const preferences=await loadReplenishmentSettings(supabase,session.user.id)
+          const pref=preferences[row.matter_id]||{}
+          if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
+          if(pref.withdrawal_flagged===true)throw new Error('This matter is flagged for withdrawal review. Resolve the flag before automatic sending.')
           const fresh=await readFinanceInvoicesForReview()
-          const candidate=replenishmentCandidate(row.matter_id,fresh,amount)
-          if(candidate.blocked)throw new Error(candidate.reason)
-          const current=candidate.invoice
-          if(current&&String(current.id)!==String(row.prepared_id))throw new Error('Another trust request was created. Reopen review to use it instead of creating a duplicate.')
-          if(current&&row.invoice?.updated_at&&current.updated_at!==row.invoice.updated_at)throw new Error('This draft changed in another window. Reopen review before sending.')
-          if(current?.payment_request_id&&Math.round(Number(current.total)*100)!==Math.round(amount*100))throw new Error('A payment link already exists for a different amount. Review the saved invoice first.')
+          const fin=clientFinanceNumbers(matter,fresh)
+          const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
+            target=Number(pref.target_trust??matterRetainerTarget(matter))
+          if(!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
+            throw new Error('Trust balance is no longer below the minimum or cannot be verified; reopen review.')
+          const plan=replenishmentPlan(row.matter_id,fresh,{trust,target})
+          if(plan.blocked)throw new Error(plan.reason)
+          if(Math.round(plan.additional*100)!==Math.round(amount*100))throw new Error('Trust balance or outstanding invoices changed. Reopen review to recalculate.')
+          const current=null
+          const work=fresh.filter(i=>String(i.matter_id)===String(row.matter_id)&&i.invoice_type==='services'
+            &&!['draft','paid','void'].includes(i.status)&&Number(i.balance||0)>0)
+          const outstanding=[...work,...plan.previouslyIssued]
+          if(outstanding.some(i=>!/^https:\/\/[^\s]+$/i.test(String(i.payment_url||''))))
+            throw new Error('One or more unpaid invoices lack a verified HTTPS payment link. Resolve them before consolidated sending.')
           updateReplenishmentRow(row.id,{send_status:'sending',send_error:''})
           const now=new Date(),date=firmDate(),due=new Date(`${date}T12:00:00Z`);due.setUTCDate(due.getUTCDate()+10)
           const invoiceNumber=current?.invoice_number||row.invoice?.invoice_number||await reserveMioInvoiceNumber()
@@ -139,8 +154,18 @@
             created_at:current?.created_at||now.toISOString(),updated_at:now.toISOString()},current?'invoice_approved':'invoice_created',{source:'replenishment_review',approved_before_send:true})
           updateReplenishmentRow(row.id,{invoice:approved,send_status:'sending'})
           const replaceTokens=text=>text.replaceAll('[invoice number]',invoiceNumber).replaceAll('[amount]',money(amount))
+          const section=(label,items)=>[label,...items.map(i=>'Invoice '+(i.invoice_number||i.id)+': '+money(i.balance)+' due — '+i.payment_url)].join('\n')
+          const combined=[
+            replaceTokens(row.message),'',
+            section('1. Invoices for previous work performed',work),'',
+            section('2. Previously issued trust replenishment invoices',plan.previouslyIssued),'',
+            '3. New trust replenishment invoice',
+            'Invoice '+invoiceNumber+': '+money(amount)+' due. Your secure trust payment link is supplied with the attached invoice.'
+          ].join('\n')
+          // The invoice sender creates the new Trust/IOLTA checkout link itself.
+          // Earlier invoice links must already be verified; never fabricate URLs.
           sendStarted=true
-          const sent=await sendInvoiceDocumentEmail(matter,approved,{recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,subject:replaceTokens(row.subject),message:replaceTokens(row.message)})
+          const sent=await sendInvoiceDocumentEmail(matter,approved,{recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,subject:replaceTokens(row.subject),message:combined})
           sentCount++;updateReplenishmentRow(row.id,{invoice:sent,send_status:'sent',included:false,send_error:''})
         } catch(error) {
           failedCount++
