@@ -74,6 +74,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const first=rows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
   const preparePacket=async()=>{
     if(!financeSnapshot)throw new Error('Financial data unavailable')
+    if(Object.keys(changes).length)throw new Error('Save or discard eligibility changes before preparing invoices.')
     const packet=prepareWeeklyInvoiceDrafts(financeSnapshot.entries,chosen)
     if(!packet.length){setNotice('No new WIP selected. Existing Work OB can still be reviewed for payment.')}
     setNotice('Rechecking all billing records...')
@@ -85,7 +86,9 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     setFinanceSnapshot(fresh);setInvoicePacket(packet);setStep('payments')
     setNotice('Invoice approval packet prepared from fresh WIP records. No invoice was issued.')
   }
-  const chosen=selected??first
+  // A previously checked matter must immediately drop out when Billing is turned
+  // off or an appointment exclusion takes effect. Never stage excluded WIP.
+  const chosen=(selected??first).filter(id=>rows.some(m=>m.id===id&&m.included&&m.appointed!==true))
   useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
@@ -100,7 +103,8 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         throw new Error('WIP changed after review. Restart invoice approval.')
       }
       const included=new Set(rows.filter(m=>m.included).map(m=>m.id))
-      if(invoicePacket.some(p=>!included.has(p.matterId)))throw new Error('Matter eligibility changed. Restart review.')
+      if(invoicePacket.some(p=>!included.has(p.matterId)||rows.find(m=>m.id===p.matterId)?.appointed===true))
+        throw new Error('A selected matter is excluded or appointed. Restart review.')
       const id=crypto.randomUUID(),now=new Date().toISOString()
       const packet={id,createdAt:now,status:'prepared_unposted',minimumWip:minimum,
         invoices:invoicePacket.map(p=>({matterId:p.matterId,entryIds:p.entryIds,totalCents:p.totalCents})),
