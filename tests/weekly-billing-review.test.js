@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createWeeklyBillingProposal,weeklyBillingDefaults} from '../src/mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview} from '../src/mioWeeklyBillingModel.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
  {id:'b',name:'Client — Other',clientId:'client1',wip:180,workOB:400,availableTrust:0,included:true,shareTrust:true},
@@ -36,4 +36,20 @@ test('source sharing disabled or destination excluded blocks cross-matter',()=>{
 test('different client can never receive shared trust',()=>{
  const p=createWeeklyBillingProposal({matters:rows,authorizations:{a:true}})
  assert.equal(p.payments.some(x=>x.destinationMatterId==='d'),false)
+})
+
+test('deselected one-run payments restore unpaid work balance without altering future sharing',()=>{
+ const proposal=createWeeklyBillingProposal({matters:rows,minimumWip:150,authorizations:{a:true}})
+ const preview=reconcileWeeklyBillingReview(proposal,['a:b'])
+ assert.equal(preview.totalPayments,500)
+ assert.equal(preview.matters.find(m=>m.id==='b').unpaid,580)
+ assert.equal(preview.matters.find(m=>m.id==='a').remainingTrust,500)
+ assert.equal(proposal.matters.find(m=>m.id==='b').shareTrust,true)
+})
+test('an excluded appointed matter never triggers a payment or a withdrawal candidate',()=>{
+ const proposal=createWeeklyBillingProposal({matters:rows})
+ const preview=reconcileWeeklyBillingReview(proposal)
+ const appointed=preview.matters.find(m=>m.id==='c')
+ assert.equal(appointed.included,false)
+ assert.equal(preview.payments.some(p=>p.destinationMatterId==='c'),false)
 })
