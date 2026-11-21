@@ -10,7 +10,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
   const closeRef=useRef(null)
   useEffect(()=>{if(!review.open)return;const prior=document.activeElement;closeRef.current?.focus();return()=>prior?.focus?.()},[review.open])
   if(!review.open)return null
-  const rows=review.rows||[],ready=rows.filter(row=>row.included&&!locked(row)&&(Number(row.amount||0)>0||(row.prior_trust_invoices||[]).length>0||(row.unpaid_work_invoices||[]).length>0))
+  const rows=review.rows||[],ready=rows.filter(row=>row.included&&!locked(row)&&(!row.appointed_status_unknown||row.non_appointed_confirmed===true)&&(Number(row.amount||0)>0||(row.prior_trust_invoices||[]).length>0||(row.unpaid_work_invoices||[]).length>0))
   return createPortal(<div style={{position:'fixed',inset:0,zIndex:99000,background:'rgba(15,23,42,.6)',padding:20,display:'grid',placeItems:'center'}}>
     <section role="dialog" aria-modal="true" aria-labelledby="replenishment-review-title" style={{background:'#fff',borderRadius:12,padding:20,width:'min(1180px,95vw)',maxHeight:'92vh',overflow:'auto'}} onKeyDown={event=>{
       if(event.key==='Escape'&&!busy)onClose()
@@ -46,6 +46,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       <small>Minimum: <strong>{min===null?'Unavailable':money(min)}</strong></small>
       <small>Target: <strong>{target===null?'Unavailable':money(target)}</strong></small>
       {onSetEligibility&&<label style={{fontSize:12}} title="Persistently exclude this matter from future replenishment runs"><input type="checkbox" checked={row.replenishment_enabled!==false} disabled={busy||locked(row)} onChange={e=>onSetEligibility(row.id,e.target.checked)}/> Enabled</label>}
+      {row.appointed_status_unknown&&<label style={{fontSize:12,color:'#92400e'}} title="Temporary confirmation until the shared Appointed matter setting is available"><input type="checkbox" checked={row.non_appointed_confirmed===true} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{non_appointed_confirmed:e.target.checked})}/> I confirm this matter is not court-appointed (this run only)</label>}
       {onFlagWithdrawal&&<button type="button" disabled={busy} onClick={()=>onFlagWithdrawal(row.id,!row.withdrawal_flagged)}>{row.withdrawal_flagged?'Remove withdrawal review flag':'Flag for withdrawal review'}</button>}
       {row.withdrawal_flagged&&<small style={{color:'#9f1239',fontWeight:700}}>Withdrawal review flagged</small>}
     </div>
@@ -78,7 +79,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
           <label style={{display:'grid',gap:4,marginTop:10}}>Subject<input aria-label={`Subject for ${row.client_name}`} value={row.subject} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{subject:e.target.value})}/></label>
           <label style={{display:'grid',gap:4,marginTop:10}}>Message<textarea aria-label={`Message for ${row.client_name}`} rows={4} value={row.message} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{message:e.target.value})}/></label>
           <p style={{fontSize:12}}>The email includes the trust-request PDF and a secure LawPay Trust/IOLTA payment link. [invoice number] and [amount] are filled from the approved request.</p>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||(row.appointed_status_unknown&&row.non_appointed_confirmed!==true)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
         </>}
       </section>)}
       {!rows.length&&!review.loading&&!review.error&&<p>No selected matter requires replenishment.</p>}
