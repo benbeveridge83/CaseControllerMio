@@ -91,6 +91,7 @@
         })
         return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
+          appointed_status_unknown:matter.appointed!==false&&matter.is_appointed!==false,non_appointed_confirmed:false,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
           prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
@@ -126,7 +127,9 @@
           if(!matter)throw new Error('Matter no longer exists.')
           // Fail closed until the shared appointed flag exists on the matter.
           // Never use a missing flag as permission to request private-client funds.
-          if(matter.appointed===true || matter.is_appointed===true || (matter.appointed!==false && matter.is_appointed!==false))throw new Error('Confirm this is a non-appointed matter before sending. The shared Appointed setting is not yet available.')
+          if(matter.appointed===true || matter.is_appointed===true)throw new Error('Appointed matters are excluded from private-client trust replenishment.');
+          if(matter.appointed!==false && matter.is_appointed!==false && row.non_appointed_confirmed!==true)throw new Error('Confirm non-appointed status on this review row before sending.');
+          if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
