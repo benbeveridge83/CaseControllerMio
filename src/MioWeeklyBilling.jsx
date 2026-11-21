@@ -71,7 +71,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const preparePacket=async()=>{
     if(!financeSnapshot)throw new Error('Financial data unavailable')
     const packet=prepareWeeklyInvoiceDrafts(financeSnapshot.entries,chosen)
-    if(!packet.length){setNotice('No uninvoiced eligible work was selected.');return}
+    if(!packet.length){setNotice('No new WIP selected. Existing Work OB can still be reviewed for payment.')}
     setNotice('Rechecking all billing records...')
     const fresh=await loadWeeklyBillingReadOnly(supabase,userId)
     if(!validateWeeklyInvoiceSnapshot(packet,fresh.entries)){
@@ -86,7 +86,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
   const stageForReview=async()=>{
-    if(!supabase||!userId||!cloudReady||!invoicePacket?.length)throw new Error('Verified invoice packet and authenticated cloud settings required')
+    if(!supabase||!userId||!cloudReady||!invoicePacket)throw new Error('Verified invoice packet and authenticated cloud settings required')
     if(Object.keys(changes).length)throw new Error('Save the matter-eligibility changes before preparing the final review.')
     setPacketBusy(true)
     try {
@@ -140,7 +140,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     </>}
     {step==='payments'&&<>
       <h3>Invoice approval packet</h3>
-      {invoicePacket?.length>0&&<section style={{background:'#f1f5f9',padding:12,borderRadius:8}}>
+      {invoicePacket&&<section style={{background:'#f1f5f9',padding:12,borderRadius:8}}>
         <strong>{invoicePacket.length} proposed invoice(s), unissued</strong>
         {invoicePacket.map(p=><div key={p.matterId} style={{padding:'7px 0',borderBottom:'1px solid #cbd5e1'}}>
           {rows.find(m=>m.id===p.matterId)?.name||p.matterId}: {USD(p.totalCents/100)} — {p.entryIds.length} WIP entries
@@ -165,7 +165,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         })}</div><div style={{clear:'both'}}/>
       </section>)}
       <p><strong>Preview total: {USD(review.totalPayments)}</strong></p>
-      <button style={button} onClick={()=>stageForReview().catch(error=>setNotice('Could not save prepared review: '+(error?.message||error)))} disabled={packetBusy||!invoicePacket?.length}>Save prepared review (no postings)</button>
+      <button style={button} onClick={()=>stageForReview().catch(error=>setNotice('Could not save prepared review: '+(error?.message||error)))} disabled={packetBusy||!invoicePacket}>Save prepared review (no postings)</button>
       <button style={button} onClick={()=>setStep('unpaid')}>Review projected unpaid balances →</button>
     </>}
     {step==='unpaid'&&<>
