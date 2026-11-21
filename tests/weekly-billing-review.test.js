@@ -158,3 +158,21 @@ test('invoice-level allocator rejects mismatched client, trust requests, dispute
  assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[matter],invoices:candidates}).totalCents,0)
  assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[{...matter,included:false}],invoices:[{...candidates[0],client_id:'x'}]}).totalCents,0)
 })
+
+test('partially paid Work OB is eligible, with only its remaining balance allocated',()=>{
+ const matter={id:'a',clientId:'x',included:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:700}
+ const invoice={id:'partial',matter_id:'a',client_id:'x',invoice_type:'services',status:'partially_paid',total:1000,amount_paid:600,balance:400}
+ const result=allocateVerifiedWeeklyInvoicePayments({matters:[matter],invoices:[invoice]})
+ assert.equal(result.totalCents,40000)
+ assert.equal(result.remainingTrustByMatter.a,30000)
+})
+test('invoice holds and uncertain cross-matter client identities fail closed',()=>{
+ const source={id:'fund',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000}
+ const dest={id:'owed',clientId:'x',included:true}
+ const invoice={id:'invoice',matter_id:'owed',invoice_type:'services',status:'outstanding',balance:900}
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[invoice]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',on_hold:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',payment_hold:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',restricted:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x'}]}).totalCents,90000)
+})
