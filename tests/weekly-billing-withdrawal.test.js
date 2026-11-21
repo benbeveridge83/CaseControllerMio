@@ -40,7 +40,7 @@ test('administrative withdrawal requires confirmation and persists only after ve
   const h=harness()
   const result=await h.mark(['a'])
   assert.equal(result.updated,1)
-  assert.deepEqual(result.updatedIds,['a'])
+  // The function runs in a separate vm realm; normalize the array before equality.\n  assert.deepEqual(Array.from(result.updatedIds),['a'])
   assert.equal(h.stats().storedExtra.a.withdrawal_status,'withdrawing')
   assert.equal(h.stats().commits,1)
   assert.equal(h.stats().confirmations,1)
