@@ -28,9 +28,10 @@ export function validateWeeklyInvoiceSnapshot(snapshot, freshEntries = []) {
   const expected=(snapshot||[]).map(x=>({
     matterId:x.matterId,
     entryIds:[...x.entryIds].sort(),
-    totalCents:x.totalCents
+    totalCents:x.totalCents,
+    lineItems:x.lineItems
   })).sort((a,b)=>a.matterId.localeCompare(b.matterId))
-  const actual=fresh.map(x=>({matterId:x.matterId,entryIds:x.entryIds,totalCents:x.totalCents}))
+  const actual=fresh.map(x=>({matterId:x.matterId,entryIds:x.entryIds,totalCents:x.totalCents,lineItems:x.lineItems}))
   return JSON.stringify(expected)===JSON.stringify(actual)
 }
 export function summarizeWeeklyBillingEntries(entries = [], invoices = []) {
@@ -41,7 +42,7 @@ export function summarizeWeeklyBillingEntries(entries = [], invoices = []) {
     wip.set(key,(wip.get(key)||0)+cents(entry.amount))
   }
   for(const invoice of invoices) {
-    if (!invoice.matter_id || invoice.invoice_type === 'trust_request' || !['outstanding','partially_paid'].includes(String(invoice.status||'').toLowerCase())) continue
+    if (!invoice.matter_id || invoice.invoice_type !== 'services' || !['outstanding','partially_paid'].includes(String(invoice.status||'').toLowerCase())) continue
     const balance = invoice.balance == null
       ? Math.max(0,num(invoice.total)-num(invoice.amount_paid))
       : num(invoice.balance)
