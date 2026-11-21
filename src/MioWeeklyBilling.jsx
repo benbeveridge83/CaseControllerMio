@@ -14,6 +14,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
   const [invoicePacket,setInvoicePacket]=useState(null)
+  const [packetBusy,setPacketBusy]=useState(false)
   const [selected,setSelected]=useState(null)
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
@@ -84,6 +85,33 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
+  const stageForReview=async()=>{
+    if(!supabase||!userId||!cloudReady||!invoicePacket?.length)throw new Error('Verified invoice packet and authenticated cloud settings required')
+    if(Object.keys(changes).length)throw new Error('Save the matter-eligibility changes before preparing the final review.')
+    setPacketBusy(true)
+    try {
+      const fresh=await loadWeeklyBillingReadOnly(supabase,userId)
+      if(!validateWeeklyInvoiceSnapshot(invoicePacket,fresh.entries)){
+        setInvoicePacket(null);setFinanceSnapshot(fresh)
+        throw new Error('WIP changed after review. Restart invoice approval.')
+      }
+      const included=new Set(rows.filter(m=>m.included).map(m=>m.id))
+      if(invoicePacket.some(p=>!included.has(p.matterId)))throw new Error('Matter eligibility changed. Restart review.')
+      const id=crypto.randomUUID(),now=new Date().toISOString()
+      const packet={id,createdAt:now,status:'prepared_unposted',minimumWip:minimum,
+        invoices:invoicePacket.map(p=>({matterId:p.matterId,entryIds:p.entryIds,totalCents:p.totalCents})),
+        rejectedPaymentIds:Object.entries(approvals).filter(([,v])=>v===false).map(([id])=>id),
+        proposalSummary:{workCents:Math.round(proposal.totalWip*100),paymentsCents:0,transfersAuthorized:false},
+        financialTransfersEnabled:false}
+      const {error}=await supabase.from('case_mio_user_state').upsert({
+        user_id:userId,key:'mioWeeklyBillingPreparedReviewV1',json_value:packet,
+        raw_value:JSON.stringify(packet),origin:'weekly_billing_review',
+        updated_at:now},{onConflict:'user_id,key'})
+      if(error)throw new Error(error.message)
+      setNotice('Approval packet saved in Mio as PREPARED — NOT POSTED. No invoice, payment, or withdrawal was changed.')
+      setStep('unpaid')
+    }finally{setPacketBusy(false)}
+  }
   const eligiblePayments=review.payments
   return <div role="dialog" aria-label="Weekly Billing Review" style={{position:'fixed',inset:18,zIndex:100000,background:'#fff',color:'#13263d',border:'2px solid #94a3b8',borderRadius:12,boxShadow:'0 24px 70px #0005',overflow:'auto',padding:20}}>
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
@@ -137,7 +165,8 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         })}</div><div style={{clear:'both'}}/>
       </section>)}
       <p><strong>Preview total: {USD(review.totalPayments)}</strong></p>
-      <button style={button} onClick={()=>setStep('unpaid')}>Review unpaid balances →</button>
+      <button style={button} onClick={()=>stageForReview().catch(error=>setNotice('Could not save prepared review: '+(error?.message||error)))} disabled={packetBusy||!invoicePacket?.length}>Save prepared review (no postings)</button>
+      <button style={button} onClick={()=>setStep('unpaid')}>Review projected unpaid balances →</button>
     </>}
     {step==='unpaid'&&<>
       <h3>Projected unpaid balances — manual review</h3>
