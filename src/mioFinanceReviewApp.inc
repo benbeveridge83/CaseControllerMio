@@ -1,4 +1,5 @@
   const [replenishmentReview,setReplenishmentReview]=useState({open:false,loading:false,rows:[],message:'',error:''})
+  const [replenishmentSettingsOpen,setReplenishmentSettingsOpen]=useState(false)
   const replenishmentSendingRef=useRef(false)
   const [financeSyncReport,setFinanceSyncReport]=useState({state:'unchecked',message:'LawPay has not been checked in this session.'})
   const [lawPayAttributionEditor,setLawPayAttributionEditor]=useState(null)
