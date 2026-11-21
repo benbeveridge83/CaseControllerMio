@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useState} from 'react'
 import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview, possibleCrossMatterFunding} from './mioWeeklyBillingModel.js'
-import {loadWeeklyBillingReadOnly} from './mioWeeklyBillingData.js'
+import {loadWeeklyBillingReadOnly,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from './mioWeeklyBillingData.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
 const cell={padding:'8px 6px',textAlign:'left',borderBottom:'1px solid #e2e8f0'}
@@ -13,6 +13,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
+  const [invoicePacket,setInvoicePacket]=useState(null)
   const [selected,setSelected]=useState(null)
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
@@ -66,7 +67,21 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     setSettings(next);setChanges({});setNotice('Billing preferences saved to Mio cloud settings.')
   }
   const first=rows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
+  const preparePacket=async()=>{
+    if(!financeSnapshot)throw new Error('Financial data unavailable')
+    const packet=prepareWeeklyInvoiceDrafts(financeSnapshot.entries,chosen)
+    if(!packet.length){setNotice('No uninvoiced eligible work was selected.');return}
+    setNotice('Rechecking all billing records...')
+    const fresh=await loadWeeklyBillingReadOnly(supabase,userId)
+    if(!validateWeeklyInvoiceSnapshot(packet,fresh.entries)){
+      setFinanceSnapshot(fresh);setInvoicePacket(null)
+      setNotice('Records changed since review. Review the updated entries before proceeding.');return
+    }
+    setFinanceSnapshot(fresh);setInvoicePacket(packet);setStep('payments')
+    setNotice('Invoice approval packet prepared from fresh WIP records. No invoice was issued.')
+  }
   const chosen=selected??first
+  useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
   const eligiblePayments=review.payments
@@ -93,9 +108,17 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
           <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
       </tbody></table><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
-      <button style={button} onClick={()=>setStep('payments')} disabled={!financeSnapshot||financeLoading}>Continue to payment preview →</button> <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
+      <button style={button} onClick={()=>preparePacket().catch(error=>setNotice('Invoice packet preparation failed: '+(error?.message||error)))} disabled={!financeSnapshot||financeLoading}>Verify WIP & Prepare Invoice Packet →</button> <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
     </>}
     {step==='payments'&&<>
+      <h3>Invoice approval packet</h3>
+      {invoicePacket?.length>0&&<section style={{background:'#f1f5f9',padding:12,borderRadius:8}}>
+        <strong>{invoicePacket.length} proposed invoice(s), unissued</strong>
+        {invoicePacket.map(p=><div key={p.matterId} style={{padding:'7px 0',borderBottom:'1px solid #cbd5e1'}}>
+          {rows.find(m=>m.id===p.matterId)?.name||p.matterId}: {USD(p.totalCents/100)} — {p.entryIds.length} WIP entries
+        </div>)}
+        <p style={small}>The packet is a verified review snapshot, not an invoice. Records must be checked again before an authorized invoice posting operation.</p>
+      </section>}
       <h3>Proposed trust payments</h3>
       <p style={small}>Cross-matter payments are intentionally blocked until a verified authorization and available-balance adapter is connected. Nothing can be executed from this preview.</p>
       {suggestions.length>0&&<section style={{border:'1px solid #d97706',background:'#fffbeb',padding:12,borderRadius:8,marginBottom:12}}>
