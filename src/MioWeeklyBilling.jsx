@@ -8,7 +8,7 @@ const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,backg
 const KEY='mioWeeklyBillingSettingsV1'
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
@@ -16,6 +16,9 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [invoicePacket,setInvoicePacket]=useState(null)
   const [packetBusy,setPacketBusy]=useState(false)
   const [ownPaymentExcluded,setOwnPaymentExcluded]=useState([])
+  const [withdrawSelected,setWithdrawSelected]=useState([])
+  const [withdrawMarked,setWithdrawMarked]=useState([])
+  const [withdrawBusy,setWithdrawBusy]=useState(false)
   const [selected,setSelected]=useState(null)
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
@@ -190,8 +193,23 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr><th style={cell}>Matter</th><th style={cell}>Projected unpaid</th><th style={cell}>Withdrawal status</th></tr></thead><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=>{
         const original=rows.find(x=>x.id===m.id)
         const status=original?.withdrawalStatus
-        return <tr key={m.id} style={{background:status==='active'?'#fff1f2':'transparent'}}><td style={cell}>{m.name}</td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{status==='active'?'Already in withdrawal':status==='released'?'Released — no active withdrawal':status==='complete'?'Completed':m.appointed?'Appointed — exempt':'Requires trust verification before any withdrawal action'}</td></tr>
+        return <tr key={m.id} style={{background:status==='active'?'#fff1f2':'transparent'}}><td style={cell}><label><input type="checkbox" checked={withdrawSelected.includes(m.id)} disabled={m.appointed||status==='active'||status==='released'||status==='complete'||withdrawMarked.includes(m.id)} onChange={e=>setWithdrawSelected(current=>e.target.checked?[...new Set([...current,m.id])]:current.filter(id=>id!==m.id))}/> {m.name}</label></td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{withdrawMarked.includes(m.id)?'Marked for withdrawal (administrative)':status==='active'?'Already in withdrawal':status==='released'?'Released — no active withdrawal':status==='complete'?'Completed':m.appointed?'Appointed — exempt':'Requires trust verification before any withdrawal action'}</td></tr>
       })}</tbody></table>
+      {onMarkWithdrawals&&<section style={{marginTop:12,padding:12,border:'1px solid #cbd5e1',borderRadius:8}}>
+        <p style={small}>Check matters individually, then confirm. Mio will recheck unpaid invoices, trust funds, client identity, sharing eligibility, and current withdrawal status. Matters without verified records will be skipped. This does not terminate representation.</p>
+        <button style={button} disabled={withdrawBusy||!withdrawSelected.length} onClick={async()=>{
+          setWithdrawBusy(true)
+          try {
+            const result=await onMarkWithdrawals(withdrawSelected)
+            if(result?.updated){
+              setWithdrawMarked(old=>[...new Set([...old,...withdrawSelected])])
+              setWithdrawSelected([])
+              setNotice(result.updated+' verified matter(s) flagged for withdrawal.'+(result.skipped?.length?' '+result.skipped.length+' skipped.':''))
+            } else setNotice(result?.cancelled?'Withdrawal marking canceled.':'No withdrawal flags were changed.')
+          }catch(error){setNotice('Withdrawal marking stopped: '+(error?.message||error))}
+          finally{setWithdrawBusy(false)}
+        }}>Mark selected matters for withdrawal</button>
+      </section>}
     </>}
     {step==='settings'&&<>
       <h3>Weekly Billing Settings</h3>
