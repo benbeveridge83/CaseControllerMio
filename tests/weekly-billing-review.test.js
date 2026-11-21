@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding} from '../src/mioWeeklyBillingModel.js'
+import {summarizeWeeklyBillingEntries} from '../src/mioWeeklyBillingData.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
  {id:'b',name:'Client — Other',clientId:'client1',wip:180,workOB:400,availableTrust:0,included:true,shareTrust:true},
@@ -68,4 +69,22 @@ test('isolated matter never shares funds as a source or destination',()=>{
   {id:'b',name:'Other',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
  ])
  assert.deepEqual(candidates,[])
+})
+
+test('WIP comes only from uninvoiced, billable entries and Work OB excludes trust requests',()=>{
+ const summary=summarizeWeeklyBillingEntries([
+  {matter_id:'a',amount:110,do_not_bill:false,payload:{}},
+  {matter_id:'a',amount:40,do_not_bill:false,payload:{invoice_id:'already-invoiced'}},
+  {matter_id:'a',amount:70,do_not_bill:true,payload:{}},
+  {matter_id:'b',amount:50,do_not_bill:false,payload:{non_billable:true}}
+ ],[
+  {matter_id:'a',invoice_type:'services',status:'outstanding',balance:80,issue_date:'2026-01-03'},
+  {matter_id:'a',invoice_type:'trust_request',status:'outstanding',balance:500,issue_date:'2025-01-01'},
+  {matter_id:'a',invoice_type:'services',status:'paid',balance:100,issue_date:'2025-01-02'},
+  {matter_id:'a',invoice_type:'services',status:'draft',balance:60,issue_date:'2025-01-03'}
+ ])
+ assert.equal(summary.wip.get('a'),11000)
+ assert.equal(summary.workOB.get('a'),8000)
+ assert.equal(summary.oldestInvoice.get('a'),'2026-01-03')
+ assert.equal(summary.wip.get('b'),undefined)
 })
