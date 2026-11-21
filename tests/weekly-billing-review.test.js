@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding} from '../src/mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding,allocateVerifiedWeeklyInvoicePayments} from '../src/mioWeeklyBillingModel.js'
 import {summarizeWeeklyBillingEntries,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from '../src/mioWeeklyBillingData.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
@@ -119,4 +119,42 @@ test('the default Share Trust flag is checked even for appointed matters, while 
  const defaults=weeklyBillingDefaults({appointed:true})
  assert.equal(defaults.included,false)
  assert.equal(defaults.shareTrust,true)
+})
+
+test('verified invoice-level allocator pays source matter first and partially pays remaining invoices',()=>{
+ const matters=[
+  {id:'a',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:5000},
+  {id:'b',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:0},
+  {id:'c',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:0}
+ ]
+ const invoices=[
+  {id:'i-a',matter_id:'a',client_id:'x',invoice_type:'services',status:'outstanding',balance:2000,issue_date:'2026-10-20'},
+  {id:'i-b',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:2500,issue_date:'2026-11-01'},
+  {id:'i-c',matter_id:'c',client_id:'x',invoice_type:'services',status:'outstanding',balance:2000,issue_date:'2026-11-02'}
+ ]
+ const p=allocateVerifiedWeeklyInvoicePayments({matters,invoices})
+ assert.deepEqual(p.payments.map(x=>[x.invoiceId,x.amount,x.crossMatter]),[['i-a',2000,false],['i-b',2500,true],['i-c',500,true]])
+ assert.equal(p.unpaidCentsByInvoice['i-c'],150000)
+ assert.equal(p.remainingTrustByMatter.a,0)
+})
+test('invoice-level cross-matter sharing needs independently verified agreement and unrestricted trust',()=>{
+ const invoice={id:'i-b',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:1000}
+ const source={id:'a',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:2000}
+ const dest={id:'b',clientId:'x',included:true,shareTrust:false}
+ const withoutAgreement=allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[invoice]})
+ assert.equal(withoutAgreement.totalCents,0)
+ const withAgreement=allocateVerifiedWeeklyInvoicePayments({matters:[{...source,agreementAuthorized:true},dest],invoices:[invoice]})
+ assert.equal(withAgreement.totalCents,100000)
+ const withRestrictedFunds=allocateVerifiedWeeklyInvoicePayments({matters:[{...source,agreementAuthorized:true,unrestrictedFundsVerified:false},dest],invoices:[invoice]})
+ assert.equal(withRestrictedFunds.totalCents,0)
+})
+test('invoice-level allocator rejects mismatched client, trust requests, disputed invoices, excluded matters',()=>{
+ const matter={id:'b',clientId:'x',included:true,shareTrust:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000}
+ const candidates=[
+  {id:'1',matter_id:'b',client_id:'y',invoice_type:'services',status:'outstanding',balance:100},
+  {id:'2',matter_id:'b',client_id:'x',invoice_type:'trust_request',status:'outstanding',balance:100},
+  {id:'3',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:100,disputed:true}
+ ]
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[matter],invoices:candidates}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[{...matter,included:false}],invoices:[{...candidates[0],client_id:'x'}]}).totalCents,0)
 })
