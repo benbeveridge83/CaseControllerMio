@@ -202,7 +202,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
           try {
             const result=await onMarkWithdrawals(withdrawSelected)
             if(result?.updated){
-              setWithdrawMarked(old=>[...new Set([...old,...withdrawSelected])])
+              setWithdrawMarked(old=>[...new Set([...old,...(result.updatedIds||[])])])
               setWithdrawSelected([])
               setNotice(result.updated+' verified matter(s) flagged for withdrawal.'+(result.skipped?.length?' '+result.skipped.length+' skipped.':''))
             } else setNotice(result?.cancelled?'Withdrawal marking canceled.':'No withdrawal flags were changed.')
