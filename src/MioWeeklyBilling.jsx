@@ -8,7 +8,7 @@ const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,backg
 const KEY='mioWeeklyBillingSettingsV1'
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
@@ -166,6 +166,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       </section>)}
       <p><strong>Preview total: {USD(review.totalPayments)}</strong></p>
       <button style={button} onClick={()=>stageForReview().catch(error=>setNotice('Could not save prepared review: '+(error?.message||error)))} disabled={packetBusy||!invoicePacket}>Save prepared review (no postings)</button>
+      {onOpenExistingWipReview&&invoicePacket?.length>0&&<button style={{...button,background:'#dbeafe',fontWeight:700}} disabled={packetBusy} onClick={()=>stageForReview().then(()=>onOpenExistingWipReview(invoicePacket.map(x=>x.matterId))).catch(error=>setNotice('Invoice handoff stopped: '+(error?.message||error)))}>Save review & open Mio invoice approval</button>}
       <button style={button} onClick={()=>setStep('unpaid')}>Review projected unpaid balances →</button>
     </>}
     {step==='unpaid'&&<>
