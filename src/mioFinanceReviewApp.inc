@@ -27,6 +27,30 @@
     return()=>{window.clearInterval(timer);window.removeEventListener('focus',load)}
   },[page,session?.user?.id])
 
+  async function changeReplenishmentSetting(id,patch) {
+    if(!session?.user?.id)throw new Error('Sign in before changing replenishment settings.')
+    const saved=await saveReplenishmentSettings(supabase,session.user.id,id,patch)
+    updateReplenishmentRow(id,patch)
+    return saved
+  }
+  async function setReplenishmentEligibility(id,enabled) {
+    try {
+      await changeReplenishmentSetting(id,{replenishment_enabled:enabled})
+      if(!enabled)updateReplenishmentRow(id,{included:false})
+    }catch(error){alert('Could not save the permanent exclusion. '+(error?.message||error))}
+  }
+  async function setReplenishmentLimits(id,patch) {
+    try {
+      await changeReplenishmentSetting(id,patch)
+      // The amounts changed. Refresh the whole review before approving; stale
+      // invoice amounts must never be sent using the old target.
+      setReplenishmentReview(current=>({...current,message:'Trust limits saved. Reopen the review to recalculate invoice amounts before sending.'}))
+    }catch(error){alert('Could not save trust limits. '+(error?.message||error))}
+  }
+  async function flagReplenishmentWithdrawal(id,flagged) {
+    try{await changeReplenishmentSetting(id,{withdrawal_flagged:flagged})
+    }catch(error){alert('Could not save withdrawal-review flag. '+(error?.message||error))}
+  }
   function updateReplenishmentRow(id,patch) {
     setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>row.id===id?{...row,...patch,...(!patch.send_status?{send_status:'ready',send_error:''}:{})}:row)}))
   }
@@ -41,18 +65,34 @@
     setReplenishmentReview({open:true,loading:true,rows:[],message:'',error:''})
     setBulkBillingBusy(true)
     try {
-      const invoices=await readFinanceInvoicesForReview()
+      const [invoices,settings]=await Promise.all([readFinanceInvoicesForReview(),loadReplenishmentSettings(supabase,session.user.id)])
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
         if(!matter)return null
-        const candidate=replenishmentCandidate(id,invoices,matterReplenishmentAmount(matter))
-        const invoice=candidate.invoice||null
+        const pref=settings[id]||{}
+        if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
+        // Existing finance numbers are in-memory, not the stale Clio historical report.
+        const finance=clientFinanceNumbers(matter,invoices)
+        const balance=Number(finance.trust),minimum=Number(pref.minimum_trust??finance.minimumBalance),
+          target=Number(pref.target_trust??matterRetainerTarget(matter))
+        if(!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
+        const plan=replenishmentPlan(id,invoices,{trust:balance,target})
+        const candidate=plan.additional>0&&!plan.blocked?{blocked:false,amount:plan.additional,invoice:null}:{
+          blocked:plan.blocked,amount:0,invoice:null,reason:plan.reason||'No new invoice is needed. Previous unpaid requests remain due.'
+        }
+        const invoice=null
+        const prior=plan.previouslyIssued||[]
+        const work=invoices.filter(i=>String(i.matter_id)===id&&i.invoice_type==='services'
+          &&!['paid','void','draft'].includes(i.status)&&Number(i.balance||0)>0)
         const template=renderBillingTemplate(invoices.some(i=>String(i.matter_id)===id&&i.invoice_type==='trust_request')?'replenishment':'initial_trust',{
           client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',invoice_number:'[invoice number]',amount:'[amount]',
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
-        return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice,
-          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??invoice?.balance??0),included:!candidate.blocked,
+        return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
+          replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
+          prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at})),
+          unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
+          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
           recipient_email:invoice?.recipient_email||matterClientEmail(matter)||clientEmailForMatter(matter)||'',sender_email:DEFAULT_BILLING_SENDER_EMAIL,
           subject:template.subject||'Trust request [invoice number]',message:template.body||'Please replenish your trust account by [amount].',
           reason:candidate.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
