@@ -92,3 +92,54 @@ export function possibleCrossMatterFunding(matters = []) {
   }
   return possible
 }
+
+/**
+ * Invoice-level allocation plan for a future transactional posting adapter.
+ * This performs no writes. Missing verification must ALWAYS produce zero usable funds.
+ * Source matter's invoices are satisfied first; then other same-client invoices oldest first.
+ */
+export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={}) {
+  const matterById=new Map(matters.map(m=>[String(m.id),m]))
+  const remainingTrust=new Map()
+  const remainingInvoice=new Map()
+  for(const m of matters) {
+    const verified=m.included===true&&m.trustVerified===true&&m.unrestrictedFundsVerified===true
+    remainingTrust.set(String(m.id),verified?cents(m.verifiedAvailableTrust):0)
+  }
+  const eligible=invoices.filter(invoice=>{
+    const dest=matterById.get(String(invoice.matter_id))
+    if(!dest||dest.included!==true||invoice.invoice_type!=='services'||invoice.status!=='outstanding'||invoice.disputed===true)return false
+    if(invoice.client_id&&String(invoice.client_id)!==String(dest.clientId||''))return false
+    return cents(invoice.balance)>0
+  }).sort((a,b)=>String(a.issue_date||'9999').localeCompare(String(b.issue_date||'9999'))||String(a.id).localeCompare(String(b.id)))
+  eligible.forEach(i=>remainingInvoice.set(String(i.id),cents(i.balance)))
+  const payments=[]
+  const allocate=(source,dest,invoice)=>{
+    const sourceId=String(source.id),invoiceId=String(invoice.id)
+    const used=Math.min(remainingTrust.get(sourceId)||0,remainingInvoice.get(invoiceId)||0)
+    if(!used)return
+    remainingTrust.set(sourceId,remainingTrust.get(sourceId)-used)
+    remainingInvoice.set(invoiceId,remainingInvoice.get(invoiceId)-used)
+    payments.push({sourceMatterId:sourceId,destinationMatterId:String(dest.id),
+      invoiceId,amountCents:used,amount:amount(used),crossMatter:sourceId!==String(dest.id),
+      requiresApproval:true})
+  }
+  // Own invoices take priority over outgoing trust sharing.
+  for(const source of matters) {
+    if(source.included!==true)continue
+    const ownInvoices=eligible.filter(invoice=>String(invoice.matter_id)===String(source.id))
+    for(const invoice of ownInvoices)allocate(source,source,invoice)
+  }
+  for(const invoice of eligible){
+    const destination=matterById.get(String(invoice.matter_id))
+    for(const source of matters){
+      if(String(source.id)===String(destination.id)||source.included!==true||
+         source.shareTrust!==true||source.agreementAuthorized!==true||
+         !source.clientId||String(source.clientId)!==String(destination.clientId))continue
+      allocate(source,destination,invoice)
+    }
+  }
+  return {payments,remainingTrustByMatter:Object.fromEntries(remainingTrust),
+    unpaidCentsByInvoice:Object.fromEntries(remainingInvoice),
+    totalCents:payments.reduce((sum,p)=>sum+p.amountCents,0)}
+}
