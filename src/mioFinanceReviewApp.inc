@@ -69,7 +69,7 @@
       const [invoices,settings]=await Promise.all([readFinanceInvoicesForReview(),loadReplenishmentSettings(supabase,session.user.id)])
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
-        if(!matter)return null
+        if(!matter||matter.appointed===true||matter.is_appointed===true)return null
         const pref=settings[id]||{}
         if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
         // Existing finance numbers are in-memory, not the stale Clio historical report.
@@ -126,7 +126,7 @@
           if(!matter)throw new Error('Matter no longer exists.')
           // Fail closed until the shared appointed flag exists on the matter.
           // Never use a missing flag as permission to request private-client funds.
-          if(matter.appointed!==false && matter.is_appointed!==false)throw new Error('Confirm this is a non-appointed matter before sending. The shared Appointed setting is not yet available.')
+          if(matter.appointed===true || matter.is_appointed===true || (matter.appointed!==false && matter.is_appointed!==false))throw new Error('Confirm this is a non-appointed matter before sending. The shared Appointed setting is not yet available.')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
