@@ -45,3 +45,25 @@ export function createWeeklyBillingProposal({matters = [], minimumWip = 150, sel
     excluded:normalized.filter(m=>!m.included).length
   }
 }
+
+/**
+ * Reconcile the reviewer's one-run payment decisions without altering any ledger.
+ * Excluded proposals are not paid; the unpaid total must reflect those exclusions.
+ */
+export function reconcileWeeklyBillingReview(proposal, rejectedPaymentIds = []) {
+  const rejected = new Set(rejectedPaymentIds.map(String))
+  const applied = (proposal.payments || []).filter(payment => !rejected.has(String(payment.id)))
+  const paidByMatter = new Map()
+  const spentBySource = new Map()
+  for (const payment of applied) {
+    paidByMatter.set(payment.destinationMatterId,(paidByMatter.get(payment.destinationMatterId)||0)+cents(payment.amount))
+    spentBySource.set(payment.sourceMatterId,(spentBySource.get(payment.sourceMatterId)||0)+cents(payment.amount))
+  }
+  const matters = proposal.matters.map(m => ({
+    ...m,
+    paid: amount(paidByMatter.get(m.id)||0),
+    unpaid: amount(Math.max(0,cents(m.workOB)-(paidByMatter.get(m.id)||0))),
+    remainingTrust: amount(Math.max(0,cents(m.availableTrust)-(spentBySource.get(m.id)||0)))
+  }))
+  return {payments:applied,matters,totalPayments:amount(applied.reduce((n,p)=>n+cents(p.amount),0))}
+}
