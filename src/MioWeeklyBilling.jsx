@@ -58,7 +58,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     const workOB=financeSnapshot?.workOBByMatter?.[String(m.id)]??0
     return {id:String(m.id),name:m.name||'Matter '+m.id, clientId:String(m.client_id||m.client?.id||''),withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
-      shareTrust:override.shareTrust??defaults.shareTrust,
+      shareTrust:override.shareTrust??defaults.shareTrust,agreementAuthorized:override.agreementAuthorized===true,
       wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
   }),[matters,financeFor,changes,settings,financeSnapshot])
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
@@ -214,11 +214,12 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     {step==='settings'&&<>
       <h3>Weekly Billing Settings</h3>
       <label>Minimum WIP ($) <input type="number" min="0" value={settings.minimumWip??150} onChange={e=>setSettings(x=>({...x,minimumWip:e.target.value}))}/></label>
-      <p style={small}>Appointed cases default to excluded. The checkbox columns are synchronized within this workspace.</p>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr>{['Matter','Appointed','Weekly Billing','Share Trust'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(m=><tr key={m.id}><td style={cell}>{m.name}</td>
+      <p style={small}>Appointed matters default to excluded. Share Trust governs the source matter only. Verify the signed fee agreement separately before authorizing a cross-matter disbursement.</p>
+      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr>{['Matter','Appointed','Weekly Billing','Share Trust','Agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(m=><tr key={m.id}><td style={cell}>{m.name}</td>
         <td style={cell}><input aria-label={'Appointed '+m.name} type="checkbox" checked={m.appointed} onChange={e=>{setMatter(m.id,'appointed',e.target.checked);setChanges(prev=>({...prev,[m.id]:{...(prev[m.id]||{}),appointed:e.target.checked,included:!e.target.checked,shareTrust:!e.target.checked}}))}}/></td>
         <td style={cell}><input aria-label={'Billing '+m.name} type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/></td>
         <td style={cell}><input aria-label={'Share trust '+m.name} type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/></td>
+        <td style={cell}><input aria-label={'Signed agreement verified '+m.name} type="checkbox" checked={m.agreementAuthorized} onChange={e=>setMatter(m.id,'agreementAuthorized',e.target.checked)} title="Check only after verifying this client's signed fee agreement authorizes cross-matter transfers."/></td>
       </tr>)}</tbody></table>
       <p><button style={button} onClick={save} disabled={!cloudReady}>Save Billing Settings</button></p>
     </>}
