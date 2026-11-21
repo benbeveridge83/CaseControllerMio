@@ -18,7 +18,7 @@ export default function weeklyBillingReviewMount(){
           return {wip:f.wip??f.workInProgress??f.unbilledTotal,workOB,
             // Available trust is intentionally unverified: never submit speculative funds.
             // Trust replenishment invoices must never be mistaken for earned-fee Work OB.
-            availableTrust:0,verified:false}
+            availableTrust:0,displayTrust:f.trust??0,verified:false}
         }} onClose={()=>setWeeklyBillingReviewOpen(false)} />}`, 'modal')
     return {code,map:null}
   }}
