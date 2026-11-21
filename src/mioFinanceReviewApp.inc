@@ -56,8 +56,17 @@
     setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>row.id===id?{...row,...patch,...(!patch.send_status?{send_status:'ready',send_error:''}:{})}:row)}))
   }
   async function readFinanceInvoicesForReview() {
-    const rows=await loadAllSupabasePages(()=>supabase.from('mio_invoices').select('*').order('created_at',{ascending:false}).order('id',{ascending:true}))
-    return rows.map(invoiceFromDatabaseRow)
+    const [rows,events]=await Promise.all([
+      loadAllSupabasePages(()=>supabase.from('mio_invoices').select('*').order('created_at',{ascending:false}).order('id',{ascending:true})),
+      loadAllSupabasePages(()=>supabase.from('mio_invoice_events').select('invoice_id,event_type,details,occurred_at').eq('user_id',session.user.id).in('event_type',['invoice_created','invoice_approved']).order('occurred_at',{ascending:true}))
+    ])
+    const snapshots=new Map()
+    for(const event of events){
+      const n=event?.details?.trust_at_issue
+      if(n!==null&&n!==undefined&&Number.isFinite(Number(n))&&!snapshots.has(String(event.invoice_id)))
+        snapshots.set(String(event.invoice_id),Number(n))
+    }
+    return rows.map(row=>({...invoiceFromDatabaseRow(row),trust_at_issue:snapshots.get(String(row.id))??null}))
   }
   async function replenishSelectedMatters(matterIds) {
     if(replenishmentSendingRef.current)return
@@ -92,7 +101,7 @@
         return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
           appointed_status_unknown:matter.appointed!==false&&matter.is_appointed!==false,non_appointed_confirmed:false,
-          prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at})),
+          prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
           prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
           recipient_email:invoice?.recipient_email||matterClientEmail(matter)||clientEmailForMatter(matter)||'',sender_email:DEFAULT_BILLING_SENDER_EMAIL,
@@ -175,7 +184,7 @@
           const approved=await persistMioInvoiceRecord({...current,id:row.prepared_id,invoice_number:invoiceNumber,invoice_type:'trust_request',matter_id:row.matter_id,client_id:matter.client_id||'',client_name:row.client_name,matter_name:row.matter_name,matter_number:row.matter_number,
             issue_date:current?.issue_date||date,due_date:current?.due_date||due.toISOString().slice(0,10),status:'outstanding',subtotal:amount,total:amount,amount_paid:0,balance:amount,
             line_items:[{date,description:'Trust / IOLTA retainer replenishment',amount}],recipient_email:row.recipient_email.trim(),sender_email:DEFAULT_BILLING_SENDER_EMAIL,
-            created_at:current?.created_at||now.toISOString(),updated_at:now.toISOString()},current?'invoice_approved':'invoice_created',{source:'replenishment_review',approved_before_send:true})
+            created_at:current?.created_at||now.toISOString(),updated_at:now.toISOString()},current?'invoice_approved':'invoice_created',{source:'replenishment_review',approved_before_send:true,trust_at_issue:trust})
           updateReplenishmentRow(row.id,{invoice:approved,send_status:'sending'})
           const replaceTokens=text=>text.replaceAll('[invoice number]',invoiceNumber).replaceAll('[amount]',money(amount))
           const section=(label,items)=>[label,...items.map(i=>'Invoice '+(i.invoice_number||i.id)+': '+money(i.balance)+' due — '+i.payment_url)].join('\n')
