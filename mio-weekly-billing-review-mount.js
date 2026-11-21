@@ -11,7 +11,7 @@ export default function weeklyBillingReviewMount(){
     code=replaceOnce(code,'        {renderDailyBillingModal()}',
       `        {renderDailyBillingModal()}
         {page==='billing' && <button type="button" onClick={()=>setWeeklyBillingReviewOpen(true)} style={{position:'fixed',bottom:20,right:20,zIndex:9998,background:'#17345b',color:'#fff',padding:'10px 15px',borderRadius:10,border:'1px solid #8ca4be',boxShadow:'0 6px 20px #0003',cursor:'pointer'}}>Weekly Billing Review</button>}
-        {page==='billing' && weeklyBillingReviewOpen && <MioWeeklyBilling matters={matters} financeFor={matter=>{
+        {page==='billing' && weeklyBillingReviewOpen && <MioWeeklyBilling matters={matters} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
           const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)||{}
           return {wip:f.wip??f.workInProgress??f.unbilledTotal,workOB:f.outstanding,
             // Available trust is intentionally unverified: never submit speculative funds.
