@@ -42,9 +42,13 @@ export async function loadWeeklyBillingReadOnly(supabase,userId) {
     fetchAllRows(supabase,'mio_billing_entries','id,matter_id,amount,do_not_bill,payload',userId),
     fetchAllRows(supabase,'mio_invoices','id,matter_id,invoice_type,status,total,amount_paid,balance,issue_date,created_at',userId)
   ])
+  const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows').select('matter_id,state').eq('owner_id',userId)
+  if(withdrawalError)throw new Error('Withdrawal status: '+withdrawalError.message)
+  const withdrawalByMatter=Object.fromEntries((withdrawalRows||[]).map(row=>[String(row.matter_id),String(row.state?.status||'unknown')]))
   const summary=summarizeWeeklyBillingEntries(entries,invoices)
   return {wipByMatter:Object.fromEntries([...summary.wip].map(([k,v])=>[k,v/100])),
     workOBByMatter:Object.fromEntries([...summary.workOB].map(([k,v])=>[k,v/100])),
     oldestByMatter:Object.fromEntries(summary.oldestInvoice),
+    withdrawalByMatter,
     recordCount:{entries:entries.length,invoices:invoices.length}}
 }
