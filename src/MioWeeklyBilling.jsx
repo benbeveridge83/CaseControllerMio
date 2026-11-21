@@ -1,5 +1,6 @@
 import React, {useEffect, useMemo, useState} from 'react'
 import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview, possibleCrossMatterFunding} from './mioWeeklyBillingModel.js'
+import {loadWeeklyBillingReadOnly} from './mioWeeklyBillingData.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
 const cell={padding:'8px 6px',textAlign:'left',borderBottom:'1px solid #e2e8f0'}
@@ -16,6 +17,17 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
   const [cloudError,setCloudError]=useState('')
+  const [financeSnapshot,setFinanceSnapshot]=useState(null)
+  const [financeError,setFinanceError]=useState('')
+  const [financeLoading,setFinanceLoading]=useState(true)
+  const refreshFinancialSnapshot=async()=>{
+    if(!supabase||!userId){setFinanceError('Login required to read financial records.');setFinanceLoading(false);return}
+    setFinanceLoading(true);setFinanceError('')
+    try {const current=await loadWeeklyBillingReadOnly(supabase,userId);setFinanceSnapshot(current)}
+    catch(error){setFinanceSnapshot(null);setFinanceError(error?.message||String(error))}
+    finally{setFinanceLoading(false)}
+  }
+  useEffect(()=>{refreshFinancialSnapshot()},[supabase,userId])
   useEffect(()=>{
     if(!supabase||!userId){setCloudError('Cloud settings unavailable: sign in to persist preferences.');return}
     let cancelled=false
@@ -36,13 +48,13 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     const override=changes[String(m.id)]||settings.matters?.[String(m.id)]||{}
     // Never represent unknown balances as verified, available funds.
     const trust=Number.isFinite(Number(f.availableTrust))?Number(f.availableTrust):0
-    const wip=Number.isFinite(Number(f.wip))?Number(f.wip):0
-    const workOB=Number.isFinite(Number(f.workOB))?Number(f.workOB):0
+    const wip=financeSnapshot?.wipByMatter?.[String(m.id)]??0
+    const workOB=financeSnapshot?.workOBByMatter?.[String(m.id)]??0
     return {id:String(m.id),name:m.name||'Matter '+m.id, clientId:String(m.client_id||m.client?.id||''),
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
       shareTrust:override.shareTrust??defaults.shareTrust,
-      wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:f.oldestInvoiceDate||'',unverified:!f.verified}
-  }),[matters,financeFor,changes,settings])
+      wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
+  }),[matters,financeFor,changes,settings,financeSnapshot])
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
@@ -66,6 +78,9 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     <nav style={{display:'flex',gap:8,flexWrap:'wrap',margin:'18px 0'}}>
       {['wip','payments','unpaid','settings'].map((s,i)=><button key={s} style={{...button,background:step===s?'#dbeafe':'white',fontWeight:step===s?700:400}} onClick={()=>setStep(s)}>{i+1}. {({wip:'WIP Review',payments:'Payment Preview',unpaid:'Unpaid Balances',settings:'Settings'})[s]}</button>)}
     </nav>
+    {financeLoading&&<p role="status">Loading recorded WIP and invoices…</p>}
+    {financeError&&<p role="alert" style={{color:'#991b1b'}}>Financial records could not be loaded: {financeError}</p>}
+    {financeSnapshot&&<p style={small}>Read-only records loaded: {financeSnapshot.recordCount.entries} billing entries; {financeSnapshot.recordCount.invoices} invoices. Trust remains unverified.</p>}
     {cloudError&&<p role="alert" style={{color:'#991b1b'}}>Settings connection: {cloudError}</p>}
     {notice&&<p role="status" style={{background:'#eff6ff',padding:8}}>{notice}</p>}
     {step==='wip'&&<>
@@ -78,7 +93,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
           <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
       </tbody></table><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
-      <button style={button} onClick={()=>setStep('payments')}>Continue to payment preview →</button>
+      <button style={button} onClick={()=>setStep('payments')} disabled={!financeSnapshot||financeLoading}>Continue to payment preview →</button> <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
     </>}
     {step==='payments'&&<>
       <h3>Proposed trust payments</h3>
