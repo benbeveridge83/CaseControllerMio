@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 function replaceOnce(source,needle,replacement,label) {
   if (source.split(needle).length!==2) throw Error('Weekly billing mount anchor changed: '+label)
   return source.replace(needle,replacement)
@@ -8,13 +9,15 @@ export default function weeklyBillingReviewMount(){
     let code="import MioWeeklyBilling from './MioWeeklyBilling.jsx'\n"+source
     code=replaceOnce(code,'  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)',
       '  const weeklyBillingSettingsPopup=new URLSearchParams(window.location.search).has(\'mioWeeklyBillingSettings\')\n  const [weeklyBillingReviewOpen,setWeeklyBillingReviewOpen]=useState(weeklyBillingSettingsPopup)\n  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)','state')
+    const withdrawalHelper=fs.readFileSync(new URL('./src/mioWeeklyWithdrawal.inc',import.meta.url),'utf8')
+    code=replaceOnce(code,'  function renderDailyBillingModal() {',withdrawalHelper+'\n  function renderDailyBillingModal() {','withdrawal helper')
     code=replaceOnce(code,'        {renderDailyBillingModal()}',
       `        {renderDailyBillingModal()}
         {page==='billing' && !weeklyBillingSettingsPopup && <div style={{position:'fixed',bottom:20,right:20,zIndex:9998,display:'flex',gap:8}}>
           <button type="button" onClick={()=>setWeeklyBillingReviewOpen(true)} style={{background:'#17345b',color:'#fff',padding:'10px 15px',borderRadius:10,border:'1px solid #8ca4be',boxShadow:'0 6px 20px #0003',cursor:'pointer'}}>Weekly Billing Review</button>
           <button type="button" onClick={()=>window.open(window.location.origin+window.location.pathname+'?mioWeeklyBillingSettings=1','mio-weekly-billing-settings','width=1100,height=800,resizable=yes,scrollbars=yes')} style={{background:'#fff',color:'#17345b',padding:'10px 15px',borderRadius:10,border:'1px solid #8ca4be',boxShadow:'0 6px 20px #0003',cursor:'pointer'}}>⚙ Billing Settings ↗</button>
         </div>}
-        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingSettingsPopup?'settings':'wip'} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);openBulkWipReview(ids)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} matters={matters} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
+        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingSettingsPopup?'settings':'wip'} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);openBulkWipReview(ids)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} matters={matters} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
           const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)||{}
           const workInvoices=Array.isArray(f.serviceInvoices)?f.serviceInvoices.filter(invoice=>invoice.invoice_type!=='trust_request'&&invoice.status!=='void'):[]
           const workOB=workInvoices.reduce((sum,invoice)=>sum+Math.max(0,Number(invoice.balance??(Number(invoice.total||0)-Number(invoice.amount_paid||0)))||0),0)
