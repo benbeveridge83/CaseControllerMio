@@ -106,9 +106,16 @@ export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={
     const verified=m.included===true&&m.trustVerified===true&&m.unrestrictedFundsVerified===true
     remainingTrust.set(String(m.id),verified?cents(m.verifiedAvailableTrust):0)
   }
+  // Only posted, collectible service invoices are payable. A partially paid
+  // invoice remains Work OB to the extent of its verified remaining balance.
+  // Never infer client ownership from a blank client ID for cross-matter use.
   const eligible=invoices.filter(invoice=>{
     const dest=matterById.get(String(invoice.matter_id))
-    if(!dest||dest.included!==true||invoice.invoice_type!=='services'||invoice.status!=='outstanding'||invoice.disputed===true)return false
+    const status=String(invoice.status||'').toLowerCase()
+    if(!invoice.id||!dest||dest.included!==true||invoice.invoice_type!=='services'||
+       !['outstanding','partially_paid'].includes(status))return false
+    if(invoice.disputed===true||invoice.on_hold===true||invoice.payment_hold===true||
+       invoice.restricted===true||invoice.voided===true)return false
     if(invoice.client_id&&String(invoice.client_id)!==String(dest.clientId||''))return false
     return cents(invoice.balance)>0
   }).sort((a,b)=>String(a.issue_date||'9999').localeCompare(String(b.issue_date||'9999'))||String(a.id).localeCompare(String(b.id)))
@@ -135,7 +142,9 @@ export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={
     for(const source of matters){
       if(String(source.id)===String(destination.id)||source.included!==true||
          source.shareTrust!==true||source.agreementAuthorized!==true||
-         !source.clientId||String(source.clientId)!==String(destination.clientId))continue
+         !source.clientId||!destination.clientId||
+         !invoice.client_id||String(invoice.client_id)!==String(destination.clientId)||
+         String(source.clientId)!==String(destination.clientId))continue
       allocate(source,destination,invoice)
     }
   }
