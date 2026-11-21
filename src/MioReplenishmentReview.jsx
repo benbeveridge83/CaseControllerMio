@@ -9,7 +9,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
   const closeRef=useRef(null)
   useEffect(()=>{if(!review.open)return;const prior=document.activeElement;closeRef.current?.focus();return()=>prior?.focus?.()},[review.open])
   if(!review.open)return null
-  const rows=review.rows||[],ready=rows.filter(row=>row.included&&!locked(row))
+  const rows=review.rows||[],ready=rows.filter(row=>row.included&&!locked(row)&&Number(row.amount||0)>0)
   return createPortal(<div style={{position:'fixed',inset:0,zIndex:99000,background:'rgba(15,23,42,.6)',padding:20,display:'grid',placeItems:'center'}}>
     <section role="dialog" aria-modal="true" aria-labelledby="replenishment-review-title" style={{background:'#fff',borderRadius:12,padding:20,width:'min(1180px,95vw)',maxHeight:'92vh',overflow:'auto'}} onKeyDown={event=>{
       if(event.key==='Escape'&&!busy)onClose()
@@ -19,7 +19,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       <div role="status" aria-live="polite">{review.loading?'Loading current invoices...':review.message}</div>
       {review.error&&<p role="alert">{review.error}</p>}
       <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'12px 0'}}>
-        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length} onClick={()=>onSend(null)}>Approve &amp; Send All ({ready.length})</button>
+        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length} onClick={()=>onSend(null)}>Approve &amp; Send New Requests ({ready.length})</button>
         <strong>New requests selected: {money(ready.reduce((sum,row)=>sum+Number(row.amount||0),0))}</strong>
         {!connected&&<button type="button" onClick={onConnect} disabled={busy}>Connect Microsoft</button>}
       </div>
@@ -38,6 +38,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
   const workTotal=work.reduce((n,i)=>n+invoiceOutstanding(i),0);
   const suggested=trust===null||target===null?null:calculateTrustReplenishment({currentTrust:trust,targetTrust:target,priorTrustInvoices:old});
   const history=recentTrustHistory(old);
+  const historyBase=Date.now()-60*86400000;
   return <div style={{marginTop:10}}>
     <div style={{display:'flex',flexWrap:'wrap',gap:12,alignItems:'center',marginBottom:8}}>
       <small>Current trust: <strong>{trust===null?'Unavailable':money(trust)}</strong></small>
@@ -59,10 +60,11 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
     </div>}
     <details style={{marginTop:10}}>
       <summary>Prior 60 days — {history.length} replenishment invoice{history.length===1?'':'s'}</summary>
-      {history.length?<div style={{overflowX:'auto'}}><table style={{width:'100%',fontSize:12,marginTop:8}}><thead><tr><th align="left">Sent</th><th align="right">Trust then</th><th align="right">Original</th><th align="right">Paid</th><th align="right">Still due</th></tr></thead><tbody>{history.map((invoice,i)=><tr key={invoice.id||i}><td>{dateLabel(invoice.sent_at||invoice.issued_at||invoice.created_at)}</td><td align="right">{invoice.trust_at_issue==null?'—':money(invoice.trust_at_issue)}</td><td align="right">{money(invoice.amount)}</td><td align="right">{money(invoice.paid_amount)}</td><td align="right">{money(invoiceOutstanding(invoice))}</td></tr>)}</tbody></table></div>:<p style={{fontSize:12}}>No invoice history available for the last 60 days. Historical balances require a saved issuance snapshot.</p>}
+      {history.length?<><div aria-label="Trust replenishment invoice timeline, last 60 days" style={{position:'relative',height:23,margin:'16px 8px 8px',borderTop:'2px solid #cbd5e1'}}>{history.map((invoice,i)=>{const date=new Date(invoice.sent_at||invoice.issued_at||invoice.created_at).getTime();const left=Math.max(0,Math.min(100,(date-historyBase)/(60*86400000)*100));return <span key={invoice.id||i} title={`${dateLabel(invoice.sent_at||invoice.issued_at||invoice.created_at)}: ${money(invoice.amount)} invoiced, ${money(invoice.paid_amount)} paid, trust then ${invoice.trust_at_issue==null?'unavailable':money(invoice.trust_at_issue)}`} style={{position:'absolute',left:left+'%',top:-7,width:12,height:12,borderRadius:'50%',background:'#64748b',border:'2px solid white',boxShadow:'0 0 0 1px #64748b'}}/>})}</div><div style={{overflowX:'auto'}}><table style={{width:'100%',fontSize:12,marginTop:8}}><thead><tr><th align="left">Sent</th><th align="right">Trust then</th><th align="right">Original</th><th align="right">Paid</th><th align="right">Still due</th></tr></thead><tbody>{history.map((invoice,i)=><tr key={invoice.id||i}><td>{dateLabel(invoice.sent_at||invoice.issued_at||invoice.created_at)}</td><td align="right">{invoice.trust_at_issue==null?'—':money(invoice.trust_at_issue)}</td><td align="right">{money(invoice.amount)}</td><td align="right">{money(invoice.paid_amount)}</td><td align="right">{money(invoiceOutstanding(invoice))}</td></tr>)}</tbody></table></div></>:<p style={{fontSize:12}}>No invoice history available for the last 60 days. Historical balances require a saved issuance snapshot.</p>}
     </details>
   </div>
 })()}
+        {Number(row.amount||0)<=0&&(row.prior_trust_invoices||[]).length>0&&<p style={{fontSize:12,color:'#92400e'}}>No additional trust invoice is needed. Previous unpaid invoices remain outstanding; reminder-only delivery is not connected to this send button yet.</p>}
         {row.reason&&<p>{row.reason}</p>}
         {row.send_error&&<p role="alert" style={{color:'#b91c1c'}}>{row.send_error}</p>}
         {row.send_status!=='blocked'&&<>
@@ -74,7 +76,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
           <label style={{display:'grid',gap:4,marginTop:10}}>Subject<input aria-label={`Subject for ${row.client_name}`} value={row.subject} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{subject:e.target.value})}/></label>
           <label style={{display:'grid',gap:4,marginTop:10}}>Message<textarea aria-label={`Message for ${row.client_name}`} rows={4} value={row.message} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{message:e.target.value})}/></label>
           <p style={{fontSize:12}}>The email includes the trust-request PDF and a secure LawPay Trust/IOLTA payment link. [invoice number] and [amount] are filled from the approved request.</p>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)} onClick={()=>onSend(row.id)}>Approve &amp; Send</button></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||Number(row.amount||0)<=0} onClick={()=>onSend(row.id)}>Approve &amp; Send</button></div>
         </>}
       </section>)}
       {!rows.length&&!review.loading&&!review.error&&<p>No selected matter requires replenishment.</p>}
