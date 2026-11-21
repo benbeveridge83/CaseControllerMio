@@ -51,10 +51,22 @@
   }
   async function setReplenishmentLimits(id,patch) {
     try {
-      await changeReplenishmentSetting(id,patch)
-      // The amounts changed. Refresh the whole review before approving; stale
-      // invoice amounts must never be sent using the old target.
-      setReplenishmentReview(current=>({...current,message:'Trust limits saved. Reopen the review to recalculate invoice amounts before sending.'}))
+      const saved=await changeReplenishmentSetting(id,patch)
+      setReplenishmentReview(current=>({
+        ...current,
+        rows:current.rows.map(row=>{
+          if(row.id!==id)return row
+          const target=Number(saved.target_trust??row.target_trust),
+            minimum=Number(saved.minimum_trust??row.minimum_trust),
+            trust=Number(row.current_trust),
+            previous=(row.prior_trust_invoices||[]).reduce((sum,i)=>sum+Math.max(0,Number(i.remaining_balance||0)),0)
+          const newAmount=Number.isFinite(target)&&Number.isFinite(trust)
+            ?Math.max(0,Math.round(target*100)-Math.round(trust*100)-Math.round(previous*100))/100:0
+          return {...row,minimum_trust:minimum,target_trust:target,amount:String(newAmount),
+            included:row.included&&trust<minimum,send_status:trust>=minimum?'blocked':'ready'}
+        }),
+        message:'Trust limits saved and amounts recalculated. Mio will recheck live balances and invoices again before sending.'
+      }))
     }catch(error){alert('Could not save trust limits. '+(error?.message||error))}
   }
   async function flagReplenishmentWithdrawal(id,flagged) {
