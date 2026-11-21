@@ -75,17 +75,19 @@ export function reconcileWeeklyBillingReview(proposal, rejectedPaymentIds = []) 
 export function possibleCrossMatterFunding(matters = []) {
   const normalized=matters.map(m=>({...m,id:String(m.id),clientId:String(m.clientId||''),displayCents:cents(m.displayTrust),owedCents:cents(m.workOB)+cents(m.selectedWip)}))
   const possible=[]
+  const remainingOwed=new Map(normalized.map(m=>[m.id,Math.max(0,m.owedCents-m.displayCents)]))
   for (const source of normalized) {
     if (!source.included || !source.shareTrust || !source.clientId) continue
     let remainder=Math.max(0,source.displayCents-source.owedCents)
     if (!remainder) continue
-    const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&dest.shareTrust&&dest.owedCents>0)
+    const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&dest.shareTrust&&remainingOwed.get(dest.id)>0)
     for (const dest of destinations) {
-      const suggested=Math.min(remainder,dest.owedCents)
+      const suggested=Math.min(remainder,remainingOwed.get(dest.id))
       if (!suggested) continue
       possible.push({id:source.id+':'+dest.id,sourceMatterId:source.id,destinationMatterId:dest.id,
         sourceName:source.name,destinationName:dest.name,amount:amount(suggested),status:'unverified'})
       remainder-=suggested
+      remainingOwed.set(dest.id,remainingOwed.get(dest.id)-suggested)
     }
   }
   return possible
