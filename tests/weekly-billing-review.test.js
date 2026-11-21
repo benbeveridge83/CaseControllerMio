@@ -88,3 +88,12 @@ test('WIP comes only from uninvoiced, billable entries and Work OB excludes trus
  assert.equal(summary.oldestInvoice.get('a'),'2026-01-03')
  assert.equal(summary.wip.get('b'),undefined)
 })
+
+test('two funding sources do not double-count the same destination obligation',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded A',clientId:'same',displayTrust:500,workOB:0,included:true,shareTrust:true},
+  {id:'b',name:'Funded B',clientId:'same',displayTrust:500,workOB:0,included:true,shareTrust:true},
+  {id:'c',name:'Owed C',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
+ ])
+ assert.equal(candidates.filter(x=>x.destinationMatterId==='c').reduce((sum,x)=>sum+x.amount,0),600)
+})
