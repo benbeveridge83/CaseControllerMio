@@ -3,7 +3,7 @@ const cents = value => Math.max(0, Math.round((Number(value) || 0) * 100))
 const amount = value => Math.round(value) / 100
 export function weeklyBillingDefaults(matter = {}) {
   const appointed = Boolean(matter.appointed ?? matter.is_appointed ?? matter.court_appointed ?? false)
-  return {appointed, included: !appointed, shareTrust: !appointed}
+  return {appointed, included: !appointed, shareTrust: true}
 }
 export function createWeeklyBillingProposal({matters = [], minimumWip = 150, selectedIds = null, authorizations = {}} = {}) {
   const threshold = cents(minimumWip)
@@ -21,7 +21,7 @@ export function createWeeklyBillingProposal({matters = [], minimumWip = 150, sel
   const proposals = []
   const makePayment = (source,dest) => {
     if (!dest.included || !source.included || !source.clientId || source.clientId !== dest.clientId) return
-    if (source.id !== dest.id && (!source.shareTrust || !dest.shareTrust || authorizations[source.id] !== true)) return
+    if (source.id !== dest.id && (!source.shareTrust || authorizations[source.id] !== true)) return
     const payment = Math.min(balance.get(source.id), owing.get(dest.id))
     if (payment <= 0) return
     proposals.push({id:source.id+':'+dest.id,sourceMatterId:source.id,destinationMatterId:dest.id,
@@ -80,7 +80,7 @@ export function possibleCrossMatterFunding(matters = []) {
     if (!source.included || !source.shareTrust || !source.clientId) continue
     let remainder=Math.max(0,source.displayCents-source.owedCents)
     if (!remainder) continue
-    const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&dest.shareTrust&&remainingOwed.get(dest.id)>0)
+    const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&remainingOwed.get(dest.id)>0)
     for (const dest of destinations) {
       const suggested=Math.min(remainder,remainingOwed.get(dest.id))
       if (!suggested) continue
