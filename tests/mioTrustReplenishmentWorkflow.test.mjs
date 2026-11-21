@@ -32,3 +32,12 @@ test('sending requires up-to-date verification, routing and idempotency',()=>{
  assert.ok(validateReplenishmentSend({recipient_email:'client@example.com'}).length>=3);
  assert.deepEqual(validateReplenishmentSend({recipient_email:'client@example.com',verified_current_balances:true,trust_payment_routing_verified:true,idempotency_key:'run:m1'}),[]);
 });
+
+test('unsent draft does not masquerade as previously invoiced client debt',()=>{
+ const [row]=buildReplenishmentReview({matters:[base],invoices:[{id:'d1',matter_id:'m1',invoice_type:'trust_request',total:4000,balance:4000,status:'draft'}]});
+ assert.equal(row.outstanding_trust,0);
+ assert.equal(row.new_replenishment,4000);
+ assert.equal(row.needs_draft_reconciliation,true);
+ assert.equal(row.needs_new_invoice,false);
+ assert.ok(validateReplenishmentSend(row).some(e=>e.includes('unsent trust')));
+});
