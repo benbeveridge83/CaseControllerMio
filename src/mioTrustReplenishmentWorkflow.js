@@ -9,10 +9,16 @@ const desc = i => ({
   id:i.id,
   invoice_number:i.invoice_number || '',
   date:dateOf(i),
+  sent_at:i.emailed_at || i.sent_at || null,
+  issued_at:i.issue_date || null,
+  created_at:i.created_at || null,
+  status:i.status || '',
   amount:Number(i.total ?? i.amount ?? 0),
   paid:Number(i.amount_paid ?? i.paid_amount ?? 0),
+  paid_amount:Number(i.amount_paid ?? i.paid_amount ?? 0),
   remaining:invoiceOutstanding({ ...i, remaining_balance:i.balance ?? i.remaining_balance,paid_amount:i.amount_paid ?? i.paid_amount,amount:i.total ?? i.amount }),
   payment_url:i.payment_url || '',
+  remaining_balance:i.balance ?? i.remaining_balance ?? null,
   trust_at_issue:i.trust_at_issue ?? null,
 });
 export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
