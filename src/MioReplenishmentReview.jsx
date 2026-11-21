@@ -78,7 +78,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
           <label style={{display:'grid',gap:4,marginTop:10}}>Subject<input aria-label={`Subject for ${row.client_name}`} value={row.subject} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{subject:e.target.value})}/></label>
           <label style={{display:'grid',gap:4,marginTop:10}}>Message<textarea aria-label={`Message for ${row.client_name}`} rows={4} value={row.message} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{message:e.target.value})}/></label>
           <p style={{fontSize:12}}>The email includes the trust-request PDF and a secure LawPay Trust/IOLTA payment link. [invoice number] and [amount] are filled from the approved request.</p>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'</button></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
         </>}
       </section>)}
       {!rows.length&&!review.loading&&!review.error&&<p>No selected matter requires replenishment.</p>}
