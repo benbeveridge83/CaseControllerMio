@@ -185,8 +185,9 @@
             matterId:row.matter_id,kind:amount===0?'reminder':'new',amount,trust,target,
             invoices:fresh.filter(i=>String(i.matter_id)===String(row.matter_id)&&i.invoice_type==='trust_request')
           })
-          sendClaim={userId:session.user.id,matterId:row.matter_id,fingerprint}
-          await claimReplenishmentSend(supabase,{...sendClaim,kind:amount===0?'reminder':'new'})
+          const proposedClaim={userId:session.user.id,matterId:row.matter_id,fingerprint}
+          await claimReplenishmentSend(supabase,{...proposedClaim,kind:amount===0?'reminder':'new'})
+          sendClaim=proposedClaim
           if(amount===0){
             // Reminder-only: reuse an existing invoice and do not issue any new trust request.
             const reminderInvoice=plan.previouslyIssued[0]||work[0]
