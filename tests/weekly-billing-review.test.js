@@ -176,3 +176,19 @@ test('invoice holds and uncertain cross-matter client identities fail closed',()
  assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',restricted:true}]}).totalCents,0)
  assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x'}]}).totalCents,90000)
 })
+
+test('invoice snapshot rejects same-dollar changes in date or description',()=>{
+ const original=[{id:'e1',matter_id:'a',entry_date:'2026-11-01',description:'Draft review',amount:150,payload:{}}]
+ const snapshot=prepareWeeklyInvoiceDrafts(original,['a'])
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,original),true)
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,[{...original[0],description:'Different work'}]),false)
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,[{...original[0],entry_date:'2026-11-03'}]),false)
+})
+test('unknown invoice types cannot silently become service Work OB',()=>{
+ const summary=summarizeWeeklyBillingEntries([],[
+  {id:'unknown',matter_id:'a',status:'outstanding',balance:400},
+  {id:'trust',matter_id:'a',invoice_type:'trust_request',status:'outstanding',balance:500},
+  {id:'services',matter_id:'a',invoice_type:'services',status:'partially_paid',balance:120}
+ ])
+ assert.equal(summary.workOB.get('a'),12000)
+})
