@@ -8,8 +8,8 @@ const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,backg
 const KEY='mioWeeklyBillingSettingsV1'
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',onClose=()=>{}}) {
-  const [step,setStep]=useState('wip')
+export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onClose=()=>{}}) {
+  const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
