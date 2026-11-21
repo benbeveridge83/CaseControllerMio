@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview} from '../src/mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding} from '../src/mioWeeklyBillingModel.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
  {id:'b',name:'Client — Other',clientId:'client1',wip:180,workOB:400,availableTrust:0,included:true,shareTrust:true},
@@ -52,4 +52,20 @@ test('an excluded appointed matter never triggers a payment or a withdrawal cand
  const appointed=preview.matters.find(m=>m.id==='c')
  assert.equal(appointed.included,false)
  assert.equal(preview.payments.some(p=>p.destinationMatterId==='c'),false)
+})
+
+test('cross-matter review identifies a possibility, never an approved transfer',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded',clientId:'same',displayTrust:1000,workOB:300,selectedWip:200,included:true,shareTrust:true},
+  {id:'b',name:'Other',clientId:'same',displayTrust:0,workOB:600,selectedWip:0,included:true,shareTrust:true},
+  {id:'c',name:'Stranger',clientId:'other',displayTrust:0,workOB:1000,included:true,shareTrust:true}
+ ])
+ assert.deepEqual(candidates.map(x=>[x.sourceMatterId,x.destinationMatterId,x.amount,x.status]),[['a','b',500,'unverified']])
+})
+test('isolated matter never shares funds as a source or destination',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded',clientId:'same',displayTrust:1000,workOB:0,included:true,shareTrust:false},
+  {id:'b',name:'Other',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
+ ])
+ assert.deepEqual(candidates,[])
 })
