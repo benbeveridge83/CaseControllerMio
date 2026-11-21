@@ -26,7 +26,10 @@ export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
     const cfg=settings[m.id] || {};
     const related = invoices.filter(i=>String(i.matter_id)===String(m.id) || (cfg.covered_matter_ids||[]).map(String).includes(String(i.matter_id)));
     const unpaid=related.filter(i=>!closedInvoice(i)&&invoiceOutstanding({ ...i,remaining_balance:i.balance ?? i.remaining_balance,paid_amount:i.amount_paid ?? i.paid_amount,amount:i.total ?? i.amount })>0);
-    const trust=unpaid.filter(isTrust).map(desc);
+    // Drafts are not client debts. They must be reviewed/reused, not treated as
+    // previously issued requests or silently subtracted from the shortfall.
+    const trust=unpaid.filter(i=>isTrust(i)&&String(i.status||'').toLowerCase()!=='draft').map(desc);
+    const unsentTrustDrafts=unpaid.filter(i=>isTrust(i)&&String(i.status||'').toLowerCase()==='draft').map(desc);
     const work=unpaid.filter(isWork).map(desc);
     const target=Number(cfg.target_trust ?? m.target_trust ?? m.initial_retainer ?? m.minimum_balance ?? 0);
     const balance=Number(m.current_trust ?? m.trust_balance ?? 0);
@@ -37,12 +40,13 @@ export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
       current_trust:balance,minimum_trust:Number(cfg.minimum_trust ?? m.minimum_trust ?? m.minimum_balance),
       target_trust:target,replenishment_enabled:cfg.replenishment_enabled!==false,
       withdrawal_flagged:cfg.withdrawal_flagged===true,
-      unpaid_work_invoices:work,prior_trust_invoices:trust,
+      unpaid_work_invoices:work,prior_trust_invoices:trust,unsent_trust_drafts:unsentTrustDrafts,
       outstanding_work:sum(work.map(i=>({remaining_balance:i.remaining}))),
       outstanding_trust:outstandingTrust,
       new_replenishment:newAmount,
       all_due:Math.round((sum(work.map(i=>({remaining_balance:i.remaining}))+outstandingTrust+newAmount)*100)/100,
-      needs_new_invoice:newAmount>0,
+      needs_new_invoice:newAmount>0 && unsentTrustDrafts.length===0,
+      needs_draft_reconciliation:unsentTrustDrafts.length>0,
       needs_payment_reminder:work.length+trust.length>0
     }
   }).sort((a,b)=>a.current_trust-b.current_trust);
@@ -73,6 +77,7 @@ export function validateReplenishmentSend(row) {
   if(!row?.trust_payment_routing_verified)errors.push('Trust payment routing not verified');
   if(!row?.operating_payment_routing_verified && (row.unpaid_work_invoices||[]).length)errors.push('Operating payment routing not verified');
   if(row?.withdrawal_flagged && !row?.withdrawal_send_approved)errors.push('Withdrawal-flagged matter requires explicit confirmation');
+  if(row?.needs_draft_reconciliation)errors.push('Existing unsent trust request must be reviewed or reused');
   if(row?.appointed || row?.replenishment_enabled===false)errors.push('Matter is excluded');
   if(!row?.idempotency_key)errors.push('Idempotency key missing');
   return errors;
