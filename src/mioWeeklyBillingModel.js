@@ -2,7 +2,7 @@
 const cents = value => Math.max(0, Math.round((Number(value) || 0) * 100))
 const amount = value => Math.round(value) / 100
 export function weeklyBillingDefaults(matter = {}) {
-  const appointed = Boolean(matter.appointed || matter.is_appointed || matter.court_appointed)
+  const appointed = Boolean(matter.appointed ?? matter.is_appointed ?? matter.court_appointed ?? false)
   return {appointed, included: !appointed, shareTrust: !appointed}
 }
 export function createWeeklyBillingProposal({matters = [], minimumWip = 150, selectedIds = null, authorizations = {}} = {}) {
