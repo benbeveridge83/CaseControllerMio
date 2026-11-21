@@ -67,3 +67,26 @@ export function reconcileWeeklyBillingReview(proposal, rejectedPaymentIds = []) 
   }))
   return {payments:applied,matters,totalPayments:amount(applied.reduce((n,p)=>n+cents(p.amount),0))}
 }
+
+/**
+ * Informational only: show possible sharing before authorization and reconciliation.
+ * The input balance is a DISPLAY balance, never proof of available or transferable funds.
+ */
+export function possibleCrossMatterFunding(matters = []) {
+  const normalized=matters.map(m=>({...m,id:String(m.id),clientId:String(m.clientId||''),displayCents:cents(m.displayTrust),owedCents:cents(m.workOB)+cents(m.selectedWip)}))
+  const possible=[]
+  for (const source of normalized) {
+    if (!source.included || !source.shareTrust || !source.clientId) continue
+    let remainder=Math.max(0,source.displayCents-source.owedCents)
+    if (!remainder) continue
+    const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&dest.shareTrust&&dest.owedCents>0)
+    for (const dest of destinations) {
+      const suggested=Math.min(remainder,dest.owedCents)
+      if (!suggested) continue
+      possible.push({id:source.id+':'+dest.id,sourceMatterId:source.id,destinationMatterId:dest.id,
+        sourceName:source.name,destinationName:dest.name,amount:amount(suggested),status:'unverified'})
+      remainder-=suggested
+    }
+  }
+  return possible
+}
