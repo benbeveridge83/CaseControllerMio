@@ -23,7 +23,9 @@
       const matter=matters.find(m=>String(m.id)===id)
       if(!matter){skipped.push(id+': missing matter');continue}
       const override=settings?.matters?.[id]||{}
-      if(override.included===false||override.appointed===true||matter.appointed===true||matter.is_appointed===true||matter.court_appointed===true){
+      const appointed=override.appointed??Boolean(matter.appointed||matter.is_appointed||matter.court_appointed)
+      const included=override.included??!appointed
+      if(!included||appointed){
         skipped.push((matter.name||id)+': weekly billing excluded/appointed');continue
       }
       if(matter.is_active===false||/closed|dismissed/i.test(String(matter.case_status||''))){skipped.push((matter.name||id)+': closed');continue}
@@ -42,7 +44,8 @@
         if(source.id===matter.id||String(source.client_id||'')!==String(matter.client_id)||source.is_active===false)return false
         const setting=settings?.matters?.[String(source.id)]||{}
         const share=setting.shareTrust!==false
-        const included=setting.included!==false && setting.appointed!==true
+        const sourceAppointed=setting.appointed??Boolean(source.appointed||source.is_appointed||source.court_appointed)
+        const included=setting.included??!sourceAppointed
         return share&&included&&financeNumber(clientFinanceNumbers(source,recentInvoices).trust)>0.005
       })
       if(fundable){skipped.push((matter.name||id)+': another included matter has trust');continue}
@@ -63,5 +66,5 @@
     const saved=verification.json_value||JSON.parse(verification.raw_value||'{}')
     if(eligible.some(m=>saved?.[String(m.id)]?.withdrawal_status!=='withdrawing'))throw new Error('Not all withdrawal marks persisted. Refresh before retrying.')
     setMatterExtraInfoById(next)
-    return {updated:eligible.length,skipped}
+    return {updated:eligible.length,updatedIds:eligible.map(m=>String(m.id)),skipped}
   }
