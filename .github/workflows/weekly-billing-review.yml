@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/MioWeeklyBilling.jsx'
       - 'src/mioWeeklyBillingModel.js'
+      - 'src/mioWeeklyBillingData.js'
+      - 'docs/weekly-billing-release-gates.md'
       - 'mio-weekly-billing-review-mount.js'
       - 'tests/weekly-billing-review.test.js'
       - 'tests/weekly-billing-withdrawal.test.js'
