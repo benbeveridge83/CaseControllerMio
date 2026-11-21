@@ -51,7 +51,7 @@ export function buildReplenishmentReview({matters=[],invoices=[],settings={}}) {
       outstanding_work:sum(work.map(i=>({remaining_balance:i.remaining}))),
       outstanding_trust:outstandingTrust,
       new_replenishment:newAmount,
-      all_due:Math.round((sum(work.map(i=>({remaining_balance:i.remaining}))+outstandingTrust+newAmount)*100)/100,
+      all_due:Math.round((sum(work.map(i=>({remaining_balance:i.remaining})))+outstandingTrust+newAmount)*100)/100,
       needs_new_invoice:newAmount>0 && unsentTrustDrafts.length===0,
       needs_draft_reconciliation:unsentTrustDrafts.length>0,
       needs_payment_reminder:work.length+trust.length>0
