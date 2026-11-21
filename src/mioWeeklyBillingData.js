@@ -13,7 +13,7 @@ export function summarizeWeeklyBillingEntries(entries = [], invoices = []) {
     wip.set(key,(wip.get(key)||0)+cents(entry.amount))
   }
   for(const invoice of invoices) {
-    if (!invoice.matter_id || invoice.invoice_type === 'trust_request' || invoice.status === 'void') continue
+    if (!invoice.matter_id || invoice.invoice_type === 'trust_request' || !['outstanding','partially_paid'].includes(String(invoice.status||'').toLowerCase())) continue
     const balance = invoice.balance == null
       ? Math.max(0,num(invoice.total)-num(invoice.amount_paid))
       : num(invoice.balance)
