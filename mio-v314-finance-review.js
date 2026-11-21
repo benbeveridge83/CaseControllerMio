@@ -98,7 +98,9 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
    part=once(part,'      const matter = row.matter','      const matter = row.matter\n      if(!passesTrustMinimum(row.trust,bulkBillingFilters.min_trust))return false','trust filter predicate')
    const field=`          <LabeledField label="Minimum trust amount"><input aria-label="Minimum trust amount" type="number" min="0" step="0.01" value={bulkBillingFilters.min_trust??''} onChange={event=>setBulkBillingFilters(current=>({...current,min_trust:event.target.value}))} placeholder="No minimum" title="Hide matters with less than this trust balance. Blank shows all." /></LabeledField>\n`
    part=once(part,'          <LabeledField label="Mio opening balance through">',field+'          <LabeledField label="Mio opening balance through">','trust filter control')
-   return once(part,'      <section className="card" style={{ padding: 0','      {renderFinanceSyncStatus()}\n      <section className="card" style={{ padding: 0','bulk audit')
+   return once(part,'      <section className="card" style={{ padding: 0',`      {renderFinanceSyncStatus()}
+      <div style={{display:'flex',alignItems:'center',gap:12,margin:'12px 0'}}><button type="button" className="btnPrimary" disabled={bulkBillingBusy} onClick={()=>replenishSelectedMatters(matters.filter(m=>m.is_active!==false).map(m=>m.id))}>Review All Low Trust Matters</button><small>Standalone replenishment review; no weekly billing connection.</small></div>
+      <section className="card" style={{ padding: 0`,'bulk audit')
  })
  code=editFunction(code,'loadLawPayWorkspace',part=>{
    part=once(part,"runSupabaseRequestWithAuthRetry(() => supabase.from('lawpay_payment_requests').select('*').order('created_at', { ascending: false }).limit(100), 'LawPay requests load')","loadAllSupabasePages(()=>supabase.from('lawpay_payment_requests').select('*').order('created_at',{ascending:false}).order('id',{ascending:true})).then(data=>({data}))",'all requests')
