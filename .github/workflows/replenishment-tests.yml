@@ -1,0 +1,24 @@
+name: Replenishment logic checks
+on:
+  push:
+    paths:
+      - 'src/mioTrustReplenishmentCalculations.js'
+      - 'src/mioTrustReplenishmentWorkflow.js'
+      - 'src/mioReplenishmentSafety.js'
+      - 'src/mioStandaloneReplenishmentData.js'
+      - 'tests/mioTrustReplenishmentCalculations.test.mjs'
+      - 'tests/mioTrustReplenishmentWorkflow.test.mjs'
+      - 'tests/mioReplenishmentSafety.test.mjs'
+      - '.github/workflows/replenishment-tests.yml'
+  workflow_dispatch:
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/mioTrustReplenishmentCalculations.test.mjs tests/mioTrustReplenishmentWorkflow.test.mjs tests/mioReplenishmentSafety.test.mjs
