@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useState} from 'react'
-import {createWeeklyBillingProposal, weeklyBillingDefaults} from './mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview} from './mioWeeklyBillingModel.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
 const cell={padding:'8px 6px',textAlign:'left',borderBottom:'1px solid #e2e8f0'}
@@ -9,7 +9,7 @@ const KEY='mioWeeklyBillingSettingsV1'
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
 export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',onClose=()=>{}}) {
   const [step,setStep]=useState('wip')
-  const [settings,setSettings]=useState(()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch{return {}}})
+  const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
   const [approvals,setApprovals]=useState({})
   const [selected,setSelected]=useState(null)
@@ -24,7 +24,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       .then(({data,error})=>{
         if(cancelled)return
         if(error){setCloudError(error.message);return}
-        if(data?.json_value&&typeof data.json_value==='object')setSettings(data.json_value)
+        setSettings(data?.json_value&&typeof data.json_value==='object'?data.json_value:{})
         setCloudReady(true)
       }).catch(error=>{if(!cancelled)setCloudError(error?.message||String(error))})
     return()=>{cancelled=true}
@@ -43,7 +43,6 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       shareTrust:override.shareTrust??defaults.shareTrust,
       wip,workOB,availableTrust:trust,oldestInvoiceDate:f.oldestInvoiceDate||'',unverified:!f.verified}
   }),[matters,financeFor,changes,settings])
-  const eligibility=useMemo(()=>rows.filter(m=>m.included),[rows])
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
@@ -56,10 +55,11 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   }
   const first=rows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
   const chosen=selected??first
-  const eligiblePayments=proposal.payments.filter(p=>approvals[p.id]!==false)
+  const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
+  const eligiblePayments=review.payments
   return <div role="dialog" aria-label="Weekly Billing Review" style={{position:'fixed',inset:18,zIndex:100000,background:'#fff',color:'#13263d',border:'2px solid #94a3b8',borderRadius:12,boxShadow:'0 24px 70px #0005',overflow:'auto',padding:20}}>
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
-      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>Safe preview mode · No invoices or trust payments will be posted</div></div>
+      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>Safe preview mode · No invoices or trust payments will be posted · Appointed matters excluded by default</div></div>
       <button style={button} onClick={onClose}>Close ×</button>
     </header>
     <nav style={{display:'flex',gap:8,flexWrap:'wrap',margin:'18px 0'}}>
@@ -82,7 +82,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     {step==='payments'&&<>
       <h3>Proposed trust payments</h3>
       <p style={small}>Cross-matter payments are intentionally blocked until a verified authorization and available-balance adapter is connected. Nothing can be executed from this preview.</p>
-      {eligiblePayments.length===0&&<p>No verified payment proposals are available.</p>}
+      {eligiblePayments.length===0&&<p>No verified payments available. Trust balances are deliberately unavailable until the live trust-availability integration is tested.</p>}
       {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8}}>
         <div><strong>{p.destinationName} — {USD(p.amount)}</strong>{p.crossMatter&&<strong style={{color:'#a16207'}}> · CROSS-MATTER</strong>}</div>
         <div style={small}>Funds from {p.sourceName} → invoice of {p.destinationName}</div>
@@ -92,13 +92,13 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
           return <span key={id} style={{display:'inline-flex',gap:6,marginLeft:10}}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(id,'included',e.target.checked)}/> Billing</label><label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(id,'shareTrust',e.target.checked)}/> Share ({m.name})</label></span>
         })}</div><div style={{clear:'both'}}/>
       </section>)}
-      <p><strong>Preview total: {USD(eligiblePayments.reduce((n,p)=>n+p.amount,0))}</strong></p>
+      <p><strong>Preview total: {USD(review.totalPayments)}</strong></p>
       <button style={button} onClick={()=>setStep('unpaid')}>Review unpaid balances →</button>
     </>}
     {step==='unpaid'&&<>
-      <h3>Unpaid Work OB — manual review</h3>
-      <p style={small}>Withdrawal changes are not enabled in preview mode. No appointment-based withdrawal recommendation is made.</p>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><tbody>{proposal.matters.filter(m=>m.included&&m.unpaid>0).map(m=><tr key={m.id}><td style={cell}>{m.name}</td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{m.appointed?'Appointed — excluded from withdrawal automation':'Review before withdrawal status'}</td></tr>)}</tbody></table>
+      <h3>Projected unpaid balances — manual review</h3>
+      <p style={small}>These projections include selected WIP that has not been invoiced. Withdrawal changes are not enabled in preview mode. No appointment-based withdrawal recommendation is made.</p>
+      <table style={{width:'100%',borderCollapse:'collapse'}}><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=><tr key={m.id}><td style={cell}>{m.name}</td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{m.appointed?'Appointed — excluded from withdrawal automation':'Review before withdrawal status'}</td></tr>)}</tbody></table>
     </>}
     {step==='settings'&&<>
       <h3>Weekly Billing Settings</h3>
