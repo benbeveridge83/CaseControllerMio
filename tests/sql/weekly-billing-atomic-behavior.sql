@@ -185,7 +185,7 @@ values ('refund-trust-fixture','trust',now());
 insert into public.lawpay_transactions
   (gateway_transaction_id,account_id,account_key,currency,amount_cents,transaction_type,status,occurred_at)
 values ('unreconciled-refund-fixture','refund-trust-fixture','','USD',2000,'REFUND','COMPLETED','2026-11-21T00:00:00+00');
-do $ begin
+do $$ begin
   begin
     perform public.mio_post_weekly_trust_payment_v1(
       'wk-behavior-refund-0001','bbbbbbbb-0000-4000-8000-000000000005',
@@ -197,7 +197,7 @@ do $ begin
   end;
   assert (select count(*)=0 from public.mio_weekly_trust_postings
     where idempotency_key='wk-behavior-refund-0001');
-end $;
+end $$;
 delete from public.lawpay_transactions where gateway_transaction_id='unreconciled-refund-fixture';
 delete from public.mio_lawpay_accounts where provider_account_id='refund-trust-fixture';
 
