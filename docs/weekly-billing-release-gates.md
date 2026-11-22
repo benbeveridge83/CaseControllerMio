@@ -1,6 +1,6 @@
 # Weekly Billing & Trust Payments — Release Gates
 
-Status: **BACKEND VERIFIED, NOT RELEASED**. The atomic trust-posting RPC is implemented, covered by isolated-Postgres behavior/concurrency tests, and wired into the UI behind an `enableAtomicWeeklyTrustPosting` gate (off by default; the RPC's execute grant is also revoked by default). It records an accounting allocation only and does not move bank funds. Nothing has been run against production.
+Status: **RELEASE BLOCKED — TRUST CLASSIFICATION INCOMPLETE**. The atomic trust-posting RPC is implemented and tested in isolated PostgreSQL. The production RPC is not installed or granted. It records an accounting allocation only and does not move bank funds. On November 22, 2026, a read-only production query found 24 completed post-cutover LawPay trust transactions totaling $53,288.25 with neither a classified ledger entry nor a matching manual LawPay ID. Each must be reconciled before posting can be enabled. No weekly trust posting has been run in production.
 
 ## Required sequence
 1. Select qualifying unbilled WIP above the configurable threshold, respecting appointment and explicit matter overrides.
@@ -26,7 +26,9 @@ Status: **BACKEND VERIFIED, NOT RELEASED**. The atomic trust-posting RPC is impl
 - The existing invoice-review handoff may require user to complete invoicing separately; the one-button end-to-end sequence is **not completed**.
 - `supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql`: the atomic, idempotent `mio_post_weekly_trust_payment_v1` RPC plus immutable-posting triggers. Execute is revoked for `authenticated`; a separate grant is required to go live.
 - `tests/sql/weekly-billing-atomic-{schema,behavior,concurrency}.sql`: isolated-Postgres coverage of idempotency, exactly-once concurrency, fail-closed validation, and rollback. Wired into `.github/workflows/weekly-billing-review.yml`.
-- Cross-matter posting still requires per-matter `agreementAuthorized` (verified signed fee agreement) and `shareTrust`. No data currently carries these flags, so cross-matter is blocked by design.
+- Cross-matter posting requires per-matter `agreementAuthorized` (verified signed fee agreement) and `shareTrust`. The attorney must confirm the agreement before checking this setting.
+- The payment preview requires an explicit per-run trust-source verification and separate approval of each payment. A server readiness RPC leaves the atomic setting disabled until the posting function's execute grant is released.
+- The server rejects all posting while a completed post-cutover LawPay trust transaction remains unclassified and not mirrored by its transaction ID in the manual ledger. This is a firmwide fail-closed gate; reconcile the 24 observed records before release.
 
 ## Acceptance tests before release
 - $150 threshold with accumulated subthreshold WIP, old Work OB, duplicate WIP records and concurrent re-runs.
@@ -39,11 +41,11 @@ Status: **BACKEND VERIFIED, NOT RELEASED**. The atomic trust-posting RPC is impl
 - CI tests and production build pass; independent human verifies a simulated invoice/payment/withdrawal run, then explicitly approves enabling live transfers.
 
 ## Production activation sequence
-1. Backfill the `appointed` classification: run `docs/backfill-appointed-dfps.sql` (marks all DFPS matters appointed and excluded). New matters can be marked via the "Appointed" checkbox on the matter form; existing matters are editable in Weekly Billing Settings.
-2. In Weekly Billing Settings, set `agreementAuthorized` only for matters whose signed fee agreement authorizes cross-matter transfers.
-3. Apply `supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql`.
-4. Grant execute: `grant execute on function public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz) to authenticated;`
-5. Enable `enableAtomicWeeklyTrustPosting` in Settings.
-6. Run a dry-run with real matters (no posting), then one supervised live batch, reconciling against LawPay.
+1. Reconcile and classify the 24 post-cutover LawPay trust transactions still missing from both the classified and manual ledgers; verify matter ownership, bank receipt/refunds, and avoid duplicate entries.
+2. Review signed fee agreements for any cross-matter source and mark `agreementAuthorized` only when authorized. Verify each trust source against bank records and any restrictions.
+3. Apply `supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql` with execute still revoked, and verify the schema and read-only readiness check.
+4. Run a dry-run using real matters and verify that invoice balances, trust balances, and all proposed allocations agree with Bulk Billing and bank records.
+5. Grant execute: `grant execute on function public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz) to authenticated;`
+6. Enable `enableAtomicWeeklyTrustPosting` in Settings. Approve each proposed payment in one supervised live batch; reconcile Mio's accounting allocation and the separate trust-to-operating bank transfer.
 
 Maintain distinct release states: `review_safe`, `backend_verified`, `live_authorized`. Only a successful backend verification and authorized release can advance beyond `review_safe`.
