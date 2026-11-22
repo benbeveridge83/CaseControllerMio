@@ -21,7 +21,7 @@ function SettingsFilter({title,choices,selected,onChange}) {
 }
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={},financeFor=()=>null,withdrawalStatusFor=()=>'',supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={},financeFor=()=>null,withdrawalStatusFor=()=>'',supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onOpenReplenishmentReview=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settingsTab,setSettingsTab]=useState('matters')
   const [primarySearch,setPrimarySearch]=useState('')
@@ -366,6 +366,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     </>}
     {step==='unpaid'&&<>
       <h3>Projected unpaid balances — manual review</h3>
+      {onOpenReplenishmentReview&&<section style={{border:'1px solid #9ca3af',background:'#f8fafc',borderRadius:9,padding:12,margin:'12px 0'}}><strong>Next: Trust Replenishment Review</strong><p style={small}>After Section A invoices and trust payments have finished posting, refresh and review low-trust matters. Preparing a weekly billing packet is not proof that payments posted. No replenishment email is sent without your separate approval.</p><button type="button" style={{...button,background:'#dbeafe',fontWeight:700}} disabled={financeLoading||packetBusy||atomicBusy} onClick={async()=>{try{setNotice('Refreshing final financial records for replenishment…');await onOpenReplenishmentReview();}catch(error){setNotice('Replenishment handoff stopped: '+(error?.message||error))}}}>Continue to Trust Replenishment →</button></section>}
       <p style={small}>These projections include selected WIP that has not been invoiced. Withdrawal changes are not enabled in preview mode. No appointment-based withdrawal recommendation is made.</p>
       <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:850}}><thead><tr><th style={cell}>Client</th><th style={cell}>Matter</th><th style={cell}>Projected unpaid</th><th style={cell}>Trust balance (displayed)</th><th style={cell}>Withdrawal status</th></tr></thead><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=>{
         const original=byId.get(m.id)
