@@ -19504,7 +19504,8 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
   }
 
   function attorneyTypeColor(name) {
-    return optionColorForCategory('attorney_type', name)
+    const fallback = { 'Party Attorney': '#0ea5e9', 'Attorney ad Litem': '#8b5cf6', 'Amicus Attorney': '#f59e0b', 'Guardian ad Litem': '#14b8a6' }
+    return optionColorForCategory('attorney_type', name) || fallback[name] || ''
   }
 
   function attorneyDirectoryById(id) {
@@ -19544,6 +19545,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const matterParties = litigationMatterPartyRows(matter.id).filter((item) => item.source !== 'appointment' && item.id && item.id !== party.id)
     const representedIds = Array.isArray(party.represented_ids) ? party.represented_ids : []
     const appointmentTypeOptions = options('attorney_type').filter((option) => option.name !== 'Party Attorney')
+    const effectiveAppointmentTypeOptions = appointmentTypeOptions.length ? appointmentTypeOptions : [
+      { id: 'attorney-ad-litem', name: 'Attorney ad Litem' },
+      { id: 'guardian-ad-litem', name: 'Guardian ad Litem' },
+      { id: 'amicus-attorney', name: 'Amicus Attorney' }
+    ]
     const toggleRepresented = (id) => {
       const next = representedIds.includes(id) ? representedIds.filter((value) => value !== id) : [...representedIds, id]
       updateLitigationMatterPartyAt(matter.id, index, { represented_ids: next })
@@ -19575,7 +19581,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
                 <div style={{ fontSize: 11, fontWeight: 800, color: '#334155' }}>Appointment</div>
                 <select aria-label="Appointment type" value={attorneyType} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { attorney_type: event.target.value })}>
                   <option value="">Appointment type…</option>
-                  {appointmentTypeOptions.map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
+                  {effectiveAppointmentTypeOptions.map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
                 </select>
               </div>
               <input value={party.name || ''} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { name: event.target.value })} placeholder="Appointed person name" />
