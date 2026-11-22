@@ -60,7 +60,7 @@ await context.route('**/*', async route => {
   if (table === 'mio_cloud_state_write_v277') {
     const body = req.postDataJSON(); writes.push({ table, key: body.p_key })
     if (failSave && body.p_key === APPOINTED_KEY) return reply({ code: 'PT500', message: 'Example save unavailable' }, 500)
-    const row = { key: body.p_key, raw_value: body.p_raw, json_value: JSON.parse(body.p_raw), updated_at: new Date().toISOString() }; states.set(row.key, row); return reply(row)
+    const row = { key: body.p_key, raw_value: body.p_raw, json_value: null, updated_at: new Date().toISOString() }; states.set(row.key, row); return reply(row)
   }
   if (table === 'case_mio_user_state') {
     let rows = [...states.values()], key = url.searchParams.get('key')

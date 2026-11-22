@@ -89,24 +89,44 @@
     }
     return rows.map(row=>({...invoiceFromDatabaseRow(row),trust_at_issue:snapshots.get(String(row.id))??null}))
   }
-  async function replenishSelectedMatters(matterIds) {
+  async function replenishSelectedMatters(matterIds,{afterWeekly=false}={}) {
     if(replenishmentSendingRef.current)return
     const ids=[...new Set((matterIds||[]).map(String))]
     if(!ids.length)return alert('Check at least one matter first.')
     setReplenishmentReview({open:true,loading:true,rows:[],message:'',error:''})
     setBulkBillingBusy(true)
     try {
-      const [invoices,settings]=await Promise.all([readFinanceInvoicesForReview(),loadReplenishmentSettings(supabase,session.user.id)])
+      if(afterWeekly){
+        // A PREPARED weekly packet is not a posted transaction. Refresh the
+        // actual financial graph after the weekly review has finished.
+        const reconciliation=await refreshLawPayFinancialData({silent:false})
+        if(!reconciliation?.ok||reconciliation?.audit?.issues?.length)
+          throw new Error('Payment reconciliation is incomplete. Resolve LawPay discrepancies before replenishment.')
+        await refreshMioFinancialGraphData()
+      }
+      const [invoices,settings,weeklyRecord,withdrawalResult]=await Promise.all([
+        readFinanceInvoicesForReview(),
+        loadReplenishmentSettings(supabase,session.user.id),
+        supabase.from('case_mio_user_state').select('json_value,raw_value').eq('user_id',session.user.id)
+          .eq('key','mioWeeklyBillingSettingsV1').maybeSingle(),
+        supabase.from('mio_withdrawal_workflows').select('matter_id,state').eq('owner_id',session.user.id)
+      ])
+      if(weeklyRecord.error)throw weeklyRecord.error
+      if(withdrawalResult.error)throw withdrawalResult.error
+      const withdrawalStatuses=new Map((withdrawalResult.data||[]).map(w=>[String(w.matter_id),String(w.state?.status||'').toLowerCase()]))
+      const weekly=weeklyRecord.data?.json_value||JSON.parse(weeklyRecord.data?.raw_value||'{}')
+      const weeklyOverrides=weekly?.matters||{}
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
-        if(!matter||matter.appointed===true||matter.is_appointed===true)return null
+        if(!matter)return null
+        if(!sectionAReplenishmentEligibility(matter,matters,weeklyOverrides,settings).eligible)return null
         const pref=settings[id]||{}
         if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
         // Existing finance numbers are in-memory, not the stale Clio historical report.
         const finance=clientFinanceNumbers(matter,invoices)
         const balance=Number(finance.trust),minimum=Number(pref.minimum_trust??finance.minimumBalance),
           target=Number(pref.target_trust??matterRetainerTarget(matter))
-        if(!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
+        if(finance.financialSnapshotResolved!==true||!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
         const plan=replenishmentPlan(id,invoices,{trust:balance,target})
         const candidate=plan.additional>0&&!plan.blocked?{blocked:false,amount:plan.additional,invoice:null}:{
           blocked:plan.blocked,amount:0,invoice:null,reason:plan.reason||'No new invoice is needed. Previous unpaid requests remain due.'
@@ -121,8 +141,9 @@
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
         return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
-          replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
-          appointed_status_unknown:matter.appointed!==false&&matter.is_appointed!==false,non_appointed_confirmed:false,
+          replenishment_enabled:pref.replenishment_enabled!==false,
+          withdrawal_flagged:pref.withdrawal_flagged===true||['active','withdrawing','pending','requested'].includes(withdrawalStatuses.get(id)),
+          appointed_status_unknown:false,non_appointed_confirmed:true,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
           prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
@@ -131,7 +152,9 @@
           reason:candidate.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
       setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
-    } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))}
+    } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))
+      if(afterWeekly)throw error
+    }
     finally {setBulkBillingBusy(false)}
   }
   async function previewReplenishmentPdf(row) {
@@ -156,20 +179,31 @@
           if(!row.subject.trim()||!row.message.trim())throw new Error('Complete the subject and message.')
           const matter=matters.find(m=>String(m.id)===row.matter_id)
           if(!matter)throw new Error('Matter no longer exists.')
-          // Fail closed until the shared appointed flag exists on the matter.
-          // Never use a missing flag as permission to request private-client funds.
-          if(matter.appointed===true || matter.is_appointed===true)throw new Error('Appointed matters are excluded from private-client trust replenishment.');
-          if(matter.appointed!==false && matter.is_appointed!==false && row.non_appointed_confirmed!==true)throw new Error('Confirm non-appointed status on this review row before sending.');
-          if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
+          // Read Section A's saved appointment and billing participation settings
+          // again immediately before approval; the review may be stale.
+          const {data:weeklyRecord,error:weeklyError}=await supabase.from('case_mio_user_state')
+            .select('json_value,raw_value').eq('user_id',session.user.id).eq('key','mioWeeklyBillingSettingsV1').maybeSingle()
+          if(weeklyError)throw weeklyError
+          const weekly=weeklyRecord?.json_value||JSON.parse(weeklyRecord?.raw_value||'{}')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
+          const eligible=sectionAReplenishmentEligibility(matter,matters,weekly?.matters||{},preferences)
+          if(!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
+          if(!weeklyRecord && row.non_appointed_confirmed!==true)
+            throw new Error('Section A appointment settings are unavailable; stop for review.')
+          if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
-          if(pref.withdrawal_flagged===true)throw new Error('This matter is flagged for withdrawal review. Resolve the flag before automatic sending.')
+          const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows')
+            .select('matter_id,state').eq('owner_id',session.user.id).eq('matter_id',row.matter_id)
+          if(withdrawalError)throw withdrawalError
+          const pendingWithdrawal=(withdrawalRows||[]).some(w=>['active','withdrawing','pending','requested'].includes(String(w.state?.status||'').toLowerCase()))
+          if(pref.withdrawal_flagged===true||pendingWithdrawal)
+            throw new Error('Matter is flagged for withdrawal review or has an active withdrawal workflow. Resolve this before automatic sending.')
           const fresh=await readFinanceInvoicesForReview()
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
             target=Number(pref.target_trust??matterRetainerTarget(matter))
-          if(!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
+          if(fin.financialSnapshotResolved!==true||!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
             throw new Error('Trust balance is no longer below the minimum or cannot be verified; reopen review.')
           const plan=replenishmentPlan(row.matter_id,fresh,{trust,target})
           if(plan.blocked)throw new Error(plan.reason)
