@@ -116,6 +116,12 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const effectiveCaseStatus=m=>!m.isActive&&(!m.caseStatus||normalized(m.caseStatus)==='open')?'Closed':m.caseStatus||'Open'
   const matchesMatterStatus=(selected,m)=>selected===null||selected.some(value=>value==='__blank__'?!m.matterStatus:normalized(value)===normalized(m.matterStatus))
   const visibleSettingsRows=rows.filter(m=>matches(caseStatusFilter,effectiveCaseStatus(m))&&matchesMatterStatus(matterStatusFilter,m)&&matches(caseTypeFilter,m.caseType))
+  const settingsFilters=<div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'start',margin:'14px 0'}}>
+    <SettingsFilter title="Case status" choices={caseStatuses.map(value=>({value,label:value}))} selected={caseStatusFilter} onChange={setCaseStatusFilter}/>
+    <SettingsFilter title="Matter status" choices={[{value:'__blank__',label:'No Matter Status'},...matterStatuses.map(value=>({value,label:value}))]} selected={matterStatusFilter} onChange={setMatterStatusFilter}/>
+    <SettingsFilter title="Case type" choices={caseTypes.map(value=>({value,label:value}))} selected={caseTypeFilter} onChange={setCaseTypeFilter}/>
+    <span style={small}>{visibleSettingsRows.length} of {rows.length} matters shown</span>
+  </div>
   const visibleReviewRows=rows.filter(m=>matches(reviewCaseStatusFilter,effectiveCaseStatus(m))&&matchesMatterStatus(reviewMatterStatusFilter,m)&&matches(reviewCaseTypeFilter,m.caseType)
     &&(reviewShowAppointed||(!m.appointed&&!/^dfps\b/i.test(m.caseType))))
   const inWithdrawal=m=>m?.matterWithdrawalStatus==='withdrawing'||m?.withdrawalStatus==='active'
@@ -139,6 +145,9 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     clientId,clientName:rows.find(m=>m.clientId===clientId)?.clientName||'Client not listed',
     matters:ids.map(id=>rows.find(m=>m.id===id)).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name))
   })).sort((a,b)=>a.clientName.localeCompare(b.clientName)),[matterClientGroups,rows])
+  const visiblePrimaryIds=new Set(visibleSettingsRows.map(m=>m.id))
+  const visiblePrimaryGroups=multipleMatterClients.map(group=>({...group,matters:group.matters.filter(m=>visiblePrimaryIds.has(m.id))}))
+    .filter(group=>group.matters.length&&`${group.clientName} ${group.matters.map(m=>m.name).join(' ')}`.toLowerCase().includes(primarySearch.trim().toLowerCase()))
   const primaryForClient=clientId=>{
     const ids=matterClientGroups.get(clientId)||[]
     if(ids.length===1)return ids[0]
@@ -388,12 +397,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       {settingsTab==='matters'&&<section role="tabpanel" aria-label="Matter settings">
       <label>Minimum WIP ($) <input type="number" min="0" value={settings.minimumWip??150} onChange={e=>setSettings(x=>({...x,minimumWip:e.target.value}))}/></label>
       <p style={small}>Appointed matters default to excluded. The filters below change which rows you see; they do not change saved billing preferences.</p>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'start',margin:'14px 0'}}>
-        <SettingsFilter title="Case status" choices={caseStatuses.map(value=>({value,label:value}))} selected={caseStatusFilter} onChange={setCaseStatusFilter}/>
-        <SettingsFilter title="Matter status" choices={[{value:'__blank__',label:'No Matter Status'},...matterStatuses.map(value=>({value,label:value}))]} selected={matterStatusFilter} onChange={setMatterStatusFilter}/>
-        <SettingsFilter title="Case type" choices={caseTypes.map(value=>({value,label:value}))} selected={caseTypeFilter} onChange={setCaseTypeFilter}/>
-        <span style={small}>{visibleSettingsRows.length} of {rows.length} matters shown</span>
-      </div>
+      {settingsFilters}
       <div style={{margin:'10px 0',padding:10,border:'1px solid #b91c1c',borderRadius:8,background:'#fef2f2'}}>
         <label><input type="checkbox" checked={settings.enableAtomicWeeklyTrustPosting===true} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting (advanced; leave off)</strong></label>
         <p style={small}>This would let Mio record payments from trust against earned-fee invoices, including approved payments across matters. It does not transfer money between bank accounts. The posting function is currently unavailable, so leave this off. Choosing a primary matter or checking an agreement does not turn it on.</p>
@@ -410,17 +414,19 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       </section>}
       {settingsTab==='primary'&&<section role="tabpanel" aria-label="Clients with multiple matters">
         <p style={small}>Choose one primary matter for each client. Mio uses it for trust replenishment requests. This does not combine trust ledgers or authorize paying another matter's invoice. Each choice saves immediately.</p>
+        {settingsFilters}
         <label>Find client or matter <input type="search" value={primarySearch} onChange={e=>setPrimarySearch(e.target.value)} style={{marginLeft:8,minWidth:250}}/></label>
+        <span style={{...small,marginLeft:12}}>{visiblePrimaryGroups.length} of {multipleMatterClients.length} clients shown</span>
         {replenishmentLoading&&<p role="status">Loading primary matter selections…</p>}
         {primaryNotice&&<p role="status" style={{color:'#166534'}}>{primaryNotice}</p>}
         {replenishmentError&&<p role="alert" style={{color:'#991b1b'}}>Primary matter settings: {replenishmentError} <button type="button" onClick={async()=>{setReplenishmentLoading(true);setReplenishmentError('');try{setReplenishmentSettings(await loadReplenishmentSettings(supabase,userId))}catch(error){setReplenishmentError(error?.message||String(error))}finally{setReplenishmentLoading(false)}}}>Retry loading</button></p>}
-        {!replenishmentLoading&&multipleMatterClients.filter(group=>`${group.clientName} ${group.matters.map(m=>m.name).join(' ')}`.toLowerCase().includes(primarySearch.trim().toLowerCase())).map(group=><div key={group.clientId} style={{border:'1px solid #cbd5e1',borderRadius:8,margin:'12px 0',padding:12}}>
-          <strong>{group.clientName}</strong> <span style={small}>· {group.matters.length} matters{!primaryForClient(group.clientId)?' · Select a primary matter':''}</span>
+        {!replenishmentLoading&&visiblePrimaryGroups.map(group=><div key={group.clientId} style={{border:'1px solid #cbd5e1',borderRadius:8,margin:'12px 0',padding:12}}>
+          <strong>{group.clientName}</strong> <span style={small}>· {group.matters.length} shown of {(matterClientGroups.get(group.clientId)||[]).length} matters{!primaryForClient(group.clientId)?' · Select a primary matter':!group.matters.some(m=>m.id===primaryForClient(group.clientId))?' · Primary matter hidden by filters':''}</span>
           <table style={{width:'100%',borderCollapse:'collapse',marginTop:8}}><thead><tr>{['Primary','Matter','Case status','Trust balance (displayed)','Withdrawal'].map(label=><th key={label} style={cell}>{label}</th>)}</tr></thead><tbody>
             {group.matters.map(m=><tr key={m.id} style={withdrawalRow(m)}><td style={cell}><input type="radio" name={'primary-trust-'+group.clientId} aria-label={'Primary trust matter for '+group.clientName+': '+m.name} checked={primaryForClient(group.clientId)===m.id} disabled={primarySaving||replenishmentLoading||!!replenishmentError} onChange={()=>choosePrimary(m)}/></td><td style={cell}>{m.name}</td><td style={cell}>{effectiveCaseStatus(m)}</td><td style={cell}>{trustLabel(m)}</td><td style={cell}>{withdrawalLabel(m)}</td></tr>)}
           </tbody></table>
         </div>)}
-        {!multipleMatterClients.length&&<p>No clients with multiple linked matters were found.</p>}
+        {!visiblePrimaryGroups.length&&!replenishmentLoading&&<p>No clients with multiple matters match these filters.</p>}
       </section>}
     </>}
   </div>
