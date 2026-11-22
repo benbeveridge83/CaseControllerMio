@@ -50,6 +50,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const [reviewMatterStatusFilter,setReviewMatterStatusFilter]=useState(null)
   const [reviewCaseTypeFilter,setReviewCaseTypeFilter]=useState(null)
   const [reviewShowAppointed,setReviewShowAppointed]=useState(false)
+  const [wipSort,setWipSort]=useState({key:'wip',direction:'desc'})
   const [replenishmentSettings,setReplenishmentSettings]=useState({})
   const [replenishmentError,setReplenishmentError]=useState('')
   const [primarySaving,setPrimarySaving]=useState(false)
@@ -153,6 +154,13 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const first=visibleReviewRows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
   const visibleReviewIds=new Set(visibleReviewRows.map(r=>r.id))
   const chosen=(selected??first).filter(id=>visibleReviewIds.has(id)&&rows.some(m=>m.id===id&&m.included))
+  const wipSortValue=m=>({invoice:Number(chosen.includes(m.id)),client:m.clientName,matter:m.name,wip:m.wip,workOB:m.workOB,trust:m.displayTrust,withdrawal:withdrawalLabel(m),controls:Number(m.included)*2+Number(m.shareTrust)})[wipSort.key]
+  const sortedReviewRows=[...visibleReviewRows].sort((a,b)=>{
+    const left=wipSortValue(a),right=wipSortValue(b)
+    const compare=typeof left==='number'?left-right:String(left||'').localeCompare(String(right||''),undefined,{sensitivity:'base',numeric:true})
+    return (wipSort.direction==='asc'?compare:-compare)||a.clientName.localeCompare(b.clientName)||a.name.localeCompare(b.name)
+  })
+  const wipHeader=(key,label)=><th key={key} style={cell}><button type="button" onClick={()=>setWipSort(current=>({key,direction:current.key===key&&current.direction==='asc'?'desc':'asc'}))} aria-label={'Sort by '+label} style={{border:0,background:'transparent',padding:0,font:'inherit',fontWeight:700,cursor:'pointer',textAlign:'left'}}>{label}{wipSort.key===key?(wipSort.direction==='asc'?' ▲':' ▼'):''}</button></th>
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:chosen,authorizations:{}}),[rows,minimum,selected,reviewCaseStatusFilter,reviewMatterStatusFilter,reviewCaseTypeFilter,reviewShowAppointed])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
@@ -267,14 +275,14 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       <h3>Work in progress — largest first</h3>
       <p style={small}>Open, non-appointed, non-DFPS matters appear by default. WIP, Work OB and trust use Bulk Billing's finance calculation. Trust shown is a displayed balance, not verified funds for payment.</p>
       {reviewFilters}
-      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1050}}><thead><tr>{['Invoice','Client','Matter','WIP','Work OB','Trust balance (displayed)','Withdrawal','Small controls'].map(t=><th key={t} style={cell}>{t}</th>)}</tr></thead><tbody>
-        {[...visibleReviewRows].sort((a,b)=>b.wip-a.wip).map(m=><tr key={m.id} style={withdrawalRow(m)}>
+      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1050}}><thead><tr>{[['invoice','Invoice'],['client','Client'],['matter','Matter'],['wip','WIP'],['workOB','Work OB'],['trust','Trust balance (displayed)'],['withdrawal','Withdrawal'],['controls','Small controls']].map(([key,label])=>wipHeader(key,label))}</tr></thead><tbody>
+        {sortedReviewRows.map(m=><tr key={m.id} style={withdrawalRow(m)}>
           <td style={cell}><input type="checkbox" aria-label={'Select WIP '+m.clientName+' '+m.name} checked={m.included&&chosen.includes(m.id)} disabled={!m.included} onChange={e=>setSelected(old=>e.target.checked?[...new Set([...(old??first),m.id])]:(old??first).filter(x=>x!==m.id))}/></td>
           <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}{m.appointed&&<span style={small}> · Appointed</span>}</td><td style={cell}>{USD(m.wip)}</td><td style={cell}>{USD(m.workOB)}</td><td style={cell}>{trustLabel(m)}</td><td style={cell}>{withdrawalLabel(m)}</td>
           <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
       </tbody></table></div><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
-      {onOpenExistingWipReview&&<button style={button} onClick={()=>chosen.length?onOpenExistingWipReview(chosen):setNotice('Select a matter with WIP to review.')} disabled={!chosen.length}>Review selected WIP in Bulk Billing →</button>} <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
+      {onOpenExistingWipReview&&<button style={button} onClick={()=>chosen.length?onOpenExistingWipReview(chosen):setNotice('Select a matter with WIP to review.')} disabled={!chosen.length}>Review selected WIP in Bulk Billing →</button>} <button style={button} onClick={()=>{if(!Object.keys(changes).length||window.confirm('Reload Mio to get the latest billing and invoice balances? Unsaved weekly billing checkbox changes will be lost.'))window.location.reload()}}>Reload Mio balances after billing</button>
     </>}
     {step==='payments'&&<>
       <h3>Invoice approval packet</h3>
