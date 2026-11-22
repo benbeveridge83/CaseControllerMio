@@ -12,7 +12,20 @@ export default function weeklyBillingReviewMount(){
     const withdrawalHelper=fs.readFileSync(new URL('./src/mioWeeklyWithdrawal.inc',import.meta.url),'utf8')
     code=replaceOnce(code,'  function renderDailyBillingModal() {',withdrawalHelper+'\n  function renderDailyBillingModal() {','withdrawal helper')
     code=replaceOnce(code,'          <button type="button" style={tabButtonStyle(\'historical_migration\')} onClick={() => setBillingTab(\'historical_migration\')}>',
-      `          <button type="button" onClick={()=>setWeeklyBillingReviewOpen(true)} style={tabButtonStyle('weekly_billing_review')}>Weekly Billing Review</button>
+      `          <button type="button" onClick={async()=>{
+            if(!session?.user?.id)return alert('Sign in to review current billing records.')
+            try{
+              const [entryRows,invoiceRows]=await Promise.all([
+                loadAllSupabasePages(()=>supabase.from('mio_billing_entries').select('*').eq('user_id',session.user.id).order('entry_date',{ascending:false})),
+                loadAllSupabasePages(()=>supabase.from('mio_invoices').select('*').eq('user_id',session.user.id).order('issue_date',{ascending:false}))
+              ])
+              const currentEntries=(entryRows||[]).map(billingEntryFromRelationalRow)
+              const currentInvoices=(invoiceRows||[]).map(invoiceFromDatabaseRow)
+              setBillingEntries(existing=>mergeBillingEntriesForState(currentEntries,existing,readBrowserBillingEntriesFallback()))
+              setMioInvoices(existing=>mergeMioInvoiceState(currentInvoices,existing))
+              setWeeklyBillingReviewOpen(true)
+            }catch(error){alert('Could not refresh billing data. Weekly Billing stayed closed: '+(error?.message||error))}
+          }} style={tabButtonStyle('weekly_billing_review')}>Weekly Billing Review</button>
           <button type="button" onClick={()=>window.open(window.location.origin+window.location.pathname+'?mioWeeklyBillingSettings=1','mio-weekly-billing-settings','width=1100,height=800,resizable=yes,scrollbars=yes')} style={tabButtonStyle('weekly_billing_settings')}>Billing Settings ↗</button>
           <button type="button" style={tabButtonStyle('historical_migration')} onClick={() => setBillingTab('historical_migration')}>`, 'billing navigation')
     code=replaceOnce(code,'        {renderDailyBillingModal()}',
