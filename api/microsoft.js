@@ -23,6 +23,7 @@ export default async function handler(req, res) {
 function targetForState(state) {
   try {
     const payload = verifyOAuthState(state, process.env.MICROSOFT_OAUTH_STATE_SECRET)
+    if (payload?.portal) return 'client_portal'
     if (payload?.accountEmail) return 'email'
   } catch { /* fall through */ }
   return 'microsoft'
@@ -36,7 +37,7 @@ async function callback(req, res) {
     if (error) return res.redirect('/#' + targetForState(state) + '?error=' + encodeURIComponent(error_description || error))
     if (!code || !state) return res.redirect('/#microsoft?error=missing_code')
     const payload = verifyOAuthState(state, process.env.MICROSOFT_OAUTH_STATE_SECRET)
-    if (!payload?.userId) return res.redirect('/#microsoft?error=invalid_state')
+    if (!payload?.userId || (payload.portal && !(payload.expiresAt > Date.now()))) return res.redirect('/#microsoft?error=invalid_state')
     const token = await exchangeCodeForToken({
       clientId: process.env.MICROSOFT_CLIENT_ID,
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
@@ -54,7 +55,7 @@ async function callback(req, res) {
         displayName = me?.data?.displayName || me?.data?.mail || payload.accountEmail
       } catch { /* keep account email */ }
       await store.save(payload.userId, payload.accountEmail, { ...normalized, displayName })
-      return res.redirect('/#email?connected=1')
+      return res.redirect(payload.portal ? '/#client_portal?connected=1' : '/#email?connected=1')
     }
     await createMicrosoftTokenStore().save(payload.userId, normalizeTokenResponse(token))
     return res.redirect('/#microsoft?connected=1')
