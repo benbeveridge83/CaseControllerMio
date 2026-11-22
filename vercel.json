@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/api/tyler-efm-callback",
+      "destination": "/api/auth/callback?integration=tyler_efm"
+    },
+    {
       "source": "/api/discovery-objections",
       "destination": "/api/auth/callback?integration=discovery_objections"
     },
@@ -63,6 +67,9 @@
     }
   ],
   "crons": [
-    { "path": "/api/microsoft/sync", "schedule": "0 1 * * *" }
+    {
+      "path": "/api/microsoft/sync",
+      "schedule": "0 1 * * *"
+    }
   ]
 }
