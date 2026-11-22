@@ -1,0 +1,239 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding,allocateVerifiedWeeklyInvoicePayments,weeklyTrustIdempotencyKey,buildAtomicTrustPaymentPlan} from '../src/mioWeeklyBillingModel.js'
+import {summarizeWeeklyBillingEntries,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from '../src/mioWeeklyBillingData.js'
+const rows=[
+ {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
+ {id:'b',name:'Client — Other',clientId:'client1',wip:180,workOB:400,availableTrust:0,included:true,shareTrust:true},
+ {id:'c',name:'Appointed',clientId:'client2',appointed:true,wip:2000,workOB:0,availableTrust:0},
+ {id:'d',name:'Other client',clientId:'client3',wip:100,workOB:200,availableTrust:0}
+]
+test('appointed defaults out and private matters default in',()=>{
+ assert.equal(weeklyBillingDefaults(rows[2]).included,false)
+ assert.equal(weeklyBillingDefaults(rows[0]).included,true)
+})
+test('DFPS matters default to appointed without an explicit flag',()=>{
+  const d=weeklyBillingDefaults({id:'x',name:'DFPS 123',matter_type:'DFPS'})
+  assert.equal(d.appointed,true)
+  assert.equal(d.included,false)
+})
+test('explicit appointed:false override wins over the DFPS default',()=>{
+  const d=weeklyBillingDefaults({id:'x',name:'DFPS 123',matter_type:'DFPS',appointed:false})
+  assert.equal(d.appointed,false)
+  assert.equal(d.included,true)
+})
+test('closed and test matters default out of billing selection',()=>{
+  assert.equal(weeklyBillingDefaults({id:'x',name:'Divorce',case_status:'Closed'}).included,false)
+  assert.equal(weeklyBillingDefaults({id:'x',name:'testes12'}).included,false)
+  assert.equal(weeklyBillingDefaults({id:'x',name:'Divorce',case_status:'Open'}).included,true)
+})
+
+
+test('minimum WIP carries forward and only eligible work is invoiced in proposal',()=>{
+ const p=createWeeklyBillingProposal({matters:rows,minimumWip:150})
+ assert.equal(p.totalWip,380)
+ assert.equal(p.matters.find(x=>x.id==='d').workOB,200)
+ assert.equal(p.matters.find(x=>x.id==='c').selected,false)
+})
+test('no cross-matter payment without a verified source authorization',()=>{
+ const p=createWeeklyBillingProposal({matters:rows,minimumWip:150})
+ assert.equal(p.payments.filter(x=>x.crossMatter).length,0)
+ assert.deepEqual(p.payments.map(x=>[x.sourceMatterId,x.destinationMatterId,x.amount]),[['a','a',500]])
+})
+test('pay own matter first, then other matter, allowing partial payments',()=>{
+ const p=createWeeklyBillingProposal({matters:rows,minimumWip:150,authorizations:{a:true}})
+ assert.deepEqual(p.payments.map(x=>[x.sourceMatterId,x.destinationMatterId,x.amount]),[['a','a',500],['a','b',500]])
+ assert.equal(p.matters.find(x=>x.id==='b').unpaid,80)
+})
+test('source sharing disabled or destination excluded blocks cross-matter',()=>{
+ const noShare=createWeeklyBillingProposal({matters:rows.map(x=>x.id==='a'?{...x,shareTrust:false}:x),authorizations:{a:true}})
+ assert.equal(noShare.payments.some(x=>x.crossMatter),false)
+ const excluded=createWeeklyBillingProposal({matters:rows.map(x=>x.id==='b'?{...x,included:false}:x),authorizations:{a:true}})
+ assert.equal(excluded.payments.some(x=>x.destinationMatterId==='b'),false)
+})
+test('different client can never receive shared trust',()=>{
+ const p=createWeeklyBillingProposal({matters:rows,authorizations:{a:true}})
+ assert.equal(p.payments.some(x=>x.destinationMatterId==='d'),false)
+})
+
+test('deselected one-run payments restore unpaid work balance without altering future sharing',()=>{
+ const proposal=createWeeklyBillingProposal({matters:rows,minimumWip:150,authorizations:{a:true}})
+ const preview=reconcileWeeklyBillingReview(proposal,['a:b'])
+ assert.equal(preview.totalPayments,500)
+ assert.equal(preview.matters.find(m=>m.id==='b').unpaid,580)
+ assert.equal(preview.matters.find(m=>m.id==='a').remainingTrust,500)
+ assert.equal(proposal.matters.find(m=>m.id==='b').shareTrust,true)
+})
+test('an excluded appointed matter never triggers a payment or a withdrawal candidate',()=>{
+ const proposal=createWeeklyBillingProposal({matters:rows})
+ const preview=reconcileWeeklyBillingReview(proposal)
+ const appointed=preview.matters.find(m=>m.id==='c')
+ assert.equal(appointed.included,false)
+ assert.equal(preview.payments.some(p=>p.destinationMatterId==='c'),false)
+})
+
+test('cross-matter review identifies a possibility, never an approved transfer',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded',clientId:'same',displayTrust:1000,workOB:300,selectedWip:200,included:true,shareTrust:true},
+  {id:'b',name:'Other',clientId:'same',displayTrust:0,workOB:600,selectedWip:0,included:true,shareTrust:true},
+  {id:'c',name:'Stranger',clientId:'other',displayTrust:0,workOB:1000,included:true,shareTrust:true}
+ ])
+ assert.deepEqual(candidates.map(x=>[x.sourceMatterId,x.destinationMatterId,x.amount,x.status]),[['a','b',500,'unverified']])
+})
+test('isolated matter never shares funds as a source or destination',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded',clientId:'same',displayTrust:1000,workOB:0,included:true,shareTrust:false},
+  {id:'b',name:'Other',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
+ ])
+ assert.deepEqual(candidates,[])
+})
+
+test('WIP comes only from uninvoiced, billable entries and Work OB excludes trust requests',()=>{
+ const summary=summarizeWeeklyBillingEntries([
+  {id:'1',matter_id:'a',amount:110,do_not_bill:false,payload:{}},
+  {id:'2',matter_id:'a',amount:40,do_not_bill:false,payload:{invoice_id:'already-invoiced'}},
+  {id:'3',matter_id:'a',amount:70,do_not_bill:true,payload:{}},
+  {id:'4',matter_id:'b',amount:50,do_not_bill:false,payload:{non_billable:true}}
+ ],[
+  {matter_id:'a',invoice_type:'services',status:'outstanding',balance:80,issue_date:'2026-01-03'},
+  {matter_id:'a',invoice_type:'trust_request',status:'outstanding',balance:500,issue_date:'2025-01-01'},
+  {matter_id:'a',invoice_type:'services',status:'paid',balance:100,issue_date:'2025-01-02'},
+  {matter_id:'a',invoice_type:'services',status:'draft',balance:60,issue_date:'2025-01-03'}
+ ])
+ assert.equal(summary.wip.get('a'),11000)
+ assert.equal(summary.workOB.get('a'),8000)
+ assert.equal(summary.oldestInvoice.get('a'),'2026-01-03')
+ assert.equal(summary.wip.get('b'),undefined)
+})
+
+test('two funding sources do not double-count the same destination obligation',()=>{
+ const candidates=possibleCrossMatterFunding([
+  {id:'a',name:'Funded A',clientId:'same',displayTrust:500,workOB:0,included:true,shareTrust:true},
+  {id:'b',name:'Funded B',clientId:'same',displayTrust:500,workOB:0,included:true,shareTrust:true},
+  {id:'c',name:'Owed C',clientId:'same',displayTrust:0,workOB:600,included:true,shareTrust:true}
+ ])
+ assert.equal(candidates.filter(x=>x.destinationMatterId==='c').reduce((sum,x)=>sum+x.amount,0),600)
+})
+
+test('invoice packet identifies exact WIP IDs and refuses changed records',()=>{
+ const original=[
+  {id:'1',matter_id:'a',amount:110,description:'review',entry_date:'2026-11-01',payload:{}},
+  {id:'2',matter_id:'a',amount:50,description:'drafting',entry_date:'2026-11-02',payload:{}},
+  {id:'3',matter_id:'b',amount:90,description:'other matter',entry_date:'2026-11-02',payload:{}}
+ ]
+ const packet=prepareWeeklyInvoiceDrafts(original,['a'])
+ assert.deepEqual(packet.map(x=>({matter:x.matterId,ids:x.entryIds,total:x.totalCents})),[{matter:'a',ids:['1','2'],total:16000}])
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,original),true)
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,original.map(x=>x.id==='2'?{...x,payload:{invoice_id:'other'}}:x)),false)
+ assert.equal(validateWeeklyInvoiceSnapshot(packet,[...original,{id:'4',matter_id:'a',amount:20,payload:{}}]),false)
+})
+
+test('sharing is a source restriction: disabling destination sharing does not block receiving authorized funds',()=>{
+ const p=createWeeklyBillingProposal({matters:rows.map(x=>x.id==='b'?{...x,shareTrust:false}:x),authorizations:{a:true}})
+ assert.equal(p.payments.some(x=>x.sourceMatterId==='a'&&x.destinationMatterId==='b'),true)
+})
+test('the default Share Trust flag is checked even for appointed matters, while billing remains excluded',()=>{
+ const defaults=weeklyBillingDefaults({appointed:true})
+ assert.equal(defaults.included,false)
+ assert.equal(defaults.shareTrust,true)
+})
+
+test('verified invoice-level allocator pays source matter first and partially pays remaining invoices',()=>{
+ const matters=[
+  {id:'a',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:5000},
+  {id:'b',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:0},
+  {id:'c',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:0}
+ ]
+ const invoices=[
+  {id:'i-a',matter_id:'a',client_id:'x',invoice_type:'services',status:'outstanding',balance:2000,issue_date:'2026-10-20'},
+  {id:'i-b',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:2500,issue_date:'2026-11-01'},
+  {id:'i-c',matter_id:'c',client_id:'x',invoice_type:'services',status:'outstanding',balance:2000,issue_date:'2026-11-02'}
+ ]
+ const p=allocateVerifiedWeeklyInvoicePayments({matters,invoices})
+ assert.deepEqual(p.payments.map(x=>[x.invoiceId,x.amount,x.crossMatter]),[['i-a',2000,false],['i-b',2500,true],['i-c',500,true]])
+ assert.equal(p.unpaidCentsByInvoice['i-c'],150000)
+ assert.equal(p.remainingTrustByMatter.a,0)
+})
+test('invoice-level cross-matter sharing needs independently verified agreement and unrestricted trust',()=>{
+ const invoice={id:'i-b',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:1000}
+ const source={id:'a',clientId:'x',included:true,shareTrust:true,agreementAuthorized:false,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:2000}
+ const dest={id:'b',clientId:'x',included:true,shareTrust:false}
+ const withoutAgreement=allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[invoice]})
+ assert.equal(withoutAgreement.totalCents,0)
+ const withAgreement=allocateVerifiedWeeklyInvoicePayments({matters:[{...source,agreementAuthorized:true},dest],invoices:[invoice]})
+ assert.equal(withAgreement.totalCents,100000)
+ const withRestrictedFunds=allocateVerifiedWeeklyInvoicePayments({matters:[{...source,agreementAuthorized:true,unrestrictedFundsVerified:false},dest],invoices:[invoice]})
+ assert.equal(withRestrictedFunds.totalCents,0)
+})
+test('invoice-level allocator rejects mismatched client, trust requests, disputed invoices, excluded matters',()=>{
+ const matter={id:'b',clientId:'x',included:true,shareTrust:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000}
+ const candidates=[
+  {id:'1',matter_id:'b',client_id:'y',invoice_type:'services',status:'outstanding',balance:100},
+  {id:'2',matter_id:'b',client_id:'x',invoice_type:'trust_request',status:'outstanding',balance:100},
+  {id:'3',matter_id:'b',client_id:'x',invoice_type:'services',status:'outstanding',balance:100,disputed:true}
+ ]
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[matter],invoices:candidates}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[{...matter,included:false}],invoices:[{...candidates[0],client_id:'x'}]}).totalCents,0)
+})
+
+test('partially paid Work OB is eligible, with only its remaining balance allocated',()=>{
+ const matter={id:'a',clientId:'x',included:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:700}
+ const invoice={id:'partial',matter_id:'a',client_id:'x',invoice_type:'services',status:'partially_paid',total:1000,amount_paid:600,balance:400}
+ const result=allocateVerifiedWeeklyInvoicePayments({matters:[matter],invoices:[invoice]})
+ assert.equal(result.totalCents,40000)
+ assert.equal(result.remainingTrustByMatter.a,30000)
+})
+test('invoice holds and uncertain cross-matter client identities fail closed',()=>{
+ const source={id:'fund',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000}
+ const dest={id:'owed',clientId:'x',included:true}
+ const invoice={id:'invoice',matter_id:'owed',invoice_type:'services',status:'outstanding',balance:900}
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[invoice]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',on_hold:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',payment_hold:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x',restricted:true}]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,dest],invoices:[{...invoice,client_id:'x'}]}).totalCents,90000)
+})
+
+test('invoice snapshot rejects same-dollar changes in date or description',()=>{
+ const original=[{id:'e1',matter_id:'a',entry_date:'2026-11-01',description:'Draft review',amount:150,payload:{}}]
+ const snapshot=prepareWeeklyInvoiceDrafts(original,['a'])
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,original),true)
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,[{...original[0],description:'Different work'}]),false)
+ assert.equal(validateWeeklyInvoiceSnapshot(snapshot,[{...original[0],entry_date:'2026-11-03'}]),false)
+})
+test('unknown invoice types cannot silently become service Work OB',()=>{
+ const summary=summarizeWeeklyBillingEntries([],[
+  {id:'unknown',matter_id:'a',status:'outstanding',balance:400},
+  {id:'trust',matter_id:'a',invoice_type:'trust_request',status:'outstanding',balance:500},
+  {id:'services',matter_id:'a',invoice_type:'services',status:'partially_paid',balance:120}
+ ])
+ assert.equal(summary.workOB.get('a'),12000)
+})
+
+test('idempotency keys are stable per run, unique across runs, and length-gated',()=>{
+  const a=weeklyTrustIdempotencyKey('run-1','src','inv',50000)
+  const b=weeklyTrustIdempotencyKey('run-1','src','inv',50000)
+  const c=weeklyTrustIdempotencyKey('run-2','src','inv',50000)
+  assert.equal(a,b)
+  assert.notEqual(a,c)
+  assert.throws(()=>weeklyTrustIdempotencyKey('x'.repeat(200),'src','inv',50000),/out of range/)
+})
+
+test('atomic plan builds invoice-level payments with idempotency keys and expected updated_at',()=>{
+  const matters=[
+    {id:'fund',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000},
+    {id:'owed',clientId:'x',included:true}
+  ]
+  const invoices=[
+    {id:'inv1',matter_id:'owed',client_id:'x',invoice_type:'services',status:'outstanding',balance:400,issue_date:'2026-11-01',updated_at:'2026-11-21T00:00:00Z'}
+  ]
+  const plan=buildAtomicTrustPaymentPlan({matters,invoices,runId:'run-abc'})
+  assert.equal(plan.totalCents,40000)
+  assert.equal(plan.payments.length,1)
+  assert.equal(plan.payments[0].invoiceId,'inv1')
+  assert.equal(plan.payments[0].sourceMatterId,'fund')
+  assert.equal(plan.payments[0].destinationMatterId,'owed')
+  assert.equal(plan.payments[0].expectedInvoiceUpdatedAt,'2026-11-21T00:00:00Z')
+  assert.equal(plan.payments[0].idempotencyKey,weeklyTrustIdempotencyKey('run-abc','fund','inv1',40000))
+  assert.throws(()=>buildAtomicTrustPaymentPlan({matters,invoices,runId:''}),/run id/)
+})

@@ -1913,6 +1913,7 @@ const emptyMatterForm = {
   hire_date: '',
   matter_type: '',
   matter_subtype: '',
+  appointed: false,
   client_status: '',
   case_status: 'Open',
   matter_status: '',
@@ -27723,6 +27724,13 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     else {
       const savedMatterId = editingMatterId || data?.id
       saveMatterExtraForId(savedMatterId, matterExtraDraft)
+      if (!editingMatterId && matterForm.appointed === true) {
+        const wkKey = 'mioWeeklyBillingSettingsV1'
+        const wkRes = await supabase.from('case_mio_user_state').select('json_value').eq('user_id', session?.user?.id).eq('key', wkKey).maybeSingle()
+        const wkSettings = (wkRes?.data?.json_value && typeof wkRes.data.json_value === 'object') ? wkRes.data.json_value : {}
+        const wkMatters = { ...(wkSettings.matters || {}), [String(savedMatterId)]: { appointed: true, included: false, shareTrust: false } }
+        await supabase.from('case_mio_user_state').upsert({ user_id: session?.user?.id, key: wkKey, json_value: { ...wkSettings, matters: wkMatters }, raw_value: JSON.stringify({ ...wkSettings, matters: wkMatters }), origin: 'matter_form_appointed', updated_at: new Date().toISOString() }, { onConflict: 'user_id,key' })
+      }
       const linkedClioMatter = requestedLinkedClioMatter
       const resolvedDisplayNumber = requestedResolvedDisplayNumber
       const previousLink = clioMioRosetta?.[String(savedMatterId)] || {}
@@ -59657,6 +59665,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         ))}
                       </select>
                     </LabeledField>
+                    <LabeledField label="Appointed">
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <input type="checkbox" checked={matterForm.appointed === true} onChange={(e) => setMatterForm({ ...matterForm, appointed: e.target.checked })} />
+                        <span>Court-appointed — excluded from weekly billing and trust-based withdrawal review</span>
+                      </label>
+                    </LabeledField>
+
 
                     <LabeledField label="Client Status">
                       <select value={matterForm.client_status} onChange={(e) => setMatterForm({ ...matterForm, client_status: e.target.value })}>
@@ -64082,6 +64097,13 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         ))}
                       </select>
                     </LabeledField>
+                    <LabeledField label="Appointed">
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <input type="checkbox" checked={matterForm.appointed === true} onChange={(e) => setMatterForm({ ...matterForm, appointed: e.target.checked })} />
+                        <span>Court-appointed — excluded from weekly billing and trust-based withdrawal review</span>
+                      </label>
+                    </LabeledField>
+
 
                     <LabeledField label="Client Status">
                       <select value={matterForm.client_status} onChange={(e) => setMatterForm({ ...matterForm, client_status: e.target.value })}>

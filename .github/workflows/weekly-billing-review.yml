@@ -1,0 +1,71 @@
+name: Weekly Billing Review Safety Checks
+on:
+  pull_request:
+    paths:
+      - 'src/MioWeeklyBilling.jsx'
+      - 'src/mioWeeklyBillingModel.js'
+      - 'src/mioWeeklyBillingData.js'
+      - 'docs/weekly-billing-release-gates.md'
+      - 'mio-weekly-billing-review-mount.js'
+      - 'tests/weekly-billing-review.test.js'
+      - 'tests/weekly-billing-withdrawal.test.js'
+      - 'src/mioWeeklyWithdrawal.inc'
+      - 'supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql'
+      - 'tests/sql/weekly-billing-atomic-schema.sql'
+      - 'tests/sql/weekly-billing-atomic-behavior.sql'
+      - 'tests/sql/weekly-billing-atomic-concurrency.sql'
+      - 'vite.config.js'
+      - '.github/workflows/weekly-billing-review.yml'
+  push:
+    branches:
+      - 'feature/weekly-billing-review-v1'
+permissions:
+  contents: read
+jobs:
+  weekly-billing-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: fixture-only
+          POSTGRES_DB: finance_fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: fixture-only
+      PGDATABASE: finance_fixture
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Weekly billing decision engine tests
+        run: node --test tests/weekly-billing-review.test.js tests/weekly-billing-withdrawal.test.js
+      - name: Test weekly-billing atomic trust posting SQL on isolated PostgreSQL
+        run: |
+          psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-schema.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-behavior.sql
+          psql -v ON_ERROR_STOP=1 -c "begin; select public.mio_post_weekly_trust_payment_v1('wk-concurrency-0001','bbbbbbbb-0000-4000-8000-000000000005','bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',10000,'2026-11-21T00:00:00+00'); select pg_sleep(1); commit;" > race-a.txt &
+          first=$!
+          sleep 0.25
+          psql -v ON_ERROR_STOP=1 -c "begin; select public.mio_post_weekly_trust_payment_v1('wk-concurrency-0001','bbbbbbbb-0000-4000-8000-000000000005','bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',10000,'2026-11-21T00:00:00+00'); commit;" > race-b.txt &
+          second=$!
+          wait "$first"
+          wait "$second"
+          psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-concurrency.sql
+      - name: Production build syntax check
+        run: npm run build
