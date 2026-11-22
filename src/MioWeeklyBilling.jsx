@@ -89,8 +89,10 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     const override=changes[String(m.id)]||settings.matters?.[String(m.id)]||{}
     // Never represent unknown balances as verified, available funds.
     const trust=Number.isFinite(Number(f.availableTrust))?Number(f.availableTrust):0
-    const wip=financeSnapshot?.wipByMatter?.[String(m.id)]??0
-    const workOB=financeSnapshot?.workOBByMatter?.[String(m.id)]??0
+    // Use the same cutover, opening-balance and invoice allocation calculations
+    // displayed by Bulk Billing. Raw database entries alone are not current WIP.
+    const wip=Math.max(0,Number(f.wip)||0)
+    const workOB=Math.max(0,Number(f.workOB)||0)
     const clientId=String(m.client_id||m.client?.id||m.clients?.id||'')
     const client=clientsById.get(clientId)||m.client||m.clients||{}
     return {id:String(m.id),name:m.name||'Matter '+m.id,clientId,clientName:`${client.first_name||''} ${client.last_name||''}`.trim()||client.name||m.matter_client_name||m.client_name||'Client not listed',
@@ -98,11 +100,12 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',matterWithdrawalStatus:withdrawalStatusFor(m),
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
       shareTrust:override.shareTrust??defaults.shareTrust,agreementAuthorized:override.agreementAuthorized===true,
-      wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
+      wip,workOB,availableTrust:trust,displayTrust:Math.max(0,Number(f.displayTrust)||0),oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!f.displayResolved}
   }),[matters,clientsById,financeFor,withdrawalStatusFor,changes,settings,financeSnapshot])
   const caseStatuses=useMemo(()=>uniqueLabels([...(filterOptions.caseStatuses||[]),...rows.map(m=>m.caseStatus),'Open']),[filterOptions.caseStatuses,rows])
   const matterStatuses=useMemo(()=>uniqueLabels([...(filterOptions.matterStatuses||[]),...rows.map(m=>m.matterStatus)]),[filterOptions.matterStatuses,rows])
-  const caseTypes=useMemo(()=>uniqueLabels([...(filterOptions.caseTypes||[]),...rows.map(m=>m.caseType)]),[filterOptions.caseTypes,rows])
+  // Settings > Dropdown Options > Case Type is authoritative, as in Bulk Billing.
+  const caseTypes=useMemo(()=>[...new Set((filterOptions.caseTypes||[]).map(value=>String(value||'').trim()).filter(Boolean))],[filterOptions.caseTypes])
   const matches=(selected,value)=>selected===null||selected.some(item=>normalized(item)===normalized(value))
   const effectiveCaseStatus=m=>!m.isActive&&(!m.caseStatus||normalized(m.caseStatus)==='open')?'Closed':m.caseStatus||'Open'
   const matchesMatterStatus=(selected,m)=>selected===null||selected.some(value=>value==='__blank__'?!m.matterStatus:normalized(value)===normalized(m.matterStatus))
@@ -262,7 +265,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     {notice&&<p role="status" style={{background:'#eff6ff',padding:8}}>{notice}</p>}
     {step==='wip'&&<>
       <h3>Work in progress — largest first</h3>
-      <p style={small}>Open, non-appointed, non-DFPS matters appear by default. Filters affect this run's WIP selection. Trust shown is a displayed balance, not verified funds for payment.</p>
+      <p style={small}>Open, non-appointed, non-DFPS matters appear by default. WIP, Work OB and trust use Bulk Billing's finance calculation. Trust shown is a displayed balance, not verified funds for payment.</p>
       {reviewFilters}
       <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1050}}><thead><tr>{['Invoice','Client','Matter','WIP','Work OB','Trust balance (displayed)','Withdrawal','Small controls'].map(t=><th key={t} style={cell}>{t}</th>)}</tr></thead><tbody>
         {[...visibleReviewRows].sort((a,b)=>b.wip-a.wip).map(m=><tr key={m.id} style={withdrawalRow(m)}>
@@ -271,7 +274,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
           <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
       </tbody></table></div><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
-      <button style={button} onClick={()=>preparePacket().catch(error=>setNotice('Invoice packet preparation failed: '+(error?.message||error)))} disabled={!financeSnapshot||financeLoading}>Verify WIP & Prepare Invoice Packet →</button> <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
+      {onOpenExistingWipReview&&<button style={button} onClick={()=>chosen.length?onOpenExistingWipReview(chosen):setNotice('Select a matter with WIP to review.')} disabled={!chosen.length}>Review selected WIP in Bulk Billing →</button>} <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
     </>}
     {step==='payments'&&<>
       <h3>Invoice approval packet</h3>
