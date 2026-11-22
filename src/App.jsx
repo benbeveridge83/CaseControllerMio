@@ -6040,6 +6040,11 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioFilerCorrections') || '{}') }
     catch { return {} }
   })
+  const [expandedLitigationPartyIds, setExpandedLitigationPartyIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioExpandedLitigationParties') || '[]') }
+    catch { return [] }
+  })
+  const [filerDrafts, setFilerDrafts] = useState({})
   const [peopleMatterId, setPeopleMatterId] = useState('')
   const [personForm, setPersonForm] = useState({ matter_id: '', name: '', notes: '', tag_ids: [] })
   const [peopleSearchText, setPeopleSearchText] = useState('')
@@ -10022,6 +10027,10 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioFilerCorrections', JSON.stringify(filerCorrections))
   }, [filerCorrections])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioExpandedLitigationParties', JSON.stringify([...expandedLitigationPartyIds]))
+  }, [expandedLitigationPartyIds])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerTimelineColumns', JSON.stringify(timelineColumns))
@@ -18216,7 +18225,21 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (!alreadyRepresented(party)) rows.push({ ...party, _stored_index: -1, _derived: true })
     })
     while (rows.length < minimum) rows.push({ ...ensureLitigationPartyShape({ id: `lit-party-${matterId}-${rows.length + 1}` }, matterId, rows.length), _stored_index: -1, _derived: true })
-    return includeBlanks ? rows : rows.filter((party) => party.name || party.email || party.role || party.attorney_name || party.attorney_email)
+    // Column ordering: Petitioners (including combined "Petitioner / …" roles) first, then
+    // Respondents, then Children, then independent appointments, then everyone else. The client
+    // keeps its own party role's column and is outlined separately wherever it lands.
+    const orderRank = (party) => {
+      const role = String(party.role || '').trim().toLowerCase()
+      if (role.startsWith('petitioner')) return 0
+      if (role.startsWith('respondent') || role.startsWith('opposing')) return 1
+      if (role.startsWith('child') || role.startsWith('children') || role.startsWith('minor')) return 2
+      if (party.source === 'appointment') return 3
+      return 4
+    }
+    const ordered = rows.map((row, position) => ({ row, position }))
+      .sort((a, b) => orderRank(a.row) - orderRank(b.row) || a.position - b.position)
+      .map((item) => item.row)
+    return includeBlanks ? ordered : ordered.filter((party) => party.name || party.email || party.role || party.attorney_name || party.attorney_email)
   }
 
   function updateLitigationMatterPartyAt(matterId, index, patch = {}) {
@@ -19677,6 +19700,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const isDerivedOpposing = isDerived && party._origin === 'opposing'
     const editIndex = party._stored_index ?? index
     const isAppointment = party.source === 'appointment'
+    const isClientCell = party.source === 'client' || isDerivedClient
+    const isExpanded = expandedLitigationPartyIds.includes(party.id || '')
+    const toggleExpanded = () => setExpandedLitigationPartyIds((current) => current.includes(party.id) ? current.filter((x) => x !== party.id) : [...current, party.id])
+    const filerDraft = filerDrafts[party.id] || {}
+    const updateFilerDraft = (patch) => setFilerDrafts((current) => ({ ...current, [party.id]: { ...(current[party.id] || {}), ...patch } }))
     const attorneyType = party.attorney_type || ''
     const partyColor = isAppointment ? (attorneyTypeColor(attorneyType) || '#64748b') : (partyTypeColor(party.role) || '#94a3b8')
     const partyFill = litigationHexToRgba(partyColor, 0.10)
@@ -19691,7 +19719,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     ]
     const edit = (patch) => {
       if (isFilingFiler) {
-        addLitigationPartyFromFiler(matter.id, { ...party, ...patch })
+        updateFilerDraft(patch)
         return
       }
       if (isDerivedClient) {
@@ -19727,6 +19755,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         return
       }
       if (isDerivedClient) return
+      if (isFilingFiler) {
+        updateFilerDraft({ attorney_directory_id: directoryId || '', attorney_name: row?.name || party.attorney_name || '', attorney_email: row?.email || party.attorney_email || '', attorney_firm: row?.firm || party.attorney_firm || '', attorney_phone: row?.phone || party.attorney_phone || '' })
+        return
+      }
       edit({ attorney_directory_id: directoryId || '', attorney_name: row?.name || party.attorney_name || '', attorney_email: row?.email || party.attorney_email || '', attorney_firm: row?.firm || party.attorney_firm || '', attorney_phone: row?.phone || party.attorney_phone || '' })
     }
     const addAttorneyInline = () => {
@@ -19740,34 +19772,50 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
     if (isFilingFiler) {
       const sourceLabel = { attorney: 'Attorney', client: 'Client', party: 'Party', counsel: 'Counsel', person: 'Person', prior_counsel: 'Prior counsel', co_counsel: 'Co-counsel' }[party.filer_source] || 'Filing'
+      const draftName = filerDraft.name !== undefined ? filerDraft.name : party.name
+      const draftEmail = filerDraft.email !== undefined ? filerDraft.email : party.email
+      const draftRole = filerDraft.role !== undefined ? filerDraft.role : party.role
+      const draftAttorneyDir = filerDraft.attorney_directory_id !== undefined ? filerDraft.attorney_directory_id : party.attorney_directory_id
+      const draftAttorneyType = filerDraft.attorney_type !== undefined ? filerDraft.attorney_type : party.attorney_type
+      const draftAttorneyName = filerDraft.attorney_name !== undefined ? filerDraft.attorney_name : party.attorney_name
+      const draftAttorneyEmail = filerDraft.attorney_email !== undefined ? filerDraft.attorney_email : party.attorney_email
       return (
         <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #cbd5e1', verticalAlign: 'top' }}>
           <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: '1px solid #b45309', background: '#fffbeb' }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: '#b45309' }}>Filed by — {sourceLabel} (review)</div>
-            <select aria-label="Party type" value={party.role || ''} onChange={(event) => edit({ role: event.target.value })}>
-              <option value="">Party type…</option>
-              {options('party_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
-            </select>
-            <input value={party.name || ''} onChange={(event) => edit({ name: event.target.value })} placeholder="Party name" />
-            <input value={party.email || ''} onChange={(event) => edit({ email: event.target.value })} placeholder="Party email (imported)" />
-            <div style={{ display: 'grid', gap: 5, padding: 6, borderRadius: 6, border: '1px dashed #cbd5e1', background: 'transparent' }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>Party attorney</div>
-              <select aria-label="Attorney" value={party.attorney_directory_id || ''} onChange={(event) => assignAttorney(event.target.value)}>
-                <option value="">Choose attorney…</option>
-                {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
-              </select>
-              <select aria-label="Attorney type" value={attorneyType} onChange={(event) => edit({ attorney_type: event.target.value })}>
-                <option value="">Attorney type…</option>
-                <option value="Party Attorney">Party Attorney</option>
-              </select>
-              <input value={party.attorney_name || ''} onChange={(event) => edit({ attorney_name: event.target.value })} placeholder="Attorney name" />
-              <input value={party.attorney_email || ''} onChange={(event) => edit({ attorney_email: event.target.value })} placeholder="Attorney email" />
+            {!isExpanded ? (
+              <div style={{ fontWeight: 700, cursor: 'pointer' }} onClick={toggleExpanded} title="Expand this filer">{draftName || 'Unnamed'}</div>
+            ) : (
+              <>
+                <select aria-label="Party type" value={draftRole || ''} onChange={(event) => updateFilerDraft({ role: event.target.value })}>
+                  <option value="">Party type…</option>
+                  {options('party_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
+                </select>
+                <input value={draftName || ''} onChange={(event) => updateFilerDraft({ name: event.target.value })} placeholder="Party name" />
+                <input value={draftEmail || ''} onChange={(event) => updateFilerDraft({ email: event.target.value })} placeholder="Party email (imported)" />
+                <div style={{ display: 'grid', gap: 5, padding: 6, borderRadius: 6, border: '1px dashed #cbd5e1', background: 'transparent' }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>Party attorney</div>
+                  <select aria-label="Attorney" value={draftAttorneyDir || ''} onChange={(event) => assignAttorney(event.target.value)}>
+                    <option value="">Choose attorney…</option>
+                    {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
+                  </select>
+                  <select aria-label="Attorney type" value={draftAttorneyType || ''} onChange={(event) => updateFilerDraft({ attorney_type: event.target.value })}>
+                    <option value="">Attorney type…</option>
+                    <option value="Party Attorney">Party Attorney</option>
+                  </select>
+                  <input value={draftAttorneyName || ''} onChange={(event) => updateFilerDraft({ attorney_name: event.target.value })} placeholder="Attorney name" />
+                  <input value={draftAttorneyEmail || ''} onChange={(event) => updateFilerDraft({ attorney_email: event.target.value })} placeholder="Attorney email" />
+                </div>
+              </>
+            )}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button type="button" onClick={toggleExpanded}>{isExpanded ? 'Done' : 'Edit'}</button>
+              <button type="button" onClick={() => addLitigationPartyFromFiler(matter.id, { ...party, ...filerDraft })}>Save as new party</button>
             </div>
             <select aria-label="Replace with party" value="" onChange={(event) => { if (event.target.value) applyFilerCorrection(matter.id, party.filer_original_id, event.target.value) }}>
               <option value="">Replace with existing party…</option>
               {correctableParties.map((item) => <option key={item.id} value={item.id}>{item.name || item.role || item.id}</option>)}
             </select>
-            <button type="button" onClick={() => addLitigationPartyFromFiler(matter.id, party)}>Add as new party</button>
             <div style={{ fontSize: 11, color: '#64748b' }}>Original filer identity is preserved separately on the filings.</div>
           </div>
         </td>
@@ -19776,7 +19824,16 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
     return (
       <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #cbd5e1', verticalAlign: 'top' }}>
-        <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: `1px solid ${partyColor}`, background: partyFill }}>
+        <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: `${isClientCell ? 3 : 1}px solid ${partyColor}`, background: partyFill }}>
+          {!isExpanded ? (
+            <div style={{ display: 'grid', gap: 3, cursor: 'pointer' }} onClick={toggleExpanded} title="Expand this party">
+              <div style={{ fontWeight: 800, fontSize: 13 }}>{party.name || party.role || (isAppointment ? 'Appointment' : 'Party')}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>{isAppointment ? (attorneyType || 'Appointment') : (party.role || (party.source === 'client' ? 'Client' : party.source === 'opposing' ? 'Opposing' : 'Other'))}</div>
+              {!isClientCell && !isAppointment && (party.attorney_name || party.attorney_email) && <div style={{ fontSize: 11, color: '#64748b' }}>Atty: {party.attorney_name || party.attorney_email}{attorneyType ? ` · ${attorneyType}` : ''}</div>}
+              <button type="button" onClick={(event) => { event.stopPropagation(); toggleExpanded() }}>Edit</button>
+            </div>
+          ) : (
+            <>
           {isAppointment ? (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 5, alignItems: 'center' }}>
@@ -19837,6 +19894,9 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
             </div>
           </div>
           {!isDerived && <button type="button" onClick={() => removeLitigationMatterParty(matter.id, editIndex)} style={{ color: '#991b1b' }}>Remove party slot</button>}
+            </>
+          )}
+              <button type="button" onClick={toggleExpanded}>Done</button>
             </>
           )}
         </div>
