@@ -191,6 +191,7 @@ begin
           and a.account_key in ('trust','echeck_trust','clientcredit_trust')
           and a.verified_at is not null))
       and t.currency='USD' and t.amount_cents>0
+      and upper(coalesce(t.transaction_type,'CHARGE')) not in ('REFUND','REVERSAL','CHARGEBACK','CREDIT')
       and lower(t.status) in ('completed','settled','succeeded','success')
       and t.occurred_at::date>cutover
       and not exists (select 1 from public.mio_lawpay_ledger_entries e
