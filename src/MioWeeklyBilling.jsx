@@ -42,9 +42,11 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const [financeError,setFinanceError]=useState('')
   const [financeLoading,setFinanceLoading]=useState(true)
   const [atomicBusy,setAtomicBusy]=useState(false)
-  const [atomicRunId,setAtomicRunId]=useState('')
+  const [atomicRunId,setAtomicRunId]=useState(()=>crypto.randomUUID())
   const [atomicNotice,setAtomicNotice]=useState('')
   const [atomicApprovals,setAtomicApprovals]=useState({})
+  const [verifiedTrustSources,setVerifiedTrustSources]=useState({})
+  const [postingAvailable,setPostingAvailable]=useState(false)
   const [caseStatusFilter,setCaseStatusFilter]=useState(['Open'])
   const [matterStatusFilter,setMatterStatusFilter]=useState(null)
   const [caseTypeFilter,setCaseTypeFilter]=useState(null)
@@ -61,11 +63,19 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const refreshFinancialSnapshot=async()=>{
     if(!supabase||!userId){setFinanceError('Login required to read financial records.');setFinanceLoading(false);return}
     setFinanceLoading(true);setFinanceError('')
-    try {const current=await loadWeeklyBillingReadOnly(supabase,userId);setFinanceSnapshot(current)}
+    try {const current=await loadWeeklyBillingReadOnly(supabase,userId);setFinanceSnapshot(current);setVerifiedTrustSources({});setAtomicApprovals({});setAtomicRunId(crypto.randomUUID())}
     catch(error){setFinanceSnapshot(null);setFinanceError(error?.message||String(error))}
     finally{setFinanceLoading(false)}
   }
   useEffect(()=>{refreshFinancialSnapshot()},[supabase,userId])
+  useEffect(()=>{
+    if(!supabase||!userId){setPostingAvailable(false);return}
+    let cancelled=false
+    supabase.rpc('mio_weekly_trust_posting_available_v1').then(({data,error})=>{
+      if(!cancelled)setPostingAvailable(!error&&data===true)
+    }).catch(()=>{if(!cancelled)setPostingAvailable(false)})
+    return()=>{cancelled=true}
+  },[supabase,userId])
   useEffect(()=>{
     if(!supabase||!userId)return
     let cancelled=false
@@ -185,6 +195,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
     if(!cloudReady||!supabase||!userId){setNotice('Settings not saved: cloud is unavailable.');return}
+    if(settings.enableAtomicWeeklyTrustPosting===true&&!postingAvailable){setNotice('Atomic posting is not available in the database. Leave it off until release.');return}
     const next={...settings,matters:{...(settings.matters||{}),...changes}}
     setNotice('Saving...')
     const {error}=await supabase.from('case_mio_user_state').upsert({user_id:userId,key:KEY,json_value:next,raw_value:JSON.stringify(next),origin:'weekly_billing_review',updated_at:new Date().toISOString()},{onConflict:'user_id,key'})
@@ -211,8 +222,10 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum,reviewCaseStatusFilter,reviewMatterStatusFilter,reviewCaseTypeFilter,reviewShowAppointed])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
-  const atomicEnabled=settings.enableAtomicWeeklyTrustPosting===true
-  const atomicMatters=useMemo(()=>rows.map(m=>({...m,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:Number(m.displayTrust)||0})),[rows])
+  const atomicEnabled=postingAvailable&&settings.enableAtomicWeeklyTrustPosting===true
+  // A displayed balance is an advisory figure. The attorney must affirm the
+  // source's reconciled, unrestricted trust before it enters this run's plan.
+  const atomicMatters=useMemo(()=>rows.map(m=>({...m,trustVerified:verifiedTrustSources[m.id]===true&&!m.unverified,unrestrictedFundsVerified:verifiedTrustSources[m.id]===true&&!m.unverified,verifiedAvailableTrust:Number(m.displayTrust)||0})),[rows,verifiedTrustSources])
   const atomicPlan=useMemo(()=>{
     if(!atomicEnabled||!financeSnapshot?.invoices)return {payments:[],totalCents:0}
     try{return buildAtomicTrustPaymentPlan({matters:atomicMatters,invoices:financeSnapshot.invoices,runId:atomicRunId||'preview'})}
@@ -220,11 +233,20 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   },[atomicEnabled,atomicMatters,financeSnapshot,atomicRunId])
   const postAtomicTrustPayments=async()=>{
     if(!supabase||!userId)throw new Error('Sign in to post trust payments.')
-    if(!financeSnapshot?.invoices?.length)throw new Error('No verified invoices are loaded.')
-    const runId=crypto.randomUUID();setAtomicRunId(runId)
-    const plan=buildAtomicTrustPaymentPlan({matters:atomicMatters,invoices:financeSnapshot.invoices,runId})
-    const toPost=plan.payments.filter(p=>atomicApprovals[`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`]!==false)
+    if(!financeSnapshot?.invoices?.length||financeLoading||financeError)throw new Error('Refresh the invoice records before posting.')
+    if(Object.keys(changes).length)throw new Error('Save or discard billing eligibility changes before posting.')
+    const plan=buildAtomicTrustPaymentPlan({matters:atomicMatters,invoices:financeSnapshot.invoices,runId:atomicRunId})
+    const toPost=plan.payments.filter(p=>atomicApprovals[`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`]===true)
     if(!toPost.length)throw new Error('No approved payments to post.')
+    const fresh=await loadWeeklyBillingReadOnly(supabase,userId)
+    const original=new Map(financeSnapshot.invoices.map(invoice=>[String(invoice.id),invoice]))
+    if(toPost.some(p=>{
+      const before=original.get(String(p.invoiceId)),now=fresh.invoices.find(invoice=>String(invoice.id)===String(p.invoiceId))
+      return !before||!now||before.updated_at!==now.updated_at||before.balance!==now.balance||before.amount_paid!==now.amount_paid||before.status!==now.status
+    })){
+      setFinanceSnapshot(fresh);setVerifiedTrustSources({});setAtomicApprovals({});setAtomicRunId(crypto.randomUUID())
+      throw new Error('An invoice changed. Review current balances and approve a new plan.')
+    }
     const total=toPost.reduce((sum,p)=>sum+p.amountCents,0)/100
     if(!window.confirm(`Post ${toPost.length} trust payment(s) totaling ${USD(total)}?\n\nThis records the trust-to-earned-fee allocation in Mio's ledger. It does not move bank funds; physical transfers are reconciled separately.`))return {cancelled:true}
     setAtomicBusy(true);setAtomicNotice('')
@@ -239,12 +261,12 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
           p_amount_cents:p.amountCents,
           p_expected_invoice_updated_at:p.expectedInvoiceUpdatedAt
         })
-        if(error){results.push({status:'failed',message:error.message});continue}
+        if(error){results.push({status:'failed',message:error.message});break}
         results.push({status:data?.status||'unknown'})
       }
       const posted=results.filter(r=>r.status==='ledger_posted'||r.status==='already_posted').length
       const failed=results.filter(r=>r.status==='failed').length
-      setAtomicNotice(`${posted} posted${failed?', '+failed+' failed':''}.`)
+      setAtomicNotice(`${posted} posted${failed?', posting stopped after an error; inspect the ledger before retrying':''}.`)
       await refreshFinancialSnapshot()
       return {posted,failed}
     }finally{setAtomicBusy(false)}
@@ -337,17 +359,18 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       </section>
       {atomicEnabled&&<section style={{border:'2px solid #b91c1c',background:'#fef2f2',padding:12,borderRadius:8,margin:'12px 0'}}>
         <strong>Atomic trust posting (enabled)</strong>
-        <p style={small}><strong>This records an accounting allocation in Mio's ledger only — it does not move bank funds.</strong> The physical trust-to-operating transfer is reconciled separately. The server re-verifies funds, identity, agreement and invoice state before posting, and a retry cannot double-post. Trust figures shown are advisory.</p>
+        <p style={small}><strong>This records an accounting allocation in Mio's ledger only — it does not move bank funds.</strong> The physical trust-to-operating transfer is reconciled separately. Verify each source's trust against the bank and restrictions for this run, then approve each proposed payment. The server checks the ledger and invoice again before posting.</p>
+        {rows.filter(m=>m.included&&m.displayTrust>0.005).map(m=><label key={m.id} style={{display:'block',padding:5,...withdrawalRow(m)}}><input type="checkbox" disabled={m.unverified||atomicBusy} checked={verifiedTrustSources[m.id]===true} onChange={e=>{setVerifiedTrustSources(x=>({...x,[m.id]:e.target.checked}));setAtomicApprovals({})}}/> I verified unrestricted trust for {m.clientName} · {m.name} ({trustLabel(m)} displayed)</label>)}
         {atomicPlan.payments.length===0&&<p style={small}>No eligible invoice payments were found with the current advisory trust and invoice data.</p>}
         {atomicPlan.payments.map(p=>{
           const key=`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`
           return <div key={key} style={{padding:7,borderBottom:'1px solid #fecaca',display:'flex',alignItems:'center',gap:10,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}>
-            <label><input type="checkbox" checked={atomicApprovals[key]!==false} onChange={e=>setAtomicApprovals(x=>({...x,[key]:e.target.checked}))}/> Approve</label>
+            <label><input type="checkbox" checked={atomicApprovals[key]===true} onChange={e=>setAtomicApprovals(x=>({...x,[key]:e.target.checked}))}/> Approve</label>
             <span>{byId.get(p.sourceMatterId)?.clientName} · {byId.get(p.sourceMatterId)?.name||p.sourceMatterId} → {p.destinationMatterId===p.sourceMatterId?'own invoice':'cross-matter invoice'} · {USD(p.amountCents/100)} · Trust {trustLabel(byId.get(p.sourceMatterId))} · Source {withdrawalLabel(byId.get(p.sourceMatterId))} · Destination {withdrawalLabel(byId.get(p.destinationMatterId))}</span>
           </div>
         })}
-        <p><strong>Total: {USD(atomicPlan.totalCents/100)}</strong></p>
-        <button style={button} disabled={atomicBusy||atomicPlan.payments.length===0} onClick={()=>postAtomicTrustPayments().catch(error=>setAtomicNotice(error?.message||String(error)))}>Post approved trust payments (atomic)</button>
+        <p><strong>Approved total: {USD(atomicPlan.payments.filter(p=>atomicApprovals[`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`]===true).reduce((sum,p)=>sum+p.amountCents,0)/100)}</strong></p>
+        <button style={button} disabled={atomicBusy||!atomicPlan.payments.some(p=>atomicApprovals[`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`]===true)} onClick={()=>postAtomicTrustPayments().catch(error=>setAtomicNotice(error?.message||String(error)))}>Post approved trust payments (atomic)</button>
         {atomicNotice&&<p style={small}>{atomicNotice}</p>}
       </section>}
       {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}>
@@ -400,8 +423,8 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       <p style={small}>Appointed matters default to excluded. The filters below change which rows you see; they do not change saved billing preferences.</p>
       {settingsFilters}
       <div style={{margin:'10px 0',padding:10,border:'1px solid #b91c1c',borderRadius:8,background:'#fef2f2'}}>
-        <label><input type="checkbox" checked={settings.enableAtomicWeeklyTrustPosting===true} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting (advanced; leave off)</strong></label>
-        <p style={small}>This would let Mio record payments from trust against earned-fee invoices, including approved payments across matters. It does not transfer money between bank accounts. The posting function is currently unavailable, so leave this off. Choosing a primary matter or checking an agreement does not turn it on.</p>
+        <label><input type="checkbox" disabled={!postingAvailable} checked={settings.enableAtomicWeeklyTrustPosting===true&&postingAvailable} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting {postingAvailable?'(requires financial review)':'(not released)'}</strong></label>
+        <p style={small}>This records trust payments against earned-fee invoices, including separately authorized cross-matter payments. It does not transfer money between bank accounts. {postingAvailable?'Verify trust funds and applicable signed fee agreements before enabling.':'The database posting permission has not been released; this option will unlock only after the server is ready.'}</p>
       </div>
       <p style={small}>The other checkboxes save with “Save Billing Settings.” Use “Clients with multiple matters” to choose the primary trust replenishment matter.</p>
       <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1050}}><thead><tr>{['Client','Matter','Trust balance (displayed)','Withdrawal','Appointed','Weekly Billing','Share Trust','Cross-matter agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{visibleSettingsRows.map(m=><tr key={m.id} style={withdrawalRow(m)}>

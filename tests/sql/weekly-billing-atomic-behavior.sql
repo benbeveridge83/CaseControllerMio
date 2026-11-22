@@ -102,6 +102,13 @@ do $$ declare result jsonb; begin
   assert (select json_value->0->>'transaction_type' = 'operating_transfer' and json_value->0->>'invoice_id' = 'cccccccc-0000-4000-8000-000000000002'
             from public.case_mio_user_state where key='caseMioTrustTransactions');
   assert (select count(*) = 1 from public.mio_invoice_events where invoice_id='cccccccc-0000-4000-8000-000000000002' and event_type='trust_applied');
+  begin
+    update public.case_mio_user_state set json_value='[]'::jsonb
+      where key='caseMioTrustTransactions';
+    raise exception 'expected stale trust ledger refusal';
+  exception when others then
+    if sqlerrm not like '%Trust ledger changed%' then raise; end if;
+  end;
 end $$;
 
 -- 8. Idempotent replay of the same payment returns already_posted and does not double-post.
@@ -132,6 +139,52 @@ end $$;
 do $$ begin
   assert not has_function_privilege('authenticated','public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz)','execute');
   assert not has_function_privilege('anon','public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz)','execute');
+end $$;
+
+-- 11. One mirrored LawPay entry must not suppress a different provider deposit.
+-- Preserve the full invoice paid amount when a legacy upsert arrives afterward.
+insert into public.lawpay_transactions (gateway_transaction_id,account_key,currency,amount_cents,status,occurred_at)
+values ('unclassified-fixture','trust','USD',5000,'COMPLETED','2026-11-21T00:00:00+00');
+do $$ begin
+  begin
+    perform public.mio_post_weekly_trust_payment_v1(
+      'wk-behavior-unclassified-0001','bbbbbbbb-0000-4000-8000-000000000005',
+      'bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',
+      10000,'2026-11-21T00:00:00+00');
+    raise exception 'expected unclassified trust refusal';
+  exception when others then
+    if sqlerrm not like '%Unclassified LawPay%' then raise; end if;
+  end;
+end $$;
+delete from public.lawpay_transactions where gateway_transaction_id='unclassified-fixture';
+
+insert into public.mio_invoices (id,user_id,invoice_number,invoice_type,matter_id,client_id,status,total,amount_paid,balance,updated_at)
+values ('cccccccc-0000-4000-8000-000000000005','00000000-0000-4000-8000-0000000000aa',
+  'MIO-WB-MIXED','services','bbbbbbbb-0000-4000-8000-000000000003','aaaaaaaa-0000-4000-8000-000000000001',
+  'partially_paid',200,60,140,'2026-11-21T00:00:00+00');
+update public.case_mio_user_state
+   set json_value=jsonb_build_array(jsonb_build_object('matter_id','bbbbbbbb-0000-4000-8000-000000000003',
+      'date','2026-11-21','direction','in','amount',25,'lawpay_transaction_id','mirrored-lawpay'))||json_value
+ where key='caseMioTrustTransactions';
+insert into public.mio_lawpay_ledger_entries
+  (identity,classification_id,entry_kind,direction,account_key,matter_id,amount_cents,currency,occurred_at,provider_account_id,created_by)
+values
+  ('mirrored-lawpay',gen_random_uuid(),'trust_deposit','in','trust','bbbbbbbb-0000-4000-8000-000000000003',2500,'USD','2026-11-21T00:00:00+00','trust-fixture','fixture'),
+  ('other-lawpay',gen_random_uuid(),'trust_deposit','in','trust','bbbbbbbb-0000-4000-8000-000000000003',3000,'USD','2026-11-21T00:00:00+00','trust-fixture','fixture');
+do $$ declare result jsonb; begin
+  result:=public.mio_post_weekly_trust_payment_v1(
+    'wk-behavior-mixed-0001','bbbbbbbb-0000-4000-8000-000000000003',
+    'bbbbbbbb-0000-4000-8000-000000000003','cccccccc-0000-4000-8000-000000000005',
+    14000,'2026-11-21T00:00:00+00');
+  assert result->>'status'='ledger_posted', result::text;
+  assert (select amount_paid=200 and balance=0 from public.mio_invoices where invoice_number='MIO-WB-MIXED');
+  begin
+    update public.mio_invoices set amount_paid=140,balance=60,status='outstanding'
+      where invoice_number='MIO-WB-MIXED';
+    raise exception 'expected stale paid balance refusal';
+  exception when others then
+    if sqlerrm not like '%Cannot erase%' then raise; end if;
+  end;
 end $$;
 
 select 'weekly billing atomic posting behavior passed' as result;
