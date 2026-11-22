@@ -12,6 +12,23 @@ test('appointed defaults out and private matters default in',()=>{
  assert.equal(weeklyBillingDefaults(rows[2]).included,false)
  assert.equal(weeklyBillingDefaults(rows[0]).included,true)
 })
+test('DFPS matters default to appointed without an explicit flag',()=>{
+  const d=weeklyBillingDefaults({id:'x',name:'DFPS 123',matter_type:'DFPS'})
+  assert.equal(d.appointed,true)
+  assert.equal(d.included,false)
+})
+test('explicit appointed:false override wins over the DFPS default',()=>{
+  const d=weeklyBillingDefaults({id:'x',name:'DFPS 123',matter_type:'DFPS',appointed:false})
+  assert.equal(d.appointed,false)
+  assert.equal(d.included,true)
+})
+test('closed and test matters default out of billing selection',()=>{
+  assert.equal(weeklyBillingDefaults({id:'x',name:'Divorce',case_status:'Closed'}).included,false)
+  assert.equal(weeklyBillingDefaults({id:'x',name:'testes12'}).included,false)
+  assert.equal(weeklyBillingDefaults({id:'x',name:'Divorce',case_status:'Open'}).included,true)
+})
+
+
 test('minimum WIP carries forward and only eligible work is invoiced in proposal',()=>{
  const p=createWeeklyBillingProposal({matters:rows,minimumWip:150})
  assert.equal(p.totalWip,380)

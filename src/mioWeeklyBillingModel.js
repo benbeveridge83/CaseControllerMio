@@ -2,8 +2,13 @@
 const cents = value => Math.max(0, Math.round((Number(value) || 0) * 100))
 const amount = value => Math.round(value) / 100
 export function weeklyBillingDefaults(matter = {}) {
-  const appointed = Boolean(matter.appointed ?? matter.is_appointed ?? matter.court_appointed ?? false)
-  return {appointed, included: !appointed, shareTrust: true}
+  const explicit = matter.appointed ?? matter.is_appointed ?? matter.court_appointed
+  const appointed = explicit != null
+    ? Boolean(explicit)
+    : /^dfps$/i.test(String(matter.matter_type || '').trim())
+  const closed = matter.is_active === false || /^(closed|dismissed)$/i.test(String(matter.case_status || '').trim())
+  const test = /^test/i.test(String(matter.name || '').trim())
+  return {appointed, closed, test, included: !appointed && !closed && !test, shareTrust: true}
 }
 export function createWeeklyBillingProposal({matters = [], minimumWip = 150, selectedIds = null, authorizations = {}} = {}) {
   const threshold = cents(minimumWip)

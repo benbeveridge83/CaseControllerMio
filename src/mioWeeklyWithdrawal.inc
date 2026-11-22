@@ -23,7 +23,8 @@
       const matter=matters.find(m=>String(m.id)===id)
       if(!matter){skipped.push(id+': missing matter');continue}
       const override=settings?.matters?.[id]||{}
-      const appointed=override.appointed??Boolean(matter.appointed||matter.is_appointed||matter.court_appointed)
+      const explicitAppointed=matter.appointed??matter.is_appointed??matter.court_appointed
+      const appointed=override.appointed??(explicitAppointed!=null?Boolean(explicitAppointed):/^dfps$/i.test(String(matter.matter_type||'').trim()))
       const included=override.included??!appointed
       if(!included||appointed){
         skipped.push((matter.name||id)+': weekly billing excluded/appointed');continue
