@@ -11,8 +11,8 @@ export default function pncDailyTrust(){return {name:'mio-v313-pnc-daily-trust',
     for(const row of data||[]){
       let value=row.json_value
       if(value===null||value===undefined){try{value=JSON.parse(row.raw_value||'null')}catch{value=null}}
-      if(row.key==='caseMioFinanceOpeningBalances'&&value&&typeof value==='object'&&!Array.isArray(value)) setMioFinanceOpeningBalances(value)
-      if(row.key==='caseMioTrustTransactions'&&Array.isArray(value)) setMioTrustTransactions(value)
+      if(row.key==='caseMioFinanceOpeningBalances'&&value&&typeof value==='object'&&!Array.isArray(value)) setMioFinanceOpeningBalances(current=>JSON.stringify(current||{})===JSON.stringify(value)?current:value)
+      if(row.key==='caseMioTrustTransactions'&&Array.isArray(value)) setMioTrustTransactions(current=>JSON.stringify(current||[])===JSON.stringify(value)?current:value)
     }
     return true
   }
