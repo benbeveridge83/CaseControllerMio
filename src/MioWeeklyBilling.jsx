@@ -21,7 +21,7 @@ function SettingsFilter({title,choices,selected,onChange}) {
 }
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={},financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={},financeFor=()=>null,withdrawalStatusFor=()=>'',supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
@@ -46,6 +46,10 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const [caseStatusFilter,setCaseStatusFilter]=useState(['Open'])
   const [matterStatusFilter,setMatterStatusFilter]=useState(null)
   const [caseTypeFilter,setCaseTypeFilter]=useState(null)
+  const [reviewCaseStatusFilter,setReviewCaseStatusFilter]=useState(['Open'])
+  const [reviewMatterStatusFilter,setReviewMatterStatusFilter]=useState(null)
+  const [reviewCaseTypeFilter,setReviewCaseTypeFilter]=useState(null)
+  const [reviewShowAppointed,setReviewShowAppointed]=useState(false)
   const [replenishmentSettings,setReplenishmentSettings]=useState({})
   const [replenishmentError,setReplenishmentError]=useState('')
   const [primarySaving,setPrimarySaving]=useState(false)
@@ -91,18 +95,32 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     const client=clientsById.get(clientId)||m.client||m.clients||{}
     return {id:String(m.id),name:m.name||'Matter '+m.id,clientId,clientName:`${client.first_name||''} ${client.last_name||''}`.trim()||client.name||m.matter_client_name||m.client_name||'Client not listed',
       caseStatus:String(m.case_status||'').trim(),matterStatus:String(m.matter_status||'').trim(),caseType:String(m.matter_type||m.case_type||'').trim(),isActive:m.is_active!==false,
-      withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',
+      withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',matterWithdrawalStatus:withdrawalStatusFor(m),
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
       shareTrust:override.shareTrust??defaults.shareTrust,agreementAuthorized:override.agreementAuthorized===true,
       wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
-  }),[matters,clientsById,financeFor,changes,settings,financeSnapshot])
+  }),[matters,clientsById,financeFor,withdrawalStatusFor,changes,settings,financeSnapshot])
   const caseStatuses=useMemo(()=>uniqueLabels([...(filterOptions.caseStatuses||[]),...rows.map(m=>m.caseStatus),'Open']),[filterOptions.caseStatuses,rows])
   const matterStatuses=useMemo(()=>uniqueLabels([...(filterOptions.matterStatuses||[]),...rows.map(m=>m.matterStatus)]),[filterOptions.matterStatuses,rows])
   const caseTypes=useMemo(()=>uniqueLabels([...(filterOptions.caseTypes||[]),...rows.map(m=>m.caseType)]),[filterOptions.caseTypes,rows])
   const matches=(selected,value)=>selected===null||selected.some(item=>normalized(item)===normalized(value))
-  const visibleSettingsRows=rows.filter(m=>matches(caseStatusFilter,!m.isActive&&(!m.caseStatus||normalized(m.caseStatus)==='open')?'Closed':m.caseStatus||'Open')
-    &&(matterStatusFilter===null||matterStatusFilter.some(value=>value==='__blank__'?!m.matterStatus:normalized(value)===normalized(m.matterStatus)))
-    &&matches(caseTypeFilter,m.caseType))
+  const effectiveCaseStatus=m=>!m.isActive&&(!m.caseStatus||normalized(m.caseStatus)==='open')?'Closed':m.caseStatus||'Open'
+  const matchesMatterStatus=(selected,m)=>selected===null||selected.some(value=>value==='__blank__'?!m.matterStatus:normalized(value)===normalized(m.matterStatus))
+  const visibleSettingsRows=rows.filter(m=>matches(caseStatusFilter,effectiveCaseStatus(m))&&matchesMatterStatus(matterStatusFilter,m)&&matches(caseTypeFilter,m.caseType))
+  const visibleReviewRows=rows.filter(m=>matches(reviewCaseStatusFilter,effectiveCaseStatus(m))&&matchesMatterStatus(reviewMatterStatusFilter,m)&&matches(reviewCaseTypeFilter,m.caseType)
+    &&(reviewShowAppointed||(!m.appointed&&!/^dfps\b/i.test(m.caseType))))
+  const inWithdrawal=m=>m?.matterWithdrawalStatus==='withdrawing'||m?.withdrawalStatus==='active'
+  const withdrawalLabel=m=>inWithdrawal(m)?'In withdrawal':m?.withdrawalStatus==='released'?'Released':m?.withdrawalStatus==='complete'||m?.withdrawalStatus==='completed'?'Completed':'Not in withdrawal'
+  const withdrawalRow=m=>({background:inWithdrawal(m)?'#fff1f2':undefined})
+  const trustLabel=m=>m?.unverified?'—':USD(m?.displayTrust)
+  const byId=new Map(rows.map(m=>[m.id,m]))
+  const reviewFilters=<div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'start',margin:'12px 0'}}>
+    <SettingsFilter title="Case status" choices={caseStatuses.map(value=>({value,label:value}))} selected={reviewCaseStatusFilter} onChange={setReviewCaseStatusFilter}/>
+    <SettingsFilter title="Matter status" choices={[{value:'__blank__',label:'No Matter Status'},...matterStatuses.map(value=>({value,label:value}))]} selected={reviewMatterStatusFilter} onChange={setReviewMatterStatusFilter}/>
+    <SettingsFilter title="Case type" choices={caseTypes.map(value=>({value,label:value}))} selected={reviewCaseTypeFilter} onChange={setReviewCaseTypeFilter}/>
+    <label style={{fontSize:13,padding:8}}><input type="checkbox" checked={reviewShowAppointed} onChange={e=>setReviewShowAppointed(e.target.checked)}/> Show appointed / DFPS</label>
+    <span style={small}>{visibleReviewRows.length} of {rows.length} matters shown</span>
+  </div>
   const matterClientGroups=useMemo(()=>{
     const groups=new Map()
     for(const matter of matters){const id=String(matter.client_id||matter.client?.id||matter.clients?.id||'');if(id)groups.set(id,[...(groups.get(id)||[]),String(matter.id)])}
@@ -129,7 +147,10 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       try{setReplenishmentSettings(await loadReplenishmentSettings(supabase,userId))}catch{}
     }finally{setPrimarySaving(false)}
   }
-  const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
+  const first=visibleReviewRows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
+  const visibleReviewIds=new Set(visibleReviewRows.map(r=>r.id))
+  const chosen=(selected??first).filter(id=>visibleReviewIds.has(id)&&rows.some(m=>m.id===id&&m.included))
+  const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:chosen,authorizations:{}}),[rows,minimum,selected,reviewCaseStatusFilter,reviewMatterStatusFilter,reviewCaseTypeFilter,reviewShowAppointed])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
     if(!cloudReady||!supabase||!userId){setNotice('Settings not saved: cloud is unavailable.');return}
@@ -139,7 +160,6 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     if(error){setNotice('Settings not saved: '+error.message);return}
     setSettings(next);setChanges({});setNotice('Billing preferences saved to Mio cloud settings.')
   }
-  const first=rows.filter(r=>r.included&&r.wip>=minimum).map(r=>r.id)
   const preparePacket=async()=>{
     if(!financeSnapshot)throw new Error('Financial data unavailable')
     if(Object.keys(changes).length)throw new Error('Save or discard eligibility changes before preparing invoices.')
@@ -157,8 +177,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   // A previously checked matter drops out immediately when Billing is disabled.
   // Preserve the deliberate included override for appointed cases; the default
   // remains excluded, but the user's explicit eligibility choice takes priority.
-  const chosen=(selected??first).filter(id=>rows.some(m=>m.id===id&&m.included))
-  useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum])
+  useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum,reviewCaseStatusFilter,reviewMatterStatusFilter,reviewCaseTypeFilter,reviewShowAppointed])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
   const atomicEnabled=settings.enableAtomicWeeklyTrustPosting===true
@@ -243,22 +262,23 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     {notice&&<p role="status" style={{background:'#eff6ff',padding:8}}>{notice}</p>}
     {step==='wip'&&<>
       <h3>Work in progress — largest first</h3>
-      <p style={small}>WIP and balances must be verified against live finance data before execution. Unknown values are shown as zero, not as available funds.</p>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr>{['Invoice','Matter','WIP','Work OB','Small controls'].map(t=><th key={t} style={cell}>{t}</th>)}</tr></thead><tbody>
-        {[...rows].sort((a,b)=>b.wip-a.wip).map(m=><tr key={m.id}>
-          <td style={cell}><input type="checkbox" aria-label={'Select WIP '+m.name} checked={m.included&&chosen.includes(m.id)} disabled={!m.included} onChange={e=>setSelected(old=>e.target.checked?[...new Set([...(old??first),m.id])]:(old??first).filter(x=>x!==m.id))}/></td>
-          <td style={cell}>{m.name}{m.appointed&&<span style={small}> · Appointed</span>}</td><td style={cell}>{USD(m.wip)}</td><td style={cell}>{USD(m.workOB)}</td>
+      <p style={small}>Open, non-appointed, non-DFPS matters appear by default. Filters affect this run's WIP selection. Trust shown is a displayed balance, not verified funds for payment.</p>
+      {reviewFilters}
+      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1050}}><thead><tr>{['Invoice','Client','Matter','WIP','Work OB','Trust balance (displayed)','Withdrawal','Small controls'].map(t=><th key={t} style={cell}>{t}</th>)}</tr></thead><tbody>
+        {[...visibleReviewRows].sort((a,b)=>b.wip-a.wip).map(m=><tr key={m.id} style={withdrawalRow(m)}>
+          <td style={cell}><input type="checkbox" aria-label={'Select WIP '+m.clientName+' '+m.name} checked={m.included&&chosen.includes(m.id)} disabled={!m.included} onChange={e=>setSelected(old=>e.target.checked?[...new Set([...(old??first),m.id])]:(old??first).filter(x=>x!==m.id))}/></td>
+          <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}{m.appointed&&<span style={small}> · Appointed</span>}</td><td style={cell}>{USD(m.wip)}</td><td style={cell}>{USD(m.workOB)}</td><td style={cell}>{trustLabel(m)}</td><td style={cell}>{withdrawalLabel(m)}</td>
           <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
-      </tbody></table><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
+      </tbody></table></div><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
       <button style={button} onClick={()=>preparePacket().catch(error=>setNotice('Invoice packet preparation failed: '+(error?.message||error)))} disabled={!financeSnapshot||financeLoading}>Verify WIP & Prepare Invoice Packet →</button> <button style={button} onClick={refreshFinancialSnapshot}>Refresh financial records</button>
     </>}
     {step==='payments'&&<>
       <h3>Invoice approval packet</h3>
       {invoicePacket&&<section style={{background:'#f1f5f9',padding:12,borderRadius:8}}>
         <strong>{invoicePacket.length} proposed invoice(s), unissued</strong>
-        {invoicePacket.map(p=><div key={p.matterId} style={{padding:'7px 0',borderBottom:'1px solid #cbd5e1'}}>
-          {rows.find(m=>m.id===p.matterId)?.name||p.matterId}: {USD(p.totalCents/100)} — {p.entryIds.length} WIP entries
+        {invoicePacket.map(p=><div key={p.matterId} style={{padding:'7px 0',borderBottom:'1px solid #cbd5e1',...withdrawalRow(byId.get(p.matterId))}}>
+          {byId.get(p.matterId)?.clientName} · {byId.get(p.matterId)?.name||p.matterId}: {USD(p.totalCents/100)} — {p.entryIds.length} WIP entries · Trust {trustLabel(byId.get(p.matterId))} · {withdrawalLabel(byId.get(p.matterId))}
         </div>)}
         <p style={small}>The packet is a verified review snapshot, not an invoice. Records must be checked again before an authorized invoice posting operation.</p>
       </section>}
@@ -267,15 +287,15 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       {suggestions.length>0&&<section style={{border:'1px solid #d97706',background:'#fffbeb',padding:12,borderRadius:8,marginBottom:12}}>
         <strong>Possible cross-matter sharing — NOT authorized or payable yet</strong>
         <p style={small}>These amounts use displayed trust balances only. Funds, agreement authorization, and all outstanding obligations must be verified before any payout.</p>
-        {suggestions.map(p=><div key={p.id} style={{marginBottom:8}}><strong>{p.sourceName}</strong> → {p.destinationName} · up to {USD(p.amount)} (unverified)</div>)}
+        {suggestions.map(p=><div key={p.id} style={{marginBottom:8,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}><strong>{p.sourceName}</strong> → {p.destinationName} · up to {USD(p.amount)} (unverified) · Source trust {trustLabel(byId.get(p.sourceMatterId))} · Source {withdrawalLabel(byId.get(p.sourceMatterId))} · Destination {withdrawalLabel(byId.get(p.destinationMatterId))}</div>)}
       </section>}
       {eligiblePayments.length===0&&<p>No verified same-matter payments are available with the current trust and invoice data.</p>}
       <section style={{border:'1px solid #cbd5e1',borderRadius:8,padding:12,margin:'12px 0'}}>
         <strong>Same-matter trust payment approvals</strong>
         <p style={small}>Only existing outstanding invoices are eligible. These displayed balances are indications, not authorization. Mio will recalculate and ask you to confirm the actual amount before posting.</p>
-        {rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005).map(m=><div key={m.id} style={{padding:7,borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
-          <label><input type="checkbox" checked={!ownPaymentExcluded.includes(m.id)} onChange={e=>setOwnPaymentExcluded(previous=>e.target.checked?previous.filter(id=>id!==m.id):[...new Set([...previous,m.id])])}/> {m.name}</label>
-          <span style={small}>Work OB {USD(m.workOB)} · Displayed trust {USD(m.displayTrust)}</span>
+        {rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005).map(m=><div key={m.id} style={{padding:7,borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,...withdrawalRow(m)}}>
+          <label><input type="checkbox" checked={!ownPaymentExcluded.includes(m.id)} onChange={e=>setOwnPaymentExcluded(previous=>e.target.checked?previous.filter(id=>id!==m.id):[...new Set([...previous,m.id])])}/> {m.clientName} · {m.name}</label>
+          <span style={small}>Work OB {USD(m.workOB)} · Displayed trust {trustLabel(m)} · {withdrawalLabel(m)}</span>
         </div>)}
         {onPayOwnMatterTrust&&<button style={button} onClick={()=>{
           const ids=rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005&&!ownPaymentExcluded.includes(m.id)).map(m=>m.id)
@@ -290,18 +310,18 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
         {atomicPlan.payments.length===0&&<p style={small}>No eligible invoice payments were found with the current advisory trust and invoice data.</p>}
         {atomicPlan.payments.map(p=>{
           const key=`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`
-          return <div key={key} style={{padding:7,borderBottom:'1px solid #fecaca',display:'flex',alignItems:'center',gap:10}}>
+          return <div key={key} style={{padding:7,borderBottom:'1px solid #fecaca',display:'flex',alignItems:'center',gap:10,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}>
             <label><input type="checkbox" checked={atomicApprovals[key]!==false} onChange={e=>setAtomicApprovals(x=>({...x,[key]:e.target.checked}))}/> Approve</label>
-            <span>{(rows.find(m=>m.id===p.sourceMatterId)?.name)||p.sourceMatterId} → {p.destinationMatterId===p.sourceMatterId?'own invoice':'cross-matter invoice'} · {USD(p.amountCents/100)}</span>
+            <span>{byId.get(p.sourceMatterId)?.clientName} · {byId.get(p.sourceMatterId)?.name||p.sourceMatterId} → {p.destinationMatterId===p.sourceMatterId?'own invoice':'cross-matter invoice'} · {USD(p.amountCents/100)} · Trust {trustLabel(byId.get(p.sourceMatterId))} · Source {withdrawalLabel(byId.get(p.sourceMatterId))} · Destination {withdrawalLabel(byId.get(p.destinationMatterId))}</span>
           </div>
         })}
         <p><strong>Total: {USD(atomicPlan.totalCents/100)}</strong></p>
         <button style={button} disabled={atomicBusy||atomicPlan.payments.length===0} onClick={()=>postAtomicTrustPayments().catch(error=>setAtomicNotice(error?.message||String(error)))}>Post approved trust payments (atomic)</button>
         {atomicNotice&&<p style={small}>{atomicNotice}</p>}
       </section>}
-      {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8}}>
-        <div><strong>{p.destinationName} — {USD(p.amount)}</strong>{p.crossMatter&&<strong style={{color:'#a16207'}}> · CROSS-MATTER</strong>}</div>
-        <div style={small}>Funds from {p.sourceName} → invoice of {p.destinationName}</div>
+      {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}>
+        <div><strong>{byId.get(p.destinationMatterId)?.clientName} · {p.destinationName} — {USD(p.amount)}</strong>{p.crossMatter&&<strong style={{color:'#a16207'}}> · CROSS-MATTER</strong>}</div>
+        <div style={small}>Funds from {p.sourceName} → invoice of {p.destinationName} · Source trust {trustLabel(byId.get(p.sourceMatterId))} · Source {withdrawalLabel(byId.get(p.sourceMatterId))} · Destination {withdrawalLabel(byId.get(p.destinationMatterId))}</div>
         <label><input type="checkbox" checked={approvals[p.id]!==false} onChange={e=>setApprovals(x=>({...x,[p.id]:e.target.checked}))}/> Approve this payment for this run</label>
         <div style={{float:'right'}}>{[p.destinationMatterId,p.sourceMatterId].filter((x,i,a)=>a.indexOf(x)===i).map(id=>{
           const m=rows.find(x=>x.id===id)
@@ -316,11 +336,11 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     {step==='unpaid'&&<>
       <h3>Projected unpaid balances — manual review</h3>
       <p style={small}>These projections include selected WIP that has not been invoiced. Withdrawal changes are not enabled in preview mode. No appointment-based withdrawal recommendation is made.</p>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr><th style={cell}>Matter</th><th style={cell}>Projected unpaid</th><th style={cell}>Withdrawal status</th></tr></thead><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=>{
-        const original=rows.find(x=>x.id===m.id)
+      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:850}}><thead><tr><th style={cell}>Client</th><th style={cell}>Matter</th><th style={cell}>Projected unpaid</th><th style={cell}>Trust balance (displayed)</th><th style={cell}>Withdrawal status</th></tr></thead><tbody>{review.matters.filter(m=>m.included&&m.unpaid>0).map(m=>{
+        const original=byId.get(m.id)
         const status=original?.withdrawalStatus
-        return <tr key={m.id} style={{background:status==='active'?'#fff1f2':'transparent'}}><td style={cell}><label><input type="checkbox" checked={withdrawSelected.includes(m.id)} disabled={m.appointed||status==='active'||status==='released'||status==='complete'||withdrawMarked.includes(m.id)} onChange={e=>setWithdrawSelected(current=>e.target.checked?[...new Set([...current,m.id])]:current.filter(id=>id!==m.id))}/> {m.name}</label></td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{withdrawMarked.includes(m.id)?'Marked for withdrawal (administrative)':status==='active'?'Already in withdrawal':status==='released'?'Released — no active withdrawal':status==='complete'?'Completed':m.appointed?'Appointed — exempt':'Requires trust verification before any withdrawal action'}</td></tr>
-      })}</tbody></table>
+        return <tr key={m.id} style={withdrawalRow(original)}><td style={cell}>{original?.clientName}</td><td style={cell}><label><input type="checkbox" checked={withdrawSelected.includes(m.id)} disabled={m.appointed||inWithdrawal(original)||status==='released'||status==='complete'||withdrawMarked.includes(m.id)} onChange={e=>setWithdrawSelected(current=>e.target.checked?[...new Set([...current,m.id])]:current.filter(id=>id!==m.id))}/> {m.name}</label></td><td style={cell}>{USD(m.unpaid)}</td><td style={cell}>{trustLabel(original)}</td><td style={cell}>{withdrawMarked.includes(m.id)?'Marked for withdrawal (administrative)':inWithdrawal(original)?'Already in withdrawal':status==='released'?'Released — no active withdrawal':status==='complete'?'Completed':m.appointed?'Appointed — exempt':'Not in withdrawal — verify trust before marking'}</td></tr>
+      })}</tbody></table></div>
       {onMarkWithdrawals&&<section style={{marginTop:12,padding:12,border:'1px solid #cbd5e1',borderRadius:8}}>
         <p style={small}>Check matters individually, then confirm. Mio will recheck unpaid invoices, trust funds, client identity, sharing eligibility, and current withdrawal status. Matters without verified records will be skipped. This does not terminate representation.</p>
         <button style={button} disabled={withdrawBusy||!withdrawSelected.length} onClick={async()=>{
@@ -353,8 +373,8 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       </div>
       <p style={small}>Primary trust matter controls which of a client's matters receives replenishment requests. Choose one when a client has multiple matters. It does not authorize using that trust to pay another matter's fees; the signed agreement and separate payment approval are still required. Primary selections save immediately; the other checkboxes save with “Save Billing Settings.”</p>
       {replenishmentError&&<p role="alert" style={{color:'#991b1b'}}>Primary matter settings: {replenishmentError}</p>}
-      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1020}}><thead><tr>{['Client','Matter','Appointed','Weekly Billing','Share Trust','Primary trust matter','Cross-matter agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{visibleSettingsRows.map(m=><tr key={m.id}>
-        <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}</td>
+      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1200}}><thead><tr>{['Client','Matter','Trust balance (displayed)','Withdrawal','Appointed','Weekly Billing','Share Trust','Primary trust matter','Cross-matter agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{visibleSettingsRows.map(m=><tr key={m.id} style={withdrawalRow(m)}>
+        <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}</td><td style={cell}>{trustLabel(m)}</td><td style={cell}>{withdrawalLabel(m)}</td>
         <td style={cell}><input aria-label={'Appointed '+m.name} type="checkbox" checked={m.appointed} onChange={e=>{setMatter(m.id,'appointed',e.target.checked);setChanges(prev=>({...prev,[m.id]:{...(prev[m.id]||{}),appointed:e.target.checked,included:!e.target.checked,shareTrust:!e.target.checked}}))}}/></td>
         <td style={cell}><input aria-label={'Billing '+m.name} type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/></td>
         <td style={cell}><input aria-label={'Share trust '+m.name} type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/></td>
