@@ -39,7 +39,7 @@ Status: **BACKEND VERIFIED, NOT RELEASED**. The atomic trust-posting RPC is impl
 - CI tests and production build pass; independent human verifies a simulated invoice/payment/withdrawal run, then explicitly approves enabling live transfers.
 
 ## Production activation sequence
-1. Backfill the `appointed` classification (new-matter entry / settings / bulk backfill). Currently no matter carries an appointed flag, and 23 DFPS matters would not be excluded.
+1. Backfill the `appointed` classification: run `docs/backfill-appointed-dfps.sql` (marks all DFPS matters appointed and excluded). New matters can be marked via the "Appointed" checkbox on the matter form; existing matters are editable in Weekly Billing Settings.
 2. In Weekly Billing Settings, set `agreementAuthorized` only for matters whose signed fee agreement authorizes cross-matter transfers.
 3. Apply `supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql`.
 4. Grant execute: `grant execute on function public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz) to authenticated;`
