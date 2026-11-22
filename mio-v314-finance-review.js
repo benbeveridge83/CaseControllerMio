@@ -96,6 +96,37 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
  })
  code=editFunction(code,'renderBulkBillingPanel',part=>{
    part=once(part,'      const matter = row.matter','      const matter = row.matter\n      if(!passesTrustMinimum(row.trust,bulkBillingFilters.min_trust))return false','trust filter predicate')
+   // The bulk table is filtered by case status and type. Its Trust header
+   // cannot stand in for the pooled bank balance when closed matters hold trust.
+   const trustSummary=`    const allTrustRows = matters.map(matter=>({
+      matter,
+      matterName:matter.name||matter.matter_name||matterClientName(matter)||'Unnamed matter',
+      trust:(bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)).trust
+    }))
+    const trustCents=trustRows=>trustRows.reduce((sum,row)=>sum+Math.round(financeNumber(row.trust)*100),0)
+    const allMatterTrustCents=trustCents(allTrustRows)
+    const filteredTrustCents=trustCents(rows)
+    const visibleTrustIds=new Set(rows.map(row=>String(row.matter.id)))
+    const hiddenTrustRows=allTrustRows.filter(row=>!visibleTrustIds.has(String(row.matter.id))&&Math.abs(financeNumber(row.trust))>=0.005)
+    const closedTrustRows=allTrustRows.filter(row=>{
+      const closedMatter=row.matter
+      return (closedMatter.is_active===false||['closed','dismissed'].includes(String(closedMatter.case_status||closedMatter.status||'').trim().toLowerCase()))&&Math.abs(financeNumber(row.trust))>=0.005
+    })
+    const centsMoney=cents=>(cents/100).toLocaleString('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2})
+`
+   part=once(part,'    const bulkColumnTotal = (column) =>',trustSummary+'    const bulkColumnTotal = (column) =>','all-matter trust calculation')
+   const trustSummaryPanel=`        <div style={{ marginTop: 10, border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', color: '#172554', padding: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 28px', alignItems: 'baseline' }}>
+            <strong>All-matter trust (including closed): {centsMoney(allMatterTrustCents)}</strong>
+            <span>Trust in current filters: {centsMoney(filteredTrustCents)}</span>
+            <span>Trust outside current filters: {centsMoney(allMatterTrustCents-filteredTrustCents)}</span>
+            <span>Closed or inactive matter trust: {centsMoney(trustCents(closedTrustRows))}</span>
+          </div>
+          <div style={{ fontSize: 12, marginTop: 5 }}>The Trust column below totals only filtered matters. Use the all-matter total when comparing Mio's pooled trust ledger to the bank.</div>
+          {!!hiddenTrustRows.length && <details style={{ marginTop: 8 }}><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Show {hiddenTrustRows.length} matters with trust outside the current filters</summary><div style={{ marginTop: 6, maxHeight: 240, overflowY: 'auto' }}>{hiddenTrustRows.map(row=><div key={row.matter.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, borderTop: '1px solid #bfdbfe', padding: '5px 2px' }}><span>{matterClientName(row.matter)||'Client'} — {row.matterName} ({row.matter.case_status||(row.matter.is_active===false?'Inactive':'Outside filters')})</span><strong>{centsMoney(Math.round(financeNumber(row.trust)*100))}</strong></div>)}</div></details>}
+        </div>
+`
+   part=once(part,"        <div style={{ marginTop: 10, border: '1px solid #86efac'",trustSummaryPanel+"        <div style={{ marginTop: 10, border: '1px solid #86efac'",'all-matter trust panel')
    const field=`          <LabeledField label="Minimum trust amount"><input aria-label="Minimum trust amount" type="number" min="0" step="0.01" value={bulkBillingFilters.min_trust??''} onChange={event=>setBulkBillingFilters(current=>({...current,min_trust:event.target.value}))} placeholder="No minimum" title="Hide matters with less than this trust balance. Blank shows all." /></LabeledField>\n`
    part=once(part,'          <LabeledField label="Mio opening balance through">',field+'          <LabeledField label="Mio opening balance through">','trust filter control')
    return once(part,'      <section className="card" style={{ padding: 0',`      {renderFinanceSyncStatus()}
