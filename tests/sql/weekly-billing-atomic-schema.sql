@@ -59,6 +59,15 @@ create table public.mio_lawpay_ledger_entries (
   refund_resolution_id uuid
 );
 
+create table public.lawpay_transactions (
+  gateway_transaction_id text primary key,
+  account_key text,
+  currency text,
+  amount_cents bigint,
+  status text,
+  occurred_at timestamptz
+);
+
 create table public.case_mio_user_state (
   user_id uuid not null,
   key text not null,
