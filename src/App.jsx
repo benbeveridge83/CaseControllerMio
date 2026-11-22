@@ -18254,10 +18254,15 @@ async function handleDiscoveryNewRequestFiles(fileList) {
 
   function applyFilerCorrection(matterId, originalFilerId, correctedPartyId) {
     if (!matterId || !originalFilerId) return
+    const partyId = String(correctedPartyId || '')
+    const mergePartyIds = (existing) => Array.from(new Set([...(Array.isArray(existing) ? existing : []).filter(Boolean).map(String), ...(partyId ? [partyId] : [])]))
     setFilerCorrections((current) => ({
       ...current,
-      [matterId]: { ...(current?.[matterId] || {}), [String(originalFilerId)]: String(correctedPartyId || '') }
+      [matterId]: { ...(current?.[matterId] || {}), [String(originalFilerId)]: partyId }
     }))
+    // Scope strictly to the selected matter AND the specific filer id, so the same attorney id
+    // reused in other matters is never touched. Both the legacy single field and the new
+    // party selection are updated together, and the original filer is preserved separately.
     setDocuments((current) => (current || []).map((doc) => {
       if (String(doc.matter_id || doc.suggested_matter_id || '') !== String(matterId)) return doc
       const currentFiler = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
@@ -18265,18 +18270,25 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       return {
         ...doc,
         filed_by_original_id: doc.filed_by_original_id || currentFiler,
-        filed_by_person_id: correctedPartyId || '',
+        filed_by_person_id: partyId,
+        filed_by_party_ids: mergePartyIds(doc.filed_by_party_ids),
         document_field_values: {
           ...(doc.document_field_values || {}),
-          filed_by_person_id: correctedPartyId || '',
-          filed_by_original_id: doc.document_field_values?.filed_by_original_id || currentFiler
+          filed_by_person_id: partyId,
+          filed_by_original_id: doc.document_field_values?.filed_by_original_id || currentFiler,
+          filed_by_party_ids: mergePartyIds(doc.document_field_values?.filed_by_party_ids)
         }
       }
     }))
     setServiceEmailRows((current) => (current || []).map((row) => {
       if (String(resolveServiceEmailMatterId(row) || '') !== String(matterId)) return row
       if (String(row.filed_by_person_id || '') !== String(originalFilerId)) return row
-      return { ...row, filed_by_original_id: row.filed_by_original_id || row.filed_by_person_id, filed_by_person_id: correctedPartyId || '' }
+      return {
+        ...row,
+        filed_by_original_id: row.filed_by_original_id || row.filed_by_person_id,
+        filed_by_person_id: partyId,
+        filed_by_party_ids: mergePartyIds(row.filed_by_party_ids)
+      }
     }))
   }
 
