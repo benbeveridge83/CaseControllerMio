@@ -9,6 +9,7 @@ create table if not exists public.mio_weekly_trust_postings (
   destination_matter_id text not null,
   invoice_id uuid not null references public.mio_invoices(id),
   amount_cents bigint not null check (amount_cents > 0),
+  minimum_paid_cents bigint not null,
   request_hash text not null,
   ledger_record jsonb not null,
   created_at timestamptz not null default now(),
@@ -24,8 +25,8 @@ create policy mio_weekly_trust_postings_read_own
 revoke all on public.mio_weekly_trust_postings from anon, authenticated;
 grant select on public.mio_weekly_trust_postings to authenticated;
 
--- Existing Mio clients still save the trust JSON state. Reinstate immutable
--- weekly postings whenever an older browser saves a stale trust-state array.
+-- Existing Mio clients still save the trust JSON state. Reject a stale save
+-- that would remove a posted allocation or an earlier source-matter outflow.
 create or replace function public.mio_preserve_weekly_trust_postings_v1()
 returns trigger language plpgsql security definer set search_path=public,pg_temp as $$
 declare
@@ -37,9 +38,21 @@ begin
   if jsonb_typeof(merged) <> 'array' then
     raise exception 'Trust ledger must remain an array';
   end if;
-  for p in select id, ledger_record from public.mio_weekly_trust_postings where user_id=new.user_id order by created_at, id loop
-    if not exists (select 1 from jsonb_array_elements(merged) row where row->>'id'=p.id::text) then
-      merged:=jsonb_build_array(p.ledger_record)||merged;
+  if tg_op='UPDATE' and jsonb_typeof(old.json_value)='array' then
+    for p in select prior.value as ledger_record
+      from jsonb_array_elements(old.json_value) prior(value)
+      where exists (select 1 from public.mio_weekly_trust_postings posted
+        where posted.user_id=new.user_id and posted.source_matter_id=prior.value->>'matter_id') loop
+      if not exists (select 1 from jsonb_array_elements(merged) row(value)
+          where row.value=p.ledger_record) then
+        raise exception 'Trust ledger changed since review; refresh before saving';
+      end if;
+    end loop;
+  end if;
+  for p in select ledger_record from public.mio_weekly_trust_postings where user_id=new.user_id loop
+    if not exists (select 1 from jsonb_array_elements(merged) row(value)
+        where row.value=p.ledger_record) then
+      raise exception 'Cannot remove a posted weekly trust allocation; refresh before saving';
     end if;
   end loop;
   new.json_value:=merged;
@@ -57,7 +70,9 @@ create or replace function public.mio_preserve_weekly_invoice_payment_v1()
 returns trigger language plpgsql security definer set search_path=public,pg_temp as $$
 declare guaranteed numeric;
 begin
-  select coalesce(sum(amount_cents),0)/100.0 into guaranteed
+  -- Preserve the full paid balance after each weekly posting, including
+  -- payments that were already on the invoice before the weekly allocation.
+  select coalesce(max(minimum_paid_cents),0)/100.0 into guaranteed
     from public.mio_weekly_trust_postings where invoice_id=new.id and user_id=new.user_id;
   if new.amount_paid < guaranteed - 0.005 or
      (guaranteed > 0 and new.status in ('void','draft')) then
@@ -145,6 +160,9 @@ begin
   if inv.updated_at is distinct from p_expected_invoice_updated_at then
     raise exception 'Invoice changed since approval; refresh payment review';
   end if;
+  if round(coalesce(inv.total-inv.amount_paid,0)*100)::bigint <> round(coalesce(inv.balance,0)*100)::bigint then
+    raise exception 'Invoice paid amount and balance do not reconcile';
+  end if;
   if round(coalesce(inv.total,0)*100)::bigint <
       round(coalesce(inv.amount_paid,0)*100)::bigint + p_amount_cents
       or round(coalesce(inv.balance,0)*100)::bigint < p_amount_cents then
@@ -158,10 +176,26 @@ begin
   select json_value into opening from public.case_mio_user_state
     where user_id=actor and key='caseMioFinanceOpeningBalances';
   if jsonb_typeof(opening)<>'object' then raise exception 'Opening trust balances unavailable'; end if;
-  select coalesce(nullif(trim(both '"' from coalesce(raw_value,'')),'')::date,current_date)
+  select nullif(trim(both '"' from coalesce(raw_value,'')),'')::date
     into cutover from public.case_mio_user_state
     where user_id=actor and key='caseMioBillingCutoverDate';
   if cutover is null then raise exception 'Billing cutover date unavailable'; end if;
+  -- Older LawPay reconciliation may have received trust funds without adding
+  -- them to the classified ledger. Refuse posting until those transactions
+  -- are classified or explicitly mirrored in the recorded manual ledger.
+  if exists (
+    select 1 from public.lawpay_transactions t
+    where t.account_key in ('trust','echeck_trust','clientcredit_trust')
+      and t.currency='USD' and t.amount_cents>0
+      and lower(t.status) in ('completed','settled','succeeded','success')
+      and t.occurred_at::date>cutover
+      and not exists (select 1 from public.mio_lawpay_ledger_entries e
+        where e.identity=t.gateway_transaction_id)
+      and not exists (select 1 from jsonb_array_elements(trust_row.json_value) x
+        where x->>'lawpay_transaction_id'=t.gateway_transaction_id)
+  ) then
+    raise exception 'Unclassified LawPay trust transactions require reconciliation';
+  end if;
   opening_amount:=coalesce((opening->p_source_matter_id->>'matter_trust_funds')::numeric,
                            (opening->p_source_matter_id->>'trust_running_balance')::numeric,0);
   manual_delta:=0;
@@ -177,18 +211,20 @@ begin
     end if;
   end loop;
   -- The classified provider ledger contains reconciled trust deposits/refunds.
-  -- Avoid counting a provider deposit twice if a manual row imported LawPay IDs.
-  if exists (select 1 from jsonb_array_elements(trust_row.json_value) x
-             where x->>'matter_id'=p_source_matter_id and
-                   coalesce(x->>'lawpay_transaction_id','')<>'') then
-    provider_delta:=0;
-  else
-    select coalesce(sum(case when direction='out' then -amount_cents else amount_cents end),0)/100.0
-      into provider_delta from public.mio_lawpay_ledger_entries
-      where matter_id=p_source_matter_id and
-        account_key in ('trust','echeck_trust','clientcredit_trust') and
-        currency='USD' and occurred_at::date>cutover;
-  end if;
+  -- Suppress only the provider entry already mirrored by a manual row.
+  -- Suppressing the entire provider ledger when any one manual row has a
+  -- LawPay ID would silently omit unrelated trust deposits.
+  select coalesce(sum(case when e.direction='out' then -e.amount_cents else e.amount_cents end),0)/100.0
+    into provider_delta from public.mio_lawpay_ledger_entries e
+    where e.matter_id=p_source_matter_id and
+      e.account_key in ('trust','echeck_trust','clientcredit_trust') and
+      e.currency='USD' and e.occurred_at::date>cutover
+      and not exists (
+        select 1 from jsonb_array_elements(trust_row.json_value) x
+        where x->>'matter_id'=p_source_matter_id
+          and x->>'lawpay_transaction_id'=e.identity
+          and coalesce(x->>'date',left(coalesce(x->>'created_at',''),10))>cutover::text
+      );
   available:=round(opening_amount+manual_delta+provider_delta,2);
   if available<0 or round(available*100)::bigint < p_amount_cents then
     raise exception 'Reconciled trust funds are insufficient or ambiguous';
@@ -203,8 +239,8 @@ begin
     'reference',inv.invoice_number,'source','Mio weekly billing atomic ledger',
     'memo','Applied trust to earned service invoice; physical bank movement separately reconciled');
   insert into public.mio_weekly_trust_postings
-    (id,user_id,idempotency_key,request_hash,source_matter_id,destination_matter_id,invoice_id,amount_cents,ledger_record)
-  values (posted,actor,p_idempotency_key,fp,p_source_matter_id,p_destination_matter_id,p_invoice_id,p_amount_cents,ledger);
+    (id,user_id,idempotency_key,request_hash,source_matter_id,destination_matter_id,invoice_id,amount_cents,minimum_paid_cents,ledger_record)
+  values (posted,actor,p_idempotency_key,fp,p_source_matter_id,p_destination_matter_id,p_invoice_id,p_amount_cents,round(nextpaid*100)::bigint,ledger);
   update public.mio_invoices set amount_paid=nextpaid,balance=round(total-nextpaid,2),
     status=case when round(total-nextpaid,2)<=0 then 'paid' else 'outstanding' end,
     updated_at=now() where id=inv.id;
@@ -225,3 +261,13 @@ revoke all on function public.mio_post_weekly_trust_payment_v1(text,text,text,uu
   from public,anon,authenticated;
 -- Keep explicitly disabled until end-to-end simulation and account reconciliation.
 -- When released, grant execute only to authenticated, after signed agreement review.
+
+-- A read-only readiness check lets Mio leave the setting disabled until the
+-- separate execute grant has actually been released to authenticated users.
+create or replace function public.mio_weekly_trust_posting_available_v1()
+returns boolean language sql stable security invoker set search_path=public,pg_temp as $$
+  select has_function_privilege(current_user,
+    'public.mio_post_weekly_trust_payment_v1(text,text,text,uuid,bigint,timestamptz)', 'execute')
+$$;
+revoke all on function public.mio_weekly_trust_posting_available_v1() from public,anon;
+grant execute on function public.mio_weekly_trust_posting_available_v1() to authenticated;
