@@ -69,7 +69,7 @@ export async function loadWeeklyBillingReadOnly(supabase,userId) {
   if(!supabase||!userId)throw new Error('Authenticated Mio connection required')
   const [entries,invoices]=await Promise.all([
     fetchAllRows(supabase,'mio_billing_entries','id,matter_id,entry_date,description,amount,do_not_bill,payload',userId),
-    fetchAllRows(supabase,'mio_invoices','id,matter_id,invoice_type,status,total,amount_paid,balance,issue_date,created_at',userId)
+    fetchAllRows(supabase,'mio_invoices','id,matter_id,invoice_type,status,total,amount_paid,balance,issue_date,created_at,client_id,invoice_number,updated_at',userId)
   ])
   const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows').select('matter_id,state').eq('owner_id',userId)
   if(withdrawalError)throw new Error('Withdrawal status: '+withdrawalError.message)
@@ -82,5 +82,9 @@ export async function loadWeeklyBillingReadOnly(supabase,userId) {
     // Entry IDs are the immutable review basis; re-check them immediately before invoicing.
     entries:entries.map(x=>({id:x.id,matter_id:x.matter_id,entry_date:x.entry_date,
       amount:x.amount,description:x.description,do_not_bill:x.do_not_bill,payload:x.payload})),
+    invoices:invoices.map(x=>({id:x.id,matter_id:x.matter_id,invoice_type:x.invoice_type,
+      status:x.status,total:x.total,amount_paid:x.amount_paid,balance:x.balance,
+      issue_date:x.issue_date,created_at:x.created_at,client_id:x.client_id,
+      invoice_number:x.invoice_number,updated_at:x.updated_at})),
     recordCount:{entries:entries.length,invoices:invoices.length}}
 }

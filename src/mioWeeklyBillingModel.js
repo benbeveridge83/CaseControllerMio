@@ -152,3 +152,34 @@ export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={
     unpaidCentsByInvoice:Object.fromEntries(remainingInvoice),
     totalCents:payments.reduce((sum,p)=>sum+p.amountCents,0)}
 }
+
+/**
+ * Stable idempotency key for one atomic weekly trust posting. A retry of the
+ * same payment in the same run must reuse this exact key so the backend returns
+ * the prior result instead of posting twice. Distinct runs use a distinct runId.
+ */
+export function weeklyTrustIdempotencyKey(runId, sourceMatterId, invoiceId, amountCents) {
+  const key = `wk:${String(runId)}:${String(sourceMatterId)}:${String(invoiceId)}:${Math.round(Number(amountCents) || 0)}`
+  if (key.length < 8 || key.length > 160) throw new Error('Weekly trust idempotency key is out of range')
+  return key
+}
+
+/**
+ * Build the per-invoice payment plan the atomic posting RPC will execute.
+ * Pure and read-only. Trust figures are advisory; the backend re-verifies funds,
+ * identity, agreement, invoice state and balance before any posting.
+ */
+export function buildAtomicTrustPaymentPlan({matters = [], invoices = [], runId = ''} = {}) {
+  if (!String(runId)) throw new Error('A stable run id is required for idempotent posting')
+  const allocation = allocateVerifiedWeeklyInvoicePayments({matters, invoices})
+  const invoiceById = new Map(invoices.map(inv => [String(inv.id), inv]))
+  const payments = allocation.payments.map(payment => {
+    const invoice = invoiceById.get(String(payment.invoiceId)) || {}
+    return {
+      ...payment,
+      idempotencyKey: weeklyTrustIdempotencyKey(runId, payment.sourceMatterId, payment.invoiceId, payment.amountCents),
+      expectedInvoiceUpdatedAt: invoice.updated_at || null
+    }
+  })
+  return {payments, totalCents: allocation.totalCents}
+}

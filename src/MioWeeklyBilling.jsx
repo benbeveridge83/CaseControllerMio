@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useState} from 'react'
-import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview, possibleCrossMatterFunding} from './mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview, possibleCrossMatterFunding, buildAtomicTrustPaymentPlan} from './mioWeeklyBillingModel.js'
 import {loadWeeklyBillingReadOnly,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from './mioWeeklyBillingData.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
@@ -26,6 +26,10 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [financeSnapshot,setFinanceSnapshot]=useState(null)
   const [financeError,setFinanceError]=useState('')
   const [financeLoading,setFinanceLoading]=useState(true)
+  const [atomicBusy,setAtomicBusy]=useState(false)
+  const [atomicRunId,setAtomicRunId]=useState('')
+  const [atomicNotice,setAtomicNotice]=useState('')
+  const [atomicApprovals,setAtomicApprovals]=useState({})
   const refreshFinancialSnapshot=async()=>{
     if(!supabase||!userId){setFinanceError('Login required to read financial records.');setFinanceLoading(false);return}
     setFinanceLoading(true);setFinanceError('')
@@ -93,6 +97,44 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   useEffect(()=>{setInvoicePacket(null)},[selected,changes,minimum])
   const review=reconcileWeeklyBillingReview(proposal,Object.entries(approvals).filter(([,value])=>value===false).map(([id])=>id))
   const suggestions=possibleCrossMatterFunding(rows.map(m=>({...m,selectedWip:chosen.includes(m.id)?m.wip:0})))
+  const atomicEnabled=settings.enableAtomicWeeklyTrustPosting===true
+  const atomicMatters=useMemo(()=>rows.map(m=>({...m,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:Number(m.displayTrust)||0})),[rows])
+  const atomicPlan=useMemo(()=>{
+    if(!atomicEnabled||!financeSnapshot?.invoices)return {payments:[],totalCents:0}
+    try{return buildAtomicTrustPaymentPlan({matters:atomicMatters,invoices:financeSnapshot.invoices,runId:atomicRunId||'preview'})}
+    catch{return {payments:[],totalCents:0}}
+  },[atomicEnabled,atomicMatters,financeSnapshot,atomicRunId])
+  const postAtomicTrustPayments=async()=>{
+    if(!supabase||!userId)throw new Error('Sign in to post trust payments.')
+    if(!financeSnapshot?.invoices?.length)throw new Error('No verified invoices are loaded.')
+    const runId=crypto.randomUUID();setAtomicRunId(runId)
+    const plan=buildAtomicTrustPaymentPlan({matters:atomicMatters,invoices:financeSnapshot.invoices,runId})
+    const toPost=plan.payments.filter(p=>atomicApprovals[`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`]!==false)
+    if(!toPost.length)throw new Error('No approved payments to post.')
+    const total=toPost.reduce((sum,p)=>sum+p.amountCents,0)/100
+    if(!window.confirm(`Post ${toPost.length} trust payment(s) totaling ${USD(total)}?\n\nThis records the trust-to-earned-fee allocation in Mio's ledger. It does not move bank funds; physical transfers are reconciled separately.`))return {cancelled:true}
+    setAtomicBusy(true);setAtomicNotice('')
+    try{
+      const results=[]
+      for(const p of toPost){
+        const {data,error}=await supabase.rpc('mio_post_weekly_trust_payment_v1',{
+          p_idempotency_key:p.idempotencyKey,
+          p_source_matter_id:p.sourceMatterId,
+          p_destination_matter_id:p.destinationMatterId,
+          p_invoice_id:p.invoiceId,
+          p_amount_cents:p.amountCents,
+          p_expected_invoice_updated_at:p.expectedInvoiceUpdatedAt
+        })
+        if(error){results.push({status:'failed',message:error.message});continue}
+        results.push({status:data?.status||'unknown'})
+      }
+      const posted=results.filter(r=>r.status==='ledger_posted'||r.status==='already_posted').length
+      const failed=results.filter(r=>r.status==='failed').length
+      setAtomicNotice(`${posted} posted${failed?', '+failed+' failed':''}.`)
+      await refreshFinancialSnapshot()
+      return {posted,failed}
+    }finally{setAtomicBusy(false)}
+  }
   const stageForReview=async()=>{
     if(!supabase||!userId||!cloudReady||!invoicePacket)throw new Error('Verified invoice packet and authenticated cloud settings required')
     if(Object.keys(changes).length)throw new Error('Save the matter-eligibility changes before preparing the final review.')
@@ -178,6 +220,21 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         }}>Review & confirm same-matter trust payments in Mio</button>}
         <p style={small}>Cross-matter payments are NOT included in this action. Individual invoice-level payments remain available in Mio's invoice detail workflow.</p>
       </section>
+      {atomicEnabled&&<section style={{border:'2px solid #b91c1c',background:'#fef2f2',padding:12,borderRadius:8,margin:'12px 0'}}>
+        <strong>Atomic trust posting (enabled)</strong>
+        <p style={small}>Records the trust-to-earned-fee allocation in Mio's ledger through the server-side atomic posting function. It does not move bank funds. Trust figures below are advisory — the server re-verifies funds, identity, agreement and invoice state before posting, and a retry cannot double-post.</p>
+        {atomicPlan.payments.length===0&&<p style={small}>No eligible invoice payments were found with the current advisory trust and invoice data.</p>}
+        {atomicPlan.payments.map(p=>{
+          const key=`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`
+          return <div key={key} style={{padding:7,borderBottom:'1px solid #fecaca',display:'flex',alignItems:'center',gap:10}}>
+            <label><input type="checkbox" checked={atomicApprovals[key]!==false} onChange={e=>setAtomicApprovals(x=>({...x,[key]:e.target.checked}))}/> Approve</label>
+            <span>{(rows.find(m=>m.id===p.sourceMatterId)?.name)||p.sourceMatterId} → {p.destinationMatterId===p.sourceMatterId?'own invoice':'cross-matter invoice'} · {USD(p.amountCents/100)}</span>
+          </div>
+        })}
+        <p><strong>Total: {USD(atomicPlan.totalCents/100)}</strong></p>
+        <button style={button} disabled={atomicBusy||atomicPlan.payments.length===0} onClick={()=>postAtomicTrustPayments().catch(error=>setAtomicNotice(error?.message||String(error)))}>Post approved trust payments (atomic)</button>
+        {atomicNotice&&<p style={small}>{atomicNotice}</p>}
+      </section>}
       {proposal.payments.map(p=><section key={p.id} style={{padding:10,margin:'9px 0',border:p.crossMatter?'2px solid #d97706':'1px solid #cbd5e1',borderRadius:8}}>
         <div><strong>{p.destinationName} — {USD(p.amount)}</strong>{p.crossMatter&&<strong style={{color:'#a16207'}}> · CROSS-MATTER</strong>}</div>
         <div style={small}>Funds from {p.sourceName} → invoice of {p.destinationName}</div>
@@ -220,6 +277,10 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       <h3>Weekly Billing Settings</h3>
       <label>Minimum WIP ($) <input type="number" min="0" value={settings.minimumWip??150} onChange={e=>setSettings(x=>({...x,minimumWip:e.target.value}))}/></label>
       <p style={small}>Appointed matters default to excluded. Share Trust governs the source matter only. Verify the signed fee agreement separately before authorizing a cross-matter disbursement.</p>
+      <div style={{margin:'10px 0',padding:10,border:'1px solid #b91c1c',borderRadius:8,background:'#fef2f2'}}>
+        <label><input type="checkbox" checked={settings.enableAtomicWeeklyTrustPosting===true} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting</strong></label>
+        <p style={small}>When enabled, Mio can record trust-to-earned-fee allocations through a server-side atomic posting function. This records accounting only; it does not move bank funds, and the database function must be released separately. Keep disabled until the signed fee agreements and trust ledger are verified.</p>
+      </div>
       <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr>{['Matter','Appointed','Weekly Billing','Share Trust','Agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(m=><tr key={m.id}><td style={cell}>{m.name}</td>
         <td style={cell}><input aria-label={'Appointed '+m.name} type="checkbox" checked={m.appointed} onChange={e=>{setMatter(m.id,'appointed',e.target.checked);setChanges(prev=>({...prev,[m.id]:{...(prev[m.id]||{}),appointed:e.target.checked,included:!e.target.checked,shareTrust:!e.target.checked}}))}}/></td>
         <td style={cell}><input aria-label={'Billing '+m.name} type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/></td>

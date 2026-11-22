@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding,allocateVerifiedWeeklyInvoicePayments} from '../src/mioWeeklyBillingModel.js'
+import {createWeeklyBillingProposal,weeklyBillingDefaults,reconcileWeeklyBillingReview,possibleCrossMatterFunding,allocateVerifiedWeeklyInvoicePayments,weeklyTrustIdempotencyKey,buildAtomicTrustPaymentPlan} from '../src/mioWeeklyBillingModel.js'
 import {summarizeWeeklyBillingEntries,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from '../src/mioWeeklyBillingData.js'
 const rows=[
  {id:'a',name:'Client — Funded',clientId:'client1',wip:200,workOB:300,availableTrust:1000,included:true,shareTrust:true},
@@ -191,4 +191,32 @@ test('unknown invoice types cannot silently become service Work OB',()=>{
   {id:'services',matter_id:'a',invoice_type:'services',status:'partially_paid',balance:120}
  ])
  assert.equal(summary.workOB.get('a'),12000)
+})
+
+test('idempotency keys are stable per run, unique across runs, and length-gated',()=>{
+  const a=weeklyTrustIdempotencyKey('run-1','src','inv',50000)
+  const b=weeklyTrustIdempotencyKey('run-1','src','inv',50000)
+  const c=weeklyTrustIdempotencyKey('run-2','src','inv',50000)
+  assert.equal(a,b)
+  assert.notEqual(a,c)
+  assert.throws(()=>weeklyTrustIdempotencyKey('x'.repeat(200),'src','inv',50000),/out of range/)
+})
+
+test('atomic plan builds invoice-level payments with idempotency keys and expected updated_at',()=>{
+  const matters=[
+    {id:'fund',clientId:'x',included:true,shareTrust:true,agreementAuthorized:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000},
+    {id:'owed',clientId:'x',included:true}
+  ]
+  const invoices=[
+    {id:'inv1',matter_id:'owed',client_id:'x',invoice_type:'services',status:'outstanding',balance:400,issue_date:'2026-11-01',updated_at:'2026-11-21T00:00:00Z'}
+  ]
+  const plan=buildAtomicTrustPaymentPlan({matters,invoices,runId:'run-abc'})
+  assert.equal(plan.totalCents,40000)
+  assert.equal(plan.payments.length,1)
+  assert.equal(plan.payments[0].invoiceId,'inv1')
+  assert.equal(plan.payments[0].sourceMatterId,'fund')
+  assert.equal(plan.payments[0].destinationMatterId,'owed')
+  assert.equal(plan.payments[0].expectedInvoiceUpdatedAt,'2026-11-21T00:00:00Z')
+  assert.equal(plan.payments[0].idempotencyKey,weeklyTrustIdempotencyKey('run-abc','fund','inv1',40000))
+  assert.throws(()=>buildAtomicTrustPaymentPlan({matters,invoices,runId:''}),/run id/)
 })
