@@ -61,11 +61,18 @@ create table public.mio_lawpay_ledger_entries (
 
 create table public.lawpay_transactions (
   gateway_transaction_id text primary key,
+  account_id text,
   account_key text,
   currency text,
   amount_cents bigint,
   status text,
   occurred_at timestamptz
+);
+
+create table public.mio_lawpay_accounts (
+  provider_account_id text primary key,
+  account_key text,
+  verified_at timestamptz
 );
 
 create table public.case_mio_user_state (
