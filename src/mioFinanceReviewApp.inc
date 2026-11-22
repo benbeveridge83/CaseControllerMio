@@ -104,13 +104,16 @@
           throw new Error('Payment reconciliation is incomplete. Resolve LawPay discrepancies before replenishment.')
         await refreshMioFinancialGraphData()
       }
-      const [invoices,settings,weeklyRecord]=await Promise.all([
+      const [invoices,settings,weeklyRecord,withdrawalResult]=await Promise.all([
         readFinanceInvoicesForReview(),
         loadReplenishmentSettings(supabase,session.user.id),
         supabase.from('case_mio_user_state').select('json_value,raw_value').eq('user_id',session.user.id)
-          .eq('key','mioWeeklyBillingSettingsV1').maybeSingle()
+          .eq('key','mioWeeklyBillingSettingsV1').maybeSingle(),
+        supabase.from('mio_withdrawal_workflows').select('matter_id,state').eq('owner_id',session.user.id)
       ])
       if(weeklyRecord.error)throw weeklyRecord.error
+      if(withdrawalResult.error)throw withdrawalResult.error
+      const withdrawalStatuses=new Map((withdrawalResult.data||[]).map(w=>[String(w.matter_id),String(w.state?.status||'').toLowerCase()]))
       const weekly=weeklyRecord.data?.json_value||JSON.parse(weeklyRecord.data?.raw_value||'{}')
       const weeklyOverrides=weekly?.matters||{}
       const rows=ids.map(id=>{
@@ -138,7 +141,8 @@
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
         return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
-          replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
+          replenishment_enabled:pref.replenishment_enabled!==false,
+          withdrawal_flagged:pref.withdrawal_flagged===true||['active','withdrawing','pending','requested'].includes(withdrawalStatuses.get(id)),
           appointed_status_unknown:false,non_appointed_confirmed:true,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
@@ -189,7 +193,12 @@
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
-          if(pref.withdrawal_flagged===true)throw new Error('This matter is flagged for withdrawal review. Resolve the flag before automatic sending.')
+          const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows')
+            .select('matter_id,state').eq('owner_id',session.user.id).eq('matter_id',row.matter_id)
+          if(withdrawalError)throw withdrawalError
+          const pendingWithdrawal=(withdrawalRows||[]).some(w=>['active','withdrawing','pending','requested'].includes(String(w.state?.status||'').toLowerCase()))
+          if(pref.withdrawal_flagged===true||pendingWithdrawal)
+            throw new Error('Matter is flagged for withdrawal review or has an active withdrawal workflow. Resolve this before automatic sending.')
           const fresh=await readFinanceInvoicesForReview()
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
