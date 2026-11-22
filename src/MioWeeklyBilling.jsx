@@ -1,14 +1,27 @@
 import React, {useEffect, useMemo, useState} from 'react'
 import {createWeeklyBillingProposal, weeklyBillingDefaults, reconcileWeeklyBillingReview, possibleCrossMatterFunding, buildAtomicTrustPaymentPlan} from './mioWeeklyBillingModel.js'
 import {loadWeeklyBillingReadOnly,prepareWeeklyInvoiceDrafts,validateWeeklyInvoiceSnapshot} from './mioWeeklyBillingData.js'
+import {loadReplenishmentSettings,saveReplenishmentSettings} from './mioReplenishmentSettings.js'
 const USD = n => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(n)||0)
 const small={fontSize:12,color:'#64748b'}
 const cell={padding:'8px 6px',textAlign:'left',borderBottom:'1px solid #e2e8f0'}
 const button={padding:'7px 11px',border:'1px solid #94a3b8',borderRadius:7,background:'#fff',cursor:'pointer'}
 const KEY='mioWeeklyBillingSettingsV1'
+const normalized = value => String(value??'').trim().toLowerCase()
+const uniqueLabels = values => [...new Set(values.map(value=>String(value??'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b))
+function SettingsFilter({title,choices,selected,onChange}) {
+  const all=selected===null
+  return <details style={{border:'1px solid #cbd5e1',borderRadius:8,padding:'5px 8px',background:'#fff',minWidth:160}}>
+    <summary style={{cursor:'pointer',fontWeight:700}}>{title}: {all?'All':`${selected.length} selected`}</summary>
+    <div style={{display:'flex',gap:6,margin:'8px 0'}}><button type="button" onClick={()=>onChange(null)}>All</button><button type="button" onClick={()=>onChange([])}>None</button></div>
+    <div style={{display:'grid',gap:5,maxHeight:220,overflowY:'auto'}}>{choices.map(({value,label})=><label key={value} style={{display:'flex',alignItems:'center',gap:6}}>
+      <input type="checkbox" checked={all||selected.includes(value)} onChange={()=>{const current=all?choices.map(choice=>choice.value):selected;onChange(current.includes(value)?current.filter(item=>item!==value):[...current,value])}}/> {label}
+    </label>)}</div>
+  </details>
+}
 // Safely stage local preferences until a cloud-backed settings adapter is connected.
 // No invoice creation, trust posting, or withdrawal mutations are exposed by this component.
-export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
+export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={},financeFor=()=>null,supabase=null,userId='',initialStep='wip',onOpenExistingWipReview=null,onPayOwnMatterTrust=null,onMarkWithdrawals=null,onClose=()=>{}}) {
   const [step,setStep]=useState(initialStep)
   const [settings,setSettings]=useState({})
   const [changes,setChanges]=useState({})
@@ -30,6 +43,12 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const [atomicRunId,setAtomicRunId]=useState('')
   const [atomicNotice,setAtomicNotice]=useState('')
   const [atomicApprovals,setAtomicApprovals]=useState({})
+  const [caseStatusFilter,setCaseStatusFilter]=useState(['Open'])
+  const [matterStatusFilter,setMatterStatusFilter]=useState(null)
+  const [caseTypeFilter,setCaseTypeFilter]=useState(null)
+  const [replenishmentSettings,setReplenishmentSettings]=useState({})
+  const [replenishmentError,setReplenishmentError]=useState('')
+  const [primarySaving,setPrimarySaving]=useState(false)
   const refreshFinancialSnapshot=async()=>{
     if(!supabase||!userId){setFinanceError('Login required to read financial records.');setFinanceLoading(false);return}
     setFinanceLoading(true);setFinanceError('')
@@ -38,6 +57,13 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     finally{setFinanceLoading(false)}
   }
   useEffect(()=>{refreshFinancialSnapshot()},[supabase,userId])
+  useEffect(()=>{
+    if(!supabase||!userId)return
+    let cancelled=false
+    loadReplenishmentSettings(supabase,userId).then(data=>{if(!cancelled)setReplenishmentSettings(data)})
+      .catch(error=>{if(!cancelled)setReplenishmentError(error?.message||String(error))})
+    return()=>{cancelled=true}
+  },[supabase,userId])
   useEffect(()=>{
     if(!supabase||!userId){setCloudError('Cloud settings unavailable: sign in to persist preferences.');return}
     let cancelled=false
@@ -52,6 +78,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     return()=>{cancelled=true}
   },[supabase,userId])
   const minimum=Number(settings.minimumWip??150)
+  const clientsById=useMemo(()=>new Map(clients.map(client=>[String(client.id),client])),[clients])
   const rows=useMemo(()=>matters.map(m=>{
     const defaults=weeklyBillingDefaults(m)
     const f=financeFor(m)||{}
@@ -60,11 +87,48 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     const trust=Number.isFinite(Number(f.availableTrust))?Number(f.availableTrust):0
     const wip=financeSnapshot?.wipByMatter?.[String(m.id)]??0
     const workOB=financeSnapshot?.workOBByMatter?.[String(m.id)]??0
-    return {id:String(m.id),name:m.name||'Matter '+m.id, clientId:String(m.client_id||m.client?.id||''),withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',
+    const clientId=String(m.client_id||m.client?.id||m.clients?.id||'')
+    const client=clientsById.get(clientId)||m.client||m.clients||{}
+    return {id:String(m.id),name:m.name||'Matter '+m.id,clientId,clientName:`${client.first_name||''} ${client.last_name||''}`.trim()||client.name||m.matter_client_name||m.client_name||'Client not listed',
+      caseStatus:String(m.case_status||'').trim(),matterStatus:String(m.matter_status||'').trim(),caseType:String(m.matter_type||m.case_type||'').trim(),isActive:m.is_active!==false,
+      withdrawalStatus:financeSnapshot?.withdrawalByMatter?.[String(m.id)]||'',
       appointed:override.appointed??defaults.appointed, included:override.included??defaults.included,
       shareTrust:override.shareTrust??defaults.shareTrust,agreementAuthorized:override.agreementAuthorized===true,
       wip,workOB,availableTrust:trust,displayTrust:Number(f.displayTrust)||0,oldestInvoiceDate:financeSnapshot?.oldestByMatter?.[String(m.id)]||'',unverified:!financeSnapshot}
-  }),[matters,financeFor,changes,settings,financeSnapshot])
+  }),[matters,clientsById,financeFor,changes,settings,financeSnapshot])
+  const caseStatuses=useMemo(()=>uniqueLabels([...(filterOptions.caseStatuses||[]),...rows.map(m=>m.caseStatus),'Open']),[filterOptions.caseStatuses,rows])
+  const matterStatuses=useMemo(()=>uniqueLabels([...(filterOptions.matterStatuses||[]),...rows.map(m=>m.matterStatus)]),[filterOptions.matterStatuses,rows])
+  const caseTypes=useMemo(()=>uniqueLabels([...(filterOptions.caseTypes||[]),...rows.map(m=>m.caseType)]),[filterOptions.caseTypes,rows])
+  const matches=(selected,value)=>selected===null||selected.some(item=>normalized(item)===normalized(value))
+  const visibleSettingsRows=rows.filter(m=>matches(caseStatusFilter,!m.isActive&&(!m.caseStatus||normalized(m.caseStatus)==='open')?'Closed':m.caseStatus||'Open')
+    &&(matterStatusFilter===null||matterStatusFilter.some(value=>value==='__blank__'?!m.matterStatus:normalized(value)===normalized(m.matterStatus)))
+    &&matches(caseTypeFilter,m.caseType))
+  const matterClientGroups=useMemo(()=>{
+    const groups=new Map()
+    for(const matter of matters){const id=String(matter.client_id||matter.client?.id||matter.clients?.id||'');if(id)groups.set(id,[...(groups.get(id)||[]),String(matter.id)])}
+    return groups
+  },[matters])
+  const primaryForClient=clientId=>{
+    const ids=matterClientGroups.get(clientId)||[]
+    if(ids.length===1)return ids[0]
+    const selected=ids.filter(id=>replenishmentSettings[id]?.primary_replenishment_matter===true)
+    return selected.length===1?selected[0]:''
+  }
+  const choosePrimary=async matter=>{
+    if(!supabase||!userId||primarySaving||!matter.clientId)return
+    setPrimarySaving(true);setReplenishmentError('')
+    try{
+      const ids=matterClientGroups.get(matter.clientId)||[]
+      const next={...replenishmentSettings}
+      // Clear other source designations before selecting the new one.
+      for(const id of ids.filter(id=>id!==matter.id))next[id]=await saveReplenishmentSettings(supabase,userId,id,{primary_replenishment_matter:false})
+      next[matter.id]=await saveReplenishmentSettings(supabase,userId,matter.id,{primary_replenishment_matter:true})
+      setReplenishmentSettings(next)
+    }catch(error){
+      setReplenishmentError('Primary matter could not be saved: '+(error?.message||String(error)))
+      try{setReplenishmentSettings(await loadReplenishmentSettings(supabase,userId))}catch{}
+    }finally{setPrimarySaving(false)}
+  }
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:selected,authorizations:{}}),[rows,minimum,selected])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
   const save=async()=>{
@@ -276,17 +340,27 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
     {step==='settings'&&<>
       <h3>Weekly Billing Settings</h3>
       <label>Minimum WIP ($) <input type="number" min="0" value={settings.minimumWip??150} onChange={e=>setSettings(x=>({...x,minimumWip:e.target.value}))}/></label>
-      <p style={small}>Appointed matters default to excluded. Share Trust governs the source matter only. Verify the signed fee agreement separately before authorizing a cross-matter disbursement.</p>
-      <div style={{margin:'10px 0',padding:10,border:'1px solid #b91c1c',borderRadius:8,background:'#fef2f2'}}>
-        <label><input type="checkbox" checked={settings.enableAtomicWeeklyTrustPosting===true} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting</strong></label>
-        <p style={small}>When enabled, Mio can record trust-to-earned-fee allocations through a server-side atomic posting function. This records accounting only; it does not move bank funds, and the database function must be released separately. Keep disabled until the signed fee agreements and trust ledger are verified.</p>
+      <p style={small}>Appointed matters default to excluded. The filters below change which rows you see; they do not change saved billing preferences.</p>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'start',margin:'14px 0'}}>
+        <SettingsFilter title="Case status" choices={caseStatuses.map(value=>({value,label:value}))} selected={caseStatusFilter} onChange={setCaseStatusFilter}/>
+        <SettingsFilter title="Matter status" choices={[{value:'__blank__',label:'No Matter Status'},...matterStatuses.map(value=>({value,label:value}))]} selected={matterStatusFilter} onChange={setMatterStatusFilter}/>
+        <SettingsFilter title="Case type" choices={caseTypes.map(value=>({value,label:value}))} selected={caseTypeFilter} onChange={setCaseTypeFilter}/>
+        <span style={small}>{visibleSettingsRows.length} of {rows.length} matters shown</span>
       </div>
-      <table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr>{['Matter','Appointed','Weekly Billing','Share Trust','Agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{rows.map(m=><tr key={m.id}><td style={cell}>{m.name}</td>
+      <div style={{margin:'10px 0',padding:10,border:'1px solid #b91c1c',borderRadius:8,background:'#fef2f2'}}>
+        <label><input type="checkbox" checked={settings.enableAtomicWeeklyTrustPosting===true} onChange={e=>setSettings(x=>({...x,enableAtomicWeeklyTrustPosting:e.target.checked}))}/> <strong>Enable atomic trust posting (advanced; leave off)</strong></label>
+        <p style={small}>This would let Mio record payments from trust against earned-fee invoices, including approved payments across matters. It does not transfer money between bank accounts. The posting function is currently unavailable, so leave this off. Choosing a primary matter or checking an agreement does not turn it on.</p>
+      </div>
+      <p style={small}>Primary trust matter controls which of a client's matters receives replenishment requests. Choose one when a client has multiple matters. It does not authorize using that trust to pay another matter's fees; the signed agreement and separate payment approval are still required. Primary selections save immediately; the other checkboxes save with “Save Billing Settings.”</p>
+      {replenishmentError&&<p role="alert" style={{color:'#991b1b'}}>Primary matter settings: {replenishmentError}</p>}
+      <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1020}}><thead><tr>{['Client','Matter','Appointed','Weekly Billing','Share Trust','Primary trust matter','Cross-matter agreement verified'].map(x=><th style={cell} key={x}>{x}</th>)}</tr></thead><tbody>{visibleSettingsRows.map(m=><tr key={m.id}>
+        <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}</td>
         <td style={cell}><input aria-label={'Appointed '+m.name} type="checkbox" checked={m.appointed} onChange={e=>{setMatter(m.id,'appointed',e.target.checked);setChanges(prev=>({...prev,[m.id]:{...(prev[m.id]||{}),appointed:e.target.checked,included:!e.target.checked,shareTrust:!e.target.checked}}))}}/></td>
         <td style={cell}><input aria-label={'Billing '+m.name} type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/></td>
         <td style={cell}><input aria-label={'Share trust '+m.name} type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/></td>
-        <td style={cell}><input aria-label={'Signed agreement verified '+m.name} type="checkbox" checked={m.agreementAuthorized} onChange={e=>setMatter(m.id,'agreementAuthorized',e.target.checked)} title="Check only after verifying this client's signed fee agreement authorizes cross-matter transfers."/></td>
-      </tr>)}</tbody></table>
+        <td style={cell}>{(matterClientGroups.get(m.clientId)||[]).length>1?<input type="radio" name={'primary-trust-'+m.clientId} aria-label={'Primary trust matter for '+m.clientName+': '+m.name} checked={primaryForClient(m.clientId)===m.id} disabled={primarySaving||!!replenishmentError} onChange={()=>choosePrimary(m)}/>:<span style={small}>{m.clientId?'Only matter':'Client unknown'}</span>}</td>
+        <td style={cell}><input aria-label={'Cross-matter fee agreement verified '+m.name} type="checkbox" checked={m.agreementAuthorized} onChange={e=>setMatter(m.id,'agreementAuthorized',e.target.checked)} title="Check only after reviewing the signed agreement and confirming it permits this matter's trust to pay another matter's earned fees."/></td>
+      </tr>)}</tbody></table></div>
       <p><button style={button} onClick={save} disabled={!cloudReady}>Save Billing Settings</button></p>
     </>}
   </div>
