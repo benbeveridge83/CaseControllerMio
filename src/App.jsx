@@ -18225,13 +18225,20 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (!alreadyRepresented(party)) rows.push({ ...party, _stored_index: -1, _derived: true })
     })
     while (rows.length < minimum) rows.push({ ...ensureLitigationPartyShape({ id: `lit-party-${matterId}-${rows.length + 1}` }, matterId, rows.length), _stored_index: -1, _derived: true })
-    // Column ordering: Petitioners (including combined "Petitioner / …" roles) first, then
-    // Respondents, then Children, then independent appointments, then everyone else. The client
-    // keeps its own party role's column and is outlined separately wherever it lands.
+    // Column ordering: column one is the original Petitioner only — "Petitioner",
+    // "Petitioner / Counter-Respondent", and "Petitioner / Cross-Respondent" all LEAD with
+    // "petitioner" so they stay here. Respondents (including "Respondent / Counter-Petitioner"
+    // and "Respondent / Cross-Petitioner") follow. Counter- or cross-petitioner status never
+    // promotes someone into the original Petitioner's column. Then Children, then independent
+    // appointments, then everyone else. The client keeps its own party role's column and is
+    // outlined separately wherever it lands.
     const orderRank = (party) => {
       const role = String(party.role || '').trim().toLowerCase()
       if (role.startsWith('petitioner')) return 0
       if (role.startsWith('respondent') || role.startsWith('opposing')) return 1
+      // Defensive: a standalone "Counter-Petitioner"/"Cross-Petitioner" (or any spacing) is a
+      // respondent, not the original petitioner.
+      if (role.includes('counter-petitioner') || role.includes('cross-petitioner') || role.includes('counterpetitioner') || role.includes('crosspetitioner')) return 1
       if (role.startsWith('child') || role.startsWith('children') || role.startsWith('minor')) return 2
       if (party.source === 'appointment') return 3
       return 4
