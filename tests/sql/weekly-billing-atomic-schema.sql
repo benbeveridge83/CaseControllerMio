@@ -65,6 +65,7 @@ create table public.lawpay_transactions (
   account_key text,
   currency text,
   amount_cents bigint,
+  transaction_type text,
   status text,
   occurred_at timestamptz
 );

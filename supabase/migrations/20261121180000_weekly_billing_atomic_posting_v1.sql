@@ -185,8 +185,13 @@ begin
   -- are classified or explicitly mirrored in the recorded manual ledger.
   if exists (
     select 1 from public.lawpay_transactions t
-    where t.account_key in ('trust','echeck_trust','clientcredit_trust')
+    where (t.account_key in ('trust','echeck_trust','clientcredit_trust')
+      or exists (select 1 from public.mio_lawpay_accounts a
+        where a.provider_account_id=t.account_id
+          and a.account_key in ('trust','echeck_trust','clientcredit_trust')
+          and a.verified_at is not null))
       and t.currency='USD' and t.amount_cents>0
+      and upper(coalesce(t.transaction_type,'CHARGE')) not in ('REFUND','REVERSAL','CHARGEBACK','CREDIT')
       and lower(t.status) in ('completed','settled','succeeded','success')
       and t.occurred_at::date>cutover
       and not exists (select 1 from public.mio_lawpay_ledger_entries e
@@ -208,6 +213,29 @@ begin
           and a.verified_at is not null)
   ) then
     raise exception 'LawPay trust settlement account is not verified';
+  end if;
+  -- Refunds can have an empty account_key even when LawPay settled them to
+  -- a verified trust account. Never count the related charge without its outflow.
+  if exists (
+    select 1 from public.lawpay_transactions t
+    where upper(coalesce(t.transaction_type,'')) in ('REFUND','REVERSAL','CHARGEBACK','CREDIT')
+      and t.currency='USD' and t.amount_cents>0
+      and lower(t.status) in ('completed','settled','succeeded','success')
+      and t.occurred_at::date>cutover
+      and (t.account_key in ('trust','echeck_trust','clientcredit_trust')
+        or exists (select 1 from public.mio_lawpay_accounts a
+          where a.provider_account_id=t.account_id
+            and a.account_key in ('trust','echeck_trust','clientcredit_trust')
+            and a.verified_at is not null))
+      and not exists (select 1 from public.mio_lawpay_ledger_entries e
+        where e.identity=t.gateway_transaction_id and e.direction='out'
+          and e.amount_cents=t.amount_cents
+          and e.account_key in ('trust','echeck_trust','clientcredit_trust'))
+      and not exists (select 1 from jsonb_array_elements(trust_row.json_value) x
+        where x->>'lawpay_transaction_id'=t.gateway_transaction_id
+          and x->>'direction'='out')
+  ) then
+    raise exception 'Unreconciled LawPay trust refunds require reconciliation';
   end if;
   opening_amount:=coalesce((opening->p_source_matter_id->>'matter_trust_funds')::numeric,
                            (opening->p_source_matter_id->>'trust_running_balance')::numeric,0);
