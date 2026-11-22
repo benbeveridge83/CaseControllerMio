@@ -19,12 +19,10 @@ export default function weeklyBillingReviewMount(){
       `        {renderDailyBillingModal()}
         {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingSettingsPopup?'settings':'wip'} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);openBulkWipReview(ids)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} matters={matters} clients={clients} withdrawalStatusFor={matterWithdrawalStatus} filterOptions={{caseStatuses:options('case_status').map(option=>option.name),matterStatuses:options('matter_status').map(option=>option.name),caseTypes:options('matter_type').map(option=>option.name)}} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
           const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)||{}
-          const workInvoices=Array.isArray(f.serviceInvoices)?f.serviceInvoices.filter(invoice=>invoice.invoice_type!=='trust_request'&&invoice.status!=='void'):[]
-          const workOB=workInvoices.reduce((sum,invoice)=>sum+Math.max(0,Number(invoice.balance??(Number(invoice.total||0)-Number(invoice.amount_paid||0)))||0),0)
-          return {wip:f.wip??f.workInProgress??f.unbilledTotal,workOB,
+          return {wip:f.wip,workOB:f.outstanding,
             // Available trust is intentionally unverified: never submit speculative funds.
             // Trust replenishment invoices must never be mistaken for earned-fee Work OB.
-            availableTrust:0,displayTrust:f.trust??0,verified:false}
+            availableTrust:0,displayTrust:Math.max(0,Number(f.trust)||0),displayResolved:!!f.financialSnapshotResolved,verified:false}
         }} onClose={()=>weeklyBillingSettingsPopup?window.close():setWeeklyBillingReviewOpen(false)} />}`, 'modal')
     return {code,map:null}
   }}
