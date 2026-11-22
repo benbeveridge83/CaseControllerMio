@@ -7,6 +7,7 @@ on:
       - 'src/mioWeeklyBillingData.js'
       - 'docs/weekly-billing-release-gates.md'
       - 'mio-weekly-billing-review-mount.js'
+      - 'mio-v314-finance-review.js'
       - 'tests/weekly-billing-review.test.js'
       - 'tests/weekly-billing-withdrawal.test.js'
       - 'src/mioWeeklyWithdrawal.inc'
