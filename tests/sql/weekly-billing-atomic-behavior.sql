@@ -158,6 +158,26 @@ do $$ begin
 end $$;
 delete from public.lawpay_transactions where gateway_transaction_id='unclassified-fixture';
 
+insert into public.lawpay_transactions (gateway_transaction_id,account_id,account_key,currency,amount_cents,status,occurred_at)
+values ('unmapped-fixture','unverified-account','trust','USD',5000,'COMPLETED','2026-11-21T00:00:00+00');
+insert into public.mio_lawpay_ledger_entries
+  (identity,classification_id,entry_kind,direction,account_key,matter_id,amount_cents,currency,occurred_at,provider_account_id,created_by)
+values ('unmapped-fixture',gen_random_uuid(),'trust_deposit','in','trust','bbbbbbbb-0000-4000-8000-000000000005',
+  5000,'USD','2026-11-21T00:00:00+00','unverified-account','fixture');
+do $$ begin
+  begin
+    perform public.mio_post_weekly_trust_payment_v1(
+      'wk-behavior-unmapped-0001','bbbbbbbb-0000-4000-8000-000000000005',
+      'bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',
+      10000,'2026-11-21T00:00:00+00');
+    raise exception 'expected unverified settlement account refusal';
+  exception when others then
+    if sqlerrm not like '%settlement account is not verified%' then raise; end if;
+  end;
+end $$;
+delete from public.mio_lawpay_ledger_entries where identity='unmapped-fixture';
+delete from public.lawpay_transactions where gateway_transaction_id='unmapped-fixture';
+
 insert into public.mio_invoices (id,user_id,invoice_number,invoice_type,matter_id,client_id,status,total,amount_paid,balance,updated_at)
 values ('cccccccc-0000-4000-8000-000000000005','00000000-0000-4000-8000-0000000000aa',
   'MIO-WB-MIXED','services','bbbbbbbb-0000-4000-8000-000000000003','aaaaaaaa-0000-4000-8000-000000000001',
