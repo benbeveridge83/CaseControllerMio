@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import handler from '../api/tyler-efm-callback.js'
+import handler from '../lib/efiling/tylerCallbackGateway.js'
 
 function invoke(method, body = undefined) {
   const headers = {}
