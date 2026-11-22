@@ -153,7 +153,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         invoices:invoicePacket.map(p=>({matterId:p.matterId,entryIds:p.entryIds,totalCents:p.totalCents})),
         rejectedPaymentIds:Object.entries(approvals).filter(([,v])=>v===false).map(([id])=>id),
         proposalSummary:{workCents:Math.round(proposal.totalWip*100),paymentsCents:0,transfersAuthorized:false},
-        financialTransfersEnabled:false}
+        financialTransfersEnabled:atomicEnabled}
       const {error}=await supabase.from('case_mio_user_state').upsert({
         user_id:userId,key:'mioWeeklyBillingPreparedReviewV1',json_value:packet,
         raw_value:JSON.stringify(packet),origin:'weekly_billing_review',
@@ -166,7 +166,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
   const eligiblePayments=review.payments
   return <div role="dialog" aria-label="Weekly Billing Review" style={{position:'fixed',inset:18,zIndex:100000,background:'#fff',color:'#13263d',border:'2px solid #94a3b8',borderRadius:12,boxShadow:'0 24px 70px #0005',overflow:'auto',padding:20}}>
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
-      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>Safe preview mode · No invoices or trust payments will be posted · Appointed matters excluded by default</div></div>
+      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Atomic posting enabled — records an accounting allocation only; does not move bank funds':'Review mode — no invoices or trust payments will be posted'} · Appointed matters excluded by default</div></div>
       <button style={button} onClick={onClose}>Close ×</button>
     </header>
     <nav style={{display:'flex',gap:8,flexWrap:'wrap',margin:'18px 0'}}>
@@ -199,13 +199,13 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
         <p style={small}>The packet is a verified review snapshot, not an invoice. Records must be checked again before an authorized invoice posting operation.</p>
       </section>}
       <h3>Proposed trust payments</h3>
-      <p style={small}>Cross-matter payments are intentionally blocked until a verified authorization and available-balance adapter is connected. Nothing can be executed from this preview.</p>
+      <p style={small}>Cross-matter payments require a signed fee agreement and the source matter's Share Trust setting. {atomicEnabled?'The atomic action below posts ledger allocations (accounting only — no bank movement).':'Enable atomic trust posting in Settings to make posting available.'}</p>
       {suggestions.length>0&&<section style={{border:'1px solid #d97706',background:'#fffbeb',padding:12,borderRadius:8,marginBottom:12}}>
         <strong>Possible cross-matter sharing — NOT authorized or payable yet</strong>
         <p style={small}>These amounts use displayed trust balances only. Funds, agreement authorization, and all outstanding obligations must be verified before any payout.</p>
         {suggestions.map(p=><div key={p.id} style={{marginBottom:8}}><strong>{p.sourceName}</strong> → {p.destinationName} · up to {USD(p.amount)} (unverified)</div>)}
       </section>}
-      {eligiblePayments.length===0&&<p>No verified payments available. Trust balances are deliberately unavailable until the live trust-availability integration is tested.</p>}
+      {eligiblePayments.length===0&&<p>No verified same-matter payments are available with the current trust and invoice data.</p>}
       <section style={{border:'1px solid #cbd5e1',borderRadius:8,padding:12,margin:'12px 0'}}>
         <strong>Same-matter trust payment approvals</strong>
         <p style={small}>Only existing outstanding invoices are eligible. These displayed balances are indications, not authorization. Mio will recalculate and ask you to confirm the actual amount before posting.</p>
@@ -222,7 +222,7 @@ export default function MioWeeklyBilling({matters=[],financeFor=()=>null,supabas
       </section>
       {atomicEnabled&&<section style={{border:'2px solid #b91c1c',background:'#fef2f2',padding:12,borderRadius:8,margin:'12px 0'}}>
         <strong>Atomic trust posting (enabled)</strong>
-        <p style={small}>Records the trust-to-earned-fee allocation in Mio's ledger through the server-side atomic posting function. It does not move bank funds. Trust figures below are advisory — the server re-verifies funds, identity, agreement and invoice state before posting, and a retry cannot double-post.</p>
+        <p style={small}><strong>This records an accounting allocation in Mio's ledger only — it does not move bank funds.</strong> The physical trust-to-operating transfer is reconciled separately. The server re-verifies funds, identity, agreement and invoice state before posting, and a retry cannot double-post. Trust figures shown are advisory.</p>
         {atomicPlan.payments.length===0&&<p style={small}>No eligible invoice payments were found with the current advisory trust and invoice data.</p>}
         {atomicPlan.payments.map(p=>{
           const key=`${p.invoiceId}:${p.sourceMatterId}:${p.amountCents}`
