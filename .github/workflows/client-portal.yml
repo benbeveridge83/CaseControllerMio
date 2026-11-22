@@ -15,6 +15,14 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: portal-test-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,3 +34,7 @@ jobs:
         run: node --test tests/client-portal-security.test.js tests/client-portal-api.test.js tests/client-portal-ui.test.mjs
       - name: Production build
         run: npm run build
+      - name: Isolated PostgreSQL schema and concurrency boundaries
+        env:
+          PGPASSWORD: portal-test-only
+        run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f tests/sql/client-portal-schema.sql

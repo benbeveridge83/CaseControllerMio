@@ -45,6 +45,12 @@ async function callback(req, res) {
       tenant: process.env.MICROSOFT_TENANT || 'common',
       code,
     })
+    if (payload.portal) {
+      const me=await graphGetMe({accessToken:token.access_token})
+      const {savePortalMailToken}=await import('../lib/portal/mail.js')
+      await savePortalMailToken(payload.userId,token,me?.data?.mail||me?.data?.userPrincipalName||'')
+      return res.redirect('/#client_portal?connected=1')
+    }
     if (payload.accountEmail) {
       // Email dashboard flow: store into the multi-mailbox token table.
       const normalized = normalizeTokenResponse(token, { accountEmail: payload.accountEmail })
