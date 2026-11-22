@@ -182,6 +182,23 @@ delete from public.lawpay_transactions where gateway_transaction_id='unmapped-fi
 -- trust settlement account. An unmatched refund must block all posting.
 insert into public.mio_lawpay_accounts (provider_account_id,account_key,verified_at)
 values ('refund-trust-fixture','trust',now());
+-- A completed charge may likewise omit its trust label; the verified
+-- settlement account still makes it a required ledger item.
+insert into public.lawpay_transactions
+  (gateway_transaction_id,account_id,account_key,currency,amount_cents,transaction_type,status,occurred_at)
+values ('unlabeled-charge-fixture','refund-trust-fixture','','USD',5000,'CHARGE','COMPLETED','2026-11-21T00:00:00+00');
+do $$ begin
+  begin
+    perform public.mio_post_weekly_trust_payment_v1(
+      'wk-behavior-unlabeled-0001','bbbbbbbb-0000-4000-8000-000000000005',
+      'bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',
+      10000,'2026-11-21T00:00:00+00');
+    raise exception 'expected unlabeled trust charge refusal';
+  exception when others then
+    if sqlerrm not like '%Unclassified LawPay trust transactions%' then raise; end if;
+  end;
+end $$;
+delete from public.lawpay_transactions where gateway_transaction_id='unlabeled-charge-fixture';
 insert into public.lawpay_transactions
   (gateway_transaction_id,account_id,account_key,currency,amount_cents,transaction_type,status,occurred_at)
 values ('unreconciled-refund-fixture','refund-trust-fixture','','USD',2000,'REFUND','COMPLETED','2026-11-21T00:00:00+00');
