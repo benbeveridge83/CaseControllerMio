@@ -1,7 +1,7 @@
 # Tyler EFM callback: engineering status
 
 ## Scope
-The Case Controller Mio Vercel application now has a reserved server function at
+The Case Controller Mio Vercel application now has a reserved API route at
 `/api/tyler-efm-callback`. The code is **not** a complete Tyler EFM callback
 implementation. It is intentionally fail-closed and **MUST NOT** be provided
 to Tyler as a functioning callback or used to request Stage activation.
@@ -50,4 +50,4 @@ The UI provider at `src/efiling/mioEfilingProvider.js` still defines
 `createTylerEfilingProvider` as a disabled stub. The pre-existing
 `supabase/migrations/20261002130000_efiling_drafts_v1.sql` covers drafts and
 activity but is not a verified callback-specific durable event inbox.
-No real Tyler submission or notification processing is enabled by this change.
+The route is rewritten through the existing `/api/auth/callback.js` Vercel function to avoid exceeding the 12-function Hobby-plan limit. The guarded handler is at `lib/efiling/tylerCallbackGateway.js`. No real Tyler submission or notification processing is enabled by this change.
