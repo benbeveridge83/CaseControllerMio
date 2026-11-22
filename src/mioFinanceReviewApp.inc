@@ -155,7 +155,9 @@
           reason:candidate.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
       setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
-    } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))}
+    } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))
+      if(afterWeekly)throw error
+    }
     finally {setBulkBillingBusy(false)}
   }
   async function previewReplenishmentPdf(row) {
@@ -180,10 +182,21 @@
           if(!row.subject.trim()||!row.message.trim())throw new Error('Complete the subject and message.')
           const matter=matters.find(m=>String(m.id)===row.matter_id)
           if(!matter)throw new Error('Matter no longer exists.')
-          // Fail closed until the shared appointed flag exists on the matter.
-          // Never use a missing flag as permission to request private-client funds.
-          if(matter.appointed===true || matter.is_appointed===true)throw new Error('Appointed matters are excluded from private-client trust replenishment.');
-          if(matter.appointed!==false && matter.is_appointed!==false && row.non_appointed_confirmed!==true)throw new Error('Confirm non-appointed status on this review row before sending.');
+          // Read Section A's saved appointment and billing participation settings
+          // again immediately before approval; the review may be stale.
+          const {data:weeklyRecord,error:weeklyError}=await supabase.from('case_mio_user_state')
+            .select('json_value,raw_value').eq('user_id',session.user.id).eq('key','mioWeeklyBillingSettingsV1').maybeSingle()
+          if(weeklyError)throw weeklyError
+          const weekly=weeklyRecord?.json_value||JSON.parse(weeklyRecord?.raw_value||'{}')
+          const weeklyPref=weekly?.matters?.[String(matter.id)]||{}
+          const explicit=matter.appointed??matter.is_appointed??matter.court_appointed
+          const appointed=weeklyPref.appointed??(explicit!=null?Boolean(explicit):/^dfps$/i.test(String(matter.matter_type||'')))
+          const included=weeklyPref.included??!appointed
+          if(appointed||!included)throw new Error('This matter is appointed or excluded from Section A private-client billing.')
+          if(matter.is_active===false||/closed|dismissed/i.test(String(matter.case_status||'')))
+            throw new Error('This matter is closed or dismissed.')
+          if(!weeklyRecord && row.non_appointed_confirmed!==true)
+            throw new Error('Section A appointment settings are unavailable; stop for review.')
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const pref=preferences[row.matter_id]||{}
@@ -193,7 +206,7 @@
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
             target=Number(pref.target_trust??matterRetainerTarget(matter))
-          if(!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
+          if(fin.financialSnapshotResolved!==true||!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
             throw new Error('Trust balance is no longer below the minimum or cannot be verified; reopen review.')
           const plan=replenishmentPlan(row.matter_id,fresh,{trust,target})
           if(plan.blocked)throw new Error(plan.reason)
