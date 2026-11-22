@@ -147,7 +147,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   })).sort((a,b)=>a.clientName.localeCompare(b.clientName)),[matterClientGroups,rows])
   const visiblePrimaryIds=new Set(visibleSettingsRows.map(m=>m.id))
   const visiblePrimaryGroups=multipleMatterClients.map(group=>({...group,matters:group.matters.filter(m=>visiblePrimaryIds.has(m.id))}))
-    .filter(group=>group.matters.length&&`${group.clientName} ${group.matters.map(m=>m.name).join(' ')}`.toLowerCase().includes(primarySearch.trim().toLowerCase()))
+    .filter(group=>group.matters.length>1&&`${group.clientName} ${group.matters.map(m=>m.name).join(' ')}`.toLowerCase().includes(primarySearch.trim().toLowerCase()))
   const primaryForClient=clientId=>{
     const ids=matterClientGroups.get(clientId)||[]
     if(ids.length===1)return ids[0]
@@ -392,7 +392,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       <h3>Weekly Billing Settings</h3>
       <div role="tablist" aria-label="Weekly Billing Settings sections" style={{display:'flex',gap:8,margin:'10px 0 16px'}}>
         <button type="button" role="tab" aria-selected={settingsTab==='matters'} style={{...button,background:settingsTab==='matters'?'#dbeafe':'#fff',fontWeight:settingsTab==='matters'?700:400}} onClick={()=>setSettingsTab('matters')}>Matter settings</button>
-        <button type="button" role="tab" aria-selected={settingsTab==='primary'} style={{...button,background:settingsTab==='primary'?'#dbeafe':'#fff',fontWeight:settingsTab==='primary'?700:400}} onClick={()=>setSettingsTab('primary')}>Clients with multiple matters ({multipleMatterClients.length})</button>
+        <button type="button" role="tab" aria-selected={settingsTab==='primary'} style={{...button,background:settingsTab==='primary'?'#dbeafe':'#fff',fontWeight:settingsTab==='primary'?700:400}} onClick={()=>setSettingsTab('primary')}>Clients with multiple matters ({visiblePrimaryGroups.length})</button>
       </div>
       {settingsTab==='matters'&&<section role="tabpanel" aria-label="Matter settings">
       <label>Minimum WIP ($) <input type="number" min="0" value={settings.minimumWip??150} onChange={e=>setSettings(x=>({...x,minimumWip:e.target.value}))}/></label>
@@ -416,7 +416,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
         <p style={small}>Choose one primary matter for each client. Mio uses it for trust replenishment requests. This does not combine trust ledgers or authorize paying another matter's invoice. Each choice saves immediately.</p>
         {settingsFilters}
         <label>Find client or matter <input type="search" value={primarySearch} onChange={e=>setPrimarySearch(e.target.value)} style={{marginLeft:8,minWidth:250}}/></label>
-        <span style={{...small,marginLeft:12}}>{visiblePrimaryGroups.length} of {multipleMatterClients.length} clients shown</span>
+        <span style={{...small,marginLeft:12}}>{visiblePrimaryGroups.length} clients with multiple matching matters</span>
         {replenishmentLoading&&<p role="status">Loading primary matter selections…</p>}
         {primaryNotice&&<p role="status" style={{color:'#166534'}}>{primaryNotice}</p>}
         {replenishmentError&&<p role="alert" style={{color:'#991b1b'}}>Primary matter settings: {replenishmentError} <button type="button" onClick={async()=>{setReplenishmentLoading(true);setReplenishmentError('');try{setReplenishmentSettings(await loadReplenishmentSettings(supabase,userId))}catch(error){setReplenishmentError(error?.message||String(error))}finally{setReplenishmentLoading(false)}}}>Retry loading</button></p>}
