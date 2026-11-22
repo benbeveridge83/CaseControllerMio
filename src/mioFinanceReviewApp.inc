@@ -89,24 +89,48 @@
     }
     return rows.map(row=>({...invoiceFromDatabaseRow(row),trust_at_issue:snapshots.get(String(row.id))??null}))
   }
-  async function replenishSelectedMatters(matterIds) {
+  async function replenishSelectedMatters(matterIds,{afterWeekly=false}={}) {
     if(replenishmentSendingRef.current)return
     const ids=[...new Set((matterIds||[]).map(String))]
     if(!ids.length)return alert('Check at least one matter first.')
     setReplenishmentReview({open:true,loading:true,rows:[],message:'',error:''})
     setBulkBillingBusy(true)
     try {
-      const [invoices,settings]=await Promise.all([readFinanceInvoicesForReview(),loadReplenishmentSettings(supabase,session.user.id)])
+      if(afterWeekly){
+        // A PREPARED weekly packet is not a posted transaction. Refresh the
+        // actual financial graph after the weekly review has finished.
+        const reconciliation=await refreshLawPayFinancialData({silent:false})
+        if(!reconciliation?.ok||reconciliation?.audit?.issues?.length)
+          throw new Error('Payment reconciliation is incomplete. Resolve LawPay discrepancies before replenishment.')
+        await refreshMioFinancialGraphData()
+      }
+      const [invoices,settings,weeklyRecord]=await Promise.all([
+        readFinanceInvoicesForReview(),
+        loadReplenishmentSettings(supabase,session.user.id),
+        supabase.from('case_mio_user_state').select('json_value,raw_value').eq('user_id',session.user.id)
+          .eq('key','mioWeeklyBillingSettingsV1').maybeSingle()
+      ])
+      if(weeklyRecord.error)throw weeklyRecord.error
+      const weekly=weeklyRecord.data?.json_value||JSON.parse(weeklyRecord.data?.raw_value||'{}')
+      const weeklyOverrides=weekly?.matters||{}
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
-        if(!matter||matter.appointed===true||matter.is_appointed===true)return null
+        if(!matter)return null
+        const weeklyPref=weeklyOverrides[id]||{}
+        // Section A is the single source of truth for court appointment and
+        // private-client weekly process participation. Never turn appointed off
+        // using only a trust replenishment setting.
+        const explicit=matter.appointed??matter.is_appointed??matter.court_appointed
+        const appointed=weeklyPref.appointed??(explicit!=null?Boolean(explicit):/^dfps$/i.test(String(matter.matter_type||'')))
+        const included=weeklyPref.included??!appointed
+        if(appointed||!included||matter.is_active===false||/closed|dismissed/i.test(String(matter.case_status||'')))return null
         const pref=settings[id]||{}
         if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
         // Existing finance numbers are in-memory, not the stale Clio historical report.
         const finance=clientFinanceNumbers(matter,invoices)
         const balance=Number(finance.trust),minimum=Number(pref.minimum_trust??finance.minimumBalance),
           target=Number(pref.target_trust??matterRetainerTarget(matter))
-        if(!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
+        if(finance.financialSnapshotResolved!==true||!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
         const plan=replenishmentPlan(id,invoices,{trust:balance,target})
         const candidate=plan.additional>0&&!plan.blocked?{blocked:false,amount:plan.additional,invoice:null}:{
           blocked:plan.blocked,amount:0,invoice:null,reason:plan.reason||'No new invoice is needed. Previous unpaid requests remain due.'
@@ -122,7 +146,7 @@
         })
         return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,withdrawal_flagged:pref.withdrawal_flagged===true,
-          appointed_status_unknown:matter.appointed!==false&&matter.is_appointed!==false,non_appointed_confirmed:false,
+          appointed_status_unknown:false,non_appointed_confirmed:true,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
           prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
