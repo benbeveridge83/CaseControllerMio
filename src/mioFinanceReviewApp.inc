@@ -116,14 +116,7 @@
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
         if(!matter)return null
-        const weeklyPref=weeklyOverrides[id]||{}
-        // Section A is the single source of truth for court appointment and
-        // private-client weekly process participation. Never turn appointed off
-        // using only a trust replenishment setting.
-        const explicit=matter.appointed??matter.is_appointed??matter.court_appointed
-        const appointed=weeklyPref.appointed??(explicit!=null?Boolean(explicit):/^dfps$/i.test(String(matter.matter_type||'')))
-        const included=weeklyPref.included??!appointed
-        if(appointed||!included||matter.is_active===false||/closed|dismissed/i.test(String(matter.case_status||'')))return null
+        if(!sectionAReplenishmentEligibility(matter,matters,weeklyOverrides,settings).eligible)return null
         const pref=settings[id]||{}
         if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
         // Existing finance numbers are in-memory, not the stale Clio historical report.
@@ -188,17 +181,12 @@
             .select('json_value,raw_value').eq('user_id',session.user.id).eq('key','mioWeeklyBillingSettingsV1').maybeSingle()
           if(weeklyError)throw weeklyError
           const weekly=weeklyRecord?.json_value||JSON.parse(weeklyRecord?.raw_value||'{}')
-          const weeklyPref=weekly?.matters?.[String(matter.id)]||{}
-          const explicit=matter.appointed??matter.is_appointed??matter.court_appointed
-          const appointed=weeklyPref.appointed??(explicit!=null?Boolean(explicit):/^dfps$/i.test(String(matter.matter_type||'')))
-          const included=weeklyPref.included??!appointed
-          if(appointed||!included)throw new Error('This matter is appointed or excluded from Section A private-client billing.')
-          if(matter.is_active===false||/closed|dismissed/i.test(String(matter.case_status||'')))
-            throw new Error('This matter is closed or dismissed.')
+          const preferences=await loadReplenishmentSettings(supabase,session.user.id)
+          const eligible=sectionAReplenishmentEligibility(matter,matters,weekly?.matters||{},preferences)
+          if(!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
           if(!weeklyRecord && row.non_appointed_confirmed!==true)
             throw new Error('Section A appointment settings are unavailable; stop for review.')
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
-          const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
           if(pref.withdrawal_flagged===true)throw new Error('This matter is flagged for withdrawal review. Resolve the flag before automatic sending.')
