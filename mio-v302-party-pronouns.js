@@ -15,8 +15,8 @@ export default function mioV302PartyPronouns(){return{name:'mio-v302-party-prono
  code=once(code,"        name: party.name || prior.name || '',","        id: party.id, sex: party.sex, pronoun_set: party.pronoun_set, date_of_birth: party.date_of_birth,\n        name: party.name || prior.name || '',")
  code=once(code,'        <h2>Parties and Counsels</h2>','        <h2>Parties and Counsels</h2>{mioMatterPronounDraftPanelV302()}')
  // Persist sex with the existing matter-party editor and existing cloud save path.
- const partyInput='<input value={party.email || \'\'} onChange={(event) => updateLitigationMatterPartyAt(matter.id, index, { email: event.target.value })} placeholder="Party email" />'
- code=once(code,partyInput,partyInput+'<div><MioPartySexFieldsV302 party={party} onChange={patch=>updateLitigationMatterPartyAt(matter.id,index,patch)}/></div>')
+ const partyInput='<input value={party.email || \'\'} onChange={(event) => updateLitigationMatterPartyAt(matter.id, editIndex, { email: event.target.value })} placeholder="Party email" />'
+ code=once(code,partyInput,partyInput+'<div><MioPartySexFieldsV302 party={party} onChange={patch=>updateLitigationMatterPartyAt(matter.id,editIndex,patch)}/></div>')
  code=region(code,'  function draftingChildrenForMatter(matter) {','  function draftingClientRoleForMatter(matter) {',"  function draftingChildrenForMatter(matter) { return matter ? mioChildrenV302(matter,matterExtraFor(matter.id)) : [] }")
  // Do not snapshot inferred pronoun sets into draft fields; resolve the current party at generation.
  const oldDefault="    if (field?.type === 'pronoun_set') {\n      const gender = String(client?.gender || client?.sex || '').toLowerCase()\n      if (/male|man|boy/.test(gender)) return 'male'\n      if (/female|woman|girl/.test(gender)) return 'female'\n    }"
