@@ -1942,6 +1942,7 @@ const emptyCounselInfo = {
 const emptyPartyInfo = {
   name: '',
   party_type: '',
+  attorney_type: '',
   email: '',
   phone: '',
   address: '',
@@ -1983,6 +1984,7 @@ const DEFAULT_COURT_PEOPLE = [
 const emptyMatterExtraInfo = {
   proceeding_id: '',
   assigned_attorney_id: '',
+  client_attorney_type: 'Party Attorney',
   mediator_email: '',
   litigation_parties: [],
   opposing_parties: [{ ...emptyPartyInfo, counsel: { ...emptyCounselInfo } }],
@@ -18098,6 +18100,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       email: client?.email || matter.client_email || '',
       attorney_name: [assignedAttorney?.first_name, assignedAttorney?.last_name].filter(Boolean).join(' ').trim() || assignedAttorney?.name || '',
       attorney_email: assignedAttorney?.email || '',
+      attorney_type: extra.client_attorney_type || 'Party Attorney',
       source: 'client'
     }, matterId, 0))
     ;(extra.opposing_parties || []).forEach((party, index) => {
@@ -18109,6 +18112,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         email: party?.email || '',
         attorney_name: party?.counsel?.name || '',
         attorney_email: party?.counsel?.email || '',
+        attorney_type: party?.attorney_type || '',
         source: 'opposing'
       }, matterId, rows.length))
     })
@@ -18132,6 +18136,7 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         ...prior,
         name: party.name || prior.name || '',
         party_type: party.role || prior.party_type || 'Opposing Party',
+        attorney_type: party.attorney_type || prior.attorney_type || '',
         email: party.email || prior.email || '',
         counsel: {
           ...emptyCounselInfo,
@@ -18312,6 +18317,10 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       setMatters((current) => current.map((item) => String(item.id) === String(matterId) ? { ...item, client_status: patch.role } : item))
       supabase.from('matters').update({ client_status: patch.role }).eq('id', matterId).then(({ error }) => { if (error) console.warn('Could not persist client status:', error.message) })
     }
+    if (patch.attorney_type !== undefined) {
+      const currentExtra = matterExtraFor(matterId)
+      setMatterExtraInfoById((all) => ({ ...all, [matterId]: { ...currentExtra, client_attorney_type: patch.attorney_type } }))
+    }
     const client = clients.find((item) => String(item.id) === String(matter.client_id))
     if (client && (patch.name !== undefined || patch.email !== undefined)) {
       let first = client.first_name || '', last = client.last_name || ''
@@ -18338,8 +18347,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       role: party.role && !String(party.role).includes('(review)') ? party.role : (isAttorneyFiler || party.source === 'opposing' ? 'Opposing Party' : 'Party'),
       name: party.name || '',
       email: party.email || '',
-      attorney_name: isAttorneyFiler ? (party.name || '') : '',
-      attorney_email: isAttorneyFiler ? (party.email || '') : ''
+      attorney_type: party.attorney_type || '',
+      attorney_directory_id: party.attorney_directory_id || '',
+      attorney_firm: party.attorney_firm || '',
+      attorney_name: party.attorney_name || (isAttorneyFiler ? (party.name || '') : ''),
+      attorney_email: party.attorney_email || (isAttorneyFiler ? (party.email || '') : '')
     }, matterId, parties.length)
     parties.push(newParty)
     const nextExtra = syncOpposingPartiesFromLitigationParties({ ...current, litigation_parties: parties }, matterId)
@@ -19678,8 +19690,12 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       { id: 'amicus-attorney', name: 'Amicus Attorney' }
     ]
     const edit = (patch) => {
+      if (isFilingFiler) {
+        addLitigationPartyFromFiler(matter.id, { ...party, ...patch })
+        return
+      }
       if (isDerivedClient) {
-        if (patch.name !== undefined || patch.email !== undefined || patch.role !== undefined) updateDerivedClientParty(matter.id, patch)
+        if (patch.name !== undefined || patch.email !== undefined || patch.role !== undefined || patch.attorney_type !== undefined) updateDerivedClientParty(matter.id, patch)
         return
       }
       if (isDerivedOpposing) {
@@ -19687,6 +19703,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         if (patch.name !== undefined) partyPatch.name = patch.name
         if (patch.email !== undefined) partyPatch.email = patch.email
         if (patch.role !== undefined) partyPatch.party_type = patch.role
+        if (patch.attorney_type !== undefined) partyPatch.attorney_type = patch.attorney_type
         if (patch.source !== undefined) partyPatch.source = patch.source
         const counselPatch = {}
         if (patch.attorney_name !== undefined) counselPatch.name = patch.attorney_name
@@ -19727,8 +19744,25 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #cbd5e1', verticalAlign: 'top' }}>
           <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: '1px solid #b45309', background: '#fffbeb' }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: '#b45309' }}>Filed by — {sourceLabel} (review)</div>
-            <div style={{ fontWeight: 700 }}>{party.name || 'Unnamed'}</div>
-            {party.email && <div style={{ fontSize: 11, color: '#64748b' }}>{party.email}</div>}
+            <select aria-label="Party type" value={party.role || ''} onChange={(event) => edit({ role: event.target.value })}>
+              <option value="">Party type…</option>
+              {options('party_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
+            </select>
+            <input value={party.name || ''} onChange={(event) => edit({ name: event.target.value })} placeholder="Party name" />
+            <input value={party.email || ''} onChange={(event) => edit({ email: event.target.value })} placeholder="Party email (imported)" />
+            <div style={{ display: 'grid', gap: 5, padding: 6, borderRadius: 6, border: '1px dashed #cbd5e1', background: 'transparent' }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>Party attorney</div>
+              <select aria-label="Attorney" value={party.attorney_directory_id || ''} onChange={(event) => assignAttorney(event.target.value)}>
+                <option value="">Choose attorney…</option>
+                {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
+              </select>
+              <select aria-label="Attorney type" value={attorneyType} onChange={(event) => edit({ attorney_type: event.target.value })}>
+                <option value="">Attorney type…</option>
+                <option value="Party Attorney">Party Attorney</option>
+              </select>
+              <input value={party.attorney_name || ''} onChange={(event) => edit({ attorney_name: event.target.value })} placeholder="Attorney name" />
+              <input value={party.attorney_email || ''} onChange={(event) => edit({ attorney_email: event.target.value })} placeholder="Attorney email" />
+            </div>
             <select aria-label="Replace with party" value="" onChange={(event) => { if (event.target.value) applyFilerCorrection(matter.id, party.filer_original_id, event.target.value) }}>
               <option value="">Replace with existing party…</option>
               {correctableParties.map((item) => <option key={item.id} value={item.id}>{item.name || item.role || item.id}</option>)}
@@ -19791,10 +19825,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
               <option value="">Choose attorney…</option>
               {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
             </select>
-            {!isDerived && <select aria-label="Attorney type" value={attorneyType} onChange={(event) => edit({ attorney_type: event.target.value })}>
+            <select aria-label="Attorney type" value={attorneyType} onChange={(event) => edit({ attorney_type: event.target.value })}>
               <option value="">Attorney type…</option>
               <option value="Party Attorney">Party Attorney</option>
-            </select>}
+            </select>
             <input value={party.attorney_name || ''} onChange={(event) => edit({ attorney_name: event.target.value })} placeholder="Attorney name" />
             <input value={party.attorney_email || ''} onChange={(event) => edit({ attorney_email: event.target.value })} placeholder="Attorney email" />
             <div style={{ display: 'flex', gap: 6 }}>
