@@ -48,7 +48,7 @@ declare r public.mio_client_intake_requests;q jsonb;begin
  if jsonb_typeof(p_answers)<>'object' or octet_length(p_answers::text)>250000 then raise exception 'Invalid intake answers';end if;
  for q in select value from jsonb_array_elements(coalesce(r.template_snapshot->'questions','[]'::jsonb)) loop
  if coalesce((q->>'required')::boolean,false) and trim(coalesce(p_answers->>(q->>'key'),'')) in ('','[]','null') then raise exception 'Required answer: %',q->>'label';end if;end loop;
- if exists(select 1 from jsonb_object_keys(p_answers) a(k) where not exists(select 1 from jsonb_array_elements(r.template_snapshot->'questions') q where q->>'key'=a.k)) then raise exception 'Unknown answer field';end if;
+ if exists(select 1 from jsonb_object_keys(p_answers) a(k) where not exists(select 1 from jsonb_array_elements(r.template_snapshot->'questions') as candidate(value) where candidate.value->>'key'=a.k)) then raise exception 'Unknown answer field';end if;
  insert into public.mio_client_intake_submissions(request_id,answers) values(r.id,p_answers);
  update public.mio_client_intake_requests set status='submitted',submitted_at=now(),updated_at=now() where id=r.id;
  return true;end $$;
