@@ -196,6 +196,19 @@ begin
   ) then
     raise exception 'Unclassified LawPay trust transactions require reconciliation';
   end if;
+  if exists (
+    select 1 from public.lawpay_transactions t
+    where t.account_key in ('trust','echeck_trust','clientcredit_trust')
+      and t.currency='USD' and t.amount_cents>0
+      and lower(t.status) in ('completed','settled','succeeded','success')
+      and t.occurred_at::date>cutover
+      and not exists (select 1 from public.mio_lawpay_accounts a
+        where a.provider_account_id=t.account_id
+          and a.account_key in ('trust','echeck_trust','clientcredit_trust')
+          and a.verified_at is not null)
+  ) then
+    raise exception 'LawPay trust settlement account is not verified';
+  end if;
   opening_amount:=coalesce((opening->p_source_matter_id->>'matter_trust_funds')::numeric,
                            (opening->p_source_matter_id->>'trust_running_balance')::numeric,0);
   manual_delta:=0;

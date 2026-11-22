@@ -28,7 +28,7 @@ Status: **RELEASE BLOCKED — TRUST CLASSIFICATION INCOMPLETE**. The atomic trus
 - `tests/sql/weekly-billing-atomic-{schema,behavior,concurrency}.sql`: isolated-Postgres coverage of idempotency, exactly-once concurrency, fail-closed validation, and rollback. Wired into `.github/workflows/weekly-billing-review.yml`.
 - Cross-matter posting requires per-matter `agreementAuthorized` (verified signed fee agreement) and `shareTrust`. The attorney must confirm the agreement before checking this setting.
 - The payment preview requires an explicit per-run trust-source verification and separate approval of each payment. A server readiness RPC leaves the atomic setting disabled until the posting function's execute grant is released.
-- The server rejects all posting while a completed post-cutover LawPay trust transaction remains unclassified and not mirrored by its transaction ID in the manual ledger. This is a firmwide fail-closed gate; reconcile the observed records before release.
+- The server rejects all posting while a completed post-cutover LawPay trust transaction remains unclassified and not mirrored by its transaction ID in the manual ledger, or its settlement account lacks a verified trust mapping. This is a firmwide fail-closed gate; reconcile the observed records before release.
 
 ## Acceptance tests before release
 - $150 threshold with accumulated subthreshold WIP, old Work OB, duplicate WIP records and concurrent re-runs.
@@ -41,7 +41,7 @@ Status: **RELEASE BLOCKED — TRUST CLASSIFICATION INCOMPLETE**. The atomic trus
 - CI tests and production build pass; independent human verifies a simulated invoice/payment/withdrawal run, then explicitly approves enabling live transfers.
 
 ## Production activation sequence
-1. Reconcile and classify the post-cutover LawPay trust transactions still missing from both the classified and manual ledgers; verify matter ownership, bank receipt/refunds, and avoid duplicate entries.
+1. Reconcile and classify the post-cutover LawPay trust transactions still missing from both the classified and manual ledgers; verify matter ownership, bank receipt/refunds, settlement account mappings, and avoid duplicate entries.
 2. Review signed fee agreements for any cross-matter source and mark `agreementAuthorized` only when authorized. Verify each trust source against bank records and any restrictions.
 3. Apply `supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql` with execute still revoked, and verify the schema and read-only readiness check.
 4. Run a dry-run using real matters and verify that invoice balances, trust balances, and all proposed allocations agree with Bulk Billing and bank records.
