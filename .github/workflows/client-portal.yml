@@ -30,11 +30,11 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Portal behavior and integration
-        run: node --test tests/client-portal-security.test.js tests/client-portal-api.test.js tests/client-portal-ui.test.mjs
-      - name: Production build
-        run: npm run build
       - name: Isolated PostgreSQL schema and concurrency boundaries
         env:
           PGPASSWORD: portal-test-only
         run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f tests/sql/client-portal-schema.sql
+      - name: Portal behavior and integration
+        run: node --test tests/client-portal-security.test.js tests/client-portal-api.test.js tests/client-portal-ui.test.mjs
+      - name: Production build
+        run: npm run build
