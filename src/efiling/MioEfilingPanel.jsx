@@ -3,6 +3,7 @@ import { autoFillEfilingDraft } from './mioEfilingAutoFill.js'
 import { validateEfilingDraft } from './mioEfilingValidation.js'
 import { assessSubmitReadiness, assertEfilingSubmissionAllowed } from './mioEfilingFlags.js'
 import { EFILING_MODES, filingModeLabel, isServiceMode } from './mioEfilingModel.js'
+import MioEfilingStatusHistory from './MioEfilingStatusHistory.jsx'
 import './mioEfiling.css'
 
 function findDocument(documents, documentId) {
@@ -394,6 +395,8 @@ export default function MioEfilingPanel({
           </div>
         </div>
       )}
+
+      <MioEfilingStatusHistory repository={repository} ownerId={ownerId} matterId={matter.id} />
 
       {notice && <div className="mio-efiling-notice">{notice}</div>}
       {error && <div className="mio-efiling-error">{error}</div>}
