@@ -13,10 +13,12 @@ on:
       - 'src/mioWeeklyWithdrawal.inc'
       - 'supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql'
       - 'supabase/migrations/20261122210000_weekly_billing_default_eligibility_v2.sql'
+      - 'supabase/migrations/20261123233000_weekly_billing_same_matter_atomic_v3.sql'
       - 'tests/sql/weekly-billing-atomic-schema.sql'
       - 'tests/sql/weekly-billing-atomic-behavior.sql'
       - 'tests/sql/weekly-billing-atomic-concurrency.sql'
       - 'tests/sql/weekly-billing-atomic-defaults.sql'
+      - 'tests/sql/weekly-billing-atomic-same-matter.sql'
       - 'vite.config.js'
       - '.github/workflows/weekly-billing-review.yml'
   push:
@@ -72,5 +74,7 @@ jobs:
           wait "$first"
           wait "$second"
           psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-concurrency.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261123233000_weekly_billing_same_matter_atomic_v3.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-same-matter.sql
       - name: Production build syntax check
         run: npm run build
