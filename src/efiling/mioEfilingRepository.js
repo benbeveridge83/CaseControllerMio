@@ -128,6 +128,22 @@ export function createSupabaseEfilingRepository(client, options = {}) {
       if (error) throw new Error(error.message)
       return data
     },
+    async listSubmissions(ownerId, matterId = '') {
+      if (!client) throw new Error('E-filing Supabase repository requires a Supabase client.')
+      let query = client.from('mio_efiling_submissions').select('id,owner_id,matter_id,environment,envelope_id,filing_id,status,status_details,submitted_at,reviewed_at,updated_at').eq('owner_id',ownerId)
+      if (matterId) query = query.eq('matter_id',String(matterId))
+      const {data,error} = await query.order('updated_at',{ascending:false}).limit(100)
+      if(error) throw new Error(error.message)
+      return data || []
+    },
+    async listSubmissionAudit(ownerId,matterId = '') {
+      if(!client) throw new Error('E-filing Supabase repository requires a Supabase client.')
+      let query = client.from('mio_efiling_status_audit').select('id,submission_id,matter_id,from_status,to_status,event_type,recorded_at').eq('owner_id',ownerId)
+      if(matterId) query=query.eq('matter_id',String(matterId))
+      const {data,error}=await query.order('recorded_at',{ascending:false}).limit(100)
+      if(error) throw new Error(error.message)
+      return data || []
+    },
     async listEvents(ownerId, matterId = '') {
       if (!client) throw new Error('E-filing Supabase repository requires a Supabase client.')
       let query = client.from('mio_efiling_events').select('*').eq('owner_id', ownerId)
