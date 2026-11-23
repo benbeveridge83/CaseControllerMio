@@ -8,7 +8,16 @@ export default function weeklyBillingReviewMount(){
     if(!id.split('?')[0].replaceAll('\\\\','/').endsWith('/src/App.jsx'))return null
     let code="import MioWeeklyBilling from './MioWeeklyBilling.jsx'\n"+source
     code=replaceOnce(code,'  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)',
-      '  const weeklyBillingSettingsPopup=new URLSearchParams(window.location.search).has(\'mioWeeklyBillingSettings\')\n  const [weeklyBillingReviewOpen,setWeeklyBillingReviewOpen]=useState(weeklyBillingSettingsPopup)\n  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)','state')
+      '  const weeklyBillingSettingsPopup=new URLSearchParams(window.location.search).has(\'mioWeeklyBillingSettings\')\n  const [weeklyBillingReviewOpen,setWeeklyBillingReviewOpen]=useState(weeklyBillingSettingsPopup)\n  const [weeklyBillingInitialStep,setWeeklyBillingInitialStep]=useState(weeklyBillingSettingsPopup?\'settings\':\'wip\')\n  const [weeklyBillingInvoiceHandoff,setWeeklyBillingInvoiceHandoff]=useState(false)\n  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)','state')
+    code=replaceOnce(code,'      if (!failures.length) window.setTimeout(closeBulkWipReview, 600)',
+      `      if (!failures.length) window.setTimeout(()=>{
+        closeBulkWipReview()
+        if (weeklyBillingInvoiceHandoff) {
+          setWeeklyBillingInvoiceHandoff(false)
+          setWeeklyBillingInitialStep('payments')
+          setWeeklyBillingReviewOpen(true)
+        }
+      }, 600)`, 'continue after invoice creation')
     const withdrawalHelper=fs.readFileSync(new URL('./src/mioWeeklyWithdrawal.inc',import.meta.url),'utf8')
     code=replaceOnce(code,'  function renderDailyBillingModal() {',withdrawalHelper+'\n  function renderDailyBillingModal() {','withdrawal helper')
     code=replaceOnce(code,'          <button type="button" style={tabButtonStyle(\'historical_migration\')} onClick={() => setBillingTab(\'historical_migration\')}>',
@@ -23,6 +32,7 @@ export default function weeklyBillingReviewMount(){
               const currentInvoices=(invoiceRows||[]).map(invoiceFromDatabaseRow)
               setBillingEntries(existing=>mergeBillingEntriesForState(currentEntries,existing,readBrowserBillingEntriesFallback()))
               setMioInvoices(existing=>mergeMioInvoiceState(currentInvoices,existing))
+              setWeeklyBillingInitialStep('wip')
               setWeeklyBillingReviewOpen(true)
             }catch(error){alert('Could not refresh billing data. Weekly Billing stayed closed: '+(error?.message||error))}
           }} style={tabButtonStyle('weekly_billing_review')}>Weekly Billing Review</button>
@@ -32,7 +42,7 @@ export default function weeklyBillingReviewMount(){
           <button type="button" style={tabButtonStyle('historical_migration')} onClick={() => setBillingTab('historical_migration')}>`, 'billing navigation')
     code=replaceOnce(code,'        {renderDailyBillingModal()}',
       `        {renderDailyBillingModal()}
-        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingSettingsPopup?'settings':'wip'} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setBillingTab('bulk_billing');openBulkWipReview(ids);setWeeklyBillingReviewOpen(false)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} onOpenReplenishmentReview={weeklyBillingSettingsPopup?null:(async()=>{await replenishSelectedMatters(matters.map(m=>m.id),{afterWeekly:true});setWeeklyBillingReviewOpen(false)})} matters={matters} clients={clients} withdrawalStatusFor={matterWithdrawalStatus} filterOptions={{caseStatuses:options('case_status').map(option=>option.name),matterStatuses:options('matter_status').map(option=>option.name),caseTypes:options('matter_type').map(option=>option.name)}} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
+        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingInitialStep} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingInvoiceHandoff(true);setBillingTab('bulk_billing');openBulkWipReview(ids);setWeeklyBillingReviewOpen(false)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} onOpenReplenishmentReview={weeklyBillingSettingsPopup?null:(async()=>{await replenishSelectedMatters(matters.map(m=>m.id),{afterWeekly:true});setWeeklyBillingReviewOpen(false)})} matters={matters} clients={clients} withdrawalStatusFor={matterWithdrawalStatus} filterOptions={{caseStatuses:options('case_status').map(option=>option.name),matterStatuses:options('matter_status').map(option=>option.name),caseTypes:options('matter_type').map(option=>option.name)}} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
           const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)||{}
           return {wip:f.wip,workOB:f.outstanding,
             // Available trust is intentionally unverified: never submit speculative funds.
