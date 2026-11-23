@@ -2,6 +2,9 @@ name: Replenishment logic checks
 on:
   push:
     paths:
+      - 'src/MioReplenishmentReview.jsx'
+      - 'src/mioFinanceReviewApp.inc'
+      - 'mio-v314-finance-review.js'
       - 'src/mioReplenishmentTabs.js'
       - 'src/mioReplenishmentActions.js'
       - 'src/mioReplenishmentHandoff.js'
@@ -31,4 +34,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+      - run: npm ci
       - run: node --test tests/mioReplenishmentTabs.test.mjs tests/mioReplenishmentActions.test.mjs tests/mioReplenishmentHandoff.test.mjs tests/mioReplenishmentClaims.test.mjs tests/mioFinanceReplenishmentPlan.test.mjs tests/mioTrustReplenishmentCalculations.test.mjs tests/mioTrustReplenishmentWorkflow.test.mjs tests/mioReplenishmentSafety.test.mjs
+      - run: npm run build
