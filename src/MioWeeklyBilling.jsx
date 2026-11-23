@@ -362,6 +362,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       await refreshFinancialSnapshot()
       if(posted&&onPayOwnMatterTrust)await onPayOwnMatterTrust()
       setNotice(failed?`${posted} invoice payment(s) posted. The remaining payments stopped: ${failed} Review current balances before trying again.`:`${posted} invoice payment(s) posted and verified by Mio. Refresh bank transfer records separately.`)
+      if(posted&&!failed)setStep('unpaid')
     }catch(error){setNotice(`${posted?`${posted} invoice payment(s) were posted. `:'No payment was confirmed. '}Refresh current invoices before taking another action: ${error?.message||error}`)}
     finally{setOwnPaymentBusy(false)}
   }
@@ -370,7 +371,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Cross-matter atomic posting enabled':'Review invoices, then confirm each same-matter trust payment'} · Accounting entries do not move bank funds · Appointed matters excluded by default</div></div>
       <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
         {step==='wip'&&onOpenExistingWipReview&&(chosen.length?<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={savingBillingPreference||!!Object.keys(changes).length} onClick={openSelectedInvoiceReview}>Next: Review {chosen.length} invoice{chosen.length===1?'':'s'} →</button>:<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} onClick={()=>setStep('payments')}>Next: Payment Preview →</button>)}
-        {step==='payments'&&onPayOwnMatterTrust&&<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={ownPaymentBusy||!selectedOwnPaymentRows.length||!postingAvailable} onClick={paySelectedOwnMatterTrust}>Next: Review {selectedOwnPaymentRows.length} trust payment{selectedOwnPaymentRows.length===1?'':'s'} →</button>}
+        {step==='payments'&&onPayOwnMatterTrust&&(selectedOwnPaymentRows.length?<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={ownPaymentBusy||!postingAvailable} onClick={paySelectedOwnMatterTrust}>Next: Review {selectedOwnPaymentRows.length} trust payment{selectedOwnPaymentRows.length===1?'':'s'} →</button>:<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} onClick={()=>setStep('unpaid')}>Next: Unpaid Balances →</button>)}
         <button style={button} onClick={onClose}>Close ×</button>
       </div>
     </header>
