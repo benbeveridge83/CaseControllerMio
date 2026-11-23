@@ -193,12 +193,10 @@
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
           if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
-          const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows')
-            .select('matter_id,state').eq('owner_id',session.user.id).eq('matter_id',row.matter_id)
-          if(withdrawalError)throw withdrawalError
-          const pendingWithdrawal=(withdrawalRows||[]).some(w=>['active','withdrawing','pending','requested'].includes(String(w.state?.status||'').toLowerCase()))
-          if(pref.withdrawal_flagged===true||pendingWithdrawal)
-            throw new Error('Matter is flagged for withdrawal review or has an active withdrawal workflow. Resolve this before automatic sending.')
+          // Withdrawal review is informational, not a prohibition on requesting
+          // payment while representation and contractual obligations continue.
+          // Closed matters and appointed matters remain excluded above.
+          // Keep withdrawal shading in the review without blocking invoice sends.
           const fresh=await readFinanceInvoicesForReview()
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
