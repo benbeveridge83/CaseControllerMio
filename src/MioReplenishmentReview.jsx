@@ -44,7 +44,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
               <td style={{padding:8,textAlign:'right'}}>{money(row.target_trust)}</td>
               <td style={{padding:8,textAlign:'right',fontWeight:600}}>{money(old)}</td>
               <td style={{padding:8,textAlign:'right',fontWeight:700}}>{money(amount)}</td>
-              <td style={{padding:8,minWidth:130}}><div style={{display:'flex',flexDirection:'column',gap:3}}>{status&&<strong style={{color:status==='Blocked'||status==='Needs attention'||status==='Verify delivery'?'#9f1239':'#334155',fontSize:11}}>{status}</strong>}{actions.map(label=><span key={label} style={{display:'block',color:label==='New trust invoice'?'#166534':'#334155',fontSize:12,lineHeight:'17px'}}>{label}</span>)}{!actions.length&&!status&&<span style={{color:'#64748b'}}>No invoices</span>}</div></td>
+              <td style={{padding:8,minWidth:130}}><div style={{display:'flex',flexDirection:'column',gap:3}}>{status&&<strong title={row.send_error||row.reason||'Open Details for review status'} style={{color:status==='Blocked'||status==='Needs attention'||status==='Verify delivery'?'#9f1239':'#334155',fontSize:11}}>{status}</strong>}{actions.map(label=><span key={label} style={{display:'block',color:label==='New trust invoice'?'#166534':'#334155',fontSize:12,lineHeight:'17px'}}>{label}</span>)}{!actions.length&&!status&&<span style={{color:'#64748b'}}>No invoices</span>}</div></td>
               <td style={{padding:8}}><button type="button" onClick={()=>{setSelectedId(current=>current===row.id?null:row.id);setTab('overview')}} style={{border:'1px solid #94a3b8',borderRadius:7,padding:'7px 11px',background:selectedId===row.id?'#dbeafe':'white',cursor:'pointer'}}>{selectedId===row.id?'Hide':'Details'}</button></td>
             </tr>
           })}</tbody>
@@ -97,6 +97,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
     </details>}
   </div>
 })()}
+        {tab==='overview'&&row.send_status==='blocked'&&row.reason&&<p role="status" style={{fontSize:12,color:'#9f1239',marginTop:10}}><strong>Needs attention:</strong> {row.reason}</p>}
         {tab==='email'&&<>
         {Number(row.amount||0)<=0&&(row.prior_trust_invoices||[]).length>0&&<p style={{fontSize:12,color:'#92400e'}}>No additional trust invoice is needed. Approval sends a reminder listing the unpaid invoices; no new invoice is created.</p>}
         <MioReplenishmentEmailSections row={row}/>
