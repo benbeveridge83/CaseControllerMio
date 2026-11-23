@@ -148,7 +148,7 @@
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
           prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
           recipient_email:invoice?.recipient_email||matterClientEmail(matter)||clientEmailForMatter(matter)||'',sender_email:DEFAULT_BILLING_SENDER_EMAIL,
-          subject:template.subject||'Trust request [invoice number]',message:template.body||'Please replenish your trust account by [amount].',
+          subject:Number(candidate.amount||0)>0?(template.subject||'Trust replenishment request'):'Reminder: outstanding invoices and trust replenishment',message:Number(candidate.amount||0)>0?(template.body||'Please replenish your trust account by [amount].'):'Please review your previously issued unpaid invoices. No additional trust replenishment invoice is being created.',
           reason:candidate.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
       setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
