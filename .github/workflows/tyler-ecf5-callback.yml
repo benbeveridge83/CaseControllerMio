@@ -3,10 +3,12 @@ on:
   pull_request:
     paths:
       - 'lib/efiling/**'
+      - 'src/efiling/**'
+      - 'supabase/migrations/*tyler_efiling*'
       - 'tests/tyler-*.test.js'
       - '.github/workflows/tyler-ecf5-callback.yml'
   push:
-    branches: [feat/tyler-ecf5-nfrc-contract]
+    branches: [feat/tyler-efiling-internal-ledger]
     paths:
       - 'lib/efiling/**'
       - 'tests/tyler-*.test.js'
@@ -26,4 +28,5 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js
+      - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js tests/tyler-efiling-receipts.test.js
+      - run: npm run build
