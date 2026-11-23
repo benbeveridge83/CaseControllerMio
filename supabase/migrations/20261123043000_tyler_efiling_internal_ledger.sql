@@ -124,3 +124,39 @@ revoke all on function public.mio_record_efiling_callback_v1(text,text,text,text
  from public,anon,authenticated;
 grant execute on function public.mio_record_efiling_callback_v1(text,text,text,text,text,text,text,timestamptz)
  to service_role;
+
+grant select, insert, update, delete on public.mio_efiling_submissions, public.mio_efiling_callback_receipts, public.mio_efiling_status_audit to service_role;
+grant usage, select on all sequences in schema public to service_role;
+
+-- Called ONLY after a genuine outbound ReviewFiling result has been verified.
+-- No browser user is permitted to manufacture a Tyler submission.
+create or replace function public.mio_register_efiling_submission_v1(
+ p_owner_id uuid, p_matter_id text, p_environment text,
+ p_envelope_id text, p_filing_id text, p_draft_id text default null
+) returns uuid language plpgsql security invoker set search_path = '' as $$
+declare rid uuid;
+begin
+ if p_owner_id is null or not exists(select 1 from auth.users where id=p_owner_id) or
+    p_matter_id is null or length(trim(p_matter_id)) not between 1 and 256 or
+    p_environment not in ('stage','production') or
+    p_envelope_id is null or length(trim(p_envelope_id)) not between 1 and 256 or
+    p_filing_id is null or length(trim(p_filing_id)) not between 1 and 256 then
+    raise exception 'Invalid outbound Tyler filing metadata' using errcode='22023';
+ end if;
+ insert into public.mio_efiling_submissions(owner_id,matter_id,environment,envelope_id,filing_id,draft_id)
+ values(p_owner_id,p_matter_id,p_environment,p_envelope_id,p_filing_id,p_draft_id)
+ on conflict(environment,envelope_id,filing_id) do nothing returning id into rid;
+ if rid is null then
+  select id into rid from public.mio_efiling_submissions where
+   environment=p_environment and envelope_id=p_envelope_id and filing_id=p_filing_id
+   and owner_id=p_owner_id and matter_id=p_matter_id;
+  if rid is null then raise exception 'Outbound filing belongs to another matter' using errcode='23505'; end if;
+ else
+  insert into public.mio_efiling_status_audit(submission_id,owner_id,matter_id,to_status,event_type)
+  values(rid,p_owner_id,p_matter_id,'submitted','tyler_outbound_registered');
+ end if;
+ return rid;
+end; $$;
+revoke all on function public.mio_register_efiling_submission_v1(uuid,text,text,text,text,text)
+ from public,anon,authenticated;
+grant execute on function public.mio_register_efiling_submission_v1(uuid,text,text,text,text,text) to service_role;
