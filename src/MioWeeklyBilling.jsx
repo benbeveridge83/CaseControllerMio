@@ -31,6 +31,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const [invoicePacket,setInvoicePacket]=useState(null)
   const [packetBusy,setPacketBusy]=useState(false)
   const [ownPaymentExcluded,setOwnPaymentExcluded]=useState([])
+  const [ownPaymentBusy,setOwnPaymentBusy]=useState(false)
   const [withdrawSelected,setWithdrawSelected]=useState([])
   const [withdrawMarked,setWithdrawMarked]=useState([])
   const [withdrawBusy,setWithdrawBusy]=useState(false)
@@ -322,12 +323,54 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
       setStep('unpaid')
     }finally{setPacketBusy(false)}
   }
-  const eligiblePayments=review.payments
+  const ownPaymentRows=rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005)
+  const selectedOwnPaymentRows=ownPaymentRows.filter(m=>!ownPaymentExcluded.includes(m.id))
+  const paySelectedOwnMatterTrust=async()=>{
+    if(ownPaymentBusy)return
+    if(!postingAvailable||!supabase||!userId){setNotice('Atomic same-matter posting is unavailable. No payment was made.');return}
+    if(financeLoading||financeError||!selectedOwnPaymentRows.length){setNotice('Select a matter with an outstanding invoice and displayed trust.');return}
+    setOwnPaymentBusy(true)
+    let posted=0
+    try{
+      const fresh=await loadWeeklyBillingReadOnly(supabase,userId)
+      const requests=[]
+      for(const matter of selectedOwnPaymentRows){
+        let remaining=Math.round(Math.min(matter.displayTrust,matter.workOB)*100)
+        const invoices=fresh.invoices.filter(invoice=>String(invoice.matter_id)===matter.id&&invoice.invoice_type==='services'&&['outstanding','partially_paid'].includes(invoice.status)&&Number(invoice.balance)>0)
+          .sort((a,b)=>String(a.issue_date||'').localeCompare(String(b.issue_date||''))||String(a.id).localeCompare(String(b.id)))
+        for(const invoice of invoices){
+          const amountCents=Math.min(remaining,Math.round(Number(invoice.balance)*100))
+          if(amountCents<=0)break
+          requests.push({matter,invoice,amountCents,idempotencyKey:`weekly-own:${atomicRunId}:${invoice.id}:${amountCents}`})
+          remaining-=amountCents
+        }
+      }
+      if(!requests.length){setFinanceSnapshot(fresh);setNotice('These invoices are already paid or no longer eligible. No payment was made.');return}
+      const total=requests.reduce((sum,request)=>sum+request.amountCents,0)/100
+      if(!window.confirm(`Apply ${USD(total)} from trust to ${requests.length} invoice(s) in ${selectedOwnPaymentRows.length} selected matter(s)?\n\nMio will record each invoice payment and its trust deduction together. This does not move money between bank accounts.`))return
+      let failed=''
+      for(const request of requests){
+        const {data,error}=await supabase.rpc('mio_post_weekly_trust_payment_v1',{
+          p_idempotency_key:request.idempotencyKey,p_source_matter_id:request.matter.id,
+          p_destination_matter_id:request.matter.id,p_invoice_id:request.invoice.id,
+          p_amount_cents:request.amountCents,p_expected_invoice_updated_at:request.invoice.updated_at
+        })
+        if(error){failed=error.message||String(error);break}
+        if(!['ledger_posted','already_posted'].includes(data?.status)){failed='Mio returned an unrecognized payment status. Review the ledger before retrying.';break}
+        posted++
+      }
+      await refreshFinancialSnapshot()
+      if(posted&&onPayOwnMatterTrust)await onPayOwnMatterTrust()
+      setNotice(failed?`${posted} invoice payment(s) posted. The remaining payments stopped: ${failed} Review current balances before trying again.`:`${posted} invoice payment(s) posted and verified by Mio. Refresh bank transfer records separately.`)
+    }catch(error){setNotice(`${posted?`${posted} invoice payment(s) were posted. `:'No payment was confirmed. '}Refresh current invoices before taking another action: ${error?.message||error}`)}
+    finally{setOwnPaymentBusy(false)}
+  }
   return <div role="dialog" aria-label="Weekly Billing Review" style={{position:'fixed',inset:18,zIndex:100000,background:'#fff',color:'#13263d',border:'2px solid #94a3b8',borderRadius:12,boxShadow:'0 24px 70px #0005',overflow:'auto',padding:20}}>
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
-      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Atomic posting enabled — records an accounting allocation only; does not move bank funds':'Review mode — no invoices or trust payments will be posted'} · Appointed matters excluded by default</div></div>
+      <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Cross-matter atomic posting enabled':'Review invoices, then confirm each same-matter trust payment'} · Accounting entries do not move bank funds · Appointed matters excluded by default</div></div>
       <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
         {step==='wip'&&onOpenExistingWipReview&&(chosen.length?<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={savingBillingPreference||!!Object.keys(changes).length} onClick={openSelectedInvoiceReview}>Next: Review {chosen.length} invoice{chosen.length===1?'':'s'} →</button>:<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} onClick={()=>setStep('payments')}>Next: Payment Preview →</button>)}
+        {step==='payments'&&onPayOwnMatterTrust&&<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={ownPaymentBusy||!selectedOwnPaymentRows.length||!postingAvailable} onClick={paySelectedOwnMatterTrust}>Next: Review {selectedOwnPaymentRows.length} trust payment{selectedOwnPaymentRows.length===1?'':'s'} →</button>}
         <button style={button} onClick={onClose}>Close ×</button>
       </div>
     </header>
@@ -364,25 +407,25 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
         <p style={small}>The packet is a verified review snapshot, not an invoice. Records must be checked again before an authorized invoice posting operation.</p>
       </section>}
       <h3>Proposed trust payments</h3>
-      <p style={small}>Cross-matter payments require a signed fee agreement and the source matter's Share Trust setting. {atomicEnabled?'The atomic action below posts ledger allocations (accounting only — no bank movement).':'Enable atomic trust posting in Settings to make posting available.'}</p>
+      <p style={small}>Same-matter payments use one atomic database transaction per invoice. Cross-matter payments require the source matter's Share Trust setting and a verified fee agreement; those remain separately controlled in Settings.</p>
       {suggestions.length>0&&<section style={{border:'1px solid #d97706',background:'#fffbeb',padding:12,borderRadius:8,marginBottom:12}}>
         <strong>Possible cross-matter sharing — NOT authorized or payable yet</strong>
         <p style={small}>These amounts use displayed trust balances only. Funds, agreement authorization, and all outstanding obligations must be verified before any payout.</p>
         {suggestions.map(p=><div key={p.id} style={{marginBottom:8,background:inWithdrawal(byId.get(p.sourceMatterId))||inWithdrawal(byId.get(p.destinationMatterId))?'#fff1f2':undefined}}><strong>{p.sourceName}</strong> → {p.destinationName} · up to {USD(p.amount)} (unverified) · Source trust {trustLabel(byId.get(p.sourceMatterId))} · Source {withdrawalLabel(byId.get(p.sourceMatterId))} · Destination {withdrawalLabel(byId.get(p.destinationMatterId))}</div>)}
       </section>}
-      {eligiblePayments.length===0&&<p>No verified same-matter payments are available with the current trust and invoice data.</p>}
       <section style={{border:'1px solid #cbd5e1',borderRadius:8,padding:12,margin:'12px 0'}}>
         <strong>Same-matter trust payment approvals</strong>
         <p style={small}>Only existing outstanding invoices are eligible. These displayed balances are indications, not authorization. Mio will recalculate and ask you to confirm the actual amount before posting.</p>
-        {rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005).map(m=><div key={m.id} style={{padding:7,borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,...withdrawalRow(m)}}>
-          <label><input type="checkbox" checked={!ownPaymentExcluded.includes(m.id)} onChange={e=>setOwnPaymentExcluded(previous=>e.target.checked?previous.filter(id=>id!==m.id):[...new Set([...previous,m.id])])}/> {m.clientName} · {m.name}</label>
-          <span style={small}>Work OB {USD(m.workOB)} · Displayed trust {trustLabel(m)} · {withdrawalLabel(m)}</span>
-        </div>)}
-        {onPayOwnMatterTrust&&<button style={button} onClick={()=>{
-          const ids=rows.filter(m=>m.included&&m.workOB>0.005&&m.displayTrust>0.005&&!ownPaymentExcluded.includes(m.id)).map(m=>m.id)
-          if(ids.length)onPayOwnMatterTrust(ids)
-          else setNotice('No approved matters have both existing Work OB and displayed trust.')
-        }}>Review & confirm same-matter trust payments in Mio</button>}
+        <div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:780}}><thead><tr>{['Pay','Client and matter','Work OB','Trust amount','Withdrawal'].map(label=><th key={label} style={{...cell,color:'#13263d',fontWeight:700}}>{label}</th>)}</tr></thead><tbody>
+          {ownPaymentRows.map(m=><tr key={m.id} style={withdrawalRow(m)}>
+            <td style={cell}><input aria-label={`Pay ${m.clientName} ${m.name} from trust`} type="checkbox" checked={!ownPaymentExcluded.includes(m.id)} onChange={e=>setOwnPaymentExcluded(previous=>e.target.checked?previous.filter(id=>id!==m.id):[...new Set([...previous,m.id])])}/></td>
+            <td style={cell}>{m.clientName} · {m.name}</td>
+            <td style={{...cell,fontWeight:700}}>{USD(m.workOB)}</td>
+            <td style={{...cell,fontWeight:700}}>{trustLabel(m)}</td>
+            <td style={cell}>{withdrawalLabel(m)}</td>
+          </tr>)}
+        </tbody></table></div>
+        {!postingAvailable&&<p role="alert" style={{color:'#991b1b'}}>Atomic same-matter posting is unavailable. Do not use Bulk Billing's older trust payment action.</p>}
         <p style={small}>Cross-matter payments are NOT included in this action. Individual invoice-level payments remain available in Mio's invoice detail workflow.</p>
       </section>
       {atomicEnabled&&<section style={{border:'2px solid #b91c1c',background:'#fef2f2',padding:12,borderRadius:8,margin:'12px 0'}}>
@@ -410,7 +453,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
           return <span key={id} style={{display:'inline-flex',gap:6,marginLeft:10}}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(id,'included',e.target.checked)}/> Billing</label><label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(id,'shareTrust',e.target.checked)}/> Share ({m.name})</label></span>
         })}</div><div style={{clear:'both'}}/>
       </section>)}
-      <p><strong>Preview total: {USD(review.totalPayments)}</strong></p>
+      {proposal.payments.length>0&&<p><strong>Separate proposal total: {USD(review.totalPayments)}</strong></p>}
       <button style={button} onClick={()=>stageForReview().catch(error=>setNotice('Could not save prepared review: '+(error?.message||error)))} disabled={packetBusy||!invoicePacket}>Save prepared review (no postings)</button>
       {onOpenExistingWipReview&&invoicePacket?.length>0&&<button style={{...button,background:'#dbeafe',fontWeight:700}} disabled={packetBusy} onClick={()=>stageForReview().then(()=>onOpenExistingWipReview(invoicePacket.map(x=>x.matterId))).catch(error=>setNotice('Invoice handoff stopped: '+(error?.message||error)))}>Save review & open Mio invoice approval</button>}
       <button style={button} onClick={()=>setStep('unpaid')}>Review projected unpaid balances →</button>
