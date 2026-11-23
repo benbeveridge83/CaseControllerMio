@@ -18362,19 +18362,6 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setMatterExtraInfoById((all) => ({ ...all, [matterId]: nextExtra }))
   }
 
-  function litigationRealPartiesForCorrection(matterId, parties) {
-    // Include existing client and opposing-party records (derived from the client and
-    // opposing_parties) plus stored litigation_parties, so a "Filed by" correction can link
-    // filings to any real party. Provisional "Filed by" rows and appointments are excluded.
-    // When a precomputed `parties` list is supplied (from the table render), reuse it instead of
-    // re-deriving every matter's rows a second time.
-    const rows = parties || litigationMatterPartyRows(matterId)
-    return rows
-      .filter((party) => party.source !== 'appointment' && !String(party.id || '').startsWith('filing-filer-') && (party.name || party.role))
-      .map((party) => ({ id: String(party.id || ''), name: party.name || '', role: party.role || '', source: party.source || 'other' }))
-      .filter((party) => party.id)
-  }
-
   function filingCountForFiler(matterId, filerId) {
     const fid = String(filerId || '')
     if (!matterId || !fid) return 0
