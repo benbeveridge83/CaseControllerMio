@@ -141,9 +141,14 @@
         const verified=finance.financialSnapshotResolved===true &&
           rawBalance!=null&&rawMinimum!=null&&rawTarget!=null&&
           [balance,minimum,target].every(Number.isFinite)
-        if(!verified)return null
+        // Keep numerically identifiable low-trust matters visible when their
+        // source is stale/unreconciled. They are informational and cannot send.
+        // Unknown balances cannot safely be assigned to either threshold tab.
+        if(![balance,minimum,target].every(Number.isFinite)||rawBalance==null||rawMinimum==null||rawTarget==null)return null
         const plan=replenishmentPlan(id,invoices,{trust:balance,target})
-        const category=classifyReplenishmentMatter({balance,minimum,eligibility,financialVerified:verified,draftBlocked:plan.blocked})
+        const category=verified
+          ?classifyReplenishmentMatter({balance,minimum,eligibility,financialVerified:true,draftBlocked:plan.blocked})
+          :{tab:balance<minimum?'excluded':'above',reason:'Trust balance requires current reconciliation'}
         if(!category.tab)return null
         const candidate=plan.additional>0&&!plan.blocked?{blocked:false,amount:plan.additional,invoice:null}:{
           blocked:plan.blocked,amount:0,invoice:null,reason:plan.reason||'No new invoice is needed. Previous unpaid requests remain due.'
@@ -158,16 +163,16 @@
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
         return {id,matter_id:id,review_tab:category.tab,exclusion_reason:category.reason,
-          one_off_allowed:canOverride,manual_override:false,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
+          one_off_allowed:canOverride&&verified&&!plan.blocked,manual_override:false,financial_verified:verified,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,
           withdrawal_flagged:pref.withdrawal_flagged===true||['active','withdrawing','pending','requested'].includes(withdrawalStatuses.get(id)),
           appointed_status_unknown:false,non_appointed_confirmed:true,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
-          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(plan.additional>0?plan.additional:0),included:category.tab==='eligible'&&!candidate.blocked,
+          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(plan.additional>0?plan.additional:0),included:category.tab==='eligible'&&!candidate.blocked&&verified,
           recipient_email:invoice?.recipient_email||matterClientEmail(matter)||clientEmailForMatter(matter)||'',sender_email:DEFAULT_BILLING_SENDER_EMAIL,
           subject:Number(candidate.amount||0)>0?(template.subject||'Trust replenishment request'):'Reminder: outstanding invoices and trust replenishment',message:Number(candidate.amount||0)>0?(template.body||'Please replenish your trust account by [amount].'):'Please review your previously issued unpaid invoices. No additional trust replenishment invoice is being created.',
-          reason:candidate.reason||category.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
+          reason:!verified?category.reason:candidate.reason||category.reason||'',send_status:!verified||candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
       setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
     } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))
