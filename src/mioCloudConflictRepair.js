@@ -3,7 +3,14 @@
 // cloud already held the intended value, or when each tab had only added its own rows.
 // Everything else keeps the strict stop-and-ask behavior. See docs/cloud-save-conflicts-v320.md.
 const ABSENT = '\u0000mio-absent'
-const canonical = value => JSON.stringify(value ?? null)
+const canonical = value => JSON.stringify(value ?? null, (_key, item) => {
+  if (!item || Array.isArray(item) || typeof item !== 'object') return item
+  return Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]]))
+})
+export const sameMioJsonValue = (left, right) => {
+  try { return canonical(JSON.parse(left)) === canonical(JSON.parse(right)) }
+  catch { return false }
+}
 const recordId = item => {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return ''
   for (const field of ['id', 'uuid', 'key']) {
@@ -60,7 +67,7 @@ export function mergeMioRecordLists(baselineRaw, localRaw, remoteRaw) {
 export function repairMioCloudConflict({ baselineRaw, localRaw, deleting, remoteRaw }) {
   if (deleting) return remoteRaw == null ? null : undefined
   if (typeof localRaw !== 'string' || remoteRaw == null) return undefined
-  if (remoteRaw === localRaw) return null
+  if (remoteRaw === localRaw || sameMioJsonValue(remoteRaw, localRaw)) return null
   const merged = mergeMioRecordLists(baselineRaw, localRaw, remoteRaw)
   return merged == null ? undefined : merged
 }
