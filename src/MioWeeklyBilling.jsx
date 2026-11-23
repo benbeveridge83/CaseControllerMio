@@ -38,6 +38,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const [notice,setNotice]=useState('')
   const [cloudReady,setCloudReady]=useState(false)
   const [cloudError,setCloudError]=useState('')
+  const [savingBillingPreference,setSavingBillingPreference]=useState(false)
   const [financeSnapshot,setFinanceSnapshot]=useState(null)
   const [financeError,setFinanceError]=useState('')
   const [financeLoading,setFinanceLoading]=useState(true)
@@ -193,6 +194,28 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   const wipHeader=(key,label)=><th key={key} style={cell}><button type="button" onClick={()=>setWipSort(current=>({key,direction:current.key===key&&current.direction==='asc'?'desc':'asc'}))} aria-label={'Sort by '+label} style={{border:0,background:'transparent',padding:0,font:'inherit',fontWeight:700,cursor:'pointer',textAlign:'left'}}>{label}{wipSort.key===key?(wipSort.direction==='asc'?' ▲':' ▼'):''}</button></th>
   const proposal=useMemo(()=>createWeeklyBillingProposal({matters:rows,minimumWip:minimum,selectedIds:chosen,authorizations:{}}),[rows,minimum,selected,reviewCaseStatusFilter,reviewMatterStatusFilter,reviewCaseTypeFilter,reviewShowAppointed])
   const setMatter=(id,field,value)=>setChanges(old=>({...old,[id]:{...(old[id]||settings.matters?.[id]||{}),[field]:value}}))
+  const setBillingIncluded=async(id,value)=>{
+    if(!cloudReady||!supabase||!userId){setNotice('Billing preference was not saved. Check the settings connection.');return}
+    setMatter(id,'included',value)
+    setSavingBillingPreference(true)
+    setNotice('Saving Weekly Billing preference…')
+    try{
+      const {data:latest,error:readError}=await supabase.from('case_mio_user_state').select('json_value').eq('user_id',userId).eq('key',KEY).maybeSingle()
+      if(readError)throw readError
+      const remote=latest?.json_value&&typeof latest.json_value==='object'?latest.json_value:settings
+      const override={...(remote.matters?.[id]||{}),...(changes[id]||{}),included:value}
+      const next={...remote,matters:{...(remote.matters||{}),...changes,[id]:override}}
+      const {error}=await supabase.from('case_mio_user_state').upsert({user_id:userId,key:KEY,json_value:next,raw_value:JSON.stringify(next),origin:'weekly_billing_review',updated_at:new Date().toISOString()},{onConflict:'user_id,key'})
+      if(error)throw error
+      setSettings(next);setChanges({});setNotice('Weekly Billing preference saved.')
+    }catch(error){setNotice('Billing preference was not saved: '+(error?.message||String(error))+' Retry before leaving this page.')}
+    finally{setSavingBillingPreference(false)}
+  }
+  const openSelectedInvoiceReview=()=>{
+    if(!chosen.length){setNotice('Select a matter with WIP to review.');return}
+    if(savingBillingPreference||Object.keys(changes).length){setNotice('Save pending Billing or Share changes before opening invoice review.');return}
+    onOpenExistingWipReview?.(chosen)
+  }
   const save=async()=>{
     if(!cloudReady||!supabase||!userId){setNotice('Settings not saved: cloud is unavailable.');return}
     if(settings.enableAtomicWeeklyTrustPosting===true&&!postingAvailable){setNotice('Atomic posting is not available in the database. Leave it off until release.');return}
@@ -303,10 +326,13 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
   return <div role="dialog" aria-label="Weekly Billing Review" style={{position:'fixed',inset:18,zIndex:100000,background:'#fff',color:'#13263d',border:'2px solid #94a3b8',borderRadius:12,boxShadow:'0 24px 70px #0005',overflow:'auto',padding:20}}>
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
       <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Atomic posting enabled — records an accounting allocation only; does not move bank funds':'Review mode — no invoices or trust payments will be posted'} · Appointed matters excluded by default</div></div>
-      <button style={button} onClick={onClose}>Close ×</button>
+      <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+        {step==='wip'&&onOpenExistingWipReview&&<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={!chosen.length||savingBillingPreference||!!Object.keys(changes).length} onClick={openSelectedInvoiceReview}>Next: Review {chosen.length} invoice{chosen.length===1?'':'s'} →</button>}
+        <button style={button} onClick={onClose}>Close ×</button>
+      </div>
     </header>
     <nav style={{display:'flex',gap:8,flexWrap:'wrap',margin:'18px 0'}}>
-      {['wip','payments','unpaid','settings'].map((s,i)=><button key={s} style={{...button,background:step===s?'#dbeafe':'white',fontWeight:step===s?700:400}} onClick={()=>setStep(s)}>{i+1}. {({wip:'WIP Review',payments:'Payment Preview',unpaid:'Unpaid Balances',settings:'Settings'})[s]}</button>)}
+      {['wip','payments','unpaid','settings'].map((s,i)=><button key={s} style={{...button,background:step===s?'#dbeafe':'white',fontWeight:step===s?700:400}} onClick={()=>setStep(s)}>{i+1}. {({wip:'WIP Review',payments:'Payment Preview (after invoices)',unpaid:'Unpaid Balances',settings:'Settings'})[s]}</button>)}
     </nav>
     {financeLoading&&<p role="status">Loading recorded WIP and invoices…</p>}
     {financeError&&<p role="alert" style={{color:'#991b1b'}}>Financial records could not be loaded: {financeError}</p>}
@@ -321,10 +347,12 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
         {sortedReviewRows.map(m=><tr key={m.id} style={withdrawalRow(m)}>
           <td style={cell}><input type="checkbox" aria-label={'Select WIP '+m.clientName+' '+m.name} checked={m.included&&chosen.includes(m.id)} disabled={!m.included} onChange={e=>setSelected(old=>e.target.checked?[...new Set([...(old??first),m.id])]:(old??first).filter(x=>x!==m.id))}/></td>
           <td style={cell}>{m.clientName}</td><td style={cell}>{m.name}{m.appointed&&<span style={small}> · Appointed</span>}</td><td style={cell}>{USD(m.wip)}</td><td style={cell}>{USD(m.workOB)}</td><td style={cell}>{trustLabel(m)}</td><td style={cell}>{withdrawalLabel(m)}</td>
-          <td style={cell}><label style={small}><input type="checkbox" checked={m.included} onChange={e=>setMatter(m.id,'included',e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
+          <td style={cell}><label style={small}><input type="checkbox" checked={m.included} disabled={savingBillingPreference||!cloudReady} onChange={e=>setBillingIncluded(m.id,e.target.checked)}/> Billing</label> <label style={small}><input type="checkbox" checked={m.shareTrust} disabled={savingBillingPreference} onChange={e=>setMatter(m.id,'shareTrust',e.target.checked)}/> Share</label></td>
         </tr>)}
       </tbody></table></div><p><strong>Selected WIP: {USD(proposal.totalWip)}</strong></p>
-      {onOpenExistingWipReview&&<button style={button} onClick={()=>chosen.length?onOpenExistingWipReview(chosen):setNotice('Select a matter with WIP to review.')} disabled={!chosen.length}>Review selected WIP in Bulk Billing →</button>} <button style={button} onClick={()=>{if(!Object.keys(changes).length||window.confirm('Reload Mio to get the latest billing and invoice balances? Unsaved weekly billing checkbox changes will be lost.'))window.location.reload()}}>Reload Mio balances after billing</button>
+      <p style={small}>Next opens Mio's invoice approval screen for the selected WIP. No invoice is created until you approve it there. Payment Preview follows invoice creation.</p>
+      {!!Object.keys(changes).length&&<button type="button" style={{...button,background:'#fef3c7',fontWeight:700,marginRight:8}} disabled={savingBillingPreference||!cloudReady} onClick={save}>Save pending Billing / Share changes</button>}
+      <button style={button} onClick={()=>{if(!savingBillingPreference&&(!Object.keys(changes).length||window.confirm('Reload Mio to get the latest billing and invoice balances? Unsaved weekly billing checkbox changes will be lost.')))window.location.reload()}} disabled={savingBillingPreference}>Reload Mio balances after billing</button>
     </>}
     {step==='payments'&&<>
       <h3>Invoice approval packet</h3>
