@@ -20,6 +20,12 @@ export default function weeklyBillingReviewMount(){
       }, 600)`, 'continue after invoice creation')
     const withdrawalHelper=fs.readFileSync(new URL('./src/mioWeeklyWithdrawal.inc',import.meta.url),'utf8')
     code=replaceOnce(code,'  function renderDailyBillingModal() {',withdrawalHelper+'\n  function renderDailyBillingModal() {','withdrawal helper')
+    code=replaceOnce(code,'  async function paySelectedOutstandingFromTrust(matterIds) {',`  async function paySelectedOutstandingFromTrust(matterIds) {
+    // The old bulk writer could save trust before a conflicted invoice update.
+    setWeeklyBillingInitialStep('payments')
+    setWeeklyBillingReviewOpen(true)
+    setBulkBillingResult('Use Weekly Billing Payment Preview for atomic same-matter trust payments.')
+    return`, 'disable split bulk trust writer')
     code=replaceOnce(code,'          <button type="button" style={tabButtonStyle(\'historical_migration\')} onClick={() => setBillingTab(\'historical_migration\')}>',
       `          <button type="button" onClick={async()=>{
             if(!session?.user?.id)return alert('Sign in to review current billing records.')
@@ -42,7 +48,7 @@ export default function weeklyBillingReviewMount(){
           <button type="button" style={tabButtonStyle('historical_migration')} onClick={() => setBillingTab('historical_migration')}>`, 'billing navigation')
     code=replaceOnce(code,'        {renderDailyBillingModal()}',
       `        {renderDailyBillingModal()}
-        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingInitialStep} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingInvoiceHandoff(true);setBillingTab('bulk_billing');openBulkWipReview(ids);setWeeklyBillingReviewOpen(false)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingReviewOpen(false);paySelectedOutstandingFromTrust(ids)})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} onOpenReplenishmentReview={weeklyBillingSettingsPopup?null:(async()=>{await replenishSelectedMatters(matters.map(m=>m.id),{afterWeekly:true});setWeeklyBillingReviewOpen(false)})} matters={matters} clients={clients} withdrawalStatusFor={matterWithdrawalStatus} filterOptions={{caseStatuses:options('case_status').map(option=>option.name),matterStatuses:options('matter_status').map(option=>option.name),caseTypes:options('matter_type').map(option=>option.name)}} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
+        {(page==='billing'||weeklyBillingSettingsPopup) && weeklyBillingReviewOpen && <MioWeeklyBilling initialStep={weeklyBillingInitialStep} onOpenExistingWipReview={weeklyBillingSettingsPopup?null:(ids=>{setWeeklyBillingInvoiceHandoff(true);setBillingTab('bulk_billing');openBulkWipReview(ids);setWeeklyBillingReviewOpen(false)})} onPayOwnMatterTrust={weeklyBillingSettingsPopup?null:(async()=>{const {data,error}=await supabase.from('case_mio_user_state').select('json_value').eq('user_id',session.user.id).eq('key','caseMioTrustTransactions').maybeSingle();if(error)throw error;if(Array.isArray(data?.json_value))setMioTrustTransactions(data.json_value);await loadMioInvoicesFromDatabase({force:true})})} onMarkWithdrawals={weeklyBillingSettingsPopup?null:weeklyBillingMarkForWithdrawal} onOpenReplenishmentReview={weeklyBillingSettingsPopup?null:(async()=>{await replenishSelectedMatters(matters.map(m=>m.id),{afterWeekly:true});setWeeklyBillingReviewOpen(false)})} matters={matters} clients={clients} withdrawalStatusFor={matterWithdrawalStatus} filterOptions={{caseStatuses:options('case_status').map(option=>option.name),matterStatuses:options('matter_status').map(option=>option.name),caseTypes:options('matter_type').map(option=>option.name)}} supabase={supabase} userId={session?.user?.id||''} financeFor={matter=>{
           const f=bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)||{}
           return {wip:f.wip,workOB:f.outstanding,
             // Available trust is intentionally unverified: never submit speculative funds.
