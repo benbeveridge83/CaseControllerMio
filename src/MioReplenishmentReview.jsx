@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import {calculateTrustReplenishment, invoiceOutstanding, recentTrustHistory} from './mioTrustReplenishmentCalculations.js'
 import MioReplenishmentEmailSections from './MioReplenishmentEmailSections.jsx'
+import {replenishmentActionCategories} from './mioReplenishmentActions.js'
 const money = value => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(value)||0)
 const getNumber = (...values) => { for (const v of values) if(v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v))) return Number(v); return null }
 const dateLabel = value => value ? new Date(value).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Date unavailable'
@@ -28,12 +29,13 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       </div>
 
       <div style={{overflowX:'auto',border:'1px solid #cbd5e1',borderRadius:10}}>
-        <table style={{width:'100%',minWidth:1040,borderCollapse:'collapse',fontSize:13}}>
+        <table style={{width:'100%',minWidth:1120,borderCollapse:'collapse',fontSize:13}}>
           <thead style={{background:'#f1f5f9',color:'#475569'}}><tr>{['Select','Client / Matter','Current Trust','Minimum','Target','Previous Due','New Request','Action',''].map(h=><th key={h} style={{padding:'11px 8px',textAlign:h==='Client / Matter'||h==='Action'?'left':'right',whiteSpace:'nowrap'}}>{h}</th>)}</tr></thead>
           <tbody>{rows.map((row,index)=>{
             const old=(row.prior_trust_invoices||[]).reduce((sum,inv)=>sum+invoiceOutstanding(inv),0)
             const amount=Number(row.amount||0)
-            const action=row.send_status==='sent'?'Sent':row.send_status==='blocked'?'Blocked':row.send_status==='uncertain'?'Verify delivery':row.send_status==='error'?'Needs attention':amount>0?'New invoice':old>0?'Reminder':'Review'
+            const actions=replenishmentActionCategories(row)
+            const status=row.send_status==='sent'?'Sent':row.send_status==='blocked'?'Blocked':row.send_status==='uncertain'?'Verify delivery':row.send_status==='error'?'Needs attention':row.send_status==='sending'?'Sending':null
             return <tr key={row.id} style={{borderTop:'1px solid #e2e8f0',background:row.withdrawal_flagged?'#fff1f2':selectedId===row.id?'#eff6ff':index%2?'#f8fafc':'white'}}>
               <td style={{padding:8,textAlign:'right'}}><input type="checkbox" aria-label={`Include ${row.client_name}`} checked={!!row.included} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{included:e.target.checked})}/></td>
               <td style={{padding:8}}><strong>{row.client_name}</strong><div style={{color:'#64748b',fontSize:11}}>{row.matter_name}</div></td>
@@ -42,7 +44,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
               <td style={{padding:8,textAlign:'right'}}>{money(row.target_trust)}</td>
               <td style={{padding:8,textAlign:'right',fontWeight:600}}>{money(old)}</td>
               <td style={{padding:8,textAlign:'right',fontWeight:700}}>{money(amount)}</td>
-              <td style={{padding:8,color:row.withdrawal_flagged?'#9f1239':undefined}}>{action}{row.withdrawal_flagged?' · Withdrawal':''}</td>
+              <td style={{padding:8,minWidth:130}}><div style={{display:'flex',flexDirection:'column',gap:3}}>{status&&<strong style={{color:status==='Blocked'||status==='Needs attention'||status==='Verify delivery'?'#9f1239':'#334155',fontSize:11}}>{status}</strong>}{actions.map(label=><span key={label} style={{display:'block',color:label==='New trust invoice'?'#166534':'#334155',fontSize:12,lineHeight:'17px'}}>{label}</span>)}{!actions.length&&!status&&<span style={{color:'#64748b'}}>No invoices</span>}</div></td>
               <td style={{padding:8}}><button type="button" onClick={()=>{setSelectedId(current=>current===row.id?null:row.id);setTab('overview')}} style={{border:'1px solid #94a3b8',borderRadius:7,padding:'7px 11px',background:selectedId===row.id?'#dbeafe':'white',cursor:'pointer'}}>{selectedId===row.id?'Hide':'Details'}</button></td>
             </tr>
           })}</tbody>
