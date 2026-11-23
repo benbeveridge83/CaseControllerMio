@@ -327,7 +327,7 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
     <header style={{display:'flex',gap:15,justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
       <div><h2 style={{margin:'0 0 3px'}}>Weekly Billing — Review Workspace</h2><div style={small}>{atomicEnabled?'Atomic posting enabled — records an accounting allocation only; does not move bank funds':'Review mode — no invoices or trust payments will be posted'} · Appointed matters excluded by default</div></div>
       <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-        {step==='wip'&&onOpenExistingWipReview&&<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={!chosen.length||savingBillingPreference||!!Object.keys(changes).length} onClick={openSelectedInvoiceReview}>Next: Review {chosen.length} invoice{chosen.length===1?'':'s'} →</button>}
+        {step==='wip'&&onOpenExistingWipReview&&(chosen.length?<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} disabled={savingBillingPreference||!!Object.keys(changes).length} onClick={openSelectedInvoiceReview}>Next: Review {chosen.length} invoice{chosen.length===1?'':'s'} →</button>:<button type="button" style={{...button,background:'#1d4ed8',color:'#fff',fontSize:17,fontWeight:800,padding:'12px 18px'}} onClick={()=>setStep('payments')}>Next: Payment Preview →</button>)}
         <button style={button} onClick={onClose}>Close ×</button>
       </div>
     </header>
