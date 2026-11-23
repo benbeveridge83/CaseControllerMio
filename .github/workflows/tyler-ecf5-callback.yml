@@ -1,0 +1,29 @@
+name: Tyler ECF5 callback tests
+on:
+  pull_request:
+    paths:
+      - 'lib/efiling/**'
+      - 'tests/tyler-*.test.js'
+      - '.github/workflows/tyler-ecf5-callback.yml'
+  push:
+    branches: [feat/tyler-ecf5-nfrc-contract]
+    paths:
+      - 'lib/efiling/**'
+      - 'tests/tyler-*.test.js'
+      - '.github/workflows/tyler-ecf5-callback.yml'
+permissions:
+  contents: read
+jobs:
+  callback-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js
