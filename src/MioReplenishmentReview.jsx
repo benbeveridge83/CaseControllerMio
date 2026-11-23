@@ -22,7 +22,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       <div role="status" aria-live="polite">{review.loading?'Loading current invoices...':review.message}</div>
       {review.error&&<p role="alert">{review.error}</p>}
       <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'12px 0'}}>
-        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length} onClick={()=>onSend(null)}>Approve &amp; Send Requests / Reminders ({ready.length})</button>
+        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length} onClick={()=>onSend(null)}>Approve &amp; Send Selected ({ready.length})</button>
         <strong>New requests selected: {money(ready.reduce((sum,row)=>sum+Number(row.amount||0),0))}</strong>
         {!connected&&<button type="button" onClick={onConnect} disabled={busy}>Connect Microsoft</button>}
       </div>
@@ -79,10 +79,10 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       {row.withdrawal_flagged&&<small style={{color:'#9f1239',fontWeight:700}}>Withdrawal review flagged</small>}
     </div>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,padding:10,background:'#f8fafc',borderRadius:8}}>
-      <div><small>Unpaid work invoices</small><div><strong>{work.length?money(workTotal):row.unpaid_work_balance!=null?money(row.unpaid_work_balance):'Not loaded'}</strong></div></div>
-      <div><small>Earlier trust invoices due</small><div><strong>{old.length?money(priorTotal):row.prior_replenishment_balance!=null?money(row.prior_replenishment_balance):'Not loaded'}</strong></div></div>
+      <div><small>Unpaid work invoices</small><div><strong>{money(workTotal)}</strong></div></div>
+      <div><small>Earlier trust invoices due</small><div><strong>{money(priorTotal)}</strong></div></div>
       <div><small>New trust request</small><div><strong>{money(row.amount)}</strong>{suggested!==null&&old.length>0&&<small style={{display:'block'}}>Calculated: {money(suggested)}</small>}</div></div>
-      <div><small>All obligations</small><div><strong>{work.length||old.length?money(workTotal+priorTotal+Number(row.amount||0)):'Pending invoice lookup'}</strong></div></div>
+      <div><small>All obligations</small><div><strong>{money(workTotal+priorTotal+Number(row.amount||0))}</strong></div></div>
     </div>
     {onUpdateLimits&&<div style={{display:'flex',flexWrap:'wrap',gap:10,marginTop:10}}>
       <label style={{fontSize:12}}>Minimum trust <input style={{width:115}} type="number" min="0" step=".01" defaultValue={min??''} disabled={busy||locked(row)} onBlur={e=>{if(e.target.value!==''&&Number(e.target.value)!==min)onUpdateLimits(row.id,{minimum_trust:Number(e.target.value)})}}/></label>
