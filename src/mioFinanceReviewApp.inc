@@ -74,7 +74,18 @@
     }catch(error){alert('Could not save withdrawal-review flag. '+(error?.message||error))}
   }
   function updateReplenishmentRow(id,patch) {
-    setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>row.id===id?{...row,...patch,...(!patch.send_status?{send_status:'ready',send_error:''}:{})}:row)}))
+    setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>{
+      if(row.id!==id)return row
+      const next={...row,...patch}
+      if(Object.hasOwn(patch,'included')&&row.review_tab!=='eligible'){
+        next.manual_override=patch.included===true
+        // One-off selection is a review-run choice, never a persistent change.
+        if(patch.included===true&&!row.one_off_allowed)return row
+      }
+      // Do not unlock an unsent draft or an uncertain delivery by checking a box.
+      if(patch.send_status===undefined&&row.send_status==='error')next.send_status='ready'
+      return next
+    })}))
   }
   async function readFinanceInvoicesForReview() {
     const [rows,events]=await Promise.all([
@@ -170,9 +181,12 @@
     if(!Number.isFinite(amount)||amount<=0)return alert('Enter a positive request amount.')
     await openInvoicePdf({...row.invoice,id:row.prepared_id,invoice_number:row.invoice?.invoice_number||'PREVIEW - NOT ISSUED',invoice_type:'trust_request',matter_id:row.matter_id,client_name:row.client_name,matter_name:row.matter_name,issue_date:date,total:amount,subtotal:amount,balance:amount,amount_paid:0,line_items:[{date,description:'Trust / IOLTA retainer replenishment',amount}]},'open')
   }
-  async function sendReplenishmentReview(rowId=null) {
+  async function sendReplenishmentReview(rowIds=null) {
     if(replenishmentSendingRef.current)return
-    const rows=replenishmentReview.rows.filter(row=>(rowId?row.id===rowId:row.included)&&!['sent','blocked','uncertain','sending'].includes(row.send_status))
+    const requested=Array.isArray(rowIds)?new Set(rowIds.map(String)):null
+    const rows=replenishmentReview.rows.filter(row=>
+      (requested?requested.has(String(row.id)):typeof rowIds==='string'?String(row.id)===rowIds:row.included)
+      &&row.included&&!['sent','blocked','uncertain','sending'].includes(row.send_status))
     if(!rows.length)return
     replenishmentSendingRef.current=true;setBulkBillingBusy(true)
     let sentCount=0,failedCount=0
@@ -194,12 +208,16 @@
           const weekly=weeklyRecord?.json_value||JSON.parse(weeklyRecord?.raw_value||'{}')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const eligible=sectionAReplenishmentEligibility(matter,matters,weekly?.matters||{},preferences)
-          if(!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
+          const manual=row.manual_override===true&&row.review_tab!=='eligible'
+          const canOverride=overrideAllowed({matter,weeklyOverride:weekly?.matters?.[String(matter.id)]||{},eligibility:eligible})
+          if(manual&&!canOverride)throw new Error('This matter cannot be manually replenished because it is appointed or closed.')
+          if(!manual&&!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
           if(!weeklyRecord && row.non_appointed_confirmed!==true)
             throw new Error('Section A appointment settings are unavailable; stop for review.')
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
-          if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
+          if(!manual&&(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false))
+            throw new Error('Matter has been excluded or is not the primary replenishment matter.')
           // Withdrawal review is informational, not a prohibition on requesting
           // payment while representation and contractual obligations continue.
           // Closed matters and appointed matters remain excluded above.
@@ -208,8 +226,10 @@
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
             target=Number(pref.target_trust??matterRetainerTarget(matter))
-          if(fin.financialSnapshotResolved!==true||!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
-            throw new Error('Trust balance is no longer below the minimum or cannot be verified; reopen review.')
+          if(fin.financialSnapshotResolved!==true||![trust,minimum,target].every(Number.isFinite))
+            throw new Error('Current trust, minimum or target cannot be verified; reopen review.')
+          if(!manual&&trust>=minimum)
+            throw new Error('Trust is no longer below minimum. Reopen review to select a manual request.')
           const plan=replenishmentPlan(row.matter_id,fresh,{trust,target})
           if(plan.blocked)throw new Error(plan.reason)
           if(Math.round(plan.additional*100)!==Math.round(amount*100))throw new Error('Trust balance or outstanding invoices changed. Reopen review to recalculate.')
