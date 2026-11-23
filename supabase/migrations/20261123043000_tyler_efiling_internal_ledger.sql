@@ -126,7 +126,7 @@ grant execute on function public.mio_record_efiling_callback_v1(text,text,text,t
  to service_role;
 
 grant select, insert, update, delete on public.mio_efiling_submissions, public.mio_efiling_callback_receipts, public.mio_efiling_status_audit to service_role;
-grant usage, select on all sequences in schema public to service_role;
+grant usage, select on sequence public.mio_efiling_status_audit_id_seq to service_role;
 
 -- Called ONLY after a genuine outbound ReviewFiling result has been verified.
 -- No browser user is permitted to manufacture a Tyler submission.
