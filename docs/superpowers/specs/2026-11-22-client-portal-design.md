@@ -1,6 +1,6 @@
 # Client Portal: Intake and Payments
 Date: 2026-11-22
-Status: Proposed for user review; implementation not started.
+Status: Approved; implemented on feature/client-portal-intake-payments; release validation in progress.
 
 ## Intent
 Give firm staff one place to manage each matter's client portal, and give invited clients access to their fee agreement, assigned intake forms, and outstanding invoices.
@@ -48,4 +48,4 @@ Verify invitation creation, resend, expiration, redemption and account reuse; bo
 Implementation will require auth/schema changes and Microsoft, BoldSign and LawPay integration checks. Report any configuration blocker specifically. Do not describe the feature as live until deployment and end-to-end verification succeed.
 
 ## Approval
-User approval of this written scope is pending. Product defaults above are recommendations, not prior user decisions.
+User approved the written scope on November 22, 2026 and instructed continued implementation.

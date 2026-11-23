@@ -7,13 +7,16 @@ on:
       - 'src/mioWeeklyBillingData.js'
       - 'docs/weekly-billing-release-gates.md'
       - 'mio-weekly-billing-review-mount.js'
+      - 'mio-v314-finance-review.js'
       - 'tests/weekly-billing-review.test.js'
       - 'tests/weekly-billing-withdrawal.test.js'
       - 'src/mioWeeklyWithdrawal.inc'
       - 'supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql'
+      - 'supabase/migrations/20261122210000_weekly_billing_default_eligibility_v2.sql'
       - 'tests/sql/weekly-billing-atomic-schema.sql'
       - 'tests/sql/weekly-billing-atomic-behavior.sql'
       - 'tests/sql/weekly-billing-atomic-concurrency.sql'
+      - 'tests/sql/weekly-billing-atomic-defaults.sql'
       - 'vite.config.js'
       - '.github/workflows/weekly-billing-review.yml'
   push:
@@ -58,7 +61,9 @@ jobs:
         run: |
           psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-schema.sql
           psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261121180000_weekly_billing_atomic_posting_v1.sql
+          psql -v ON_ERROR_STOP=1 -f supabase/migrations/20261122210000_weekly_billing_default_eligibility_v2.sql
           psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-behavior.sql
+          psql -v ON_ERROR_STOP=1 -f tests/sql/weekly-billing-atomic-defaults.sql
           psql -v ON_ERROR_STOP=1 -c "begin; select public.mio_post_weekly_trust_payment_v1('wk-concurrency-0001','bbbbbbbb-0000-4000-8000-000000000005','bbbbbbbb-0000-4000-8000-000000000002','cccccccc-0000-4000-8000-000000000004',10000,'2026-11-21T00:00:00+00'); select pg_sleep(1); commit;" > race-a.txt &
           first=$!
           sleep 0.25

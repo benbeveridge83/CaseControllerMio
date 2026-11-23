@@ -31,6 +31,28 @@ import { DISCLOSURE_CATEGORIES } from './discoveryRelief/catalog.js'
 import { discoveryTypeLabel } from './discoveryRelief/types.js'
 import { generateDiscoveryDocx, buildDiscoveryRequestsData } from './discoveryRelief/generate.js'
 
+const MioFilerCorrectionControl = React.memo(function MioFilerCorrectionControl({ matterId, filerId, options, affectedCount, onApply }) {
+  const [selected, setSelected] = useState('')
+  const apply = () => {
+    if (!selected) return
+    onApply(matterId, filerId, selected)
+    setSelected('')
+  }
+  return (
+    <div style={{ display: 'grid', gap: 4, padding: 6, borderRadius: 6, border: '1px dashed #d97706', background: '#fff7ed' }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: '#92400e' }}>Attribute these filings to party…</div>
+      <select aria-label="Attribute these filings to party" value={selected} onChange={(event) => setSelected(event.target.value)}>
+        <option value="">Choose an existing party…</option>
+        {options.map((item) => <option key={item.id} value={item.id}>{item.name ? `${item.name} — ${item.role || 'Party'}` : (item.role || item.id)}</option>)}
+      </select>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button type="button" disabled={!selected} onClick={apply}>Apply</button>
+        <span style={{ fontSize: 11, color: '#64748b' }}>{affectedCount} filing{affectedCount === 1 ? '' : 's'} affected</span>
+      </div>
+    </div>
+  )
+})
+
 const MIO_APP_VERSION = 'Mio V267'
 const MIO_EFILE_HANDLE_DB_NAME = 'case-controller-mio-file-handles'
 const MIO_EFILE_HANDLE_DB_VERSION = 1
@@ -5414,6 +5436,7 @@ function App() {
       return normalizeMatterSettingsChecklistFilters(clearTransientSearchFields(stored, ['search']))
     } catch { return normalizeMatterSettingsChecklistFilters({}) }
   })
+  const [litigationPartyTablePage, setLitigationPartyTablePage] = useState(1)
   const [efileFolderTableFilters, setEfileFolderTableFilters] = useState(() => {
     try { return normalizeMatterSettingsChecklistFilters(clearTransientSearchFields(JSON.parse(localStorage.getItem('caseMioEfileFolderTableFiltersV250') || '{}') || {}, ['search'])) }
     catch { return normalizeMatterSettingsChecklistFilters({}) }
@@ -6040,6 +6063,11 @@ function App() {
     try { return JSON.parse(localStorage.getItem('caseMioFilerCorrections') || '{}') }
     catch { return {} }
   })
+  const [expandedLitigationPartyIds, setExpandedLitigationPartyIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('caseMioExpandedLitigationParties') || '[]') }
+    catch { return [] }
+  })
+  const [filerDrafts, setFilerDrafts] = useState({})
   const [peopleMatterId, setPeopleMatterId] = useState('')
   const [personForm, setPersonForm] = useState({ matter_id: '', name: '', notes: '', tag_ids: [] })
   const [peopleSearchText, setPeopleSearchText] = useState('')
@@ -9800,6 +9828,7 @@ function App() {
     safeSetLocalStorage('caseMioLitigationPartyTableFiltersV250', JSON.stringify(savedFilters))
     safeSetLocalStorage('caseMioLitigationPartyTableFilters', JSON.stringify(savedFilters))
   }, [litigationPartyTableFilters])
+  useEffect(() => { setLitigationPartyTablePage(1) }, [litigationPartyTableFilters])
   useEffect(() => { safeSetLocalStorage('caseMioEfileFolderTableFiltersV250', JSON.stringify(clearTransientSearchFields(efileFolderTableFilters, ['search']))) }, [efileFolderTableFilters])
   useEffect(() => { safeSetLocalStorage('caseMioServiceInboxSettingsTabV250', serviceInboxSettingsTab || 'tags') }, [serviceInboxSettingsTab])
 
@@ -10022,6 +10051,10 @@ function App() {
   useEffect(() => {
     safeSetLocalStorage('caseMioFilerCorrections', JSON.stringify(filerCorrections))
   }, [filerCorrections])
+
+  useEffect(() => {
+    safeSetLocalStorage('caseMioExpandedLitigationParties', JSON.stringify([...expandedLitigationPartyIds]))
+  }, [expandedLitigationPartyIds])
 
   useEffect(() => {
     safeSetLocalStorage('caseControllerTimelineColumns', JSON.stringify(timelineColumns))
@@ -18216,7 +18249,28 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       if (!alreadyRepresented(party)) rows.push({ ...party, _stored_index: -1, _derived: true })
     })
     while (rows.length < minimum) rows.push({ ...ensureLitigationPartyShape({ id: `lit-party-${matterId}-${rows.length + 1}` }, matterId, rows.length), _stored_index: -1, _derived: true })
-    return includeBlanks ? rows : rows.filter((party) => party.name || party.email || party.role || party.attorney_name || party.attorney_email)
+    // Column ordering: column one is the original Petitioner only — "Petitioner",
+    // "Petitioner / Counter-Respondent", and "Petitioner / Cross-Respondent" all LEAD with
+    // "petitioner" so they stay here. Respondents (including "Respondent / Counter-Petitioner"
+    // and "Respondent / Cross-Petitioner") follow. Counter- or cross-petitioner status never
+    // promotes someone into the original Petitioner's column. Then Children, then independent
+    // appointments, then everyone else. The client keeps its own party role's column and is
+    // outlined separately wherever it lands.
+    const orderRank = (party) => {
+      const role = String(party.role || '').trim().toLowerCase()
+      if (role.startsWith('petitioner')) return 0
+      if (role.startsWith('respondent') || role.startsWith('opposing')) return 1
+      // Defensive: a standalone "Counter-Petitioner"/"Cross-Petitioner" (or any spacing) is a
+      // respondent, not the original petitioner.
+      if (role.includes('counter-petitioner') || role.includes('cross-petitioner') || role.includes('counterpetitioner') || role.includes('crosspetitioner')) return 1
+      if (role.startsWith('child') || role.startsWith('children') || role.startsWith('minor')) return 2
+      if (party.source === 'appointment') return 3
+      return 4
+    }
+    const ordered = rows.map((row, position) => ({ row, position }))
+      .sort((a, b) => orderRank(a.row) - orderRank(b.row) || a.position - b.position)
+      .map((item) => item.row)
+    return includeBlanks ? ordered : ordered.filter((party) => party.name || party.email || party.role || party.attorney_name || party.attorney_email)
   }
 
   function updateLitigationMatterPartyAt(matterId, index, patch = {}) {
@@ -18255,44 +18309,78 @@ async function handleDiscoveryNewRequestFiles(fileList) {
     setMatterExtraInfoById((all) => ({ ...all, [matterId]: nextExtra }))
   }
 
-  function litigationRealPartiesForCorrection(matterId) {
-    return litigationStoredParties(matterId).filter((party) => party.source !== 'appointment' && (party.name || party.role))
+  function litigationRealPartiesForCorrection(matterId, parties) {
+    // Include existing client and opposing-party records (derived from the client and
+    // opposing_parties) plus stored litigation_parties, so a "Filed by" correction can link
+    // filings to any real party. Provisional "Filed by" rows and appointments are excluded.
+    // When a precomputed `parties` list is supplied (from the table render), reuse it instead of
+    // re-deriving every matter's rows a second time.
+    const rows = parties || litigationMatterPartyRows(matterId)
+    return rows
+      .filter((party) => party.source !== 'appointment' && !String(party.id || '').startsWith('filing-filer-') && (party.name || party.role))
+      .map((party) => ({ id: String(party.id || ''), name: party.name || '', role: party.role || '', source: party.source || 'other' }))
+      .filter((party) => party.id)
+  }
+
+  function filingCountForFiler(matterId, filerId) {
+    const fid = String(filerId || '')
+    if (!matterId || !fid) return 0
+    let count = 0
+    ;(documents || []).forEach((doc) => {
+      if (String(doc.matter_id || doc.suggested_matter_id || '') !== String(matterId)) return
+      const ids = Array.isArray(doc.filed_by_party_ids) && doc.filed_by_party_ids.length ? doc.filed_by_party_ids : [doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id]
+      if (ids.some((id) => String(id) === fid)) count += 1
+    })
+    ;(serviceEmailRows || []).forEach((row) => {
+      if (String(resolveServiceEmailMatterId(row) || '') !== String(matterId)) return
+      if (String(row.filed_by_person_id || '') === fid) count += 1
+    })
+    return count
   }
 
   function applyFilerCorrection(matterId, originalFilerId, correctedPartyId) {
     if (!matterId || !originalFilerId) return
     const partyId = String(correctedPartyId || '')
-    const mergePartyIds = (existing) => Array.from(new Set([...(Array.isArray(existing) ? existing : []).filter(Boolean).map(String), ...(partyId ? [partyId] : [])]))
+    const fid = String(originalFilerId)
+    const mergePartyIds = (existing) => Array.from(new Set([
+      ...(Array.isArray(existing) ? existing : []).filter((id) => Boolean(id) && String(id) !== fid).map(String),
+      ...(partyId ? [partyId] : [])
+    ]))
     setFilerCorrections((current) => ({
       ...current,
-      [matterId]: { ...(current?.[matterId] || {}), [String(originalFilerId)]: partyId }
+      [matterId]: { ...(current?.[matterId] || {}), [fid]: partyId }
     }))
     // Scope strictly to the selected matter AND the specific filer id, so the same attorney id
-    // reused in other matters is never touched. Both the legacy single field and the new
-    // party selection are updated together, and the original filer is preserved separately.
+    // reused in other matters is never touched. Match both the legacy single field and the new
+    // party selection, link to the chosen existing party, and preserve the original filer
+    // separately in filed_by_original_id.
     setDocuments((current) => (current || []).map((doc) => {
       if (String(doc.matter_id || doc.suggested_matter_id || '') !== String(matterId)) return doc
-      const currentFiler = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
-      if (!currentFiler || currentFiler !== String(originalFilerId)) return doc
+      const personId = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
+      const partyIds = Array.isArray(doc.filed_by_party_ids) ? doc.filed_by_party_ids.map(String) : []
+      if (personId !== fid && !partyIds.includes(fid)) return doc
+      const original = doc.filed_by_original_id || doc.document_field_values?.filed_by_original_id || fid
       return {
         ...doc,
-        filed_by_original_id: doc.filed_by_original_id || currentFiler,
+        filed_by_original_id: original,
         filed_by_person_id: partyId,
         filed_by_party_ids: mergePartyIds(doc.filed_by_party_ids),
         document_field_values: {
           ...(doc.document_field_values || {}),
           filed_by_person_id: partyId,
-          filed_by_original_id: doc.document_field_values?.filed_by_original_id || currentFiler,
+          filed_by_original_id: original,
           filed_by_party_ids: mergePartyIds(doc.document_field_values?.filed_by_party_ids)
         }
       }
     }))
     setServiceEmailRows((current) => (current || []).map((row) => {
       if (String(resolveServiceEmailMatterId(row) || '') !== String(matterId)) return row
-      if (String(row.filed_by_person_id || '') !== String(originalFilerId)) return row
+      const personId = String(row.filed_by_person_id || '')
+      const partyIds = Array.isArray(row.filed_by_party_ids) ? row.filed_by_party_ids.map(String) : []
+      if (personId !== fid && !partyIds.includes(fid)) return row
       return {
         ...row,
-        filed_by_original_id: row.filed_by_original_id || row.filed_by_person_id,
+        filed_by_original_id: row.filed_by_original_id || personId || fid,
         filed_by_person_id: partyId,
         filed_by_party_ids: mergePartyIds(row.filed_by_party_ids)
       }
@@ -19677,6 +19765,11 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const isDerivedOpposing = isDerived && party._origin === 'opposing'
     const editIndex = party._stored_index ?? index
     const isAppointment = party.source === 'appointment'
+    const isClientCell = party.source === 'client' || isDerivedClient
+    const isExpanded = expandedLitigationPartyIds.includes(party.id || '')
+    const toggleExpanded = () => setExpandedLitigationPartyIds((current) => current.includes(party.id) ? current.filter((x) => x !== party.id) : [...current, party.id])
+    const filerDraft = filerDrafts[party.id] || {}
+    const updateFilerDraft = (patch) => setFilerDrafts((current) => ({ ...current, [party.id]: { ...(current[party.id] || {}), ...patch } }))
     const attorneyType = party.attorney_type || ''
     const partyColor = isAppointment ? (attorneyTypeColor(attorneyType) || '#64748b') : (partyTypeColor(party.role) || '#94a3b8')
     const partyFill = litigationHexToRgba(partyColor, 0.10)
@@ -19691,7 +19784,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     ]
     const edit = (patch) => {
       if (isFilingFiler) {
-        addLitigationPartyFromFiler(matter.id, { ...party, ...patch })
+        updateFilerDraft(patch)
         return
       }
       if (isDerivedClient) {
@@ -19727,6 +19820,10 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
         return
       }
       if (isDerivedClient) return
+      if (isFilingFiler) {
+        updateFilerDraft({ attorney_directory_id: directoryId || '', attorney_name: row?.name || party.attorney_name || '', attorney_email: row?.email || party.attorney_email || '', attorney_firm: row?.firm || party.attorney_firm || '', attorney_phone: row?.phone || party.attorney_phone || '' })
+        return
+      }
       edit({ attorney_directory_id: directoryId || '', attorney_name: row?.name || party.attorney_name || '', attorney_email: row?.email || party.attorney_email || '', attorney_firm: row?.firm || party.attorney_firm || '', attorney_phone: row?.phone || party.attorney_phone || '' })
     }
     const addAttorneyInline = () => {
@@ -19740,34 +19837,48 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
     if (isFilingFiler) {
       const sourceLabel = { attorney: 'Attorney', client: 'Client', party: 'Party', counsel: 'Counsel', person: 'Person', prior_counsel: 'Prior counsel', co_counsel: 'Co-counsel' }[party.filer_source] || 'Filing'
+      const draftName = filerDraft.name !== undefined ? filerDraft.name : party.name
+      const draftEmail = filerDraft.email !== undefined ? filerDraft.email : party.email
+      const draftRole = filerDraft.role !== undefined ? filerDraft.role : party.role
+      const draftAttorneyDir = filerDraft.attorney_directory_id !== undefined ? filerDraft.attorney_directory_id : party.attorney_directory_id
+      const draftAttorneyType = filerDraft.attorney_type !== undefined ? filerDraft.attorney_type : party.attorney_type
+      const draftAttorneyName = filerDraft.attorney_name !== undefined ? filerDraft.attorney_name : party.attorney_name
+      const draftAttorneyEmail = filerDraft.attorney_email !== undefined ? filerDraft.attorney_email : party.attorney_email
+      const affectedCount = filingCountForFiler(matter.id, party.filer_original_id)
       return (
         <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #cbd5e1', verticalAlign: 'top' }}>
           <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: '1px solid #b45309', background: '#fffbeb' }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: '#b45309' }}>Filed by — {sourceLabel} (review)</div>
-            <select aria-label="Party type" value={party.role || ''} onChange={(event) => edit({ role: event.target.value })}>
-              <option value="">Party type…</option>
-              {options('party_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
-            </select>
-            <input value={party.name || ''} onChange={(event) => edit({ name: event.target.value })} placeholder="Party name" />
-            <input value={party.email || ''} onChange={(event) => edit({ email: event.target.value })} placeholder="Party email (imported)" />
-            <div style={{ display: 'grid', gap: 5, padding: 6, borderRadius: 6, border: '1px dashed #cbd5e1', background: 'transparent' }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>Party attorney</div>
-              <select aria-label="Attorney" value={party.attorney_directory_id || ''} onChange={(event) => assignAttorney(event.target.value)}>
-                <option value="">Choose attorney…</option>
-                {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
-              </select>
-              <select aria-label="Attorney type" value={attorneyType} onChange={(event) => edit({ attorney_type: event.target.value })}>
-                <option value="">Attorney type…</option>
-                <option value="Party Attorney">Party Attorney</option>
-              </select>
-              <input value={party.attorney_name || ''} onChange={(event) => edit({ attorney_name: event.target.value })} placeholder="Attorney name" />
-              <input value={party.attorney_email || ''} onChange={(event) => edit({ attorney_email: event.target.value })} placeholder="Attorney email" />
+            {!isExpanded ? (
+              <div style={{ fontWeight: 700, cursor: 'pointer' }} onClick={toggleExpanded} title="Expand this filer">{draftName || 'Unnamed'}</div>
+            ) : (
+              <>
+                <select aria-label="Party type" value={draftRole || ''} onChange={(event) => updateFilerDraft({ role: event.target.value })}>
+                  <option value="">Party type…</option>
+                  {options('party_type').map((option) => <option key={option.id} value={option.name}>{option.name}</option>)}
+                </select>
+                <input value={draftName || ''} onChange={(event) => updateFilerDraft({ name: event.target.value })} placeholder="Party name" />
+                <input value={draftEmail || ''} onChange={(event) => updateFilerDraft({ email: event.target.value })} placeholder="Party email (imported)" />
+                <div style={{ display: 'grid', gap: 5, padding: 6, borderRadius: 6, border: '1px dashed #cbd5e1', background: 'transparent' }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b' }}>Party attorney</div>
+                  <select aria-label="Attorney" value={draftAttorneyDir || ''} onChange={(event) => assignAttorney(event.target.value)}>
+                    <option value="">Choose attorney…</option>
+                    {attorneyDirectory.filter((item) => item.name).map((item) => <option key={item.id} value={item.id}>{item.name}{item.firm ? ` — ${item.firm}` : ''}</option>)}
+                  </select>
+                  <select aria-label="Attorney type" value={draftAttorneyType || ''} onChange={(event) => updateFilerDraft({ attorney_type: event.target.value })}>
+                    <option value="">Attorney type…</option>
+                    <option value="Party Attorney">Party Attorney</option>
+                  </select>
+                  <input value={draftAttorneyName || ''} onChange={(event) => updateFilerDraft({ attorney_name: event.target.value })} placeholder="Attorney name" />
+                  <input value={draftAttorneyEmail || ''} onChange={(event) => updateFilerDraft({ attorney_email: event.target.value })} placeholder="Attorney email" />
+                </div>
+              </>
+            )}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button type="button" onClick={toggleExpanded}>{isExpanded ? 'Done' : 'Edit'}</button>
+              <button type="button" onClick={() => addLitigationPartyFromFiler(matter.id, { ...party, ...filerDraft })}>Save as new party</button>
             </div>
-            <select aria-label="Replace with party" value="" onChange={(event) => { if (event.target.value) applyFilerCorrection(matter.id, party.filer_original_id, event.target.value) }}>
-              <option value="">Replace with existing party…</option>
-              {correctableParties.map((item) => <option key={item.id} value={item.id}>{item.name || item.role || item.id}</option>)}
-            </select>
-            <button type="button" onClick={() => addLitigationPartyFromFiler(matter.id, party)}>Add as new party</button>
+            <MioFilerCorrectionControl matterId={matter.id} filerId={party.filer_original_id} options={correctableParties} affectedCount={affectedCount} onApply={applyFilerCorrection} />
             <div style={{ fontSize: 11, color: '#64748b' }}>Original filer identity is preserved separately on the filings.</div>
           </div>
         </td>
@@ -19776,7 +19887,16 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
     return (
       <td key={party.id || index} style={{ padding: 6, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #cbd5e1', verticalAlign: 'top' }}>
-        <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: `1px solid ${partyColor}`, background: partyFill }}>
+        <div style={{ display: 'grid', gap: 6, padding: 7, borderRadius: 7, border: `${isClientCell ? 3 : 1}px solid ${partyColor}`, background: partyFill }}>
+          {!isExpanded ? (
+            <div style={{ display: 'grid', gap: 3, cursor: 'pointer' }} onClick={toggleExpanded} title="Expand this party">
+              <div style={{ fontWeight: 800, fontSize: 13 }}>{party.name || party.role || (isAppointment ? 'Appointment' : 'Party')}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>{isAppointment ? (attorneyType || 'Appointment') : (party.role || (party.source === 'client' ? 'Client' : party.source === 'opposing' ? 'Opposing' : 'Other'))}</div>
+              {!isClientCell && !isAppointment && (party.attorney_name || party.attorney_email) && <div style={{ fontSize: 11, color: '#64748b' }}>Atty: {party.attorney_name || party.attorney_email}{attorneyType ? ` · ${attorneyType}` : ''}</div>}
+              <button type="button" onClick={(event) => { event.stopPropagation(); toggleExpanded() }}>Edit</button>
+            </div>
+          ) : (
+            <>
           {isAppointment ? (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', gap: 5, alignItems: 'center' }}>
@@ -19839,26 +19959,43 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
           {!isDerived && <button type="button" onClick={() => removeLitigationMatterParty(matter.id, editIndex)} style={{ color: '#991b1b' }}>Remove party slot</button>}
             </>
           )}
+              <button type="button" onClick={toggleExpanded}>Done</button>
+            </>
+          )}
         </div>
       </td>
     )
   }
 
   function renderLitigationPartySettingsTable({ embedded = false } = {}) {
-    const rows = matters.filter((matter) => {
-      const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: 6 })
-      const partyText = parties.map((party) => `${party.name || ''} ${party.email || ''} ${party.attorney_name || ''} ${party.attorney_email || ''} ${party.role || ''}`).join(' ')
-      return matterMatchesSettingsChecklistFilters(matter, litigationPartyTableFilters, partyText)
-    }).sort((a, b) => matterName(a.id).localeCompare(matterName(b.id)))
-    const maxPartyColumns = Math.max(6, ...rows.map((matter) => litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: 6 }).length))
+    const pageSize = embedded ? 10 : 25
+    const allRows = matters
+      .map((matter) => {
+        const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: 6 })
+        const partyText = parties.map((party) => `${party.name || ''} ${party.email || ''} ${party.attorney_name || ''} ${party.attorney_email || ''} ${party.role || ''}`).join(' ')
+        return { matter, parties, partyText }
+      })
+      .filter((item) => matterMatchesSettingsChecklistFilters(item.matter, litigationPartyTableFilters, item.partyText))
+      .sort((a, b) => matterName(a.matter.id).localeCompare(matterName(b.matter.id)))
+    const maxPartyColumns = Math.max(6, ...allRows.map((item) => item.parties.length))
+    const totalPages = Math.max(1, Math.ceil(allRows.length / pageSize))
+    const page = Math.min(Math.max(1, litigationPartyTablePage), totalPages)
+    const pageRows = allRows.slice((page - 1) * pageSize, page * pageSize)
     return (
       <div style={embedded ? { padding: 0 } : undefined}>
         <h2 style={{ marginTop: embedded ? 0 : undefined }}>Litigation Parties by Matter</h2>
         <p style={{ color: '#64748b' }}>One row per matter. These parties create the subcolumns inside every Litigation Track. Each matter starts with six party slots and can add more.</p>
         {renderMatterSettingsFilterBar(litigationPartyTableFilters, setLitigationPartyTableFilters, { searchPlaceholder: 'Filter matters, parties, attorneys, or emails...' })}
-        <div style={{ marginBottom: 7, color: '#64748b', fontSize: 12 }}><strong style={{ color: '#334155' }}>{rows.length}</strong> matter{rows.length === 1 ? '' : 's'} shown</div>
-        <div style={{ overflowX: 'auto', maxHeight: embedded ? 500 : undefined, overflowY: embedded ? 'auto' : undefined, border: '1px solid #cbd5e1', borderRadius: 8 }}><table style={{ borderCollapse: 'collapse', minWidth: 300 + maxPartyColumns * 285, width: '100%', background: '#fff' }}><thead><tr><th style={{ position: 'sticky', left: 0, top: 0, zIndex: 4, background: '#e2e8f0', minWidth: 280, padding: 8, textAlign: 'left', borderRight: '2px solid #94a3b8' }}>Matter</th>{Array.from({ length: maxPartyColumns }, (_, index) => <th key={index} style={{ minWidth: 285, padding: 8, background: '#f8fafc', borderRight: '1px solid #cbd5e1', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Party {index + 1}</th>)}<th style={{ minWidth: 110, background: '#e2e8f0', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Actions</th></tr></thead><tbody>{rows.map((matter) => { const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: maxPartyColumns }); return <tr key={matter.id}><td style={{ position: 'sticky', left: 0, zIndex: 2, background: '#fff', padding: 8, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #94a3b8', verticalAlign: 'top' }}><strong>{matterName(matter.id)}</strong><div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{matter.cause_number || 'No cause number'}</div><div style={{ color: '#64748b', fontSize: 10 }}>{matter.matter_type || ''}{matter.case_status ? ` · ${matter.case_status}` : ''}{matter.matter_status ? ` · ${matter.matter_status}` : ''}{matterWithdrawalStatus(matter) === 'withdrawing' ? ' · Withdrawing' : ''}</div></td>{(() => { const mp = parties.filter((p) => p.source !== 'appointment' && !String(p.id || '').startsWith('filing-filer-') && (p.name || p.role)); const cp = litigationRealPartiesForCorrection(matter.id); return parties.map((party, index) => renderLitigationPartyCell(matter, party, index, mp.filter((p) => String(p.id) !== String(party.id)), cp.filter((p) => String(p.id) !== String(party.id)))) })()}<td style={{ padding: 8, borderTop: '1px solid #e2e8f0', verticalAlign: 'top', whiteSpace: 'nowrap' }}><button type="button" onClick={() => addLitigationMatterParty(matter.id)}>+ Add party</button><button type="button" onClick={() => addLitigationMatterAppointment(matter.id)} style={{ marginLeft: 6 }}>+ Add appointment</button></td></tr>})}</tbody></table></div>
-        {!rows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 12 }}>No matters match the selected filters.</div>}
+        <div style={{ marginBottom: 7, color: '#64748b', fontSize: 12 }}><strong style={{ color: '#334155' }}>{allRows.length}</strong> matter{allRows.length === 1 ? '' : 's'} shown{totalPages > 1 ? ` - page ${page} of ${totalPages}` : ''}</div>
+        <div style={{ overflowX: 'auto', maxHeight: embedded ? 500 : undefined, overflowY: embedded ? 'auto' : undefined, border: '1px solid #cbd5e1', borderRadius: 8 }}><table style={{ borderCollapse: 'collapse', minWidth: 300 + maxPartyColumns * 285, width: '100%', background: '#fff' }}><thead><tr><th style={{ position: 'sticky', left: 0, top: 0, zIndex: 4, background: '#e2e8f0', minWidth: 280, padding: 8, textAlign: 'left', borderRight: '2px solid #94a3b8' }}>Matter</th>{Array.from({ length: maxPartyColumns }, (_, index) => <th key={index} style={{ minWidth: 285, padding: 8, background: '#f8fafc', borderRight: '1px solid #cbd5e1', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Party {index + 1}</th>)}<th style={{ minWidth: 110, background: '#e2e8f0', position: embedded ? 'sticky' : undefined, top: embedded ? 0 : undefined, zIndex: embedded ? 3 : undefined }}>Actions</th></tr></thead><tbody>{pageRows.map((item) => { const matter = item.matter; const parties = litigationMatterPartyRows(matter.id, { includeBlanks: true, minimum: maxPartyColumns }); return <tr key={matter.id}><td style={{ position: 'sticky', left: 0, zIndex: 2, background: '#fff', padding: 8, borderTop: '1px solid #e2e8f0', borderRight: '2px solid #94a3b8', verticalAlign: 'top' }}><strong>{matterName(matter.id)}</strong><div style={{ color: '#64748b', fontSize: 11, marginTop: 3 }}>{matter.cause_number || 'No cause number'}</div><div style={{ color: '#64748b', fontSize: 10 }}>{matter.matter_type || ''}{matter.case_status ? ` · ${matter.case_status}` : ''}{matter.matter_status ? ` · ${matter.matter_status}` : ''}{matterWithdrawalStatus(matter) === 'withdrawing' ? ' · Withdrawing' : ''}</div></td>{(() => { const mp = parties.filter((p) => p.source !== 'appointment' && !String(p.id || '').startsWith('filing-filer-') && (p.name || p.role)); const cp = litigationRealPartiesForCorrection(matter.id, parties); return parties.map((party, index) => renderLitigationPartyCell(matter, party, index, mp.filter((p) => String(p.id) !== String(party.id)), cp.filter((p) => String(p.id) !== String(party.id)))) })()}<td style={{ padding: 8, borderTop: '1px solid #e2e8f0', verticalAlign: 'top', whiteSpace: 'nowrap' }}><button type="button" onClick={() => addLitigationMatterParty(matter.id)}>+ Add party</button><button type="button" onClick={() => addLitigationMatterAppointment(matter.id)} style={{ marginLeft: 6 }}>+ Add appointment</button></td></tr>})}</tbody></table></div>
+        {!allRows.length && <div style={{ color: '#64748b', textAlign: 'center', padding: 12 }}>No matters match the selected filters.</div>}
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            <button type="button" disabled={page <= 1} onClick={() => setLitigationPartyTablePage(page - 1)}>Prev</button>
+            <span style={{ fontSize: 12, color: '#334155' }}>Page {page} of {totalPages}</span>
+            <button type="button" disabled={page >= totalPages} onClick={() => setLitigationPartyTablePage(page + 1)}>Next</button>
+          </div>
+        )}
       </div>
     )
   }

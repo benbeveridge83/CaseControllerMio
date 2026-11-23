@@ -13,7 +13,9 @@ create table public.matters (
   id uuid primary key,
   client_id uuid,
   name text not null,
-  is_active boolean default true
+  is_active boolean default true,
+  matter_type text,
+  case_status text
 );
 
 create table public.mio_invoices (

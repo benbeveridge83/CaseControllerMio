@@ -74,7 +74,18 @@
     }catch(error){alert('Could not save withdrawal-review flag. '+(error?.message||error))}
   }
   function updateReplenishmentRow(id,patch) {
-    setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>row.id===id?{...row,...patch,...(!patch.send_status?{send_status:'ready',send_error:''}:{})}:row)}))
+    setReplenishmentReview(current=>({...current,rows:current.rows.map(row=>{
+      if(row.id!==id)return row
+      const next={...row,...patch}
+      if(Object.hasOwn(patch,'included')&&row.review_tab!=='eligible'){
+        next.manual_override=patch.included===true
+        // One-off selection is a review-run choice, never a persistent change.
+        if(patch.included===true&&!row.one_off_allowed)return row
+      }
+      // Do not unlock an unsent draft or an uncertain delivery by checking a box.
+      if(patch.send_status===undefined&&row.send_status==='error')next.send_status='ready'
+      return next
+    })}))
   }
   async function readFinanceInvoicesForReview() {
     const [rows,events]=await Promise.all([
@@ -119,15 +130,26 @@
       const rows=ids.map(id=>{
         const matter=matters.find(m=>String(m.id)===id)
         if(!matter)return null
-        if(!sectionAReplenishmentEligibility(matter,matters,weeklyOverrides,settings).eligible)return null
+        const eligibility=sectionAReplenishmentEligibility(matter,matters,weeklyOverrides,settings)
         const pref=settings[id]||{}
-        if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)return null
+        const canOverride=overrideAllowed({matter,weeklyOverride:weeklyOverrides[id]||{},eligibility})
         // Existing finance numbers are in-memory, not the stale Clio historical report.
         const finance=clientFinanceNumbers(matter,invoices)
-        const balance=Number(finance.trust),minimum=Number(pref.minimum_trust??finance.minimumBalance),
-          target=Number(pref.target_trust??matterRetainerTarget(matter))
-        if(finance.financialSnapshotResolved!==true||!Number.isFinite(balance)||!Number.isFinite(minimum)||!Number.isFinite(target)||balance>=minimum)return null
+        const rawBalance=finance.trust,rawMinimum=pref.minimum_trust??finance.minimumBalance
+        const rawTarget=pref.target_trust??matterRetainerTarget(matter)
+        const balance=Number(rawBalance),minimum=Number(rawMinimum),target=Number(rawTarget)
+        const verified=finance.financialSnapshotResolved===true &&
+          rawBalance!=null&&rawMinimum!=null&&rawTarget!=null&&
+          [balance,minimum,target].every(Number.isFinite)
+        // Keep numerically identifiable low-trust matters visible when their
+        // source is stale/unreconciled. They are informational and cannot send.
+        // Unknown balances cannot safely be assigned to either threshold tab.
+        if(![balance,minimum,target].every(Number.isFinite)||rawBalance==null||rawMinimum==null||rawTarget==null)return null
         const plan=replenishmentPlan(id,invoices,{trust:balance,target})
+        const category=verified
+          ?classifyReplenishmentMatter({balance,minimum,eligibility,financialVerified:true,draftBlocked:plan.blocked})
+          :{tab:balance<minimum?'excluded':'above',reason:'Trust balance requires current reconciliation'}
+        if(!category.tab)return null
         const candidate=plan.additional>0&&!plan.blocked?{blocked:false,amount:plan.additional,invoice:null}:{
           blocked:plan.blocked,amount:0,invoice:null,reason:plan.reason||'No new invoice is needed. Previous unpaid requests remain due.'
         }
@@ -140,16 +162,17 @@
           client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',invoice_number:'[invoice number]',amount:'[amount]',
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
-        return {id,matter_id:id,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
+        return {id,matter_id:id,review_tab:category.tab,exclusion_reason:category.reason,
+          one_off_allowed:canOverride&&verified&&!plan.blocked,manual_override:false,financial_verified:verified,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,
           withdrawal_flagged:pref.withdrawal_flagged===true||['active','withdrawing','pending','requested'].includes(withdrawalStatuses.get(id)),
           appointed_status_unknown:false,non_appointed_confirmed:true,
           prior_trust_invoices:prior.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at,created_at:i.created_at,trust_at_issue:i.trust_at_issue})),
           unpaid_work_invoices:work.map(i=>({id:i.id,invoice_number:i.invoice_number,amount:Number(i.total||0),paid_amount:Number(i.amount_paid||0),remaining_balance:Number(i.balance||0),payment_url:i.payment_url,issued_at:i.issue_date,sent_at:i.emailed_at})),
-          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(candidate.amount??0),included:!candidate.blocked,
+          prepared_id:invoice?.id||crypto.randomUUID(),amount:String(plan.additional>0?plan.additional:0),included:category.tab==='eligible'&&!candidate.blocked&&verified,
           recipient_email:invoice?.recipient_email||matterClientEmail(matter)||clientEmailForMatter(matter)||'',sender_email:DEFAULT_BILLING_SENDER_EMAIL,
-          subject:template.subject||'Trust request [invoice number]',message:template.body||'Please replenish your trust account by [amount].',
-          reason:candidate.reason||'',send_status:candidate.blocked?'blocked':'ready',send_error:''}
+          subject:Number(candidate.amount||0)>0?(template.subject||'Trust replenishment request'):'Reminder: outstanding invoices and trust replenishment',message:Number(candidate.amount||0)>0?(template.body||'Please replenish your trust account by [amount].'):'Please review your previously issued unpaid invoices. No additional trust replenishment invoice is being created.',
+          reason:!verified?category.reason:candidate.reason||category.reason||'',send_status:!verified||candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
       setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
     } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))
@@ -163,9 +186,12 @@
     if(!Number.isFinite(amount)||amount<=0)return alert('Enter a positive request amount.')
     await openInvoicePdf({...row.invoice,id:row.prepared_id,invoice_number:row.invoice?.invoice_number||'PREVIEW - NOT ISSUED',invoice_type:'trust_request',matter_id:row.matter_id,client_name:row.client_name,matter_name:row.matter_name,issue_date:date,total:amount,subtotal:amount,balance:amount,amount_paid:0,line_items:[{date,description:'Trust / IOLTA retainer replenishment',amount}]},'open')
   }
-  async function sendReplenishmentReview(rowId=null) {
+  async function sendReplenishmentReview(rowIds=null) {
     if(replenishmentSendingRef.current)return
-    const rows=replenishmentReview.rows.filter(row=>(rowId?row.id===rowId:row.included)&&!['sent','blocked','uncertain','sending'].includes(row.send_status))
+    const requested=Array.isArray(rowIds)?new Set(rowIds.map(String)):null
+    const rows=replenishmentReview.rows.filter(row=>
+      (requested?requested.has(String(row.id)):typeof rowIds==='string'?String(row.id)===rowIds:row.included)
+      &&row.included&&!['sent','blocked','uncertain','sending'].includes(row.send_status))
     if(!rows.length)return
     replenishmentSendingRef.current=true;setBulkBillingBusy(true)
     let sentCount=0,failedCount=0
@@ -187,24 +213,28 @@
           const weekly=weeklyRecord?.json_value||JSON.parse(weeklyRecord?.raw_value||'{}')
           const preferences=await loadReplenishmentSettings(supabase,session.user.id)
           const eligible=sectionAReplenishmentEligibility(matter,matters,weekly?.matters||{},preferences)
-          if(!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
+          const manual=row.manual_override===true&&row.review_tab!=='eligible'
+          const canOverride=overrideAllowed({matter,weeklyOverride:weekly?.matters?.[String(matter.id)]||{},eligibility:eligible})
+          if(manual&&!canOverride)throw new Error('This matter cannot be manually replenished because it is appointed or closed.')
+          if(!manual&&!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
           if(!weeklyRecord && row.non_appointed_confirmed!==true)
             throw new Error('Section A appointment settings are unavailable; stop for review.')
           if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
-          if(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false)throw new Error('Matter has been excluded or is not the primary replenishment matter.')
-          const {data:withdrawalRows,error:withdrawalError}=await supabase.from('mio_withdrawal_workflows')
-            .select('matter_id,state').eq('owner_id',session.user.id).eq('matter_id',row.matter_id)
-          if(withdrawalError)throw withdrawalError
-          const pendingWithdrawal=(withdrawalRows||[]).some(w=>['active','withdrawing','pending','requested'].includes(String(w.state?.status||'').toLowerCase()))
-          if(pref.withdrawal_flagged===true||pendingWithdrawal)
-            throw new Error('Matter is flagged for withdrawal review or has an active withdrawal workflow. Resolve this before automatic sending.')
+          if(!manual&&(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false))
+            throw new Error('Matter has been excluded or is not the primary replenishment matter.')
+          // Withdrawal review is informational, not a prohibition on requesting
+          // payment while representation and contractual obligations continue.
+          // Closed matters and appointed matters remain excluded above.
+          // Keep withdrawal shading in the review without blocking invoice sends.
           const fresh=await readFinanceInvoicesForReview()
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
             target=Number(pref.target_trust??matterRetainerTarget(matter))
-          if(fin.financialSnapshotResolved!==true||!Number.isFinite(trust)||!Number.isFinite(minimum)||!Number.isFinite(target)||trust>=minimum)
-            throw new Error('Trust balance is no longer below the minimum or cannot be verified; reopen review.')
+          if(fin.financialSnapshotResolved!==true||![trust,minimum,target].every(Number.isFinite))
+            throw new Error('Current trust, minimum or target cannot be verified; reopen review.')
+          if(!manual&&trust>=minimum)
+            throw new Error('Trust is no longer below minimum. Reopen review to select a manual request.')
           const plan=replenishmentPlan(row.matter_id,fresh,{trust,target})
           if(plan.blocked)throw new Error(plan.reason)
           if(Math.round(plan.additional*100)!==Math.round(amount*100))throw new Error('Trust balance or outstanding invoices changed. Reopen review to recalculate.')

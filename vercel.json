@@ -6,6 +6,10 @@
       "destination": "/api/auth/callback?integration=client_portal"
     },
     {
+      "source": "/api/tyler-efm-callback",
+      "destination": "/api/auth/callback?integration=tyler_efm"
+    },
+    {
       "source": "/api/discovery-objections",
       "destination": "/api/auth/callback?integration=discovery_objections"
     },

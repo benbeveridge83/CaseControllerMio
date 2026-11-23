@@ -165,6 +165,16 @@ test('invoice-level cross-matter sharing needs independently verified agreement 
  const withRestrictedFunds=allocateVerifiedWeeklyInvoicePayments({matters:[{...source,agreementAuthorized:true,unrestrictedFundsVerified:false},dest],invoices:[invoice]})
  assert.equal(withRestrictedFunds.totalCents,0)
 })
+test('excluded source can share verified trust while excluded destinations receive no payment',()=>{
+ const source={id:'closed-source',clientId:'x',included:false,shareTrust:true,agreementAuthorized:true,
+   trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:100}
+ const destination={id:'open-dest',clientId:'x',included:true}
+ const invoice={id:'inv',matter_id:'open-dest',client_id:'x',invoice_type:'services',status:'outstanding',balance:80}
+ const allocated=allocateVerifiedWeeklyInvoicePayments({matters:[source,destination],invoices:[invoice]})
+ assert.deepEqual(allocated.payments.map(p=>[p.sourceMatterId,p.destinationMatterId,p.amount]),[['closed-source','open-dest',80]])
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[source,{...destination,included:false}],invoices:[invoice]}).totalCents,0)
+ assert.equal(allocateVerifiedWeeklyInvoicePayments({matters:[{...source,shareTrust:false},destination],invoices:[invoice]}).totalCents,0)
+})
 test('invoice-level allocator rejects mismatched client, trust requests, disputed invoices, excluded matters',()=>{
  const matter={id:'b',clientId:'x',included:true,shareTrust:true,trustVerified:true,unrestrictedFundsVerified:true,verifiedAvailableTrust:1000}
  const candidates=[

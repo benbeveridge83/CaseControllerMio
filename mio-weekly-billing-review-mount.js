@@ -26,6 +26,8 @@ export default function weeklyBillingReviewMount(){
               setWeeklyBillingReviewOpen(true)
             }catch(error){alert('Could not refresh billing data. Weekly Billing stayed closed: '+(error?.message||error))}
           }} style={tabButtonStyle('weekly_billing_review')}>Weekly Billing Review</button>
+          <button type="button" onClick={()=>replenishSelectedMatters(matters.filter(m=>m.is_active!==false).map(m=>m.id))}
+            style={tabButtonStyle('trust_replenishment_review')} title="Standalone low-trust review, independent of weekly billing">Trust Replenishment Review</button>
           <button type="button" onClick={()=>window.open(window.location.origin+window.location.pathname+'?mioWeeklyBillingSettings=1','mio-weekly-billing-settings','width=1100,height=800,resizable=yes,scrollbars=yes')} style={tabButtonStyle('weekly_billing_settings')}>Billing Settings ↗</button>
           <button type="button" style={tabButtonStyle('historical_migration')} onClick={() => setBillingTab('historical_migration')}>`, 'billing navigation')
     code=replaceOnce(code,'        {renderDailyBillingModal()}',

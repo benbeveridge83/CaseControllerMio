@@ -8,7 +8,7 @@ export function mountClientPortal(source){
  "    const {data} = await supabase.auth.getSession()",
  "    if (!data?.session?.access_token) throw new Error('Sign in to Mio first.')",
  "    const payload = {action,...body}",
- "    if (action === 'invite') { try {payload.graph_token=await getMicrosoftGraphToken()} catch {} }",
+ "    if (['invite','staff_send_intake'].includes(action)) { try {payload.graph_token=await getMicrosoftGraphToken()} catch {} }",
  "    const r=await fetch('/api/client-portal',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+data.session.access_token},body:JSON.stringify(payload)})",
  "    const p=await r.json();if(!r.ok)throw new Error(p.error||'Portal request failed.');return p",
  "  },[serviceGraphConfig,serviceGraphAuth,page])",

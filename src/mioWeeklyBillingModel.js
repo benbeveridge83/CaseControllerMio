@@ -25,7 +25,8 @@ export function createWeeklyBillingProposal({matters = [], minimumWip = 150, sel
   const owing = new Map(normalized.map(m=>[m.id,m.dueCents]))
   const proposals = []
   const makePayment = (source,dest) => {
-    if (!dest.included || !source.included || !source.clientId || source.clientId !== dest.clientId) return
+    if (!dest.included || !source.clientId || source.clientId !== dest.clientId) return
+    if (source.id === dest.id && !source.included) return
     if (source.id !== dest.id && (!source.shareTrust || authorizations[source.id] !== true)) return
     const payment = Math.min(balance.get(source.id), owing.get(dest.id))
     if (payment <= 0) return
@@ -82,7 +83,7 @@ export function possibleCrossMatterFunding(matters = []) {
   const possible=[]
   const remainingOwed=new Map(normalized.map(m=>[m.id,Math.max(0,m.owedCents-m.displayCents)]))
   for (const source of normalized) {
-    if (!source.included || !source.shareTrust || !source.clientId) continue
+    if (!source.shareTrust || !source.clientId) continue
     let remainder=Math.max(0,source.displayCents-source.owedCents)
     if (!remainder) continue
     const destinations=normalized.filter(dest=>dest.id!==source.id&&dest.clientId===source.clientId&&dest.included&&remainingOwed.get(dest.id)>0)
@@ -108,7 +109,7 @@ export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={
   const remainingTrust=new Map()
   const remainingInvoice=new Map()
   for(const m of matters) {
-    const verified=m.included===true&&m.trustVerified===true&&m.unrestrictedFundsVerified===true
+    const verified=m.trustVerified===true&&m.unrestrictedFundsVerified===true
     remainingTrust.set(String(m.id),verified?cents(m.verifiedAvailableTrust):0)
   }
   // Only posted, collectible service invoices are payable. A partially paid
@@ -145,7 +146,7 @@ export function allocateVerifiedWeeklyInvoicePayments({matters=[],invoices=[]}={
   for(const invoice of eligible){
     const destination=matterById.get(String(invoice.matter_id))
     for(const source of matters){
-      if(String(source.id)===String(destination.id)||source.included!==true||
+      if(String(source.id)===String(destination.id)||
          source.shareTrust!==true||source.agreementAuthorized!==true||
          !source.clientId||!destination.clientId||
          !invoice.client_id||String(invoice.client_id)!==String(destination.clientId)||

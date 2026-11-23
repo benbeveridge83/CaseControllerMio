@@ -6,6 +6,10 @@ export const config = { maxDuration: 120 }
 export default async function handler(req, res) {
   if(req.query?.integration==='client_portal') { const {default:portalHandler}=await import('../../lib/portal/handler.js');return portalHandler(req,res) }
 
+  if (req.query?.integration === 'tyler_efm') {
+    const { default: tylerCallback } = await import('../../lib/efiling/tylerCallbackGateway.js')
+    return tylerCallback(req, res)
+  }
   if (req.query?.integration === 'discovery_objections') {
     const { default: discoveryHandler } = await import('../../lib/discovery-objections-handler.js')
     return discoveryHandler(req, res)

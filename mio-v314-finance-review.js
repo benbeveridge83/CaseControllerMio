@@ -3,7 +3,7 @@ const app=fs.readFileSync(new URL('./src/mioFinanceReviewApp.inc',import.meta.ur
 function once(code,from,to,label){if(code.split(from).length!==2)throw Error(`V314 ${label}: source anchor not unique`);return code.replace(from,to)}
 function editFunction(code,name,edit){const re=new RegExp('  (?:async )?function '+name+'\\('),match=re.exec(code);if(!match)throw Error(`V314 missing ${name}`);const start=match.index,next=/\n {2}(?:async )?function /.exec(code.slice(start+match[0].length));if(!next)throw Error(`V314 missing end ${name}`);const end=start+match[0].length+next.index;return code.slice(0,start)+edit(code.slice(start,end))+code.slice(end)}
 export default function financeReview(){return {name:'mio-v314-finance-review',enforce:'pre',transform(source,id){if(!id.split('?')[0].replaceAll('\\','/').endsWith('/src/App.jsx'))return null
- let code="import MioReplenishmentReview from './MioReplenishmentReview.jsx'\nimport MioReplenishmentMatterSettings from './MioReplenishmentMatterSettings.jsx'\nimport {loadReplenishmentSettings,saveReplenishmentSettings} from './mioReplenishmentSettings.js'\nimport {sectionAReplenishmentEligibility} from './mioReplenishmentHandoff.js'\nimport {replenishmentFingerprint,claimReplenishmentSend,finishReplenishmentClaim} from './mioReplenishmentClaims.js'\nimport {passesTrustMinimum,compareInvoiceRows,replenishmentCandidate,replenishmentPlan,operatingPaymentMarkers,scanLawPayPages,auditLawPayRecords,lawPayReconciliationMessage,bulkInvoiceActionEligibility,lawPayAccountLabel} from './mioFinanceReview.js'\nimport {lawPayAttributionEntry,lawPayAttributionState,lawPayAttributionSummary,duplicateLawPayAttribution,lawPayTransactionId,accountKind,transactionMoneyOut} from './mioLawPayAttribution.js'\n"+source
+ let code="import MioReplenishmentReview from './MioReplenishmentReview.jsx'\nimport MioReplenishmentMatterSettings from './MioReplenishmentMatterSettings.jsx'\nimport {loadReplenishmentSettings,saveReplenishmentSettings} from './mioReplenishmentSettings.js'\nimport {sectionAReplenishmentEligibility} from './mioReplenishmentHandoff.js'\nimport {classifyReplenishmentMatter,overrideAllowed,calculateReplenishmentCents} from './mioReplenishmentTabs.js'\nimport {replenishmentFingerprint,claimReplenishmentSend,finishReplenishmentClaim} from './mioReplenishmentClaims.js'\nimport {passesTrustMinimum,compareInvoiceRows,replenishmentCandidate,replenishmentPlan,operatingPaymentMarkers,scanLawPayPages,auditLawPayRecords,lawPayReconciliationMessage,bulkInvoiceActionEligibility,lawPayAccountLabel} from './mioFinanceReview.js'\nimport {lawPayAttributionEntry,lawPayAttributionState,lawPayAttributionSummary,duplicateLawPayAttribution,lawPayTransactionId,accountKind,transactionMoneyOut} from './mioLawPayAttribution.js'\n"+source
  code=once(code,'  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)','  const [bulkInvoiceLedgerOpen, setBulkInvoiceLedgerOpen] = useState(false)\n  const [bulkInvoiceSelectedIds,setBulkInvoiceSelectedIds]=useState([])','invoice selection state')
  code=editFunction(code,'replenishSelectedMatters',()=>app.trimEnd()+'\n')
  code=once(code,'        {renderDailyBillingModal()}',`        {renderDailyBillingModal()}
@@ -96,6 +96,37 @@ export default function financeReview(){return {name:'mio-v314-finance-review',e
  })
  code=editFunction(code,'renderBulkBillingPanel',part=>{
    part=once(part,'      const matter = row.matter','      const matter = row.matter\n      if(!passesTrustMinimum(row.trust,bulkBillingFilters.min_trust))return false','trust filter predicate')
+   // The bulk table is filtered by case status and type. Its Trust header
+   // cannot stand in for the pooled bank balance when closed matters hold trust.
+   const trustSummary=`    const allTrustRows = matters.map(matter=>({
+      matter,
+      matterName:matter.name||matter.matter_name||matterClientName(matter)||'Unnamed matter',
+      trust:(bulkFinanceByMatterId.get(String(matter.id))||clientFinanceNumbers(matter)).trust
+    }))
+    const trustCents=trustRows=>trustRows.reduce((sum,row)=>sum+Math.round(financeNumber(row.trust)*100),0)
+    const allMatterTrustCents=trustCents(allTrustRows)
+    const filteredTrustCents=trustCents(rows)
+    const visibleTrustIds=new Set(rows.map(row=>String(row.matter.id)))
+    const hiddenTrustRows=allTrustRows.filter(row=>!visibleTrustIds.has(String(row.matter.id))&&Math.abs(financeNumber(row.trust))>=0.005)
+    const closedTrustRows=allTrustRows.filter(row=>{
+      const closedMatter=row.matter
+      return (closedMatter.is_active===false||['closed','dismissed'].includes(String(closedMatter.case_status||closedMatter.status||'').trim().toLowerCase()))&&Math.abs(financeNumber(row.trust))>=0.005
+    })
+    const centsMoney=cents=>(cents/100).toLocaleString('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2})
+`
+   part=once(part,'    const bulkColumnTotal = (column) =>',trustSummary+'    const bulkColumnTotal = (column) =>','all-matter trust calculation')
+   const trustSummaryPanel=`        <div style={{ marginTop: 10, border: '1px solid #93c5fd', borderRadius: 8, background: '#eff6ff', color: '#172554', padding: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 28px', alignItems: 'baseline' }}>
+            <strong>All-matter trust (including closed): {centsMoney(allMatterTrustCents)}</strong>
+            <span>Trust in current filters: {centsMoney(filteredTrustCents)}</span>
+            <span>Trust outside current filters: {centsMoney(allMatterTrustCents-filteredTrustCents)}</span>
+            <span>Closed or inactive matter trust: {centsMoney(trustCents(closedTrustRows))}</span>
+          </div>
+          <div style={{ fontSize: 12, marginTop: 5 }}>The Trust column below totals only filtered matters. Use the all-matter total when comparing Mio's pooled trust ledger to the bank.</div>
+          {!!hiddenTrustRows.length && <details style={{ marginTop: 8 }}><summary style={{ cursor: 'pointer', fontWeight: 700 }}>Show {hiddenTrustRows.length} matters with trust outside the current filters</summary><div style={{ marginTop: 6, maxHeight: 240, overflowY: 'auto' }}>{hiddenTrustRows.map(row=><div key={row.matter.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, borderTop: '1px solid #bfdbfe', padding: '5px 2px' }}><span>{matterClientName(row.matter)||'Client'} — {row.matterName} ({row.matter.case_status||(row.matter.is_active===false?'Inactive':'Outside filters')})</span><strong>{centsMoney(Math.round(financeNumber(row.trust)*100))}</strong></div>)}</div></details>}
+        </div>
+`
+   part=once(part,"        <div style={{ marginTop: 10, border: '1px solid #86efac'",trustSummaryPanel+"        <div style={{ marginTop: 10, border: '1px solid #86efac'",'all-matter trust panel')
    const field=`          <LabeledField label="Minimum trust amount"><input aria-label="Minimum trust amount" type="number" min="0" step="0.01" value={bulkBillingFilters.min_trust??''} onChange={event=>setBulkBillingFilters(current=>({...current,min_trust:event.target.value}))} placeholder="No minimum" title="Hide matters with less than this trust balance. Blank shows all." /></LabeledField>\n`
    part=once(part,'          <LabeledField label="Mio opening balance through">',field+'          <LabeledField label="Mio opening balance through">','trust filter control')
    return once(part,'      <section className="card" style={{ padding: 0',`      {renderFinanceSyncStatus()}
