@@ -114,6 +114,9 @@
         if(!reconciliation?.ok||reconciliation?.audit?.issues?.length)
           throw new Error('Payment reconciliation is incomplete. Resolve LawPay discrepancies before replenishment.')
         await refreshMioFinancialGraphData()
+        // Atomic posting writes to this cloud ledger together with invoice payments.
+        // Refuse a handoff from stale React state (including another tab's postings).
+        await assertCurrentTrustLedger(supabase,session.user.id,mioTrustTransactions)
       }
       const [invoices,settings,weeklyRecord,withdrawalResult]=await Promise.all([
         readFinanceInvoicesForReview(),
@@ -227,6 +230,9 @@
           // payment while representation and contractual obligations continue.
           // Closed matters and appointed matters remain excluded above.
           // Keep withdrawal shading in the review without blocking invoice sends.
+          // Refresh both sides of the atomic posting before any invoice issuance.
+          // A concurrent posting in another tab must invalidate this approval.
+          await assertCurrentTrustLedger(supabase,session.user.id,mioTrustTransactions)
           const fresh=await readFinanceInvoicesForReview()
           const fin=clientFinanceNumbers(matter,fresh)
           const trust=Number(fin.trust),minimum=Number(pref.minimum_trust??fin.minimumBalance),
