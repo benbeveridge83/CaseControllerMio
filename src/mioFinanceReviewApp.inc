@@ -106,17 +106,35 @@
     if(!ids.length)return alert('Check at least one matter first.')
     setReplenishmentReview({open:true,loading:true,rows:[],message:'',error:''})
     setBulkBillingBusy(true)
+    let handoffWarning=''
     try {
       if(afterWeekly){
-        // A PREPARED weekly packet is not a posted transaction. Refresh the
-        // actual financial graph after the weekly review has finished.
-        const reconciliation=await refreshLawPayFinancialData({silent:false})
-        if(!reconciliation?.ok||reconciliation?.audit?.issues?.length)
-          throw new Error('Payment reconciliation is incomplete. Resolve LawPay discrepancies before replenishment.')
-        await refreshMioFinancialGraphData()
-        // Atomic posting writes to this cloud ledger together with invoice payments.
-        // Refuse a handoff from stale React state (including another tab's postings).
-        await assertCurrentTrustLedger(supabase,session.user.id,mioTrustTransactions)
+        // A failed global LawPay audit must not hide the READ-ONLY review.
+        // It still blocks issuance until payments and balances are verified.
+        try {
+          const reconciliation=await refreshLawPayFinancialData({silent:false})
+          if(!reconciliation?.ok) {
+            handoffWarning='LawPay refresh incomplete: '+(reconciliation?.error||'The complete transaction check could not be confirmed.')
+          } else if(reconciliation.audit?.issues?.length) {
+            const issues=reconciliation.audit.issues
+            const sample=issues.slice(0,3).map(i=>[i.invoiceNumber||i.id||'transaction',i.reason||i.kind||'needs review'].join(' — ')).join('; ')
+            handoffWarning=issues.length+' LawPay invoice discrepancy(ies) require reconciliation before sending. '+sample
+          }
+        } catch(error) {
+          handoffWarning='LawPay refresh failed: '+(error?.message||error)
+        }
+        try {
+          await refreshMioFinancialGraphData()
+        } catch(error) {
+          handoffWarning+=(handoffWarning?' ':'')+'Financial graph refresh failed: '+(error?.message||error)
+        }
+        // Atomic posting writes the invoice payment and trust deduction together.
+        // Stale local entries may still be reviewed but must NEVER authorize sends.
+        try {
+          await assertCurrentTrustLedger(supabase,session.user.id,mioTrustTransactions)
+        } catch(error) {
+          handoffWarning+=(handoffWarning?' ':'')+'Trust ledger verification: '+(error?.message||error)
+        }
       }
       const [invoices,settings,weeklyRecord,withdrawalResult]=await Promise.all([
         readFinanceInvoicesForReview(),
@@ -177,7 +195,11 @@
           subject:Number(candidate.amount||0)>0?(template.subject||'Trust replenishment request'):'Reminder: outstanding invoices and trust replenishment',message:Number(candidate.amount||0)>0?(template.body||'Please replenish your trust account by [amount].'):'Please review your previously issued unpaid invoices. No additional trust replenishment invoice is being created.',
           reason:!verified?category.reason:candidate.reason||category.reason||'',send_status:!verified||candidate.blocked?'blocked':'ready',send_error:''}
       }).filter(Boolean)
-      setReplenishmentReview({open:true,loading:false,rows,message:'No emails have been sent. Approve individual requests or all selected requests below.',error:''})
+      setReplenishmentReview({open:true,loading:false,rows,
+        message:handoffWarning
+          ?'REVIEW ONLY — Sending is disabled until reconciliation is resolved. '+handoffWarning
+          :'No emails have been sent. Approve individual requests or selected requests in this tab.',
+        sendingDisabledReason:handoffWarning,error:''})
     } catch(error){setReplenishmentReview(current=>({...current,loading:false,error:`Could not prepare review: ${error?.message||error}`}))
       if(afterWeekly)throw error
     }
@@ -190,6 +212,8 @@
     await openInvoicePdf({...row.invoice,id:row.prepared_id,invoice_number:row.invoice?.invoice_number||'PREVIEW - NOT ISSUED',invoice_type:'trust_request',matter_id:row.matter_id,client_name:row.client_name,matter_name:row.matter_name,issue_date:date,total:amount,subtotal:amount,balance:amount,amount_paid:0,line_items:[{date,description:'Trust / IOLTA retainer replenishment',amount}]},'open')
   }
   async function sendReplenishmentReview(rowIds=null) {
+    if(replenishmentReview.sendingDisabledReason)
+      return alert('Sending is disabled until reconciliation is resolved: '+replenishmentReview.sendingDisabledReason)
     if(replenishmentSendingRef.current)return
     const requested=Array.isArray(rowIds)?new Set(rowIds.map(String)):null
     const rows=replenishmentReview.rows.filter(row=>
