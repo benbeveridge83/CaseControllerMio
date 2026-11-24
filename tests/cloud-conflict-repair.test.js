@@ -36,6 +36,19 @@ test('a write whose value is already in the cloud is not reported as unsaved',()
   assert.equal(repairMioCloudConflict({baselineRaw:null,localRaw:null,deleting:true,remoteRaw:null}),null)
   assert.equal(repairMioCloudConflict({baselineRaw:'one',localRaw:null,deleting:true,remoteRaw:'three'}),undefined)
 })
+test('equivalent financial records with different JSON key order do not become unsaved conflicts',async()=>{
+  const key='caseMioTrustTransactions'
+  const original=list({id:'payment',amount:100,meta:{source:'trust',note:'paid'}})
+  const reordered='[{"meta":{"note":"paid","source":"trust"},"amount":100,"id":"payment"}]'
+  const f=fixture([{key,raw_value:list(),updated_at:'first'}])
+  const first=await f.open(),second=await f.open()
+  assert.equal(await first.saveNow(key,original),true)
+  assert.equal(await second.saveNow(key,reordered),true)
+  assert.equal(second.status().pending,0)
+  assert.equal(second.status().conflicts,0)
+  assert.equal(f.rows.get(key).raw_value,original,'the cloud record was not overwritten')
+  assert.equal(repairMioCloudConflict({baselineRaw:list(),localRaw:original,deleting:false,remoteRaw:list({id:'payment',amount:101})}),undefined)
+})
 test('rows added by each tab are merged and a shared row keeps its conflict',()=>{
   assert.deepEqual(JSON.parse(mergeMioRecordLists(list(),list({id:'b',value:2}),list({id:'a',value:1}))).map(row=>row.id),['a','b'])
   assert.equal(mergeMioRecordLists(list({id:'a',value:1}),list({id:'a',value:2}),list({id:'a',value:3})),null,'two edits of one row must stay a conflict')

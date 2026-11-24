@@ -1,6 +1,6 @@
 import {readMioCloudRows,cloudReadRequest} from './mioCloudRead.js'
 import {rebaseFilterValue} from './mioStickyFilterValues.js'
-import {repairMioCloudConflict} from './mioCloudConflictRepair.js'
+import {repairMioCloudConflict,sameMioJsonValue} from './mioCloudConflictRepair.js'
 // Explicit allowlist: never infer that a business record is safe to overwrite.
 const displayKeys=new Set(['caseMioWithdrawalViewV305','caseMioChecklistStepsExpandedByRow','caseMioMatterStepsExpandedByRow','caseMioNeedToSetTocCollapsed','caseMioNeedToSetTocDock','caseMioNeedToSetPageTab','caseMioChecklistNeedToSetSortMode','caseMioChecklistViewMode','caseMioChecklistTimelineMonths','caseMioChecklistTimelineGroupBy','caseMioChecklistTimelineSettingsOpen','caseMioChecklistTimelineDetailsOpen','caseMioChecklistTimelineVisibleSettings','caseMioChecklistDayGridShowEmptyDays','caseMioChecklistDayGridRowHeight','caseMioOrderExpandedIds','visibleMatterColumns','matterColumnWidths'])
 const isDisplayKey=key=>key.startsWith('caseMioStickyFilter:')||displayKeys.has(key)
@@ -158,7 +158,7 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
       // A lossless merge keeps the caller's own rows inside the merged value, so a
       // merged key is not reported as a superseded edit. It is blocked from further
       // writes until the window reloads.
-      if(s.pending.has(key)||(!isDisplayKey(key)&&s.baseline.get(key)?.raw_value!==text&&!s.mergedKeys?.has(key)))throw new Error('A newer edit superseded this save. Review the current value before continuing.')
+      if(s.pending.has(key)||(!isDisplayKey(key)&&s.baseline.get(key)?.raw_value!==text&&!sameMioJsonValue(s.baseline.get(key)?.raw_value,text)&&!s.mergedKeys?.has(key)))throw new Error('A newer edit superseded this save. Review the current value before continuing.')
       return true
     }catch(error){if(current?.phase==='ready'&&current.pending.has(key)){current.error=error.message||String(error);notify()}if(throwOnError)throw error;return false}
   }
