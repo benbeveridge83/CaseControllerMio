@@ -289,9 +289,11 @@ export default function MioWeeklyBilling({matters=[],clients=[],filterOptions={}
         results.push({status:data?.status||'unknown'})
       }
       const posted=results.filter(r=>r.status==='ledger_posted'||r.status==='already_posted').length
-      const failed=results.filter(r=>r.status==='failed').length
+      const failed=results.filter(r=>r.status==='failed'||!['ledger_posted','already_posted'].includes(r.status)).length
       setAtomicNotice(`${posted} posted${failed?', posting stopped after an error; inspect the ledger before retrying':''}.`)
       await refreshFinancialSnapshot()
+      if(posted&&onPayOwnMatterTrust)await onPayOwnMatterTrust()
+      if(posted&&!failed)setStep('unpaid')
       return {posted,failed}
     }finally{setAtomicBusy(false)}
   }
