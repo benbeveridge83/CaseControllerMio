@@ -24,7 +24,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       if(event.key==='Tab'){const focusable=[...event.currentTarget.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary')];const first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}}
     }}>
       <header style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}><div><h2 id="replenishment-review-title" style={{margin:0}}>Replenishment Review</h2><p>Review matters by category. Select a tab, check the matters to include, and approve only that tab. Nothing sends until approved.</p></div><button ref={closeRef} type="button" disabled={busy} onClick={onClose}>Close</button></header>
-      <div role="status" aria-live="polite">{review.loading?'Loading current invoices...':review.message}</div>
+      <div role="status" aria-live="polite" style={review.sendingDisabledReason?{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,padding:12,color:'#9a3412',fontWeight:600}:undefined}>{review.loading?'Loading current invoices...':review.message}</div>
       {review.error&&<p role="alert">{review.error}</p>}
       <nav aria-label="Replenishment matter groups" style={{display:'flex',gap:8,marginTop:14,marginBottom:4,flexWrap:'wrap',borderBottom:'1px solid #cbd5e1',paddingBottom:10}}>
         {REPLENISHMENT_TABS.map(item=>{
@@ -37,7 +37,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       {listTab==='excluded'&&<p style={{fontSize:12,color:'#475569',margin:'8px 0'}}>These matters are below minimum but not automatically selected. The Reason column explains why. Check an allowed matter for a one-time request up to its target; permanent settings do not change.</p>}
       {listTab==='above'&&<p style={{fontSize:12,color:'#475569',margin:'8px 0'}}>These matters are at or above minimum and are unchecked by default. You may select one for a one-time request toward its target. If trust already meets the target, no additional trust invoice is due.</p>}
       <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'12px 0'}}>
-        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length} onClick={()=>onSend(ready.map(row=>row.id))}>Approve &amp; Send This Tab ({ready.length})</button>
+        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length||!!review.sendingDisabledReason} title={review.sendingDisabledReason||undefined} onClick={()=>onSend(ready.map(row=>row.id))}>Approve &amp; Send This Tab ({ready.length})</button>
         <strong>New trust requests in this tab: {money(ready.reduce((sum,row)=>sum+Number(row.amount||0),0))}</strong>
         {!connected&&<button type="button" onClick={onConnect} disabled={busy}>Connect Microsoft</button>}
       </div>
@@ -127,7 +127,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
           <label style={{display:'grid',gap:4,marginTop:10}}>Subject<input aria-label={`Subject for ${row.client_name}`} value={row.subject} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{subject:e.target.value})}/></label>
           <label style={{display:'grid',gap:4,marginTop:10}}>Message<textarea aria-label={`Message for ${row.client_name}`} rows={4} value={row.message} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{message:e.target.value})}/></label>
           <p style={{fontSize:12}}>The email includes the trust-request PDF and a secure LawPay Trust/IOLTA payment link. [invoice number] and [amount] are filled from the approved request.</p>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||locked(row)||(row.appointed_status_unknown&&row.non_appointed_confirmed!==true)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||!!review.sendingDisabledReason||locked(row)||(row.appointed_status_unknown&&row.non_appointed_confirmed!==true)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
         </>}
         </>}
       </section>)}
