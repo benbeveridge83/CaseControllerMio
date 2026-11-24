@@ -18378,12 +18378,11 @@ async function handleDiscoveryNewRequestFiles(fileList) {
       ...(partyId ? [partyId] : [])
     ]))
     const nextFilerCorrections = { ...(filerCorrections || {}), [matterId]: { ...(filerCorrections?.[matterId] || {}), [fid]: partyId } }
-    setFilerCorrections(nextFilerCorrections)
     // Scope strictly to the selected matter AND the specific filer id, so the same attorney id
     // reused in other matters is never touched. Match both the legacy single field and the new
     // party selection, link to the chosen existing party, and preserve the original filer
     // separately in filed_by_original_id.
-    setDocuments((current) => (current || []).map((doc) => {
+    const nextDocuments = (documents || []).map((doc) => {
       if (String(doc.matter_id || doc.suggested_matter_id || '') !== String(matterId)) return doc
       const personId = String(doc.filed_by_person_id || doc.document_field_values?.filed_by_person_id || '')
       const partyIds = Array.isArray(doc.filed_by_party_ids) ? doc.filed_by_party_ids.map(String) : []
@@ -18401,8 +18400,8 @@ async function handleDiscoveryNewRequestFiles(fileList) {
           filed_by_party_ids: mergePartyIds(doc.document_field_values?.filed_by_party_ids)
         }
       }
-    }))
-    setServiceEmailRows((current) => (current || []).map((row) => {
+    })
+    const nextServiceEmailRows = (serviceEmailRows || []).map((row) => {
       if (String(resolveServiceEmailMatterId(row) || '') !== String(matterId)) return row
       const personId = String(row.filed_by_person_id || '')
       const partyIds = Array.isArray(row.filed_by_party_ids) ? row.filed_by_party_ids.map(String) : []
@@ -18413,8 +18412,16 @@ async function handleDiscoveryNewRequestFiles(fileList) {
         filed_by_person_id: partyId,
         filed_by_party_ids: mergePartyIds(row.filed_by_party_ids)
       }
-    }))
-    try { await saveMioStateKeyNow('caseMioFilerCorrections', JSON.stringify(nextFilerCorrections), { throwOnError: true }) } catch (error) { console.warn('Could not persist filer correction:', error?.message || error) }
+    })
+    // Update state, then persist the filing links and the correction map. Only after all three
+    // writes are acknowledged do we record the correction (which removes the provisional block).
+    // If any write is rejected, the block stays so the user can retry.
+    setDocuments(nextDocuments)
+    setServiceEmailRows(nextServiceEmailRows)
+    await saveMioStateKeyNow('caseControllerDocuments', JSON.stringify(stripLargeFileData(nextDocuments)), { throwOnError: true })
+    await saveMioStateKeyNow('caseMioServiceEmailRows', JSON.stringify(nextServiceEmailRows), { throwOnError: true })
+    await saveMioStateKeyNow('caseMioFilerCorrections', JSON.stringify(nextFilerCorrections), { throwOnError: true })
+    setFilerCorrections(nextFilerCorrections)
   }
 
   function updateMatterOpposingPartyAt(matterId, index, patch = {}) {

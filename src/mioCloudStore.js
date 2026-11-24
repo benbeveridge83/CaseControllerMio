@@ -84,7 +84,12 @@ export function createMioCloudStore({client, nativeStorage, origin='', delay=350
     const previous=s.pending.get(key)
     if(previous?.raw===text&&previous.deleting===deleting)return previous
     if(!previous&&(deleting?!s.baseline.has(key):s.baseline.get(key)?.raw_value===text))return null
-    const change={raw:text,deleting};s.pending.set(key,change);notify();schedule(s);return change
+    const change={raw:text,deleting};s.pending.set(key,change)
+    notify()
+    // A conflicted record must not re-arm the flush: its pending edit is already protected and
+    // re-staging would only repeat the rejected write. The user resolves it via the status panel.
+    if(!s.conflicts.has(key))schedule(s)
+    return change
   }
   async function write(s,key,retry=0) {
     check(s)
