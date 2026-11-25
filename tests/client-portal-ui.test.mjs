@@ -18,3 +18,29 @@ test('a delayed earlier matter response cannot overwrite a newer staff selection
 
 test('assigned intake uses template field types and submits only the selected request',async()=>{const root=await setup(),{PortalContent:C}=await import(new URL('ClientPortal.test-render.mjs',dir)),calls=[];const questions=[{key:'email',label:'Contact email',type:'email',required:true},{key:'date',label:'Birth date',type:'date'},{key:'children',label:'Children',type:'children'}];await act(async()=>root.render(React.createElement(C,{snapshot:{matter:{id:'m'},agreement:{},invoices:[],forms:[{id:'form',title:'Family intake',status:'pending',expires_at:'2999-01-01',template_snapshot:{questions}}]},api:async(a,b)=>{calls.push([a,b]);return {ok:true}}})));await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Fill out intake form').click());assert.equal(document.querySelector('input[type=email]').required,true);assert(document.querySelector('input[type=date]'));assert.match(document.querySelector('textarea').placeholder,/One child per line/);await act(async()=>document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));assert.equal(calls[0][0],'intake_submit');assert.equal(calls[0][1].request_id,'form');assert.equal(calls[0][1].matter_id,'m');await act(async()=>root.unmount())})
 test('staff can send intake email for an existing assignment',async()=>{const root=await setup(),{default:C}=await import(new URL('StaffPortal.test-render.mjs',dir)),calls=[],api=async(a,b)=>{calls.push([a,b]);return a==='staff_overview'?{matter:{id:'m'},agreement:{},invoices:[],forms:[{id:'f',title:'Family intake',status:'pending',expires_at:'2999-01-01'}]}:a==='staff_list'?{grants:[{matter_id:'m',email:'client@example.com',accepted_at:'now'}]}:{events:[]}};await act(async()=>root.render(React.createElement(C,{matterId:'m',matters:[{id:'m',clients:{email:'client@example.com'}}],api})));await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Send intake email').click());assert(calls.some(([a,b])=>a==='staff_send_intake'&&b.matter_id==='m'&&b.request_id==='f'));await act(async()=>root.unmount())})
+
+test('portal integration mounts the staff app with only the main app React imports',async()=>{
+ const root=await setup();
+ const source=`import React from 'react'
+ const appPages = []
+ const serviceGraphConfig={},serviceGraphAuth={},page='billing',matters=[],draftingIntakeTemplates=[]
+ const clientDashboardTab='matter_information',isFirmStaffMember=()=>true,canOpenPage=()=>true
+ const setClientDashboardTab=()=>{},selectedTemplateMatter=()=>null
+ const renderBillingPage=()=>React.createElement('p',null,'Staff app mounted')
+ const renderClientDashboardMatterInformation=()=>null
+ export default function Host(){
+  function renderClientDashboardFeeAgreement(matter) { return null }
+  return <>
+        {page === 'billing' && canOpenPage('billing') && renderBillingPage()}
+                  <button
+                    type="button"
+                    onClick={() => setClientDashboardTab('fee_agreement')}>Fee agreement</button>
+                {clientDashboardTab === 'matter_information' && renderClientDashboardMatterInformation(selectedTemplateMatter())}
+  </>
+ }
+ `;
+ const mounted=mountClientPortal(source).replace("import StaffPortal from './portal/StaffPortal.jsx'",'const StaffPortal=()=>null').replace("import './portal/portal.css'",'');
+ const output=await transformWithOxc(mounted,'PortalHost.jsx',{jsx:{runtime:'automatic'}});
+ const file=new URL('PortalHost.test-render.mjs',dir);
+ try{await fs.writeFile(file,output.code);const {default:Host}=await import(file.href+'?startup='+Date.now());await act(async()=>root.render(React.createElement(Host)));assert.match(document.body.textContent,/Staff app mounted/)}finally{await act(async()=>root.unmount());await fs.unlink(file).catch(()=>{})}
+})

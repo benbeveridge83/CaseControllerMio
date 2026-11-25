@@ -4,7 +4,7 @@ export function mountClientPortal(source){
  source="import StaffPortal from './portal/StaffPortal.jsx'\nimport './portal/portal.css'\n"+source
  patch('const appPages = [',"const appPages = [\n  {value:'client_portal',label:'Client Portal'},")
  const helper=[
- "  const portalStaffApi = useCallback(async (action, body = {}) => {",
+ "  const portalStaffApi = React.useCallback(async (action, body = {}) => {",
  "    const {data} = await supabase.auth.getSession()",
  "    if (!data?.session?.access_token) throw new Error('Sign in to Mio first.')",
  "    const payload = {action,...body}",
