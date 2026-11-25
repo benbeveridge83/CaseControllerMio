@@ -92,7 +92,7 @@ begin
 end; $$;
 revoke all on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text[],text)
  from public,anon,authenticated;
-grant execute on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text,text)
+grant execute on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text[],text)
  to service_role;
 
 -- An ambiguous send may be marked uncertain for manual reconciliation;
