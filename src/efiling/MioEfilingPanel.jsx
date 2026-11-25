@@ -18,6 +18,7 @@ export default function MioEfilingPanel({
   flags = {},
   provider = null,
   repository = null,
+  historyRepository = null,
   ownerId = '',
   onSaved = null,
 }) {
@@ -396,7 +397,7 @@ export default function MioEfilingPanel({
         </div>
       )}
 
-      <MioEfilingStatusHistory repository={repository} ownerId={ownerId} matterId={matter.id} />
+      <MioEfilingStatusHistory repository={historyRepository} ownerId={ownerId} matterId={matter.id} />
 
       {notice && <div className="mio-efiling-notice">{notice}</div>}
       {error && <div className="mio-efiling-error">{error}</div>}
