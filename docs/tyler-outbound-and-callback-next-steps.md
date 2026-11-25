@@ -11,8 +11,9 @@
 - `lib/efiling/tylerSubmissionRegistrar.js`: server-side RPC adapter to associate real Tyler envelope/filing IDs with the original Mio owner and matter.
 - `lib/efiling/tylerWsSecurityInspection.js`: strictly preliminary SOAP envelope/timestamp/structure checks. **Never produces a cryptographically verified result**; it cannot authorize a callback.
 - `tests/tyler-outbound-pipeline.test.js`: tests negative cases, duplicate reservations, successful mock transport injection, ambiguous delivery, DB adapter, malformed SOAP.
-- `mio_efiling_outbox` plus `mio_reserve_efiling_outbound_v1`, `mio_confirm_efiling_outbound_v1`, `mio_mark_efiling_outbound_uncertain_v1`: durable service-only per-owner idempotency reservation and atomic confirmed-ID registration.
+- `mio_efiling_outbox` plus `mio_reserve_efiling_outbound_v1`, `mio_confirm_efiling_outbound_v1`, `mio_mark_efiling_outbound_uncertain_v1`: durable service-only per-owner idempotency reservation and atomic confirmed-ID registration, including **multiple filing IDs per envelope** (as in Tyler's ReviewFilingResponse sample).
 - `lib/efiling/tylerOutboxRepository.js`: server-only adapter to those functions; still no active network sender.
+- `lib/efiling/tylerReviewFilingResponse.js`: extracts a single envelopeID and **all** filingIDs from the documented ECF5 ReviewFilingResponse. Does not authenticate the response.
 - **No live network transport or signing key** is configured; the guarded coordinator is not wired to a browser action.
 
 ## Release gates / remaining tasks
