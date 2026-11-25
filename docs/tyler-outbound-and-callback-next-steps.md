@@ -11,11 +11,13 @@
 - `lib/efiling/tylerSubmissionRegistrar.js`: server-side RPC adapter to associate real Tyler envelope/filing IDs with the original Mio owner and matter.
 - `lib/efiling/tylerWsSecurityInspection.js`: strictly preliminary SOAP envelope/timestamp/structure checks. **Never produces a cryptographically verified result**; it cannot authorize a callback.
 - `tests/tyler-outbound-pipeline.test.js`: tests negative cases, duplicate reservations, successful mock transport injection, ambiguous delivery, DB adapter, malformed SOAP.
+- `mio_efiling_outbox` plus `mio_reserve_efiling_outbound_v1`, `mio_confirm_efiling_outbound_v1`, `mio_mark_efiling_outbound_uncertain_v1`: durable service-only per-owner idempotency reservation and atomic confirmed-ID registration.
+- `lib/efiling/tylerOutboxRepository.js`: server-only adapter to those functions; still no active network sender.
 - **No live network transport or signing key** is configured; the guarded coordinator is not wired to a browser action.
 
 ## Release gates / remaining tasks
 1. **Outbound SOAP mapping** — implement vendor ECF5 `ReviewFiling` request/response from WSDL + schema, including service recipient selections, case IDs, filing codes, documents, filing fees, and TOGA payment configuration. Establish Tyler endpoints per environment from TCP. Do not send partial or mock envelopes to Tyler.
-2. **Server-side identity and durable queue** — require authenticated Mio actor/matter ownership and a transactional outbox/reservation keyed by request ID, with a reconciliation path for ambiguous timeouts. Existing database RPC registers only *confirmed* vendor IDs; it is not a network outbox.
+2. **Server-side identity and durable queue** — require authenticated Mio actor/matter ownership and completed server authentication, plus an operator reconciliation path for ambiguous timeouts. The outbox table and reservation/confirmation RPCs are now implemented; the actual network sender is deliberately absent.
 3. **XMLDSIG/WS-Security** — implement actual digest and reference verification, canonicalization, X.509 trust chain/pinned sender identity, signed timestamps, replay rejection, and algorithm restrictions. Test with signed Tyler Stage fixtures. Merely finding a `Signature` XML tag is not authentication.
 4. **Callback HTTP transport** — verify Tyler identity, parse NFRC, confirm outbound ownership, derive accepted/rejected result from authenticated real Stage fixtures, write atomically, then send the exact SOAP acknowledgment. Reject unsigned/unknown/uncorrelated messages. Never switch POST to 2xx before this passes.
 5. **Court documents and fees** — reconcile accepted/rejected outcomes, stamped copies, receipts, e-service recipients/returns and attorney-facing notifications. Keep user-facing status source of truth in Supabase.
