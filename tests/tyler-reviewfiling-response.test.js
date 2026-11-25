@@ -13,7 +13,7 @@ test('Tyler ECF5 ReviewFiling response returns all filing IDs not only lead',()=
 })
 test('rejects vendor failure and duplicate IDs',()=>{
  assert.throws(()=>parseTylerReviewFilingResponse(success.replace('Success','Error')),/did not report/)
- assert.throws(()=>parseTylerReviewFilingResponse(success.replace("filingID','f-2","filingID','f-1")),/valid filing/)
+ assert.throws(()=>parseTylerReviewFilingResponse(success.replace('IdentificationID>f-2<','IdentificationID>f-1<')),/valid filing/)
 })
 test('rejects untrusted namespaces and DTD declarations',()=>{
  assert.throws(()=>parseTylerReviewFilingResponse('<ReviewFilingResponse/>'),/Unexpected/)
