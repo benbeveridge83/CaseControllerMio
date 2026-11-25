@@ -32,18 +32,19 @@ test('outbox reserves exactly once with original owner and matter',async()=>{
  assert.deepEqual(calls[1].filters,[['owner_id','owner'],['environment','stage'],['idempotency_key','key']])
 })
 test('confirmed outbox avoids another external submission',async()=>{
- const {outbox}=makeClient({previous:{state:'confirmed',envelope_id:'e',filing_id:'f',fingerprint:intent.fingerprint,matter_id:'matter'}})
- assert.deepEqual(await outbox.loadExisting(intent),{environment:'stage',envelopeId:'e',filingId:'f'})
+ const {outbox}=makeClient({previous:{state:'confirmed',envelope_id:'e',filing_ids:['f','g'],fingerprint:intent.fingerprint,matter_id:'matter'}})
+ assert.deepEqual(await outbox.loadExisting(intent),{environment:'stage',envelopeId:'e',filingIds:['f','g']})
 })
 test('outbox cannot silently reuse a request ID with different fingerprint',async()=>{
- const {outbox}=makeClient({previous:{state:'confirmed',envelope_id:'e',filing_id:'f',fingerprint:'b'.repeat(64),matter_id:'matter'}})
+ const {outbox}=makeClient({previous:{state:'confirmed',envelope_id:'e',filing_ids:['f','g'],fingerprint:'b'.repeat(64),matter_id:'matter'}})
  await assert.rejects(()=>outbox.loadExisting(intent),/Conflicting/)
 })
 test('confirmed status and uncertainty use separate service-only RPCs',async()=>{
  const {calls,outbox}=makeClient()
- await outbox.registerSubmission({...intent,envelopeId:'e',filingId:'f',draftId:'d'})
+ await outbox.registerSubmission({...intent,envelopeId:'e',filingIds:['f','g'],draftId:'d'})
  await outbox.markUncertain(intent)
  assert.equal(calls[0].name,'mio_confirm_efiling_outbound_v1')
  assert.equal(calls[0].args.p_draft_id,'d')
+ assert.deepEqual(calls[0].args.p_filing_ids,['f','g'])
  assert.equal(calls[1].name,'mio_mark_efiling_outbound_uncertain_v1')
 })
