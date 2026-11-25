@@ -13,17 +13,17 @@ alter table public.lawpay_transactions add column raw jsonb,add column reference
 \ir ../../supabase/migrations/20261122205113_client_portal_intake_payments.sql
 
 insert into public.matters(id,client_id,name) values
- ('bbbbbbbb-0000-4000-8000-000000000006','aaaaaaaa-0000-4000-8000-000000000001','Portal compatibility fixture');
+ ('eeeeeeee-ff00-4000-8000-000000000001','aaaaaaaa-0000-4000-8000-000000000001','Portal compatibility fixture');
 update public.case_mio_user_state set json_value=json_value ||
- '{"bbbbbbbb-0000-4000-8000-000000000006":{"matter_trust_funds":500}}'::jsonb
+ '{"eeeeeeee-ff00-4000-8000-000000000001":{"matter_trust_funds":500}}'::jsonb
  where key='caseMioFinanceOpeningBalances';
 insert into public.mio_invoices(id,user_id,invoice_number,invoice_type,matter_id,client_id,status,total,amount_paid,balance,updated_at) values
- ('cccccccc-0000-4000-8000-000000000020','00000000-0000-4000-8000-0000000000aa','PORTAL-ATOMIC-TEST','services','bbbbbbbb-0000-4000-8000-000000000006','aaaaaaaa-0000-4000-8000-000000000001','outstanding',100,0,100,'2026-11-21T00:00:00+00');
+ ('cccccccc-ff00-4000-8000-000000000001','00000000-0000-4000-8000-0000000000aa','PORTAL-ATOMIC-TEST','services','eeeeeeee-ff00-4000-8000-000000000001','aaaaaaaa-0000-4000-8000-000000000001','outstanding',100,0,100,'2026-11-21T00:00:00+00');
 
 do $$
 declare
- inv uuid='cccccccc-0000-4000-8000-000000000020';
- matter text='bbbbbbbb-0000-4000-8000-000000000006';
+ inv uuid='cccccccc-ff00-4000-8000-000000000001';
+ matter text='eeeeeeee-ff00-4000-8000-000000000001';
  result jsonb;ledger_before jsonb;invoice_version timestamptz;
 begin
  -- Exercise the actual current atomic posting function, not a simulated update.
