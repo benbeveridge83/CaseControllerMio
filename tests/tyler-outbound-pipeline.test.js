@@ -32,6 +32,7 @@ test('a result must be verified and real, not mock IDs',()=>{
  assert.throws(()=>validateTylerReviewReceipt({environment:'stage',envelopeId:'abc',filingId:'def'},'stage'),/cryptographic/)
  assert.throws(()=>validateTylerReviewReceipt({environment:'production',signatureVerified:true,sourceVerified:true,envelopeId:'abc',filingId:'def'},'stage'),/environment/)
  assert.throws(()=>validateTylerReviewReceipt({environment:'stage',signatureVerified:true,sourceVerified:true,envelopeId:'mock-1',filingId:'def'},'stage'),/Mock/)
+ assert.deepEqual(validateTylerReviewReceipt({environment:'stage',signatureVerified:true,sourceVerified:true,envelopeId:'real-env',filingIds:['f1','f2']},'stage').filingIds,['f1','f2'])
 })
 test('verified result registers owner/matter and does not replay a previously known submission',async()=>{
  let sent=0,registered=null
@@ -39,8 +40,10 @@ test('verified result registers owner/matter and does not replay a previously kn
  const s=createTylerOutboundCoordinator({enabled:true,transport,registerSubmission:async x=>{registered=x},loadExisting:async()=>null})
  const value=await s.submit(args)
  assert.equal(value.envelopeId,'e1')
+ assert.deepEqual(value.filingIds,['f1'])
  assert.equal(registered.ownerId,'owner-1')
  assert.equal(registered.matterId,'matter-1')
+ assert.deepEqual(registered.filingIds,['f1'])
  assert.equal(sent,1)
  const existing=createTylerOutboundCoordinator({enabled:true,transport,registerSubmission:async()=>{},loadExisting:async()=>({submissionId:'existing-id'})})
  assert.equal((await existing.submit(args)).existing,true)
