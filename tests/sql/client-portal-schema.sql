@@ -14,6 +14,8 @@ create table public.mio_invoices(id uuid primary key default gen_random_uuid(),u
 create table public.lawpay_payment_requests(id uuid primary key default gen_random_uuid(),created_by uuid,matter_id text,matter_name text,client_id text,client_name text,payer_name text,payer_email text,account_key text,amount_cents bigint,invoice_number text,reference text,payment_url text,raw jsonb,gateway_transaction_id text);
 create table public.lawpay_transactions(gateway_transaction_id text primary key,status text,reference text,payer_email text,raw jsonb);
 \ir ../../supabase/migrations/20261122205113_client_portal_intake_payments.sql
+-- Verify interrupted provisioning can resume.
+\ir ../../supabase/migrations/20261122205113_client_portal_intake_payments.sql
 do $test$
 declare staff uuid=gen_random_uuid();c1 uuid=gen_random_uuid();c2 uuid=gen_random_uuid();m uuid=gen_random_uuid();inv uuid=gen_random_uuid();form uuid=gen_random_uuid();issued jsonb;first_issue uuid;result jsonb;rid uuid;n integer;threw boolean;
 begin
