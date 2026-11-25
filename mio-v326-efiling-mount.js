@@ -10,6 +10,8 @@ const IMPORT_ANCHOR = "import MioAgentPanel from './MioAgentPanel.jsx'"
 const IMPORTS = `import MioAgentPanel from './MioAgentPanel.jsx'
 import MioEfilingPanel from './efiling/MioEfilingPanel.jsx'
 import { createEfilingRuntime, efilingFilerFromTeamMember, efilingMatterDocuments } from './efiling/mioEfilingRuntime.js'
+import { supabase as mioEfilingSupabase } from './supabaseClient.js'
+import { createSupabaseEfilingRepository } from './efiling/mioEfilingRepository.js'
 
 // V326: mock-only e-filing runtime. Provider and repository are created once and
 // shared across the matter dashboard. Stage and Production submission remain
@@ -21,7 +23,9 @@ const mioEfilingRuntime = createEfilingRuntime({
     TYLER_EFM_STAGE_ENABLED: import.meta.env.VITE_TYLER_EFM_STAGE_ENABLED,
     TYLER_EFM_PRODUCTION_ENABLED: import.meta.env.VITE_TYLER_EFM_PRODUCTION_ENABLED,
   },
-})`
+})
+// Read-only Tyler ledger; mock drafts remain isolated in memory.
+const mioEfilingHistoryRepository = createSupabaseEfilingRepository(mioEfilingSupabase)`
 
 const FILINGS_ANCHOR = `{clientDashboardTab === 'filings' && renderMatterFilingsPanel(selectedTemplateMatter())}`
 
@@ -35,6 +39,7 @@ const EFILING_MOUNT = `{clientDashboardTab === 'filings' && mioEfilingRuntime.en
     flags={mioEfilingRuntime.flags}
     provider={mioEfilingRuntime.provider}
     repository={mioEfilingRuntime.repository}
+    historyRepository={mioEfilingHistoryRepository}
     ownerId={session?.user?.id || ''}
   />
 )}
