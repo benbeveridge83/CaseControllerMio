@@ -14,6 +14,7 @@ test('deterministic outbound preflight excludes source document and secrets',()=
 })
 test('service requires an email recipient and missing identifiers block request',()=>{
  assert.throws(()=>prepareTylerFilingIntent({...args,draft:{...draft,filingMode:'efile_and_serve'}}),/recipient/)
+ assert.throws(()=>prepareTylerFilingIntent({...args,draft:{...draft,filingMode:'efile_and_serve',serviceContacts:[{name:'Counsel',email:'oc@example.com',selected:true}]}}),/Tyler service contact ID/)
  assert.throws(()=>prepareTylerFilingIntent({...args,draft:{...draft,filingCode:''}}),/Filing code/)
  assert.throws(()=>prepareTylerFilingIntent({...args,environment:'productionX'}),/environment/)
 })
