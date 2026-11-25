@@ -8,7 +8,7 @@ create table if not exists public.mio_efiling_outbox (
  fingerprint text not null check (fingerprint ~ '^[a-f0-9]{64}$'),
  state text not null default 'reserved' check (state in ('reserved','uncertain','confirmed')),
  envelope_id text,
- filing_id text,
+ filing_ids text[] not null default '{}'::text[],
  created_at timestamptz not null default clock_timestamp(),
  updated_at timestamptz not null default clock_timestamp(),
  unique (owner_id, environment, idempotency_key)
@@ -59,9 +59,9 @@ grant execute on function public.mio_reserve_efiling_outbound_v1(uuid,text,text,
 -- the outbox, original owner and confirmed Tyler IDs transactionally.
 create or replace function public.mio_confirm_efiling_outbound_v1(
  p_owner_id uuid, p_environment text, p_idempotency_key text,
- p_fingerprint text, p_envelope_id text, p_filing_id text, p_draft_id text default null
+ p_fingerprint text, p_envelope_id text, p_filing_ids text[], p_draft_id text default null
 ) returns jsonb language plpgsql security invoker set search_path = '' as $$
-declare r public.mio_efiling_outbox%rowtype; filing uuid;
+declare r public.mio_efiling_outbox%rowtype; filing uuid; fid text;
 begin
  select * into r from public.mio_efiling_outbox where owner_id=p_owner_id
   and environment=p_environment and idempotency_key=p_idempotency_key
@@ -69,21 +69,28 @@ begin
  if not found or r.fingerprint is distinct from p_fingerprint then
   raise exception 'Missing outbound reservation' using errcode='23503';
  end if;
+ if p_filing_ids is null or cardinality(p_filing_ids) not between 1 and 100 or
+    exists(select 1 from unnest(p_filing_ids) v where v is null or length(trim(v)) not between 1 and 256) or
+    (select count(distinct v) from unnest(p_filing_ids) v) <> cardinality(p_filing_ids) then
+   raise exception 'Invalid Tyler filing IDs' using errcode='22023';
+ end if;
  if r.state='confirmed' then
-  if r.envelope_id is distinct from p_envelope_id or r.filing_id is distinct from p_filing_id then
+  if r.envelope_id is distinct from p_envelope_id or r.filing_ids is distinct from p_filing_ids then
    raise exception 'Conflicting confirmed Tyler identifiers' using errcode='23505';
   end if;
  else
-  filing := public.mio_register_efiling_submission_v1(
-   r.owner_id, r.matter_id,r.environment,p_envelope_id,p_filing_id,p_draft_id);
+  foreach fid in array p_filing_ids loop
+   filing := public.mio_register_efiling_submission_v1(
+    r.owner_id, r.matter_id,r.environment,p_envelope_id,fid,p_draft_id);
+  end loop;
   update public.mio_efiling_outbox set state='confirmed',
-   envelope_id=p_envelope_id,filing_id=p_filing_id,updated_at=clock_timestamp()
+   envelope_id=p_envelope_id,filing_ids=p_filing_ids,updated_at=clock_timestamp()
    where id=r.id;
  end if;
  return jsonb_build_object('confirmed',true,'reservation_id',r.id,
-  'envelope_id',p_envelope_id,'filing_id',p_filing_id);
+  'envelope_id',p_envelope_id,'filing_ids',to_jsonb(p_filing_ids));
 end; $$;
-revoke all on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text,text)
+revoke all on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text[],text)
  from public,anon,authenticated;
 grant execute on function public.mio_confirm_efiling_outbound_v1(uuid,text,text,text,text,text,text)
  to service_role;
