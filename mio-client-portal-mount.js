@@ -1,7 +1,7 @@
 // Keep the monolithic App integration small and fail builds if an anchor changes.
 export function mountClientPortal(source){
  const patch=(anchor,replacement)=>{if(!source.includes(anchor))throw new Error('Client portal mount anchor missing: '+anchor.slice(0,90));source=source.replace(anchor,replacement)}
- source="import StaffPortal from './portal/StaffPortal.jsx'\nimport './portal/portal.css'\n"+source
+ source="import StaffDiscovery from './portal/StaffDiscovery.jsx'\nimport StaffPortal from './portal/StaffPortal.jsx'\nimport './portal/portal.css'\n"+source
  patch('const appPages = [',"const appPages = [\n  {value:'client_portal',label:'Client Portal'},")
  const helper=[
  "  const portalStaffApi = React.useCallback(async (action, body = {}) => {",
@@ -13,7 +13,7 @@ export function mountClientPortal(source){
  "    const p=await r.json();if(!r.ok)throw new Error(p.error||'Portal request failed.');return p",
  "  },[serviceGraphConfig,serviceGraphAuth,page])",
  "  function renderStaffClientPortal(matter = null) {",
- "    return <StaffPortal matterId={matter?.id||''} matters={matters} api={portalStaffApi} templates={draftingIntakeTemplates}",
+ "    return <StaffPortal matterId={matter?.id||''} matters={matters} api={portalStaffApi} discoverySets={respondingDiscoverySets} templates={draftingIntakeTemplates}",
  "      onPrepareAgreement={m=>mioPnc.open(m,'agreement')}",
  "      onAssignIntake={async (m,t)=>draftingAuthenticatedApi('/api/client-intake',{method:'POST',body:JSON.stringify({action:'create',matter_id:m.id,matter_name:m.name||'',client_name:matterClientName(m),recipient_email:m.clients?.email||'',expires_days:60,template_snapshot:draftingNormalizeIntakeTemplate(t),title:t.name})})} />",
  "  }",""
@@ -25,6 +25,7 @@ export function mountClientPortal(source){
  patch(tab,"                  {isFirmStaffMember() && <button type=\"button\" onClick={()=>setClientDashboardTab('client_portal')} style={{padding:'8px 14px',border:'1px solid #c8d0d8',background:clientDashboardTab==='client_portal'?'#2f6584':'white',color:clientDashboardTab==='client_portal'?'white':'#1f2d3d'}}>Client Portal</button>}\n"+tab)
  const panel="                {clientDashboardTab === 'matter_information' && renderClientDashboardMatterInformation(selectedTemplateMatter())}"
  patch(panel,"                {clientDashboardTab === 'client_portal' && isFirmStaffMember() && renderStaffClientPortal(selectedTemplateMatter())}\n\n"+panel)
+ patch('<h2 style={{ margin: 0 }}>Responding to Discovery</h2>', '<h2 style={{ margin: 0 }}>Responding to Discovery</h2><StaffDiscovery key={effectiveMatterId} matterId={effectiveMatterId} sets={respondingDiscoverySets} api={portalStaffApi} />')
  return source
 }
 export default function clientPortalMount(){return {name:'mio-client-portal',enforce:'pre',transform(code,id){if(!id.replaceAll('\\','/').endsWith('/src/App.jsx'))return null;return {code:mountClientPortal(code),map:null}}}}
