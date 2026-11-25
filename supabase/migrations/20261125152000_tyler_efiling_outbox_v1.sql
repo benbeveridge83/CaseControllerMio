@@ -70,8 +70,8 @@ begin
   raise exception 'Missing outbound reservation' using errcode='23503';
  end if;
  if p_filing_ids is null or cardinality(p_filing_ids) not between 1 and 100 or
-    exists(select 1 from unnest(p_filing_ids) v where v is null or length(trim(v)) not between 1 and 256) or
-    (select count(distinct v) from unnest(p_filing_ids) v) <> cardinality(p_filing_ids) then
+    exists(select 1 from unnest(p_filing_ids) as t(fid) where t.fid is null or length(trim(t.fid)) not between 1 and 256) or
+    (select count(distinct t.fid) from unnest(p_filing_ids) as t(fid)) <> cardinality(p_filing_ids) then
    raise exception 'Invalid Tyler filing IDs' using errcode='22023';
  end if;
  if r.state='confirmed' then
