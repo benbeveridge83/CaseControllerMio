@@ -56,6 +56,7 @@ test('production requests preserve optional guidance and autosave the selected r
  const set={id:'s',title:'Production',discovery_type:'production',client_instructions:'Existing attorney instructions',requests:[{id:'r',request_number:'1',request_text:'Produce tax returns',client_must_respond:false,attorney_comments:'Specific instruction'}],answers:[],files:[]}
  const api=async(a,b)=>{calls.push([a,b]);return a==='discovery_list'?{sets:[set]}:{answer:{...b.answer,request_id:'r',version:1}}}
  await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+ await act(async()=>document.querySelector('.discovery-request-heading').click())
  assert.match(document.body.textContent,/No response required, but you may add information below/)
  assert.match(document.body.textContent,/Existing attorney instructions/)
  assert.match(document.body.textContent,/Specific instruction/)
@@ -84,4 +85,44 @@ test('a production upload is registered only after storage succeeds and remains 
   await act(async()=>heading().click());await act(async()=>heading().click())
   assert.match(document.body.textContent,/sample.txt/)
  }finally{globalThis.fetch=oldFetch;await act(async()=>root.unmount())}
+})
+
+test('client discovery separates required requests and labels every collapsed optional request across all eleven items',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir))
+ const requests=[11,10,1,9,2,8,3,7,4,6,5].map(n=>({id:'r'+n,request_number:String(n),request_text:'Disclosure request '+n,client_must_respond:n===5}))
+ const api=async()=>({sets:[{id:'s',title:'Disclosures',discovery_type:'disclosures',requests,answers:[],files:[]}]})
+ await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+ const required=document.querySelector('.required-column'),optional=document.querySelector('.optional-column')
+ assert.deepEqual([...required.querySelectorAll('article')].map(a=>a.dataset.requestNumber),['5'])
+ assert.deepEqual([...optional.querySelectorAll('article')].map(a=>a.dataset.requestNumber),['1','2','3','4','6','7','8','9','10','11'])
+ assert.equal(optional.querySelectorAll('.discovery-requirement.is-optional').length,10)
+ assert([...optional.querySelectorAll('.discovery-requirement')].every(b=>b.textContent==='No answer required'))
+ assert.equal(required.querySelector('.discovery-requirement').textContent,'Answer required')
+ assert.equal(required.querySelector('.discovery-request-heading').getAttribute('aria-expanded'),'true')
+ assert.match(document.body.textContent,/Showing all 11 requests/)
+ assert.equal([...document.querySelectorAll('button')].find(b=>b.textContent==='Next'),undefined)
+ await act(async()=>required.querySelector('.discovery-request-heading').click())
+ assert.equal(required.querySelector('.discovery-request-heading').getAttribute('aria-expanded'),'false')
+ assert.equal(required.querySelector('.discovery-requirement').textContent,'Answer required')
+ await act(async()=>root.unmount())
+})
+test('no-answer-required requests retain an editable answer field for the actual client',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir))
+ const api=async()=>({sets:[{id:'s',title:'Disclosures',discovery_type:'disclosures',requests:[{id:'r11',request_number:'11',request_text:'Additional parties',client_must_respond:false}],answers:[],files:[]}]})
+ await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+ assert.equal(document.querySelector('textarea'),null)
+ await act(async()=>document.querySelector('.optional-column .discovery-request-heading').click())
+ assert.equal(document.querySelector('textarea').disabled,false)
+ assert.match(document.body.textContent,/No response required, but you may add information below/)
+ await act(async()=>root.unmount())
+})
+test('requirements follow the attorney flag after refresh without depending on explanatory comments',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir));let current=5
+ const api=async()=>({sets:[{id:'s',title:'Disclosures',discovery_type:'disclosures',requests:[5,6].map(n=>({id:'r'+n,request_number:String(n),request_text:'Request '+n,client_must_respond:current===n,attorney_comments:''})),answers:[],files:[]}]})
+ await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+ assert.equal(document.querySelector('.required-column article').dataset.requestNumber,'5')
+ current=6;await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Refresh requests').click())
+ assert.equal(document.querySelector('.required-column article').dataset.requestNumber,'6')
+ assert.equal(document.querySelector('.optional-column article').dataset.requestNumber,'5')
+ await act(async()=>root.unmount())
 })

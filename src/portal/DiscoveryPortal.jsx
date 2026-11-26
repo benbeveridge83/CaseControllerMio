@@ -51,10 +51,16 @@ export function DiscoveryRequest({set,request,api,matterId,readOnly=false,onSave
  </div>
 }
 export default function DiscoveryPortal({matterId,api,readOnly=false,onPending}){
- const [sets,setSets]=useState([]),[selected,setSelected]=useState(''),[open,setOpen]=useState(''),[page,setPage]=useState(1),[loading,setLoading]=useState(true),[error,setError]=useState(''),[filter,setFilter]=useState(''),[dirty,setDirty]=useState({})
+ const [sets,setSets]=useState([]),[selected,setSelected]=useState(''),[open,setOpen]=useState(''),[loading,setLoading]=useState(true),[error,setError]=useState(''),[filter,setFilter]=useState(''),[dirty,setDirty]=useState({})
  const reload=useCallback(async()=>{const result=await api('discovery_list',{matter_id:matterId});setSets(result.sets||[]);setSelected(v=>result.sets.some(s=>s.id===v)?v:result.sets[0]?.id||'');return result},[matterId,api])
  useEffect(()=>{let active=true;setLoading(true);reload().catch(e=>{if(active)setError(e.message)}).finally(()=>{if(active)setLoading(false)});return()=>{active=false}},[reload])
- const active=sets.find(s=>s.id===selected),requests=active?.requests||[],filtered=requests.filter(r=>[r.request_number,r.request_text].join(' ').toLowerCase().includes(filter.toLowerCase())),pages=Math.max(1,Math.ceil(filtered.length/10)),pending=Object.values(dirty).some(Boolean)
+ const active=sets.find(s=>s.id===selected),requests=active?.requests||[],pending=Object.values(dirty).some(Boolean)
+ const required=r=>r.client_must_respond!==false
+ const ordered=[...requests].sort((a,b)=>String(a.request_number).localeCompare(String(b.request_number),undefined,{numeric:true}))
+ const filtered=ordered.filter(r=>[r.request_number,r.request_text].join(' ').toLowerCase().includes(filter.toLowerCase()))
+ const requiredRequests=ordered.filter(required),optionalRequests=ordered.filter(r=>!required(r))
+ const defaultOpen=requiredRequests.find(r=>filtered.some(item=>item.id===r.id))?.id||'closed'
+ const expandedId=open===''?defaultOpen:open
  const pendingRef=useRef(false);pendingRef.current=pending
  useEffect(()=>{onPending?.(pending)},[pending,onPending])
  useEffect(()=>{const timer=setInterval(()=>{if(!pendingRef.current)void reload().catch(e=>setError(e.message))},15000);return()=>clearInterval(timer)},[reload])
@@ -62,12 +68,36 @@ export default function DiscoveryPortal({matterId,api,readOnly=false,onPending})
  const changeDirty=(id,flag)=>setDirty(d=>({...d,[id]:flag}))
  const uploaded=file=>setSets(rows=>rows.map(s=>s.id===selected?{...s,files:[...s.files,file]}:s))
  const answered=r=>active.answers.some(a=>a.request_id===r.id&&(a.client_answer?.trim()||a.rfp_status))||active.files.some(f=>f.request_id===r.id)
- return <section className="discovery-portal"><div className="portal-card discovery-intro"><small>WORK WITH YOUR ATTORNEY</small><h2>Respond to discovery</h2><p>Answer the requests below and attach any requested documents. Your work saves automatically and your attorney can review it as you go. There is no submit button.</p><button disabled={pending} onClick={()=>reload().catch(e=>setError(e.message))}>Refresh requests</button>{pending&&<small>Keep this page open while your changes save.</small>}</div>
- {error&&<p role="alert" className="portal-error">{error}</p>}{loading?<p>Loading discovery…</p>:!sets.length?<div className="portal-card">Your attorney has not assigned discovery requests yet.</div>:<>
- <nav className="discovery-set-tabs" aria-label="Discovery sets">{sets.map(s=><button aria-pressed={selected===s.id} disabled={pending&&selected!==s.id} key={s.id} onClick={()=>{setSelected(s.id);setOpen('');setPage(1);setFilter('')}}><strong>{label(s.discovery_type)}</strong><small>{s.requests.length} requests</small></button>)}</nav>
- {active&&<><section className="portal-card"><h2>{active.title}</h2>{active.client_response_due&&<p>Client response target: {active.client_response_due}</p>}<div className="discovery-guidance"><strong>Instructions from your attorney</strong><p>{active.client_instructions||'Please answer in your own words. Ask us if you need help.'}</p></div><p>{requests.filter(r=>r.client_must_respond&&answered(r)).length} of {requests.filter(r=>r.client_must_respond).length} requested responses started · You can return and keep working.</p><label>Find a request<input disabled={pending} value={filter} onChange={e=>{setFilter(e.target.value);setPage(1)}} placeholder="Search by number or words in the request"/></label></section>
- {filtered.slice((page-1)*10,page*10).map((r,i)=><article className="portal-card discovery-request" key={r.id}><button className="discovery-request-heading" disabled={pending} aria-expanded={open===r.id||(open===''&&i===0)} onClick={()=>setOpen(open===r.id||(open===''&&i===0)?'closed':r.id)}><span className="discovery-number">{r.request_number}</span><span><strong>Request {r.request_number}</strong><span className="discovery-request-text">{r.request_text}</span><small>{!r.client_must_respond?'Optional response':answered(r)?'Response started':'Needs your response'} · {open===r.id||(open===''&&i===0)?'Collapse':'Open request'}</small></span></button>{(open===r.id||(open===''&&i===0))&&<DiscoveryRequest set={active} request={r} matterId={matterId} api={api} readOnly={readOnly} onSaved={saved} onDirty={changeDirty} onFile={uploaded}/>}</article>)}
- <div className="portal-actions"><button disabled={page<=1||pending} onClick={()=>{setPage(p=>p-1);setOpen('')}}>Previous</button><span>Page {page} of {pages}</span><button disabled={page>=pages||pending} onClick={()=>{setPage(p=>p+1);setOpen('')}}>Next</button></div></>}
- </>}
+ function card(r){
+  const needsAnswer=required(r),expanded=expandedId===r.id,started=answered(r)
+  return <article className={'portal-card discovery-request '+(needsAnswer?'discovery-required':'discovery-optional')+(expanded?' is-open':'')} key={r.id} data-request-number={r.request_number}>
+   <button className="discovery-request-heading" disabled={pending} aria-expanded={expanded} onClick={()=>setOpen(expanded?'closed':r.id)}>
+    <span className="discovery-number">{r.request_number}</span><span className="discovery-request-main">
+     <span className="discovery-card-top"><strong>Request {r.request_number}</strong><span className={'discovery-requirement '+(needsAnswer?'is-required':'is-optional')}>{needsAnswer?'Answer required':'No answer required'}</span></span>
+     <span className="discovery-request-text">{r.request_text}</span>
+     <span className="discovery-card-action">{expanded?'− Close request':needsAnswer?(started?'Continue your answer →':'Open and answer →'):'View / add information →'}{started&&<span className="discovery-started">Response started</span>}</span>
+    </span>
+   </button>
+   {expanded&&<DiscoveryRequest set={active} request={r} matterId={matterId} api={api} readOnly={readOnly} onSaved={saved} onDirty={changeDirty} onFile={uploaded}/>}
+  </article>
+ }
+ return <section className="discovery-portal">
+  <header className="discovery-intro"><div><small>YOUR CASE · DISCOVERY</small><h2>Respond to discovery</h2><p>Start with the requests marked <strong>Answer required</strong>. Your answers and uploads save automatically for your attorney to review.</p></div><button disabled={pending} onClick={()=>reload().catch(e=>setError(e.message))}>Refresh requests</button>{pending&&<p className="discovery-pending" role="status">Saving your work — keep this page open.</p>}</header>
+  {error&&<p role="alert" className="portal-error">{error}</p>}
+  {loading?<p>Loading discovery…</p>:!sets.length?<div className="portal-card">Your attorney has not assigned discovery requests yet.</div>:<>
+   <nav className="discovery-set-tabs" aria-label="Discovery sets">{sets.map(s=><button aria-pressed={selected===s.id} disabled={pending&&selected!==s.id} key={s.id} onClick={()=>{setSelected(s.id);setOpen('');setFilter('')}}><strong>{label(s.discovery_type)}</strong><small>{s.requests.length} requests · {s.requests.filter(required).length} answer required</small></button>)}</nav>
+   {active&&<>
+    <section className="portal-card discovery-set-overview"><div className="discovery-set-heading"><div><small>ASSIGNED REQUESTS</small><h2>{active.title}</h2></div>{active.client_response_due&&<span className="discovery-due">Your response target<strong>{new Date(active.client_response_due+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</strong></span>}</div>
+     <div className="discovery-summary"><div className="summary-required"><strong>{requiredRequests.length}</strong><span>answer required</span></div><div className="summary-optional"><strong>{optionalRequests.length}</strong><span>no answer required</span></div><div><strong>{requiredRequests.filter(answered).length} / {requiredRequests.length}</strong><span>required responses started</span></div></div>
+     <div className="discovery-guidance"><strong>Instructions from your attorney</strong><p>{active.client_instructions||'Please answer in your own words. Ask us if you need help.'}</p></div>
+     <div className="discovery-search"><label>Find a request<input disabled={pending} value={filter} onChange={e=>{setFilter(e.target.value);setOpen('')}} placeholder="Search by number or words in the request"/></label><p role="status">{filter?'Showing '+filtered.length+' of '+requests.length+' requests':'Showing all '+requests.length+' requests'}<small>Original request numbers are preserved. No requests are hidden on another page.</small></p></div>
+    </section>
+    <div className={'discovery-columns'+(!optionalRequests.length?' has-only-required':!requiredRequests.length?' has-only-optional':'')}>
+     <section className="discovery-column required-column" aria-label="Answer required requests"><header className="discovery-column-heading"><div><h3>Answer required</h3><p>Please respond to these requests.</p></div><span>{requiredRequests.length}</span></header><div className="discovery-column-content">{filtered.filter(required).length?filtered.filter(required).map(card):<p className="discovery-empty">{filter?'No matching requests in this column.':'No answers are required for this set. You can still open a request and add information.'}</p>}</div></section>
+     <section className="discovery-column optional-column" aria-label="No answer required requests"><header className="discovery-column-heading"><div><h3>No answer required</h3><p>You may still open a request and add information.</p></div><span>{optionalRequests.length}</span></header><div className="discovery-column-content">{filtered.filter(r=>!required(r)).length?filtered.filter(r=>!required(r)).map(card):<p className="discovery-empty">{filter?'No matching requests in this column.':'All requests in this set require your response.'}</p>}</div></section>
+    </div>
+    <p className="discovery-list-end">{filtered.length} of {requests.length} requests shown · Numbered in original order within each column.</p>
+   </>}
+  </>}
  </section>
 }
