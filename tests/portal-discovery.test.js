@@ -67,6 +67,7 @@ test('named folder uploads preserve original names and renaming never moves or d
  await discoveryAction(f.db,matter,{action:'discovery_upload_complete',set_id:'set',request_id:'r',file_id:begin.file_id})
  const renamed=await discoveryAction(f.db,matter,{action:'discovery_rename_file',set_id:'set',request_id:'r',file_id:begin.file_id,filename:'Amended tax return – 2025',expected_filename:'Tax return – 2025.pdf'})
  assert.equal(renamed.file.filename,'Amended tax return – 2025.pdf');assert.equal(renamed.file.original_filename,'scan.pdf');assert.equal(renamed.file.path,undefined);assert.equal(stored.path,path);assert.equal(f.tables.mio_portal_discovery_files.length,1)
+ const download=await discoveryAction(f.db,matter,{action:'discovery_download',set_id:'set',request_id:'r',file_id:begin.file_id});assert.equal(new URL(download.url).searchParams.get('download'),renamed.file.filename)
  await assert.rejects(discoveryAction(f.db,matter,{action:'discovery_rename_file',set_id:'set',request_id:'r',file_id:begin.file_id,filename:'Stale name',expected_filename:'Tax return – 2025.pdf'}),e=>e.status===409)
  await assert.rejects(discoveryAction(f.db,{...matter,client_id:'other'},{action:'discovery_rename_file',set_id:'set',request_id:'r',file_id:begin.file_id,filename:'Bad',expected_filename:stored.filename}),e=>e.status===404)
 })

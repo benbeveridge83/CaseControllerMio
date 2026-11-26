@@ -204,3 +204,15 @@ test('folder uploads prompt for folder and document names and uploaded files can
   await act(async()=>document.querySelector('.discovery-request-heading').click());await act(async()=>document.querySelector('.discovery-request-heading').click());assert.match(document.body.textContent,/Tax return – 2025 amended.txt/)
  }finally{globalThis.fetch=oldFetch;await act(async()=>root.unmount())}
 })
+
+test('portal navigation hides disabled sections and falls back to an enabled tab',async()=>{
+ const root=await setup(),{PortalContent:C}=await import(new URL('ClientPortal.test-render.mjs',dir)),calls=[]
+ const snapshot={matter:{id:'m'},agreement:{},forms:[],invoices:[],portal_settings:{intake:false,discovery:true,payments:false}}
+ try{await act(async()=>root.render(React.createElement(C,{snapshot,api:async action=>{calls.push(action);return {sets:[]}}})));assert.deepEqual([...document.querySelectorAll('.portal-tabs button')].map(b=>b.textContent),['Discovery']);assert.match(document.body.textContent,/Respond to discovery/);assert(calls.includes('discovery_list'))}finally{await act(async()=>root.unmount())}
+})
+test('staff portal Settings page saves visibility choices with a warning for existing matters',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('StaffPortal.test-render.mjs',dir)),calls=[]
+ const api=async(action,body)=>{calls.push([action,body]);return action==='staff_portal_settings'?{settings:{intake:true,discovery:true,payments:true,version:1}}:action==='staff_portal_settings_save'?{settings:{...body.settings,version:2}}:{grants:[],summaries:[]}}
+ const button=text=>[...document.querySelectorAll('button')].find(b=>b.textContent===text)
+ try{await act(async()=>root.render(React.createElement(C,{api})));await act(async()=>button('Settings').click());assert.match(document.body.textContent,/all existing and future client portals/);const boxes=document.querySelectorAll('input[type=checkbox]');assert.equal(boxes.length,3);await act(async()=>boxes[2].click());await act(async()=>button('Save portal settings').click());assert(calls.some(([a,b])=>a==='staff_portal_settings_save'&&b.settings.payments===false&&b.settings.discovery===true&&b.version===1));assert.match(document.body.textContent,/Portal settings saved/)}finally{await act(async()=>root.unmount())}
+})
