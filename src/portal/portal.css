@@ -93,3 +93,11 @@
 .discovery-columns.has-only-required,.discovery-columns.has-only-optional{grid-template-columns:minmax(0,1fr)}
 .has-only-required .optional-column{display:none}
 .has-only-optional .required-column .discovery-column-heading{background:#465462}
+.discovery-portal{padding-bottom:100px}
+.discovery-save.is-unsaved,.discovery-upload-pending{color:#8a380b;font-weight:750}
+.discovery-save-bar{position:fixed;right:24px;bottom:16px;z-index:25;max-width:480px;box-sizing:border-box;padding:12px 16px;border-radius:8px;border:2px solid #244d39;background:#e5f2e9;color:#204e32;box-shadow:0 4px 18px #172b4026;text-align:left;font-size:13px}
+.discovery-save-bar strong,.discovery-save-bar span{display:block}
+.discovery-save-bar strong{font-size:15px;margin-bottom:3px}
+.discovery-save-bar.is-saving{background:#173956;color:#fff;border-color:#315d80}
+.discovery-save-bar.has-problem{background:#fff1c5;color:#624100;border-color:#ad7c24}
+@media(max-width:600px){.discovery-save-bar{left:12px;right:12px;bottom:10px;max-width:none;font-size:12px}.discovery-portal{padding-bottom:125px}}

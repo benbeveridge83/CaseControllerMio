@@ -20,7 +20,7 @@ export default function StaffClientView({matterId,api=staffPortalApi}){
   {notice&&<p className="portal-notice" role="status">{notice}</p>}
   {!snapshot&&!error&&<p>Opening client view…</p>}
   {snapshot&&<><section className="portal-card portal-client-context"><h2>{snapshot.matter.name}</h2><p>{snapshot.matter.client_name} · {snapshot.viewer.email}</p><p className="portal-notice">{snapshot.viewer.can_submit_intake?'Test client view — you can try answers, uploads, and intake.':'Staff preview · You are viewing this client’s portal. Answers, uploads, signatures and payments are read-only in this preview.'}</p><button onClick={async()=>{try{setSnapshot(await reload());setError('')}catch(e){setError(e.message)}}}>Refresh client view</button></section>
-   <PortalContent key={matterId} snapshot={snapshot} api={clientApi} staffView allowTestSubmission={snapshot.viewer.can_submit_intake} onRefresh={async()=>setSnapshot(await reload())}/>
+   <PortalContent key={matterId} snapshot={snapshot} api={clientApi} draftOwner={snapshot.viewer.email} staffView allowTestSubmission={snapshot.viewer.can_submit_intake} onRefresh={async()=>setSnapshot(await reload())}/>
   </>}
   <footer>Questions? Contact office@beveridgelawfirm.com.</footer>
  </main>

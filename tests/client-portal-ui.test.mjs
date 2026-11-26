@@ -66,7 +66,7 @@ test('production requests preserve optional guidance and autosave the selected r
  await act(async()=>{await new Promise(r=>setTimeout(r,800))})
  assert.equal(calls.filter(([a])=>a==='discovery_save').length,1)
  assert.equal(calls.find(([a])=>a==='discovery_save')[1].version,0)
- assert.match(document.body.textContent,/Saved · Your attorney can see/)
+ assert.match(document.body.textContent,/Saved online · Your attorney can see/)
  assert(![...document.querySelectorAll('button')].some(b=>/^Submit/.test(b.textContent)))
  await act(async()=>root.unmount())
 })
@@ -125,4 +125,34 @@ test('requirements follow the attorney flag after refresh without depending on e
  assert.equal(document.querySelector('.required-column article').dataset.requestNumber,'6')
  assert.equal(document.querySelector('.optional-column article').dataset.requestNumber,'5')
  await act(async()=>root.unmount())
+})
+
+test('an offline client draft is recovered after reopening and saves after reconnect without changing requests',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir)),{draftPrefix}=await import('../src/portal/discoveryAutosave.js');let connected=false,writes=0
+ const owner='client@example.test',scope={owner,matterId:'m',setId:'s',requestId:'r'}
+ window.localStorage.setItem(draftPrefix(scope)+'previous-tab',JSON.stringify({schema:1,baseVersion:0,answer:{client_answer:'Recovered client words',client_comments:'Original comment'},updatedAt:Date.now()}))
+ const api=async(a,b)=>{if(a==='discovery_list')return {sets:[{id:'s',title:'Disclosures',discovery_type:'disclosures',requests:[{id:'r',request_number:'1',request_text:'Describe the facts',client_must_respond:true}],answers:[],files:[]}]};if(!connected)throw Error('Network offline');writes++;return {answer:{...b.answer,version:1,request_id:'r'}}}
+ try{
+  await act(async()=>root.render(React.createElement(C,{matterId:'m',draftOwner:owner,api})))
+  await act(async()=>{await new Promise(r=>setTimeout(r,20))})
+  assert.equal(document.querySelector('textarea').value,'Recovered client words')
+  assert.match(document.body.textContent,/Recovered your unsaved answer/)
+  assert.match(document.body.textContent,/Some work is not saved online/)
+  assert(window.localStorage.length>0)
+  connected=true;await act(async()=>window.dispatchEvent(new window.Event('online')))
+  assert.match(document.body.textContent,/Saved online/);assert.equal(writes,1)
+  assert(![...Array(window.localStorage.length)].map((_,i)=>window.localStorage.key(i)).some(k=>k.startsWith(draftPrefix(scope))))
+ }finally{await act(async()=>root.unmount())}
+})
+test('an expired session shows sign-in guidance while retaining the recovered draft',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir)),{draftPrefix}=await import('../src/portal/discoveryAutosave.js'),owner='client@example.test'
+ const key=draftPrefix({owner,matterId:'m',setId:'s',requestId:'r'})+'prior'
+ window.localStorage.setItem(key,JSON.stringify({schema:1,baseVersion:0,answer:{client_answer:'Do not lose this'},updatedAt:Date.now()}))
+ const api=async a=>{if(a==='discovery_list')return {sets:[{id:'s',title:'Set',discovery_type:'disclosures',requests:[{id:'r',request_number:'1',request_text:'Question',client_must_respond:true}],answers:[],files:[]}]};throw Object.assign(Error('Your session expired. Sign in again.'),{status:401})}
+ try{await act(async()=>root.render(React.createElement(C,{matterId:'m',draftOwner:owner,api})));await act(async()=>{await new Promise(r=>setTimeout(r,20))});assert.equal(document.querySelector('textarea').value,'Do not lose this');assert.match(document.body.textContent,/Please sign in again/);assert(document.querySelector('a[href*="client-portal"]'));assert(window.localStorage.getItem(key))}finally{await act(async()=>root.unmount())}
+})
+test('an uploaded file whose confirmation was lost can be finished after reopening without uploading it twice',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir)),calls=[]
+ const api=async(a,b)=>{calls.push([a,b]);if(a==='discovery_list')return {sets:[{id:'s',title:'Production',discovery_type:'production',requests:[{id:'r',request_number:'1',request_text:'Produce records',client_must_respond:true}],answers:[],files:[{id:'f',request_id:'r',filename:'Records.pdf',size_bytes:100,status:'uploading'}]}]};if(a==='discovery_upload_complete')return {file:{id:'f',request_id:'r',filename:'Records.pdf',size_bytes:100,status:'ready'}};throw Error('Unexpected action')}
+ try{await act(async()=>root.render(React.createElement(C,{matterId:'m',api})));assert.match(document.body.textContent,/not been confirmed/);await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Finish upload').click());assert(!calls.some(([a])=>a==='discovery_upload_begin'));assert(calls.some(([a])=>a==='discovery_upload_complete'));assert.match(document.body.textContent,/Uploaded for this request/);assert.doesNotMatch(document.querySelector('.discovery-save-bar').textContent,/not saved online/)}finally{await act(async()=>root.unmount())}
 })
