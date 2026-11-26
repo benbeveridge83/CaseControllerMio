@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {extractDisclosureRequests} from '../supabase/functions/_shared/disclosure-extraction.js'
+import {extractServedDiscoveryRequests} from '../supabase/functions/_shared/served-discovery-extraction.js'
 import {mountDiscoveryExtraction} from '../mio-discovery-extraction.js'
 
 // Synthetic three-page disclosure: lowercase requests, wrapped lines and rule citations.
@@ -19,7 +20,7 @@ test('the App fallback uses the shared parser and returns no page-sized guesses'
  const app=mountDiscoveryExtraction(fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8'))
  const names=['discoveryTypeColumnKey','normalizeDiscoveryExtractionText','extractNumberedDisclosureRequests','extractExhibitANumberedRequests','localExtractRespondingDiscoveryRequests']
  const body=names.map(name=>{const start=app.indexOf('  function '+name+'('),end=app.indexOf('\n  function ',start+4);return app.slice(start,end)}).join('\n')
- const parse=new Function('extractDisclosureRequests',body+';return localExtractRespondingDiscoveryRequests')(extractDisclosureRequests)
+ const parse=new Function('extractDisclosureRequests','extractServedDiscoveryRequests',body+';return localExtractRespondingDiscoveryRequests')(extractDisclosureRequests,extractServedDiscoveryRequests)
  check(parse(flatPages,'Request for Disclosures'));assert.deepEqual(parse(pages[0]+'\n\n'+pages[1],'Request for Disclosures'),[])
  for(const type of ['Request for Production','Interrogatories','Request for Admissions']){
   const rows=parse('Exhibit A\n1. Produce or identify the first item.\n2. Produce or identify the second item.',type);assert.equal(rows.length,2,type)
