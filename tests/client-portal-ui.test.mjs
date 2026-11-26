@@ -79,6 +79,9 @@ test('a production upload is registered only after storage succeeds and remains 
   await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
   const input=document.querySelector('input[type=file]');Object.defineProperty(input,'files',{value:[new File(['sample'],'sample.txt',{type:'text/plain'})]})
   await act(async()=>input.dispatchEvent(new window.Event('change',{bubbles:true})))
+  assert.equal(calls.filter(([a])=>a!=='discovery_list').length,0)
+  assert.match(document.body.textContent,/Name your documents/)
+  await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Upload named documents').click())
   assert.deepEqual(calls.filter(([a])=>a!=='discovery_list').map(([a])=>a),['discovery_upload_begin','discovery_upload_complete'])
   assert.match(document.body.textContent,/sample.txt/)
   const heading=()=>document.querySelector('.discovery-request-heading')
@@ -155,4 +158,49 @@ test('an uploaded file whose confirmation was lost can be finished after reopeni
  const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir)),calls=[]
  const api=async(a,b)=>{calls.push([a,b]);if(a==='discovery_list')return {sets:[{id:'s',title:'Production',discovery_type:'production',requests:[{id:'r',request_number:'1',request_text:'Produce records',client_must_respond:true}],answers:[],files:[{id:'f',request_id:'r',filename:'Records.pdf',size_bytes:100,status:'uploading'}]}]};if(a==='discovery_upload_complete')return {file:{id:'f',request_id:'r',filename:'Records.pdf',size_bytes:100,status:'ready'}};throw Error('Unexpected action')}
  try{await act(async()=>root.render(React.createElement(C,{matterId:'m',api})));assert.match(document.body.textContent,/not been confirmed/);await act(async()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='Finish upload').click());assert(!calls.some(([a])=>a==='discovery_upload_begin'));assert(calls.some(([a])=>a==='discovery_upload_complete'));assert.match(document.body.textContent,/Uploaded for this request/);assert.doesNotMatch(document.querySelector('.discovery-save-bar').textContent,/not saved online/)}finally{await act(async()=>root.unmount())}
+})
+
+
+test('real-matter preview explicitly enables only discovery editing and sends an on-behalf action',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('StaffClientView.test-render.mjs',dir)),calls=[]
+ const snapshot={matter:{id:'m',name:'Real matter',client_name:'Francis'},viewer:{email:'client@example.com',can_submit_intake:false},agreement:{},invoices:[{id:'i',balance:100}],forms:[]}
+ const set={id:'s',title:'RFP',discovery_type:'production',requests:[{id:'r',request_number:'1',request_text:'Records',client_must_respond:true}],answers:[],files:[]}
+ const api=async(a,b)=>{calls.push([a,b]);return a==='staff_client_view'?snapshot:b.client_action==='discovery_list'?{sets:[set]}:{answer:{...b.answer,request_id:'r',version:1}}}
+ const button=text=>[...document.querySelectorAll('button')].find(b=>b.textContent===text)
+ try{
+  await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+  await act(async()=>button('Discovery').click())
+  assert(document.querySelector('select').disabled);assert.match(document.body.textContent,/Preview mode/)
+  await act(async()=>button('Edit discovery on behalf of client').click())
+  assert.equal(document.querySelector('select').disabled,false);assert.match(document.body.textContent,/Editing discovery on behalf of Francis/)
+  const select=document.querySelector('select');await act(async()=>{select.value=select.options[1].value;select.dispatchEvent(new window.Event('change',{bubbles:true}))})
+  assert(button('Finish editing discovery').disabled)
+  await act(async()=>new Promise(r=>setTimeout(r,800)))
+  assert(calls.some(([a,b])=>a==='staff_client_discovery_action'&&b.edit_on_behalf===true&&b.client_action==='discovery_save'&&b.matter_id==='m'))
+  await act(async()=>button('Payments · $100.00').click());assert(button('Pay $100.00').disabled)
+ }finally{await act(async()=>root.unmount())}
+})
+
+test('folder uploads prompt for folder and document names and uploaded files can be renamed',async()=>{
+ const root=await setup(),{default:C}=await import(new URL('DiscoveryPortal.test-render.mjs',dir)),calls=[],oldFetch=globalThis.fetch
+ const set={id:'s',title:'RFP',discovery_type:'production',requests:[{id:'r',request_number:'1',request_text:'Tax returns',client_must_respond:true}],answers:[],files:[]}
+ let file
+ const api=async(a,b)=>{calls.push([a,b]);if(a==='discovery_list')return {sets:[set]};if(a==='discovery_upload_begin'){file={id:'f',request_id:'r',filename:b.filename,original_filename:b.original_filename,folder_name:b.folder_name,relative_path:b.relative_path,size_bytes:6,status:'ready'};return {file_id:'f',url:'https://storage.example/signed',content_type:'text/plain'}};if(a==='discovery_upload_complete')return {file};if(a==='discovery_rename_file'){assert.equal(b.expected_filename,file.filename);file={...file,filename:b.filename};return {file}};throw Error(a)}
+ globalThis.fetch=async()=>new Response('{}')
+ const button=text=>[...document.querySelectorAll('button')].find(b=>b.textContent===text)
+ const change=async(input,text)=>{await act(async()=>{const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;setter.call(input,text);input.dispatchEvent(new window.Event('input',{bubbles:true}));input.dispatchEvent(new window.Event('change',{bubbles:true}))})}
+ try{
+  await act(async()=>root.render(React.createElement(C,{matterId:'m',api})))
+  const input=document.querySelector('input[webkitdirectory]'),original=new File(['sample'],'scan.txt',{type:'text/plain'});Object.defineProperty(original,'webkitRelativePath',{value:'Scans/2025/scan.txt'});Object.defineProperty(input,'files',{value:[original]})
+  await act(async()=>input.dispatchEvent(new window.Event('change',{bubbles:true})))
+  assert(!calls.some(([a])=>a==='discovery_upload_begin'));assert.match(document.body.textContent,/Tax return – 2025.pdf/)
+  await change(document.querySelector('.discovery-upload-review label input'),'Tax returns')
+  await change(document.querySelector('.discovery-name-row input'),'Tax return – 2025')
+  await act(async()=>button('Upload named documents').click())
+  const sent=calls.find(([a])=>a==='discovery_upload_begin')[1];assert.equal(sent.filename,'Tax return – 2025.txt');assert.equal(sent.original_filename,'scan.txt');assert.equal(sent.folder_name,'Tax returns');assert.equal(sent.relative_path,'2025/scan.txt')
+  assert.match(document.body.textContent,/Folder: Tax returns/)
+  await act(async()=>button('Rename').click());await change(document.querySelector('.discovery-rename input'),'Tax return – 2025 amended');await act(async()=>button('Save name').click())
+  assert.match(document.body.textContent,/Tax return – 2025 amended.txt/);assert.equal(calls.filter(([a])=>a==='discovery_upload_begin').length,1)
+  await act(async()=>document.querySelector('.discovery-request-heading').click());await act(async()=>document.querySelector('.discovery-request-heading').click());assert.match(document.body.textContent,/Tax return – 2025 amended.txt/)
+ }finally{globalThis.fetch=oldFetch;await act(async()=>root.unmount())}
 })
