@@ -48,7 +48,8 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       {review.error&&<p role="alert">{review.error}</p>}
       <nav aria-label="Replenishment matter groups" style={{display:'flex',gap:8,marginTop:14,marginBottom:4,flexWrap:'wrap',borderBottom:'1px solid #cbd5e1',paddingBottom:10}}>
         {REPLENISHMENT_TABS.map(item=>{
-          const count=allRows.filter(row=>(row.review_tab||'eligible')===item.id).length
+          const tabFilters=filtersByTab[item.id]||defaultFilters()
+          const count=allRows.filter(row=>(row.review_tab||'eligible')===item.id&&Object.entries(tabFilters).every(([field,chosen])=>!chosen||normalizeFilter(row[field])===chosen)).length
           return <button key={item.id} type="button" aria-current={listTab===item.id?'page':undefined}
             onClick={()=>{setListTab(item.id);setSelectedId(null);setTab('overview');setConfirmIds(null)}}
             style={{border:'1px solid #cbd5e1',borderRadius:8,padding:'9px 13px',background:listTab===item.id?'#dbeafe':'white',fontWeight:listTab===item.id?700:500,cursor:'pointer'}}>{item.label} ({count})</button>
