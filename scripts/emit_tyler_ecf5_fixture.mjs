@@ -35,6 +35,30 @@ const payment=buildUnsignedTylerPaymentMessage({plan,feeQuote:{
 for (const [name,xml] of [
  ['generated-filing.xml',filing.xml], ['generated-payment.xml',payment.xml],
 ]) writeFileSync(resolve(outputDir,name),xml,{mode:0o600})
+// Also exercise the extra vendor extension blocks: a connected exhibit and
+// a Tyler service recipient. This variant is still purely synthetic.
+const exhibit={...doc,fileName:'Synthetic Exhibit.pdf',sourceObjectId:'synthetic-exhibit'}
+const servicePlan=planTylerSubsequentCivilFiling({
+ environment:'stage',mode:'efile_and_serve',isNewCase:false,messageId:'msg-synthetic-serve-2',
+ courtLocationId:'harris:dc',caseCategoryCode:'7',caseTypeCode:'545',
+ caseTrackingId:'CASE-SYNTHETIC-123',
+ sendingMdeLocationId:'https://example.invalid/efsp',filingCodeId:'670',
+ filingPartyParticipantId:'PARTY-SYNTHETIC-123',
+ filingAttorneyParticipantId:'ATTORNEY-SYNTHETIC-123',
+ leadDocument:doc,attachments:[exhibit],
+ serviceContacts:[{selected:true,tylerServiceContactId:'SYNTHETIC-SERVICE-CONTACT',
+ serviceTypeCode:'-580',representedPartyRef:'Party1'}],
+ paymentAccountId:'PAYMENT-SYNTHETIC-123',maxFeeAmountCents:10000,
+})
+const serviceFiling=buildUnsignedTylerSubsequentCivilFilingMessage({
+ plan:servicePlan,bytesBySourceId:{
+ 'synthetic-document':bytes, 'synthetic-exhibit':bytes,
+ },submittedAt:'2026-11-26T15:00:00.000Z',
+})
+writeFileSync(resolve(outputDir,'generated-service-and-exhibit.xml'),
+ serviceFiling.xml,{mode:0o600})
+if(serviceFiling.transportReady!==false)
+ throw Error('Service ECF5 fixture unexpectedly marked transport ready.')
 if(filing.transportReady!==false || payment.transportReady!==false)
  throw Error('Synthetic ECF5 fixture unexpectedly marked transport ready.')
 process.stdout.write('Generated synthetic, unsigned ECF5 XML fixtures. No live transport.\n')
