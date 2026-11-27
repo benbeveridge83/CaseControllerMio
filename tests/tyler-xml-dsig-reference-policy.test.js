@@ -39,7 +39,9 @@ test('rejects SHA-1 methods and repeated references',()=>{
  assert.throws(()=>inspect(xml.replace('</ds:SignedInfo>',extra+'</ds:SignedInfo>')),/Repeated signature references/)
 })
 test('rejects signature moved into SOAP Body',()=>{
- const signature=xml.match(/<ds:Signature>[\\s\\S]*?<\\/ds:Signature>/)?.[0]
+ const start=xml.indexOf('<ds:Signature>')
+ const end=xml.indexOf('</ds:Signature>',start)
+ const signature=start>=0 && end>=0 ? xml.slice(start,end+'</ds:Signature>'.length) : null
  assert.ok(signature)
  const wrapped=xml.replace(signature,'').replace('</s:Body>',signature+'</s:Body>')
  assert.throws(()=>inspect(wrapped),/Single SOAP Header/)
