@@ -5161,6 +5161,40 @@ function MatterColumnWidthInput({ label, value, onCommit, style }) {
   )
 }
 
+function MatterWindowHeightInput({ value, onCommit }) {
+  const [draft, setDraft] = useState(String(value))
+  useEffect(() => setDraft(String(value)), [value])
+
+  return <input
+    type="number"
+    min="40"
+    max="180"
+    value={draft}
+    aria-label="Matters window height as a percentage of the screen height"
+    title="Press Enter to save; Escape cancels"
+    onChange={(event) => setDraft(event.target.value)}
+    onKeyDown={(event) => {
+      if (event.key === 'Escape') {
+        setDraft(String(value))
+        event.currentTarget.blur()
+      } else if (event.key === 'Enter') {
+        event.preventDefault()
+        const height = Number(draft)
+        if (draft.trim() && Number.isFinite(height)) {
+          const committed = Math.max(40, Math.min(180, Math.round(height)))
+          setDraft(String(committed))
+          onCommit(committed)
+        } else {
+          setDraft(String(value))
+        }
+        event.currentTarget.blur()
+      }
+    }}
+    onBlur={() => setDraft(String(value))}
+    style={{ width: 62, padding: '3px 4px' }}
+  />
+}
+
 
 function App() {
   const [session, setSession] = useState(null)
@@ -6824,6 +6858,7 @@ function App() {
   const [showTaskWindow, setShowTaskWindow] = useState(false)
   const [showMatterColumnsWindow, setShowMatterColumnsWindow] = useState(false)
   const [showMatterWidthControls, setShowMatterWidthControls] = useState(false)
+  const [showMatterWindowHeightControl, setShowMatterWindowHeightControl] = useState(false)
   const [matterPageFieldsEditable, setMatterPageFieldsEditable] = useState(false)
   const [showUnpopulatedMatterStatuses, setShowUnpopulatedMatterStatuses] = useState(() => localStorage.getItem('showUnpopulatedMatterStatuses') === 'true')
   const [showMatterStepsOnMatterPage, setShowMatterStepsOnMatterPage] = useState(() => localStorage.getItem('showMatterStepsOnMatterPage') === 'true')
@@ -7073,6 +7108,10 @@ function App() {
     } catch {
       return {}
     }
+  })
+  const [matterPageWindowHeightVh, setMatterPageWindowHeightVh] = useState(() => {
+    try { return Math.max(40, Math.min(180, Number(localStorage.getItem('matterPageWindowHeightVh')) || 72)) }
+    catch { return 72 }
   })
 
   const [clientFilter, setClientFilter] = useState('all')
@@ -7748,6 +7787,7 @@ function App() {
       matterPageFilterMatterStatus: { setter: setMatterPageFilterMatterStatus, kind: 'array', fallback: null },
       matterPageFilterCaseType: { setter: setMatterPageFilterCaseType, kind: 'array', fallback: null },
       matterColumnWidths: { setter: setMatterColumnWidths, kind: 'object', fallback: {} },
+      matterPageWindowHeightVh: { setter: (value) => setMatterPageWindowHeightVh(Math.max(40, Math.min(180, Number(value) || 72))), kind: 'number', fallback: 72 },
       taskSubpartCompletions: { setter: setTaskSubpartCompletions, kind: 'object', fallback: {} },
       caseControllerTimelineCompression: { setter: setTimelineRangeDays, kind: 'number', fallback: 60 },
       caseControllerTimelineHideEmptyDays: { setter: setTimelineHideEmptyDays, kind: 'boolean', fallback: false },
@@ -28864,6 +28904,12 @@ async function updateTeamCell(memberId, field, value) {
     }
     setMatterColumnWidths(next)
     saveMioStateKey('matterColumnWidths', JSON.stringify(next))
+  }
+
+  function resizeMatterPageWindow(height) {
+    const next = Math.max(40, Math.min(180, Math.round(Number(height) || 72)))
+    setMatterPageWindowHeightVh(next)
+    saveMioStateKey('matterPageWindowHeightVh', String(next))
   }
 
   function matterPageTableColumns() {
@@ -60435,6 +60481,15 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             <div style={{ display: 'flex', gap: 10, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               <button onClick={() => setShowMatterColumnsWindow(true)}>Columns</button>
               <button onClick={() => setShowMatterWidthControls(!showMatterWidthControls)}>Column Width</button>
+              <button type="button" aria-expanded={showMatterWindowHeightControl} onClick={() => setShowMatterWindowHeightControl(!showMatterWindowHeightControl)}>Vertical Window</button>
+              {showMatterWindowHeightControl && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 7px', border: '1px solid #cbd5e1', borderRadius: 5 }}>
+                  Height <MatterWindowHeightInput value={matterPageWindowHeightVh} onCommit={resizeMatterPageWindow} /> vh
+                  <button type="button" onClick={() => resizeMatterPageWindow(matterPageWindowHeightVh - 10)} aria-label="Make Matters window shorter">−10</button>
+                  <button type="button" onClick={() => resizeMatterPageWindow(matterPageWindowHeightVh + 10)} aria-label="Make Matters window taller">+10</button>
+                  <small title="100vh equals the browser window height">Enter to save · 100 = screen height</small>
+                </span>
+              )}
               <button onClick={() => setMatterPageFieldsEditable(!matterPageFieldsEditable)}>
                 {matterPageFieldsEditable ? 'Done Editing Fields' : 'Edit Fields'}
               </button>
@@ -60510,7 +60565,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
             >
               <div style={{ width: matterPageTableWidth(), height: 1 }} />
             </div>
-            <div ref={matterPageBodyScrollRef} onScroll={() => syncMatterPageScroll('body')} style={{ overflow: 'auto', maxHeight: '72vh', width: '100%', border: '1px solid #aaa' }}>
+            <div ref={matterPageBodyScrollRef} onScroll={() => syncMatterPageScroll('body')} style={{ overflow: 'auto', maxHeight: `${matterPageWindowHeightVh}vh`, width: '100%', border: '1px solid #aaa' }}>
               <table border="1" cellPadding="4" style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: matterPageTableWidth() }}>
                 <colgroup>{matterPageTableColumns().map((key) => <col key={key} style={{ width: matterColumnWidth(key) }} />)}</colgroup>
                 <tbody>
