@@ -32,7 +32,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js tests/tyler-efiling-receipts.test.js tests/tyler-efiling-cloud-history.test.js tests/tyler-outbound-pipeline.test.js tests/tyler-efiling-outbox.test.js tests/tyler-reviewfiling-response.test.js tests/tyler-ecf5-reviewfiling-envelope.test.js tests/tyler-ecf5-subsequent-civil-mapper.test.js tests/tyler-ecf5-document-rendition.test.js tests/tyler-ecf5-existing-case-message.test.js
+      - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js tests/tyler-efiling-receipts.test.js tests/tyler-efiling-cloud-history.test.js tests/tyler-outbound-pipeline.test.js tests/tyler-efiling-outbox.test.js tests/tyler-reviewfiling-response.test.js tests/tyler-ecf5-reviewfiling-envelope.test.js tests/tyler-ecf5-subsequent-civil-mapper.test.js tests/tyler-ecf5-document-rendition.test.js tests/tyler-ecf5-existing-case-message.test.js tests/tyler-xml-dsig-reference-policy.test.js
       - run: python3 -m pip install --disable-pip-version-check lxml==6.0.2
       - run: python3 -m unittest discover -s tests -p 'tyler_ecf5_schema_validation_test.py' -v
       - run: node scripts/emit_tyler_ecf5_fixture.mjs ./synthetic-efm-artifacts
