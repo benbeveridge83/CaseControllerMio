@@ -5123,6 +5123,44 @@ function isMioEfileFolderError(error) {
   return error?.mioCode === 'MIO_EFILE_FOLDER' || error?.name === 'MioEfileFolderError'
 }
 
+function MatterColumnWidthInput({ label, value, onCommit, style }) {
+  const [draft, setDraft] = useState(String(value))
+
+  useEffect(() => setDraft(String(value)), [value])
+
+  return (
+    <input
+      type="number"
+      min="48"
+      value={draft}
+      aria-label={`${label} column width in pixels`}
+      title="Press Enter to save the column width; Escape cancels"
+      onChange={(event) => setDraft(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          setDraft(String(value))
+          event.currentTarget.blur()
+        } else if (event.key === 'Enter') {
+          event.preventDefault()
+          event.stopPropagation()
+          const width = Number(draft)
+          if (draft.trim() && Number.isFinite(width)) {
+            const committed = Math.max(48, Math.round(width))
+            setDraft(String(committed))
+            onCommit(committed)
+          } else {
+            setDraft(String(value))
+          }
+          event.currentTarget.blur()
+        }
+      }}
+      onBlur={() => setDraft(String(value))}
+      style={style}
+    />
+  )
+}
+
 
 function App() {
   const [session, setSession] = useState(null)
@@ -31895,7 +31933,7 @@ async function updateTeamCell(memberId, field, value) {
         {['action', 'trust'].map((key) => (
           <th key={key} style={{ ...matterColumnStyle(key, true), position: 'sticky', top: 38, textAlign: 'center', zIndex: 10, overflow: 'hidden' }} title={key === 'trust' ? 'Current Mio trust balance' : undefined}>
             {key === 'action' ? 'Action' : 'Trust'}
-            {showMatterWidthControls && <input type="number" min="48" value={matterColumnWidth(key)} onChange={(e) => resizeMatterColumn(key, e.target.value)} title={`Adjust ${key} column width`} style={{ display: 'block', width: 58, fontSize: 11, margin: '4px auto 0' }} />}
+            {showMatterWidthControls && <MatterColumnWidthInput label={key} value={matterColumnWidth(key)} onCommit={(width) => resizeMatterColumn(key, width)} style={{ display: 'block', width: 58, fontSize: 11, margin: '4px auto 0' }} />}
           </th>
         ))}
         {shownMatterColumns().map((column) => (
@@ -31934,13 +31972,10 @@ async function updateTeamCell(memberId, field, value) {
             </div>
 
             {showMatterWidthControls && (
-              <input
-                type="number"
-                min="48"
+              <MatterColumnWidthInput
+                label={column.label}
                 value={matterColumnWidth(column.key)}
-                onChange={(e) => resizeMatterColumn(column.key, e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                title="Adjust column width"
+                onCommit={(width) => resizeMatterColumn(column.key, width)}
                 style={{ width: 58, fontSize: 11, marginTop: 4 }}
               />
             )}
@@ -60425,7 +60460,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                 optionsList={options('matter_type').map((option) => ({ value: option.name, label: option.name }))}
               />
 
-              <span style={{ fontSize: 13 }}>Matter headings repeat under each status section. Use Column Width to adjust widths. Choices save automatically.</span>
+              <span style={{ fontSize: 13 }}>Matter headings repeat under each status section. Press Enter to save a column width; Escape cancels.</span>
             </div>
 
             {showMatterColumnsWindow && (
@@ -60486,7 +60521,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                         </td>
                       </tr>
 
-                      <MatterPageHeaderRow />
+                      {MatterPageHeaderRow()}
 
                       {section.matters.length === 0 && (
                         <tr>
