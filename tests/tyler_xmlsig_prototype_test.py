@@ -115,7 +115,7 @@ class XMLDSIGRoundTripTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check(unsigned())
         with self.assertRaises(ValueError):
-            self.check(b'<!DOCTYPE s:Envelope [<!ENTITY x "attack">]>' + self.signed)
+            self.check(self.signed.replace(b"?>", b"?><!DOCTYPE s:Envelope [<!ENTITY x 'attack'>]>", 1))
 
     def test_duplicate_body_id_rejected_before_crypto_verification(self):
         root = etree.fromstring(self.signed)
