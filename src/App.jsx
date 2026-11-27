@@ -6872,19 +6872,14 @@ function App() {
       opposing_party_1: true,
       opposing_party_1_counsel: true,
       opposing_party_1_counsel_firm: true,
-      notes: true,
-      action: true
+      notes: true
     }
 
     try {
       const savedColumns = JSON.parse(localStorage.getItem('visibleMatterColumns') || '{}')
       const nextColumns = {
         ...defaults,
-        ...savedColumns,
-        // Keep these core columns visible even when an older saved column layout exists.
-        trial_date: true,
-        days_until_trial: true,
-        action: true
+        ...savedColumns
       }
       saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
       return nextColumns
@@ -9578,19 +9573,6 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [page, matterTimelineSortMode, matterTimelineCaseStatusFilters, matterTimelineMatterStatusFilters, matterTimelineOptions, matterTimelineDateAdjustments, matters, events, documents, tags, courtTimelineRules, matterTimelineViewportWidth, matterTimelineHiddenOptionKeys, matterTimelineLayoutMode])
 
-
-  useEffect(() => {
-    if (!visibleMatterColumns.trial_date || !visibleMatterColumns.days_until_trial || !visibleMatterColumns.action) {
-      const nextColumns = {
-        ...visibleMatterColumns,
-        trial_date: true,
-        days_until_trial: true,
-        action: true
-      }
-      setVisibleMatterColumns(nextColumns)
-      saveMioStateKey('visibleMatterColumns', JSON.stringify(nextColumns))
-    }
-  }, [visibleMatterColumns])
 
   useEffect(() => {
     const email = session?.user?.email || ''
@@ -28756,25 +28738,17 @@ async function updateTeamCell(memberId, field, value) {
     { key: 'opposing_party_1', label: 'Opposing/Addl Party 1', width: 220 },
     { key: 'opposing_party_1_counsel', label: 'Party 1 Counsel', width: 220 },
     { key: 'opposing_party_1_counsel_firm', label: 'Party 1 Counsel Firm', width: 240 },
-    { key: 'notes', label: 'Notes', width: 420 },
-    { key: 'action', label: 'Action', width: 260 }
+    { key: 'notes', label: 'Notes', width: 420 }
   ]
 
   function shownMatterColumns() {
-    return matterPageColumns.filter((column) => column.key === 'action' || visibleMatterColumns[column.key])
+    return matterPageColumns.filter((column) => visibleMatterColumns[column.key])
   }
 
   function toggleMatterColumn(columnKey) {
-    if (columnKey === 'action') {
-      const next = { ...visibleMatterColumns, action: true }
-      setVisibleMatterColumns(next)
-      saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
-      return
-    }
     const next = {
       ...visibleMatterColumns,
-      [columnKey]: !visibleMatterColumns[columnKey],
-      action: true
+      [columnKey]: !visibleMatterColumns[columnKey]
     }
     setVisibleMatterColumns(next)
     saveMioStateKey('visibleMatterColumns', JSON.stringify(next))
@@ -28782,13 +28756,15 @@ async function updateTeamCell(memberId, field, value) {
 
   function matterColumnWidth(columnKey) {
     const column = matterPageColumns.find((item) => item.key === columnKey)
-    return Number(matterColumnWidths[columnKey] || column?.width || 160)
+    return Number(matterColumnWidths[columnKey] || column?.width || (columnKey === 'action' ? 230 : columnKey === 'trust' ? 132 : 160))
   }
 
   function matterColumnStyle(columnKey, isHeader = false) {
     const base = {
       minWidth: matterColumnWidth(columnKey),
       width: matterColumnWidth(columnKey),
+      maxWidth: matterColumnWidth(columnKey),
+      boxSizing: 'border-box',
       whiteSpace: isHeader ? 'nowrap' : 'nowrap',
       verticalAlign: isHeader ? 'middle' : 'middle',
       background: isHeader ? '#f7f7f7' : 'white',
@@ -28843,13 +28819,21 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function resizeMatterColumn(columnKey, width) {
-    const cleanWidth = Math.max(80, Number(width) || 80)
+    const cleanWidth = Math.max(48, Number(width) || 48)
     const next = {
       ...matterColumnWidths,
       [columnKey]: cleanWidth
     }
     setMatterColumnWidths(next)
     saveMioStateKey('matterColumnWidths', JSON.stringify(next))
+  }
+
+  function matterPageTableColumns() {
+    return ['action', 'trust', ...shownMatterColumns().map((column) => column.key)]
+  }
+
+  function matterPageTableWidth() {
+    return matterPageTableColumns().reduce((total, key) => total + matterColumnWidth(key), 0)
   }
 
   function updateMatterPageFilter(key, value) {
@@ -31837,7 +31821,7 @@ async function updateTeamCell(memberId, field, value) {
 
   function matterEditableInputStyle(columnKey) {
     return {
-      width: Math.max(60, matterColumnWidth(columnKey) - 18),
+      width: Math.max(30, matterColumnWidth(columnKey) - 18),
       border: '1px solid #ccc',
       padding: 2,
       boxSizing: 'border-box'
@@ -31908,8 +31892,12 @@ async function updateTeamCell(memberId, field, value) {
   function MatterPageHeaderRow() {
     return (
       <tr>
-        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 116 }}>Action</th>
-        <th style={{ position: 'sticky', top: 38, whiteSpace: 'nowrap', textAlign: 'center', zIndex: 10, minWidth: 132, background: '#f8fafc' }} title="Most recent loaded Clio Trust Management Report snapshot">Trust</th>
+        {['action', 'trust'].map((key) => (
+          <th key={key} style={{ ...matterColumnStyle(key, true), position: 'sticky', top: 38, textAlign: 'center', zIndex: 10, overflow: 'hidden' }} title={key === 'trust' ? 'Current Mio trust balance' : undefined}>
+            {key === 'action' ? 'Action' : 'Trust'}
+            {showMatterWidthControls && <input type="number" min="48" value={matterColumnWidth(key)} onChange={(e) => resizeMatterColumn(key, e.target.value)} title={`Adjust ${key} column width`} style={{ display: 'block', width: 58, fontSize: 11, margin: '4px auto 0' }} />}
+          </th>
+        ))}
         {shownMatterColumns().map((column) => (
           <th
             key={column.key}
@@ -31918,6 +31906,8 @@ async function updateTeamCell(memberId, field, value) {
               position: 'sticky',
               top: 38,
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
               textAlign: 'center',
               zIndex: column.key === 'matter' || column.key === 'client' ? 12 : 10
             }}
@@ -31946,7 +31936,7 @@ async function updateTeamCell(memberId, field, value) {
             {showMatterWidthControls && (
               <input
                 type="number"
-                min="80"
+                min="48"
                 value={matterColumnWidth(column.key)}
                 onChange={(e) => resizeMatterColumn(column.key, e.target.value)}
                 onClick={(e) => e.stopPropagation()}
@@ -31986,7 +31976,7 @@ async function updateTeamCell(memberId, field, value) {
   function MatterPageCells({ matter }) {
     return (
       <>
-        <td style={{ ...matterDataCellStyle('action'), textAlign: 'left', minWidth: 230, padding: '2px 4px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+        <td style={{ ...matterDataCellStyle('action'), textAlign: 'left', padding: '2px 4px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
           <span style={{ display:'inline-flex', alignItems:'center', gap:4, flexWrap:'nowrap' }}>
             <MatterQuickLinkIcons matter={matter} />
             <button type="button" onClick={() => openMatterTaskTemplates(matter)} title="Open dashboard" style={{ padding:'2px 5px', fontSize:10 }}>Dashboard</button>
@@ -31995,7 +31985,7 @@ async function updateTeamCell(memberId, field, value) {
             {showMatterStepsOnMatterPage && matterStepsForMatter(matter).length > 0 && <button type="button" onClick={() => toggleMatterStepsRow(matter.id)} style={{ padding:'2px 5px', fontSize:10 }}>{matterStepsRowVisible(matter.id) ? 'Hide steps' : 'Steps'}</button>}
           </span>
         </td>
-        <td style={{ ...matterDataCellStyle('trust'), minWidth: 132, textAlign: 'right', fontWeight: 700, color: latestTrustAmountForMatter(matter) ? '#166534' : '#94a3b8', background: '#f8fafc' }} title="Current Mio trust balance: frozen opening plus Mio and completed LawPay activity">
+        <td style={{ ...matterDataCellStyle('trust'), textAlign: 'right', fontWeight: 700, color: latestTrustAmountForMatter(matter) ? '#166534' : '#94a3b8', background: '#f8fafc' }} title="Current Mio trust balance: frozen opening plus Mio and completed LawPay activity">
           {latestTrustAmountForMatter(matter) || '--'}
         </td>
         {visibleMatterColumns.matter && (
@@ -60447,9 +60437,7 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
                     <label key={column.key}>
                       <input
                         type="checkbox"
-                        checked={column.key === 'action' ? true : !!visibleMatterColumns[column.key]}
-                        disabled={column.key === 'action'}
-                        title={column.key === 'action' ? 'Action buttons stay visible so Matter Dashboard and Edit Matter are always available.' : ''}
+                        checked={!!visibleMatterColumns[column.key]}
                         onChange={() => toggleMatterColumn(column.key)}
                       />
                       {' '}
@@ -60469,10 +60457,11 @@ create index if not exists clio_financial_snapshots_clio_matter_idx
               onScroll={() => syncMatterPageScroll('top')}
               style={{ overflowX: 'auto', overflowY: 'hidden', width: '100%', height: 18, border: '1px solid #aaa', borderBottom: 0 }}
             >
-              <div style={{ width: 2600, height: 1 }} />
+              <div style={{ width: matterPageTableWidth(), height: 1 }} />
             </div>
             <div ref={matterPageBodyScrollRef} onScroll={() => syncMatterPageScroll('body')} style={{ overflow: 'auto', maxHeight: '72vh', width: '100%', border: '1px solid #aaa' }}>
-              <table border="1" cellPadding="4" style={{ borderCollapse: 'collapse', minWidth: 2600, width: 'max-content' }}>
+              <table border="1" cellPadding="4" style={{ borderCollapse: 'collapse', tableLayout: 'fixed', width: matterPageTableWidth() }}>
+                <colgroup>{matterPageTableColumns().map((key) => <col key={key} style={{ width: matterColumnWidth(key) }} />)}</colgroup>
                 <tbody>
                   {matterStatusSections.map((section) => (
                     <Fragment key={section.label}>
