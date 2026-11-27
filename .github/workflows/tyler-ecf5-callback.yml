@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'lib/efiling/**'
+      - 'scripts/emit_tyler_ecf5_fixture.mjs'
       - 'scripts/validate_tyler_ecf5.py'
       - 'tests/tyler_ecf5_schema_validation_test.py'
       - 'src/efiling/**'
@@ -34,4 +35,10 @@ jobs:
       - run: node --test tests/tyler-efm-callback.test.js tests/tyler-ecf5-nfrc-contract.test.js tests/tyler-efiling-receipts.test.js tests/tyler-efiling-cloud-history.test.js tests/tyler-outbound-pipeline.test.js tests/tyler-efiling-outbox.test.js tests/tyler-reviewfiling-response.test.js tests/tyler-ecf5-reviewfiling-envelope.test.js tests/tyler-ecf5-subsequent-civil-mapper.test.js tests/tyler-ecf5-document-rendition.test.js tests/tyler-ecf5-existing-case-message.test.js
       - run: python3 -m pip install --disable-pip-version-check lxml==6.0.2
       - run: python3 -m unittest discover -s tests -p 'tyler_ecf5_schema_validation_test.py' -v
+      - run: node scripts/emit_tyler_ecf5_fixture.mjs ./synthetic-efm-artifacts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synthetic-tyler-xml
+          path: synthetic-efm-artifacts/*.xml
+          retention-days: 1
       - run: npm run build
