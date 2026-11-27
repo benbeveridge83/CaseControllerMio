@@ -31874,9 +31874,10 @@ async function updateTeamCell(memberId, field, value) {
     )
   }
 
-  function MatterEditableTextCell({ matter, field, columnKey, type = 'text' }) {
+  function MatterEditableTextCell({ matter, field, columnKey, type = 'text', displayValue }) {
     if (!matterPageFieldsEditable) {
-      return <MatterTextDisplay>{matter[field]}</MatterTextDisplay>
+      const text = displayValue ?? matter[field]
+      return <span title={String(text || '')}><MatterTextDisplay>{text}</MatterTextDisplay></span>
     }
 
     return (
@@ -31924,7 +31925,20 @@ async function updateTeamCell(memberId, field, value) {
   }
 
   function matterDocketUrl(matter = {}) {
-    return String(matter?.courts?.docket_url || matter?.courts?.court_docket_url || matter?.docket_url || '').trim()
+    return String(matter?.courts?.court_docket || matter?.courts?.docket_url || matter?.courts?.court_docket_url || matter?.docket_url || '').trim()
+  }
+
+  function matterCauseUrl(matter = {}) {
+    return normalizeExternalUrl(matterDocketUrl(matter) || matterCourtWebsiteUrl(matter))
+  }
+
+  function matterNameWithoutDuplicateCause(matter = {}) {
+    const name = String(matter.name || '').trim()
+    const cause = String(matter.cause_number || '').trim()
+    if (!name || !cause) return name
+    const escapedCause = cause.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const withoutCause = name.replace(new RegExp(`(?:\\s*[-–—#:]+\\s*|\\s+)${escapedCause}$`, 'i'), '').trim()
+    return withoutCause || name
   }
 
   function MatterPageHeaderRow() {
@@ -32025,7 +32039,7 @@ async function updateTeamCell(memberId, field, value) {
         </td>
         {visibleMatterColumns.matter && (
           <td style={matterDataCellStyle('matter')}>
-            <MatterEditableTextCell matter={matter} field="name" columnKey="matter" />
+            <MatterEditableTextCell matter={matter} field="name" columnKey="matter" displayValue={matterNameWithoutDuplicateCause(matter)} />
           </td>
         )}
 
@@ -32040,7 +32054,9 @@ async function updateTeamCell(memberId, field, value) {
             {matterPageFieldsEditable ? (
               <MatterEditableTextCell matter={matter} field="cause_number" columnKey="cause_number" />
             ) : (
-              matterDocketUrl(matter) ? <a href={matterDocketUrl(matter)} target="_blank" rel="noreferrer" title="Open court docket">{matter.cause_number}</a> : <MatterLinkTextHover matter={matter}>{matter.cause_number}</MatterLinkTextHover>
+              matterCauseUrl(matter) && matter.cause_number
+                ? <a href={matterCauseUrl(matter)} target="_blank" rel="noreferrer" title={matterDocketUrl(matter) ? 'Open court docket' : 'Open court website'}>{matter.cause_number}</a>
+                : <MatterTextDisplay>{matter.cause_number}</MatterTextDisplay>
             )}
           </td>
         )}
