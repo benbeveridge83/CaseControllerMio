@@ -184,7 +184,7 @@
           trust_balance:money(clientFinanceNumbers(matter,invoices).trust),minimum_balance:money(clientFinanceNumbers(matter,invoices).minimumBalance),retainer_target:money(matterRetainerTarget(matter)),due_date:'10 days after issue',payment_link:'[secure LawPay link below]'
         })
         return {id,matter_id:id,review_tab:category.tab,exclusion_reason:category.reason,
-          one_off_allowed:canOverride&&verified&&!plan.blocked,manual_override:false,financial_verified:verified,client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
+          one_off_allowed:canOverride&&verified&&!plan.blocked,manual_override:false,financial_verified:verified,case_status:matter.case_status||'',matter_status:matter.matter_status||'',case_type:matter.matter_type||matter.case_type||'',client_name:matterClientName(matter)||'Client',matter_name:matter.name||'',matter_number:billingMatterNumber(matter),invoice, current_trust:balance,minimum_trust:minimum,target_trust:target,
           replenishment_enabled:pref.replenishment_enabled!==false,
           withdrawal_flagged:pref.withdrawal_flagged===true||['active','withdrawing','pending','requested'].includes(withdrawalStatuses.get(id)),
           appointed_status_unknown:false,non_appointed_confirmed:true,
