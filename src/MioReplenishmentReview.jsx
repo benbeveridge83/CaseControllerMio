@@ -7,7 +7,7 @@ import {REPLENISHMENT_TABS} from './mioReplenishmentTabs.js'
 const money = value => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(Number(value)||0)
 const getNumber = (...values) => { for (const v of values) if(v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v))) return Number(v); return null }
 const dateLabel = value => value ? new Date(value).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Date unavailable'
-const locked = row => ['sent','sending','blocked','uncertain'].includes(row.send_status)
+const locked = row => ['sent','sending','blocked','uncertain','error'].includes(row.send_status)
 const normalizeFilter = value => String(value??'').trim()
 const filterOptions = (rows,field) => [...new Set(rows.map(row=>normalizeFilter(row[field])).filter(Boolean))].sort((a,b)=>a.localeCompare(b))
 const defaultFilters = () => ({case_status:'',matter_status:'',case_type:''})
@@ -27,6 +27,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
   const rows=tabRows.filter(row=>Object.entries(filters).every(([field,chosen])=>!chosen||normalizeFilter(row[field])===chosen))
   const ready=rows.filter(row=>row.included&&!locked(row)&&(!row.appointed_status_unknown||row.non_appointed_confirmed===true)&&(Number(row.amount||0)>0||(row.prior_trust_invoices||[]).length>0||(row.unpaid_work_invoices||[]).length>0))
   const confirmRows=confirmIds===null?[]:ready.filter(row=>confirmIds.includes(String(row.id)))
+  const failedRows=rows.filter(row=>['error','uncertain'].includes(row.send_status))
   const selectedTotal=ready.reduce((sum,row)=>sum+Number(row.amount||0),0)
   const filterActive=Object.values(filters).some(Boolean)
   const setFilter=(field,value)=>{setConfirmIds(null);setSelectedId(null);setFiltersByTab(old=>({...old,[listTab]:{...(old[listTab]||defaultFilters()),[field]:value}}))}
@@ -46,6 +47,13 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
       </header>
       <div role="status" aria-live="polite" style={review.sendingDisabledReason?{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,padding:12,color:'#9a3412',fontWeight:600}:undefined}>{review.loading?'Loading current invoices...':review.message}</div>
       {review.error&&<p role="alert">{review.error}</p>}
+      {!!failedRows.length&&<section role="alert" style={{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:8,padding:'12px 14px',margin:'12px 0'}}>
+        <strong style={{color:'#9a3412'}}>{failedRows.length} matter{failedRows.length===1?'':'s'} need attention in this tab</strong>
+        <p style={{fontSize:12,margin:'5px 0 8px'}}>These were not confirmed sent. Resolve the specific error and refresh the review before trying again. A delivery marked uncertain must be checked against Sent Items and invoice history first.</p>
+        <ul style={{fontSize:12,margin:'4px 0',paddingLeft:18}}>
+          {failedRows.map(row=><li key={row.id} style={{marginBottom:4}}><strong>{row.client_name}:</strong> {row.send_error||row.reason||'No detailed error was recorded; reopen review and inspect financial verification.'}</li>)}
+        </ul>
+      </section>}
       <nav aria-label="Replenishment matter groups" style={{display:'flex',gap:8,marginTop:14,marginBottom:4,flexWrap:'wrap',borderBottom:'1px solid #cbd5e1',paddingBottom:10}}>
         {REPLENISHMENT_TABS.map(item=>{
           const tabFilters=filtersByTab[item.id]||defaultFilters()
@@ -94,7 +102,7 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
               <td style={{padding:8,textAlign:'right',fontWeight:600}}>{money(old)}</td>
               <td style={{padding:8,textAlign:'right',fontWeight:700}}>{money(amount)}</td>
               {listTab==='excluded'&&<td style={{padding:8,maxWidth:240,fontSize:12,color:'#92400e'}}>{row.exclusion_reason||row.reason||'Not automatically eligible'}</td>}
-              <td style={{padding:8,minWidth:130}}><div style={{display:'flex',flexDirection:'column',gap:3}}>{status&&<strong title={row.send_error||row.reason||'Open Details for review status'} style={{color:status==='Blocked'||status==='Needs attention'||status==='Verify delivery'?'#9f1239':'#334155',fontSize:11}}>{status}</strong>}{actions.map(label=><span key={label} style={{display:'block',color:label==='New trust invoice'?'#166534':'#334155',fontSize:12,lineHeight:'17px'}}>{label}</span>)}{!actions.length&&!status&&<span style={{color:'#64748b'}}>No invoices</span>}</div></td>
+              <td style={{padding:8,minWidth:130}}><div style={{display:'flex',flexDirection:'column',gap:3}}>{status&&<strong title={row.send_error||row.reason||'Open Details for review status'} style={{color:status==='Blocked'||status==='Needs attention'||status==='Verify delivery'?'#9f1239':'#334155',fontSize:11}}>{status}</strong>}{['error','uncertain'].includes(row.send_status)&&<span style={{color:'#9a3412',fontSize:11,lineHeight:1.35,maxWidth:240,overflowWrap:'anywhere'}}>{row.send_error||'Review invoice and email history before retrying.'}</span>}{actions.map(label=><span key={label} style={{display:'block',color:label==='New trust invoice'?'#166534':'#334155',fontSize:12,lineHeight:'17px'}}>{label}</span>)}{!actions.length&&!status&&<span style={{color:'#64748b'}}>No invoices</span>}</div></td>
               <td style={{padding:8}}><button type="button" onClick={()=>{setSelectedId(current=>current===row.id?null:row.id);setTab('overview')}} style={{border:'1px solid #94a3b8',borderRadius:7,padding:'7px 11px',background:selectedId===row.id?'#dbeafe':'white',cursor:'pointer'}}>{selectedId===row.id?'Hide':'Details'}</button></td>
             </tr>
           })}</tbody>
