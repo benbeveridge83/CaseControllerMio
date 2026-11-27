@@ -10,6 +10,10 @@ export default async function handler(req, res) {
     const { default: tylerCallback } = await import('../../lib/efiling/tylerCallbackGateway.js')
     return tylerCallback(req, res)
   }
+  if (req.query?.integration === 'tyler_efm_submit') {
+    const { default: tylerSubmit } = await import('../../lib/efiling/tylerSubmitApi.js')
+    return tylerSubmit(req, res)
+  }
   if (req.query?.integration === 'discovery_objections') {
     const { default: discoveryHandler } = await import('../../lib/discovery-objections-handler.js')
     return discoveryHandler(req, res)
