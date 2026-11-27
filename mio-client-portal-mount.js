@@ -4,13 +4,13 @@ export function mountClientPortal(source){
  source="import StaffDiscovery from './portal/StaffDiscovery.jsx'\nimport StaffPortal from './portal/StaffPortal.jsx'\nimport './portal/portal.css'\n"+source
  patch('const appPages = [',"const appPages = [\n  {value:'client_portal',label:'Client Portal'},")
  const helper=[
- "  const portalStaffApi = React.useCallback(async (action, body = {}) => {",
+ "  const portalStaffApi = React.useCallback(async (action, body = {}, options = {}) => {",
  "    const {data} = await supabase.auth.getSession()",
  "    if (!data?.session?.access_token) throw new Error('Sign in to Mio first.')",
  "    const payload = {action,...body}",
  "    if (['invite','staff_send_intake'].includes(action)) { try {payload.graph_token=await getMicrosoftGraphToken()} catch {} }",
- "    const r=await fetch('/api/client-portal',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+data.session.access_token},body:JSON.stringify(payload)})",
- "    const p=await r.json();if(!r.ok)throw new Error(p.error||'Portal request failed.');return p",
+ "    const r=await fetch('/api/client-portal',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+data.session.access_token},body:JSON.stringify(payload),signal:options.signal})",
+ "    const p=await r.json();if(!r.ok)throw Object.assign(new Error(p.error||'Portal request failed.'),{status:r.status,code:p.code||'PORTAL_ERROR',retryable:p.retryable??(r.status>=500||r.status===429),retryAfterSeconds:p.retryAfterSeconds||0});return p",
  "  },[serviceGraphConfig,serviceGraphAuth,page])",
  "  function renderStaffClientPortal(matter = null) {",
  "    return <StaffPortal matterId={matter?.id||''} matters={matters} api={portalStaffApi} discoverySets={respondingDiscoverySets} templates={draftingIntakeTemplates}",

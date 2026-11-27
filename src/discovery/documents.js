@@ -186,13 +186,14 @@ export function mapRecognizedRanges(paragraphs, ranges, defaultType = 'rfp') {
   })
 }
 
+const multilineXml=text=>String(text).split(/\r\n?|\n/).map(escapeXml).join('</w:t><w:br/><w:t xml:space="preserve">')
 function paragraphXml(text, bold = false) {
-  return `<w:p><w:pPr><w:spacing w:after="160"/></w:pPr><w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`
+  return `<w:p><w:pPr><w:spacing w:after="160"/></w:pPr><w:r>${bold ? '<w:rPr><w:b/></w:rPr>' : ''}<w:t xml:space="preserve">${multilineXml(text)}</w:t></w:r></w:p>`
 }
 function annotationXml(text, label = 'OBJECTION') {
   const clean = String(text).replace(/^\s*(?:OBJECTION|PRIVILEGE)\s*:\s*/i, '').trim()
   if (!clean || clean.length > 20_000) throw new Error('An objection or privilege is empty or too long.')
-  return `<w:p><w:pPr><w:spacing w:before="100" w:after="180"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXml(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${escapeXml(clean)}</w:t></w:r></w:p>`
+  return `<w:p><w:pPr><w:spacing w:before="100" w:after="180"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXml(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${multilineXml(clean)}</w:t></w:r></w:p>`
 }
 function insertXml(doc, parent, before, xml) {
   if (!xml) return
@@ -240,7 +241,7 @@ function splitInlineResponse(node) {
   return { requestNode:before, responseNode:after }
 }
 
-export async function exportDiscoveryDocx({ originalBytes, requests, objections = [], privileges = [], privilegePlacement = 'before_request' }) {
+export async function exportDiscoveryDocx({ originalBytes, requests, objections = [], privileges = [], privilegePlacement = 'before_request', title = 'Discovery responses', preamble = [] }) {
   if (!Array.isArray(requests) || !requests.length) throw new Error('There are no requests to export.')
   if (!['before_request','after_request'].includes(privilegePlacement)) throw new Error('Choose a valid privilege placement.')
   const ids = new Set(requests.map(r => r.id)), selected = new Map(), privileged = new Map()
@@ -283,7 +284,7 @@ export async function exportDiscoveryDocx({ originalBytes, requests, objections 
     zip.file('word/document.xml',new XMLSerializer().serializeToString(loaded.doc))
   } else {
     zip = new JSZip()
-    const body = paragraphXml('Discovery responses',true) + requests.map(r => {
+    const body = paragraphXml(title,true) + preamble.filter(Boolean).map(line=>paragraphXml(line)).join('') + requests.map(r => {
       const {objection,privilege} = additions(r)
       return (privilegePlacement === 'before_request' ? privilege : '') + paragraphXml(`${TITLES[r.type] || 'REQUEST'} NO. ${r.number}: ${r.request}`,true) + (privilegePlacement === 'after_request' ? privilege : '') + objection + paragraphXml(`RESPONSE: ${r.response || ''}`)
     }).join('')
