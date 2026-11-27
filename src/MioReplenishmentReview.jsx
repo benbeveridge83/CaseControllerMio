@@ -8,37 +8,71 @@ const money = value => new Intl.NumberFormat('en-US',{style:'currency',currency:
 const getNumber = (...values) => { for (const v of values) if(v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v))) return Number(v); return null }
 const dateLabel = value => value ? new Date(value).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Date unavailable'
 const locked = row => ['sent','sending','blocked','uncertain'].includes(row.send_status)
+const normalizeFilter = value => String(value??'').trim()
+const filterOptions = (rows,field) => [...new Set(rows.map(row=>normalizeFilter(row[field])).filter(Boolean))].sort((a,b)=>a.localeCompare(b))
+const defaultFilters = () => ({case_status:'',matter_status:'',case_type:''})
+
 export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onSend,onPreview,onConnect,connected,onSetEligibility,onFlagWithdrawal,onUpdateLimits}) {
   const closeRef=useRef(null)
   const [selectedId,setSelectedId]=useState(null)
   const [tab,setTab]=useState('overview')
   const [listTab,setListTab]=useState('eligible')
+  const [filtersByTab,setFiltersByTab]=useState({eligible:defaultFilters(),excluded:defaultFilters(),above:defaultFilters()})
+  const [confirmIds,setConfirmIds]=useState(null)
   useEffect(()=>{if(!review.open)return;const prior=document.activeElement;closeRef.current?.focus();return()=>prior?.focus?.()},[review.open])
   if(!review.open)return null
   const allRows=review.rows||[]
-  const rows=allRows.filter(row=>(row.review_tab||'eligible')===listTab)
+  const tabRows=allRows.filter(row=>(row.review_tab||'eligible')===listTab)
+  const filters=filtersByTab[listTab]||defaultFilters()
+  const rows=tabRows.filter(row=>Object.entries(filters).every(([field,chosen])=>!chosen||normalizeFilter(row[field])===chosen))
   const ready=rows.filter(row=>row.included&&!locked(row)&&(!row.appointed_status_unknown||row.non_appointed_confirmed===true)&&(Number(row.amount||0)>0||(row.prior_trust_invoices||[]).length>0||(row.unpaid_work_invoices||[]).length>0))
+  const confirmRows=confirmIds===null?[]:ready.filter(row=>confirmIds.includes(String(row.id)))
+  const selectedTotal=ready.reduce((sum,row)=>sum+Number(row.amount||0),0)
+  const filterActive=Object.values(filters).some(Boolean)
+  const setFilter=(field,value)=>{setConfirmIds(null);setSelectedId(null);setFiltersByTab(old=>({...old,[listTab]:{...(old[listTab]||defaultFilters()),[field]:value}}))}
+  const showConfirmation=ids=>setConfirmIds(ids.map(String))
   return createPortal(<div style={{position:'fixed',inset:0,zIndex:99000,background:'rgba(15,23,42,.6)',padding:20,display:'grid',placeItems:'center'}}>
     <section role="dialog" aria-modal="true" aria-labelledby="replenishment-review-title" style={{background:'#fff',borderRadius:12,padding:20,width:'min(1440px,97vw)',maxHeight:'94vh',overflow:'auto'}} onKeyDown={event=>{
       if(event.key==='Escape'&&!busy)onClose()
       if(event.key==='Tab'){const focusable=[...event.currentTarget.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), summary')];const first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}}
     }}>
-      <header style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}><div><h2 id="replenishment-review-title" style={{margin:0}}>Replenishment Review</h2><p>Review matters by category. Select a tab, check the matters to include, and approve only that tab. Nothing sends until approved.</p></div><button ref={closeRef} type="button" disabled={busy} onClick={onClose}>Close</button></header>
+      <header style={{display:'flex',justifyContent:'space-between',alignItems:'start',gap:12,flexWrap:'wrap'}}>
+        <div><h2 id="replenishment-review-title" style={{margin:'0 0 6px'}}>Replenishment Review</h2><p style={{margin:'0 0 6px',color:'#475569',fontSize:13}}>1. Choose a tab and filters. 2. Check the matters to include. 3. Click <strong>Next: Review Selected</strong>.</p></div>
+        <div style={{display:'flex',gap:10,alignItems:'center',marginLeft:'auto'}}>
+          <button type="button" disabled={busy||review.loading||!ready.length||!!review.sendingDisabledReason} onClick={()=>showConfirmation(ready.map(row=>row.id))}
+            style={{background:!ready.length||review.sendingDisabledReason?'#cbd5e1':'#1d4ed8',color:'#fff',border:0,borderRadius:8,padding:'12px 17px',fontWeight:750,fontSize:14,cursor:ready.length&&!review.sendingDisabledReason?'pointer':'not-allowed'}}>Next: Review Selected ({ready.length}) →</button>
+          <button ref={closeRef} type="button" disabled={busy} onClick={onClose} style={{padding:'9px 12px'}}>Close</button>
+        </div>
+      </header>
       <div role="status" aria-live="polite" style={review.sendingDisabledReason?{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,padding:12,color:'#9a3412',fontWeight:600}:undefined}>{review.loading?'Loading current invoices...':review.message}</div>
       {review.error&&<p role="alert">{review.error}</p>}
       <nav aria-label="Replenishment matter groups" style={{display:'flex',gap:8,marginTop:14,marginBottom:4,flexWrap:'wrap',borderBottom:'1px solid #cbd5e1',paddingBottom:10}}>
         {REPLENISHMENT_TABS.map(item=>{
           const count=allRows.filter(row=>(row.review_tab||'eligible')===item.id).length
           return <button key={item.id} type="button" aria-current={listTab===item.id?'page':undefined}
-            onClick={()=>{setListTab(item.id);setSelectedId(null);setTab('overview')}}
+            onClick={()=>{setListTab(item.id);setSelectedId(null);setTab('overview');setConfirmIds(null)}}
             style={{border:'1px solid #cbd5e1',borderRadius:8,padding:'9px 13px',background:listTab===item.id?'#dbeafe':'white',fontWeight:listTab===item.id?700:500,cursor:'pointer'}}>{item.label} ({count})</button>
         })}
       </nav>
+      <div style={{display:'flex',flexWrap:'wrap',gap:12,alignItems:'end',background:'#f8fafc',padding:'12px 14px',border:'1px solid #e2e8f0',borderRadius:9,marginTop:10}}>
+        {[
+          ['case_status','Case Status'],['matter_status','Matter Status'],['case_type','Case Type']
+        ].map(([field,label])=><label key={field} style={{display:'grid',gap:4,minWidth:175,flex:'1 1 175px',fontSize:12,fontWeight:600,color:'#334155'}}>
+          {label}
+          <select aria-label={label+' filter'} value={filters[field]||''} onChange={e=>setFilter(field,e.target.value)}
+            style={{fontSize:13,padding:'8px 9px',border:'1px solid #94a3b8',background:'white',borderRadius:6,color:'#0f172a'}}>
+            <option value="">All {label.toLowerCase()}es</option>
+            {filterOptions(tabRows,field).map(value=><option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>)}
+        <button type="button" onClick={()=>{setFiltersByTab(old=>({...old,[listTab]:defaultFilters()}));setConfirmIds(null)}} disabled={!filterActive} style={{padding:'9px 12px',border:'1px solid #cbd5e1',borderRadius:7,background:'#fff'}}>Clear filters</button>
+        <span style={{fontSize:12,color:'#475569',marginLeft:'auto'}}>{rows.length} of {tabRows.length} matters shown</span>
+      </div>
       {listTab==='excluded'&&<p style={{fontSize:12,color:'#475569',margin:'8px 0'}}>These matters are below minimum but not automatically selected. The Reason column explains why. Check an allowed matter for a one-time request up to its target; permanent settings do not change.</p>}
       {listTab==='above'&&<p style={{fontSize:12,color:'#475569',margin:'8px 0'}}>These matters are at or above minimum and are unchecked by default. You may select one for a one-time request toward its target. If trust already meets the target, no additional trust invoice is due.</p>}
       <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'12px 0'}}>
-        <button type="button" className="btnPrimary" disabled={busy||review.loading||!ready.length||!!review.sendingDisabledReason} title={review.sendingDisabledReason||undefined} onClick={()=>onSend(ready.map(row=>row.id))}>Approve &amp; Send This Tab ({ready.length})</button>
-        <strong>New trust requests in this tab: {money(ready.reduce((sum,row)=>sum+Number(row.amount||0),0))}</strong>
+        <span style={{fontWeight:650,fontSize:13}}>Selected in this view: {ready.length}</span>
+        <strong>New trust requests selected: {money(selectedTotal)}</strong>
         {!connected&&<button type="button" onClick={onConnect} disabled={busy}>Connect Microsoft</button>}
       </div>
 
@@ -127,11 +161,31 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
           <label style={{display:'grid',gap:4,marginTop:10}}>Subject<input aria-label={`Subject for ${row.client_name}`} value={row.subject} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{subject:e.target.value})}/></label>
           <label style={{display:'grid',gap:4,marginTop:10}}>Message<textarea aria-label={`Message for ${row.client_name}`} rows={4} value={row.message} disabled={busy||locked(row)} onChange={e=>onUpdate(row.id,{message:e.target.value})}/></label>
           <p style={{fontSize:12}}>The email includes the trust-request PDF and a secure LawPay Trust/IOLTA payment link. [invoice number] and [amount] are filled from the approved request.</p>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||!!review.sendingDisabledReason||locked(row)||(row.appointed_status_unknown&&row.non_appointed_confirmed!==true)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>onSend(row.id)}>{Number(row.amount||0)>0?'Approve & Send':'Send Reminder'}</button></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={busy} onClick={()=>onPreview(row)}>Preview PDF</button><button type="button" className="btnPrimary" disabled={busy||!!review.sendingDisabledReason||locked(row)||(row.appointed_status_unknown&&row.non_appointed_confirmed!==true)||(Number(row.amount||0)<=0&&!(row.prior_trust_invoices||[]).length&&!(row.unpaid_work_invoices||[]).length)} onClick={()=>showConfirmation([row.id])}>{Number(row.amount||0)>0?'Next: Review Request':'Next: Review Reminder'}</button></div>
         </>}
         </>}
       </section>)}
       {!rows.length&&!review.loading&&!review.error&&<p>No matters in this category.</p>}
+      {confirmIds!==null&&<div role="dialog" aria-modal="true" aria-label="Confirm replenishment requests" style={{position:'fixed',inset:0,zIndex:99100,background:'rgba(15,23,42,.7)',display:'grid',placeItems:'center',padding:20}}>
+        <section style={{background:'#fff',width:'min(760px,96vw)',maxHeight:'85vh',overflowY:'auto',padding:24,borderRadius:12,boxShadow:'0 20px 70px #0004'}}>
+          <h2 style={{marginTop:0}}>Review before sending</h2>
+          <p style={{fontSize:13,color:'#475569'}}>Only the <strong>{REPLENISHMENT_TABS.find(t=>t.id===listTab)?.label}</strong> tab and the current filters are included. This final step will create new trust invoices when needed and send the selected clients their consolidated invoice email.</p>
+          <div style={{border:'1px solid #cbd5e1',borderRadius:8,overflowX:'auto'}}>
+            <table style={{width:'100%',fontSize:13,borderCollapse:'collapse'}}><thead><tr style={{background:'#f1f5f9'}}><th style={{padding:9,textAlign:'left'}}>Client / matter</th><th style={{padding:9,textAlign:'left'}}>Included actions</th><th style={{padding:9,textAlign:'right'}}>New trust amount</th></tr></thead>
+              <tbody>{confirmRows.map(row=><tr key={row.id} style={{borderTop:'1px solid #e2e8f0'}}><td style={{padding:9}}><strong>{row.client_name}</strong><div style={{fontSize:11,color:'#64748b'}}>{row.matter_name}</div></td><td style={{padding:9}}>{replenishmentActionCategories(row).join(', ')||'None'}</td><td style={{padding:9,textAlign:'right'}}>{money(row.amount)}</td></tr>)}</tbody>
+            </table>
+          </div>
+          <p style={{textAlign:'right',fontWeight:700}}>New trust invoices: {money(confirmRows.reduce((sum,row)=>sum+Number(row.amount||0),0))}</p>
+          {review.sendingDisabledReason&&<p role="alert" style={{color:'#9a3412'}}>Sending unavailable: {review.sendingDisabledReason}</p>}
+          <div style={{display:'flex',gap:12,justifyContent:'flex-end',marginTop:18}}>
+            <button type="button" onClick={()=>setConfirmIds(null)} disabled={busy} style={{padding:'11px 16px'}}>Back to review</button>
+            <button type="button" disabled={busy||!confirmRows.length||!!review.sendingDisabledReason} onClick={()=>{const ids=confirmRows.map(row=>row.id);setConfirmIds(null);onSend(ids)}}
+              style={{padding:'12px 17px',background:confirmRows.length&&!review.sendingDisabledReason?'#1d4ed8':'#cbd5e1',color:'white',border:0,borderRadius:7,fontWeight:700}}>
+              Approve &amp; Send {confirmRows.length} Selected
+            </button>
+          </div>
+        </section>
+      </div>}
     </section>
   </div>,document.body)
 }
