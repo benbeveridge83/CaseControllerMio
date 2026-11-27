@@ -12,7 +12,7 @@ BASE_XSD = """<?xml version="1.0"?>
  xmlns:f="https://docs.oasis-open.org/legalxml-courtfiling/ns/v5.0/filing"
  elementFormDefault="qualified">
  <xs:element name="FilingMessage"><xs:complexType><xs:sequence>
- <xs:element name="FilingLeadDocument"><xs:complexType>
+ <xs:element name="FilingLeadDocument"><xs:complexType mixed="true">
  <xs:sequence/><xs:anyAttribute processContents="lax"/>
  </xs:complexType></xs:element>
  </xs:sequence></xs:complexType></xs:element>
