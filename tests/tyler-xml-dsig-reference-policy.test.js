@@ -38,6 +38,12 @@ test('rejects SHA-1 methods and repeated references',()=>{
  const extra='<ds:Reference URI="#Body-1"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/></ds:Reference>'
  assert.throws(()=>inspect(xml.replace('</ds:SignedInfo>',extra+'</ds:SignedInfo>')),/Repeated signature references/)
 })
+test('rejects signature moved into SOAP Body',()=>{
+ const signature=xml.match(/<ds:Signature>[\\s\\S]*?<\\/ds:Signature>/)?.[0]
+ assert.ok(signature)
+ const wrapped=xml.replace(signature,'').replace('</s:Body>',signature+'</s:Body>')
+ assert.throws(()=>inspect(wrapped),/Single SOAP Header/)
+})
 test('rejects duplicate signed XML IDs and ambiguous header structure',()=>{
  assert.throws(()=>inspect(xml.replace('wsu:Id="Body-1"','wsu:Id="Timestamp-1"')),/Duplicate WS-Security IDs|distinct/)
  assert.throws(()=>inspect(xml.replace('<s:Header>','<s:Header></s:Header><s:Header>')),/Single SOAP Header/)
