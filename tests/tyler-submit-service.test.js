@@ -99,3 +99,16 @@ test('delegates to the durable-outbox coordinator only when a server flag enable
   assert.deepEqual(r2.filingIds, ['f1'])
   assert.equal(sent, 1)
 })
+
+test('an enabled send requires the document record to carry an expected digest', async () => {
+  let sent = 0
+  const coordinator = { submit: async () => { sent++; return { envelopeId: 'e1', filingIds: ['f1'] } } }
+  const deps = {
+    authorizeMatter: async () => {},
+    resolveDocument: async () => ({ path: 'p.pdf' }), // no sha256
+    retrieveDocument: async (ref) => ({ sha256: ref.expectedSha256, byteLength: ref.expectedByteLength }),
+  }
+  const service = createTylerSubmitService({ ...deps, coordinator, enabled: true })
+  await assert.rejects(() => service.submit(args), /expected SHA-256 digest before sending/)
+  assert.equal(sent, 0)
+})
