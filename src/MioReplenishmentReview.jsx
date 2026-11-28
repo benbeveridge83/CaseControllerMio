@@ -12,7 +12,7 @@ const normalizeFilter = value => String(value??'').trim()
 const filterOptions = (rows,field) => [...new Set(rows.map(row=>normalizeFilter(row[field])).filter(Boolean))].sort((a,b)=>a.localeCompare(b))
 const defaultFilters = () => ({case_status:'',matter_status:'',case_type:''})
 
-export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onSend,onPreview,onConnect,connected,onSetEligibility,onFlagWithdrawal,onUpdateLimits}) {
+export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onSend,onRecheckLawPay,onPreview,onConnect,connected,onSetEligibility,onFlagWithdrawal,onUpdateLimits}) {
   const closeRef=useRef(null)
   const [selectedId,setSelectedId]=useState(null)
   const [tab,setTab]=useState('overview')
@@ -46,6 +46,13 @@ export default function MioReplenishmentReview({review,busy,onClose,onUpdate,onS
         </div>
       </header>
       <div role="status" aria-live="polite" style={review.sendingDisabledReason?{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:7,padding:12,color:'#9a3412',fontWeight:600}:undefined}>{review.loading?'Loading current invoices...':review.message}</div>
+      {(review.sendingDisabledReason||review.recheckStatus)&&<div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',margin:'10px 0'}}>
+        <button type="button" disabled={busy||review.recheckStatus==='checking'} onClick={onRecheckLawPay}
+          style={{padding:'10px 14px',background:'#1d4ed8',color:'#fff',border:0,borderRadius:7,fontWeight:700}}>
+          {review.recheckStatus==='checking'?'Checking LawPay…':'Recheck LawPay (no sending)'}
+        </button>
+        <span style={{fontSize:12,color:'#475569'}}>This fetches new transactions and recalculates the audit. It does not create invoices, move funds or send emails.</span>
+      </div>}
       {review.error&&<p role="alert">{review.error}</p>}
       {!!failedRows.length&&<section role="alert" style={{background:'#fff7ed',border:'1px solid #fdba74',borderRadius:8,padding:'12px 14px',margin:'12px 0'}}>
         <strong style={{color:'#9a3412'}}>{failedRows.length} matter{failedRows.length===1?'':'s'} need attention in this tab</strong>
