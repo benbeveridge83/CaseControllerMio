@@ -150,7 +150,7 @@ export function createSupabaseEfilingRepository(client, options = {}) {
       if(matterId) query=query.eq('matter_id',String(matterId))
       const {data,error}=await query.order('received_at',{ascending:false}).limit(100)
       if(error){
-        if(error.code === '42P01' || /does not exist/i.test(error.message || '')) return []
+        if(error.code === 'PGRST205') return []
         throw new Error(error.message)
       }
       return data || []
@@ -161,7 +161,7 @@ export function createSupabaseEfilingRepository(client, options = {}) {
       if(matterId) query=query.eq('matter_id',String(matterId))
       const {data,error}=await query.order('recorded_at',{ascending:false}).limit(100)
       if(error){
-        if(error.code === '42P01' || /does not exist/i.test(error.message || '')) return []
+        if(error.code === 'PGRST205') return []
         throw new Error(error.message)
       }
       return data || []

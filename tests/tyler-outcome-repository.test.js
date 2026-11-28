@@ -82,14 +82,14 @@ test('classifies an accepted filing with a delivered service result as served', 
   assert.equal(accepted.state, 'accepted')
 })
 
-test('reads tolerate a not-yet-applied migration (missing tables)', async () => {
+test('reads tolerate a not-yet-applied migration (PGRST205 missing table)', async () => {
   const missingTable = {
     from: () => {
       const api = {
         select() { return api },
         eq() { return api },
         order() { return api },
-        then(resolve) { resolve({ data: null, error: { code: '42P01', message: 'relation "mio_efiling_filing_receipts" does not exist' } }) },
+        then(resolve) { resolve({ data: null, error: { code: 'PGRST205', message: 'Could not find the table \'public.mio_efiling_filing_receipts\' in the schema cache' } }) },
       }
       return api
     },
@@ -97,4 +97,21 @@ test('reads tolerate a not-yet-applied migration (missing tables)', async () => 
   const repo = createSupabaseTylerOutcomeRepository(missingTable)
   assert.deepEqual(await repo.listReceipts('o1', 'mA'), [])
   assert.deepEqual(await repo.listServiceResults('o1', 'mA'), [])
+})
+
+test('other database errors still surface', async () => {
+  const denied = {
+    from: () => {
+      const api = {
+        select() { return api },
+        eq() { return api },
+        order() { return api },
+        then(resolve) { resolve({ data: null, error: { code: '42501', message: 'permission denied for table mio_efiling_filing_receipts' } }) },
+      }
+      return api
+    },
+  }
+  const repo = createSupabaseTylerOutcomeRepository(denied)
+  await assert.rejects(() => repo.listReceipts('o1', 'mA'), /permission denied/)
+  await assert.rejects(() => repo.listServiceResults('o1', 'mA'), /permission denied/)
 })
