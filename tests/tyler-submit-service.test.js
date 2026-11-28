@@ -74,3 +74,28 @@ test('requires all three dependencies', () => {
   assert.throws(() => createTylerSubmitService({ authorizeMatter: async () => {} }), /resolution/)
   assert.throws(() => createTylerSubmitService({ authorizeMatter: async () => {}, resolveDocument: async () => ({}) }), /retrieval/)
 })
+
+test('delegates to the durable-outbox coordinator only when a server flag enables sending', async () => {
+  let sent = 0
+  const coordinator = { submit: async () => { sent++; return { envelopeId: 'e1', filingIds: ['f1'] } } }
+  const deps = {
+    authorizeMatter: async () => {},
+    resolveDocument: async () => ({ path: 'p.pdf', sha256: 'a'.repeat(64), byteLength: 1 }),
+    retrieveDocument: async (ref) => ({ sha256: ref.expectedSha256, byteLength: ref.expectedByteLength }),
+  }
+  // Default (no server flag): dry run, the coordinator (outbox + transport) is never invoked.
+  const dry = createTylerSubmitService(deps)
+  const r1 = await dry.submit(args)
+  assert.equal(r1.dryRun, true)
+  assert.equal(r1.sent, false)
+  assert.equal(sent, 0)
+  // Server-enabled + a certified coordinator: the submit delegates to it.
+  const live = createTylerSubmitService({ ...deps, coordinator, enabled: true })
+  const r2 = await live.submit(args)
+  assert.equal(r2.dryRun, false)
+  assert.equal(r2.sent, true)
+  assert.equal(r2.networkCallMade, true)
+  assert.equal(r2.envelopeId, 'e1')
+  assert.deepEqual(r2.filingIds, ['f1'])
+  assert.equal(sent, 1)
+})
