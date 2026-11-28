@@ -1,24 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {execFileSync} from 'node:child_process'
-import {mkdtempSync,readFileSync,rmSync} from 'node:fs'
-import {tmpdir} from 'node:os'
-import {join} from 'node:path'
-import {X509Certificate} from 'node:crypto'
-import {inspectTylerSigningIdentity,inspectTylerTrustedResponseCertificate} from '../lib/efiling/tylerX509Readiness.js'
+import { X509Certificate } from 'node:crypto'
+import { inspectTylerSigningIdentity, inspectTylerTrustedResponseCertificate } from '../lib/efiling/tylerX509Readiness.js'
+import { makeSyntheticIdentity } from './helpers/syntheticIdentity.js'
 
-function fixture() {
- const dir=mkdtempSync(join(tmpdir(),'mio-tyler-x509-'))
- const cert=join(dir,'cert.pem'),key=join(dir,'key.pem')
- try {
-  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes',
-   '-days','3','-subj','/CN=Synthetic Tyler Test Only',
-   '-keyout',key,'-out',cert],{stdio:'ignore'})
-  return {certificatePem:readFileSync(cert,'utf8'),
-   privateKeyPem:readFileSync(key,'utf8')}
- } finally {rmSync(dir,{recursive:true,force:true})}
-}
-const one=fixture(),two=fixture()
+const one = makeSyntheticIdentity({ cn: 'Synthetic Tyler Test Only', days: 3 })
+const two = makeSyntheticIdentity({ cn: 'Synthetic Tyler Test Only', days: 3 })
 const cert=new X509Certificate(one.certificatePem)
 const pin=cert.fingerprint256
 const args={...one,approvedCertificateSha256:pin,environment:'stage'}
