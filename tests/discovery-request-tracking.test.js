@@ -25,6 +25,7 @@ function fixture(docs = [], options = {}) {
     discoveryDocumentMatter: doc => ({ id: doc.matter_id, matter_status: 'Open', case_status: 'Open' }),
     discoveryTrialDateForDoc: () => null, discoveryThirtyDaysBeforeTrial: () => null,
     discoveryDocServiceDate: () => '', discoveryDocResponseDueDate: () => '', discoveryDateDisplay: v => v,
+    discoveryFieldValueByMeaning: () => '',
     dateToInputValue: () => '2026-10-20', formatMatterOption: m => m.id, matterName: id => id,
     sortedDiscoveryRows: rows => rows, discoveryLegacyRequestToTrackingRow: r => ({ ...r, legacyRequest: r }),
     confirm: message => { prompts.push(message); return options.confirm ?? false }, alert: message => alerts.push(message),
@@ -44,7 +45,7 @@ function fixture(docs = [], options = {}) {
   }
   vm.createContext(state)
   const names = ['normalizeDiscoveryTagPath', 'discoveryDocumentPathInfo', 'documentHasDiscoveryRequestSide',
-    'discoveryDocRequestId', 'storedDiscoveryRequestForDoc', 'discoveryStoredDateOrDefault', 'discoveryDocumentTitle',
+    'discoveryDocRequestId', 'storedDiscoveryRequestForDoc', 'discoveryDateValueForDoc', 'discoveryStoredDateOrDefault', 'discoveryDocumentTitle',
     'discoveryTypeForDoc', 'inferDiscoveryTypeFromDocument', 'discoveryRowDeleteKey', 'isDiscoveryRowDeleted', 'discoveryRows',
     'discoveryRequestAssignments', 'isDiscoveryResponseDocument', 'confirmDiscoveryRequestDocuments', 'saveDocumentEdit', 'toggleDocumentTag',
     'withLitigationAssignment', 'confirmServiceDiscoveryRequest', 'saveServicePdfViaLocalHelper', 'saveDownloadedServicePdf', 'addLitigationPlacement', 'applyTagsToDocuments', 'commitBulkRows', 'addDocument', 'updateSavedDocumentLitigation', 'updateDocumentCell']
@@ -205,3 +206,43 @@ test('the actual shared assignment form renders the request/response choice', as
   assert.match(html, /Discovery document/)
   assert.match(html, /value="response" selected=""/)
 })
+
+test('track-only discovery documents read Request served and Response due from document field values', () => {
+  const trackOnly = { ...request('track-only'), document_field_values: { request_served: '2026-09-30', response_due: '2026-10-15' } }
+  const f = fixture([trackOnly])
+  const rows = f.state.discoveryRows('their')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].request_served, '2026-09-30')
+  assert.equal(rows[0].response_due, '2026-10-15')
+})
+
+test('document field values stay authoritative over a stale saved request record and appear once', () => {
+  const both = { ...request('both'), tag_ids: ['Case Filings > Discovery > Requests > RFP'], document_field_values: { request_served: '2026-09-30', response_due: '2026-10-15' } }
+  const f = fixture([both], { requests: [{ id: 'stale', document_id: 'both', request_served: '2020-01-01', response_due: '2020-02-02' }] })
+  const rows = f.state.discoveryRows('their')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].request_served, '2026-09-30')
+  assert.equal(rows[0].response_due, '2026-10-15')
+})
+
+test('clearing a date in document field values shows blank even when a saved record still holds a date', () => {
+  const doc = { ...request('cleared'), document_field_values: { request_served: '2026-09-30', response_due: '' } }
+  const f = fixture([doc], { requests: [{ id: 'stale', document_id: 'cleared', request_served: '2020-01-01', response_due: '2020-02-02' }] })
+  const rows = f.state.discoveryRows('their')
+  assert.equal(rows[0].request_served, '2026-09-30')
+  assert.equal(rows[0].response_due, '')
+})
+
+test('the shared assignment form exposes Request served and Response due for discovery request documents', async () => {
+  const f = fixture()
+  f.state.React = React
+  f.state.DISCOVERY_TRACK_SIDES = [{ id: 'ours', name: 'Our Requests' }, { id: 'theirs', name: 'Their Requests' }]
+  f.state.litigationTracksForMatter = () => [{ id: 'track-matter-a', matter_id: 'matter-a', type: 'discovery', name: 'Discovery' }]
+  f.state.LabeledField = ({ label, children }) => React.createElement('label', null, label, children)
+  const compiled = await transformWithOxc(functionSource('renderLitigationAssignmentFields'), 'assignment.jsx', { jsx: { runtime: 'classic' } })
+  vm.runInContext(compiled.code, f.state)
+  const html = renderToStaticMarkup(f.state.renderLitigationAssignmentFields(request('req'), () => {}))
+  assert.match(html, /Request served/)
+  assert.match(html, /Response due/)
+})
+
