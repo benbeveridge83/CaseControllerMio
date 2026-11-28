@@ -14769,6 +14769,13 @@ function App() {
     return discoveryRequests.find((request) => request.document_id === docId || request.id === discoveryDocRequestId(doc)) || null
   }
 
+  function discoveryDateValueForDoc(doc, fieldKey) {
+    const values = doc?.document_field_values || {}
+    if (Object.prototype.hasOwnProperty.call(values, fieldKey)) return values[fieldKey] || ''
+    const stored = storedDiscoveryRequestForDoc(doc) || {}
+    return stored[fieldKey] || ''
+  }
+
   function upsertDiscoveryDocRequest(doc, patch) {
     const existing = storedDiscoveryRequestForDoc(doc)
     const id = existing?.id || discoveryDocRequestId(doc)
@@ -15150,8 +15157,8 @@ function App() {
 
   function discoveryMatrixResponseForDoc(doc) {
     const stored = storedDiscoveryRequestForDoc(doc) || {}
-    const explicitDue = stored.response_due || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
-    const requestServed = stored.request_served || discoveryDocServiceDate(doc) || ''
+    const explicitDue = discoveryDateValueForDoc(doc, 'response_due') || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date']) || ''
+    const requestServed = discoveryDateValueForDoc(doc, 'request_served') || discoveryFieldValueByMeaning(doc, ['request served', 'service date', 'srevice date', 'served date']) || ''
     const dueDate = explicitDue || (requestServed ? discoveryMatrixDefaultDueDate(requestServed) : '')
     const responses = Array.isArray(stored.responses) ? stored.responses : []
     const dated = responses
@@ -15673,12 +15680,10 @@ function App() {
         const thirtyBeforeTrial = discoveryThirtyDaysBeforeTrial(doc)
         const defaultTrial = trialDate ? dateToInputValue(trialDate) : ''
         const defaultThirtyBeforeTrial = thirtyBeforeTrial ? dateToInputValue(thirtyBeforeTrial) : ''
-        const defaultRequestServed = discoveryDocServiceDate(doc)
-        const defaultResponseDue = discoveryDocResponseDueDate(doc)
         const trial = discoveryStoredDateOrDefault(stored, 'trial', defaultTrial)
         const thirtyBeforeTrialValue = discoveryStoredDateOrDefault(stored, 'thirtyBeforeTrial', defaultThirtyBeforeTrial)
-        const requestServed = discoveryStoredDateOrDefault(stored, 'request_served', defaultRequestServed)
-        const responseDue = discoveryStoredDateOrDefault(stored, 'response_due', defaultResponseDue)
+        const requestServed = discoveryDateValueForDoc(doc, 'request_served') || discoveryFieldValueByMeaning(doc, ['request served', 'service date', 'srevice date', 'served date']) || ''
+        const responseDue = discoveryDateValueForDoc(doc, 'response_due') || discoveryFieldValueByMeaning(doc, ['response due', 'discovery response date', 'response date']) || ''
         const mediationDocumentExchange = discoveryStoredDateOrDefault(stored, 'mediation_document_exchange', '')
         return {
           id: discoveryDocRequestId(doc),
@@ -18848,6 +18853,16 @@ async function handleDiscoveryNewRequestFiles(fileList) {
                 <option value="response">Response</option>
               </select>
             </LabeledField>
+            {row.discovery_document_kind !== 'response' && (
+              <>
+                <LabeledField label="Request served">
+                  <input type="date" value={(row.document_field_values || {}).request_served || ''} onChange={(event) => onPatch({ document_field_values: { ...(row.document_field_values || {}), request_served: event.target.value } })} />
+                </LabeledField>
+                <LabeledField label="Response due">
+                  <input type="date" value={(row.document_field_values || {}).response_due || ''} onChange={(event) => onPatch({ document_field_values: { ...(row.document_field_values || {}), response_due: event.target.value } })} />
+                </LabeledField>
+              </>
+            )}
           </>
         )}
       </div>
