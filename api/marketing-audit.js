@@ -1,4 +1,5 @@
 import { answerMarketingQuestion, gatherMarketingEvidence, validateMarketingMessages } from '../lib/marketing-agent.js'
+import { extractPartiesWithAi, sanitizeDocuments } from '../lib/party-extraction.js'
 
 export const config = { maxDuration: 120 }
 
@@ -60,6 +61,13 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Use POST.' })
   try {
     await requireFirmUser(req)
+    if (req.body?.action === 'party_extraction') {
+      if (!process.env.OPENAI_API_KEY) return json(res, 200, { ok: true, aiConfigured: false, parties: [] })
+      const documents = sanitizeDocuments(req.body?.documents)
+      if (!documents.length) return json(res, 200, { ok: true, aiConfigured: true, parties: [] })
+      const { parties, error } = await extractPartiesWithAi(documents)
+      return json(res, 200, { ok: true, aiConfigured: true, parties, ...(error ? { error } : {}) })
+    }
     const action = req.body?.action || 'audit'
     if (['context', 'chat'].includes(action)) {
       if (req.body?.scope && req.body.scope !== 'marketing') return json(res, 400, { ok: false, error: 'Ask Mio currently supports the marketing page.' })

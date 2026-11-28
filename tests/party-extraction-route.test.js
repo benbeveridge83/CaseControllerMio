@@ -1,7 +1,7 @@
 // Synthetic data only. No sign-in, production reads, or network writes.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeParties, parsePartiesJson, sanitizeDocuments } from '../api/party-extraction.js'
+import { normalizeParties, parsePartiesJson, sanitizeDocuments } from '../lib/party-extraction.js'
 
 test('parsePartiesJson reads {parties:[...]} and bare arrays, tolerating fences', () => {
   assert.equal(parsePartiesJson('```json\n{"parties":[{"name":"Jane Doe"}]}\n```').length, 1)

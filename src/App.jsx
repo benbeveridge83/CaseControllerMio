@@ -19831,15 +19831,15 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const readable = (Array.isArray(documents) ? documents : []).filter((d) => d && d.text).map((d) => ({ fileName: d.name || '', text: String(d.text).slice(0, 12000) })).slice(0, 12)
     if (!readable.length) return { parties: [], aiConfigured: false }
     try {
-      const response = await fetch('/api/party-extraction', {
+      const response = await fetch('/api/marketing-audit', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documents: readable }),
+        body: JSON.stringify({ action: 'party_extraction', documents: readable }),
         signal: AbortSignal.timeout(25000)
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok || !payload.ok) return { parties: [], aiConfigured: false, error: true }
-      return { parties: Array.isArray(payload.parties) ? payload.parties : [], aiConfigured: Boolean(payload.aiConfigured) }
+      return { parties: Array.isArray(payload.parties) ? payload.parties : [], aiConfigured: Boolean(payload.aiConfigured), error: payload.error ? true : false }
     } catch {
       return { parties: [], aiConfigured: false, error: true }
     }
