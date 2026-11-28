@@ -6219,6 +6219,7 @@ function App() {
   const [matterExtraDraft, setMatterExtraDraft] = useState(cloneMatterExtraInfo())
   const [partyScanSession, setPartyScanSession] = useState(null)
   const [partyScanDraft, setPartyScanDraft] = useState(null)
+  const [partyScanSaveError, setPartyScanSaveError] = useState('')
 
   // Reusable indexes so the Litigation Parties table and correction counts never re-scan the
   // full documents/service-email datasets on unrelated re-renders (e.g. the periodic cloud-state
@@ -19787,6 +19788,27 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     return `data:${blob.type || 'application/octet-stream'};base64,${btoa(binary)}`
   }
 
+  async function callPartyExtractionApi(documents) {
+    const { data: authData } = await supabase.auth.getSession().catch(() => ({ data: null }))
+    const token = authData?.session?.access_token
+    if (!token) return { parties: [], aiConfigured: false, error: true }
+    const readable = (Array.isArray(documents) ? documents : []).filter((d) => d && d.text).map((d) => ({ fileName: d.name || '', text: String(d.text).slice(0, 12000) })).slice(0, 12)
+    if (!readable.length) return { parties: [], aiConfigured: false }
+    try {
+      const response = await fetch('/api/party-extraction', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documents: readable }),
+        signal: AbortSignal.timeout(25000)
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload.ok) return { parties: [], aiConfigured: false, error: true }
+      return { parties: Array.isArray(payload.parties) ? payload.parties : [], aiConfigured: Boolean(payload.aiConfigured) }
+    } catch {
+      return { parties: [], aiConfigured: false, error: true }
+    }
+  }
+
   async function runMatterPartyScan(matterId) {
     if (!matterId) return alert('Select a matter first.')
     const id = String(matterId)
@@ -19794,6 +19816,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
     const savedRef = matterEfileFolderRefForId(id)
     setPartyScanSession({ matterId: id, status: 'scanning', error: '', result: null })
     setPartyScanDraft(null)
+    setPartyScanSaveError('')
     try {
       let folder = null
       if (savedRef?.source === 'graph' && savedRef.driveItemId) {
@@ -19830,6 +19853,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
           date: '',
           text: '',
           unreadable: false,
+          needsOcr: false,
           unreadableReason: '',
           skipReason: ''
         }
@@ -19858,10 +19882,18 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
           else if (ext === 'docx') text = await extractRfpDocxText(dataUrlToUint8Array(dataUrl))
           else text = await blob.text()
           doc.text = text
-          const kind = classifyPleading({ fileName: name, text })
-          doc.kind = kind.kind
-          doc.label = kind.label
-          doc.date = parseDocumentDate({ fileName: name, text })
+          if (!String(text || '').trim()) {
+            doc.unreadable = true
+            doc.needsOcr = ext === 'pdf'
+            doc.unreadableReason = ext === 'pdf'
+              ? 'Scanned or image-only PDF — no selectable text (needs OCR).'
+              : 'No readable text found in this file.'
+          } else {
+            const kind = classifyPleading({ fileName: name, text })
+            doc.kind = kind.kind
+            doc.label = kind.label
+            doc.date = parseDocumentDate({ fileName: name, text })
+          }
         } catch (error) {
           doc.unreadable = true
           doc.unreadableReason = `Could not read text: ${error.message || error}`
@@ -19871,9 +19903,25 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       const existingParties = litigationStoredParties(id)
       const filers = litigationFilingParties(id)
       const existingPeople = matterPeople.filter((person) => String(person.matter_id || '') === id)
-      const result = buildScanProposals({ documents, existingParties, existingPeople, attorneyDirectory, filers })
+      let result = buildScanProposals({ documents, existingParties, existingPeople, attorneyDirectory, filers })
+      let aiStatus = 'none'
+      const readableDocs = documents.filter((d) => !d.unreadable && !d.skipReason && d.text)
+      if (readableDocs.length) {
+        const ai = await Promise.race([
+          callPartyExtractionApi(readableDocs),
+          new Promise((resolve) => setTimeout(() => resolve({ parties: [], aiConfigured: false, error: true }), 15000))
+        ])
+        if (Array.isArray(ai?.parties) && ai.parties.length) {
+          result = buildScanProposals({ documents, existingParties, existingPeople, attorneyDirectory, filers, aiParties: ai.parties })
+          aiStatus = 'done'
+        } else if (ai?.error) {
+          aiStatus = 'unavailable'
+        } else if (ai?.aiConfigured === false) {
+          aiStatus = 'unconfigured'
+        }
+      }
       setPartyScanDraft({ edits: {}, approvals: {}, pleadings: {} })
-      setPartyScanSession({ matterId: id, status: 'review', error: '', result })
+      setPartyScanSession({ matterId: id, status: 'review', error: '', result, aiStatus })
     } catch (error) {
       setPartyScanSession({ matterId: id, status: 'error', error: `Could not scan the e-file folder: ${error.message || error}`, result: null })
     }
@@ -19967,28 +20015,42 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
 
     const nextExtra = syncOpposingPartiesFromLitigationParties({ ...current, litigation_parties: parties, approved_pleadings: { ...(current.approved_pleadings || {}), ...approvedPleadings } }, matterId)
     const nextAll = { ...matterExtraInfoById, [matterId]: nextExtra }
+    const hasPleadings = Object.keys(approvedPleadings).length > 0
+    if (!applied.length && !hasPleadings) {
+      // Nothing was approved; close without writing anything.
+      setPartyScanSaveError('')
+      setPartyScanSession(null)
+      setPartyScanDraft(null)
+      return
+    }
+
+    // Save to the cloud first; only update the visible table after every write succeeds,
+    // so a failed save never makes it look like the matter was updated.
+    try {
+      await saveMioStateKeyNow('caseControllerMatterExtraInfo', JSON.stringify(nextAll), { throwOnError: true })
+      await saveMioStateKeyNow('caseControllerPeople', JSON.stringify(nextPeople), { throwOnError: true })
+      await saveMioStateKeyNow('caseMioAttorneyDirectory', JSON.stringify(nextDirectory), { throwOnError: true })
+    } catch (saveError) {
+      setPartyScanSaveError(`Save failed — your approved changes were NOT saved. ${saveError?.message || saveError}`)
+      return
+    }
 
     setMatterExtraInfoById(nextAll)
     setMatterPeople(nextPeople)
     setAttorneyDirectory(nextDirectory)
-    try {
-      await saveMioStateKeyNow('caseControllerMatterExtraInfo', JSON.stringify(nextAll), { throwOnError: false })
-      await saveMioStateKeyNow('caseControllerPeople', JSON.stringify(nextPeople), { throwOnError: false })
-      await saveMioStateKeyNow('caseMioAttorneyDirectory', JSON.stringify(nextDirectory), { throwOnError: false })
-    } catch {}
-
+    setPartyScanSaveError('')
     setPartyScanSession(null)
     setPartyScanDraft(null)
     const message = applied.length ? `Saved ${applied.length} approved suggestion(s).` : 'No approved suggestions to save.'
     if (errors.length) alert(`${message} ${errors.join(' ')}`)
-    else if (applied.length || Object.keys(approvedPleadings).length) alert(message)
+    else if (applied.length || hasPleadings) alert(message)
   }
   function renderPartyScanModal() {
     const session = partyScanSession
     if (!session || !session.matterId) return null
     const draft = partyScanDraft || { edits: {}, approvals: {}, pleadings: {} }
     const result = session.result
-    const close = () => { if (session.status !== 'scanning') { setPartyScanSession(null); setPartyScanDraft(null) } }
+    const close = () => { if (session.status !== 'scanning') { setPartyScanSession(null); setPartyScanDraft(null); setPartyScanSaveError('') } }
     const partyTypeOptions = (options('party_type') || []).length ? options('party_type') : PARTY_ROLES.map((name) => ({ id: name, name }))
     const attorneyTypeOptions = (options('attorney_type') || []).length ? options('attorney_type') : ATTORNEY_TYPES.map((name) => ({ id: name, name }))
     const approvalLabel = (id) => { const v = (draft.approvals || {})[id]; return v === true ? 'Approved' : v === false ? 'Rejected' : 'Pending' }
@@ -20010,11 +20072,15 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
                 <div><strong>{result.summary.conflicts}</strong> conflict(s)</div>
               </div>
 
+              {session.aiStatus === 'done' && <div style={{ fontSize: 12, color: '#0f766e' }}>AI extraction added suggestions (marked “AI”). Review them the same as any other.</div>}
+              {session.aiStatus === 'unconfigured' && <div style={{ fontSize: 12, color: '#64748b' }}>AI extraction is not configured on the server — deterministic results shown.</div>}
+              {session.aiStatus === 'unavailable' && <div style={{ fontSize: 12, color: '#64748b' }}>AI extraction unavailable — deterministic results shown.</div>}
+
               {result.documents.some((d) => d.unreadable || d.skipReason) && (
                 <div style={{ padding: 8, borderRadius: 6, background: '#fffbeb', border: '1px solid #fde68a' }}>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>Skipped or unreadable files</div>
                   {result.documents.filter((d) => d.unreadable || d.skipReason).map((d) => (
-                    <div key={d.id || d.name} style={{ fontSize: 12, color: '#57534e' }}>{d.name} — {d.skipReason || d.unreadableReason}</div>
+                    <div key={d.id || d.name} style={{ fontSize: 12, color: '#57534e' }}>{d.name} — {d.needsOcr ? <strong style={{ color: '#b45309' }}>Needs OCR: </strong> : null}{d.skipReason || d.unreadableReason}</div>
                   ))}
                 </div>
               )}
@@ -20074,6 +20140,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
                       <div key={proposal.id} style={{ padding: 10, borderRadius: 8, border: approval === true ? '2px solid #16a34a' : approval === false ? '2px solid #e5e7eb' : '1px solid #cbd5e1', background: approval === true ? '#f0fdf4' : approval === false ? '#f9fafb' : '#fff' }}>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
                           <span style={{ fontSize: 11, fontWeight: 800, color: confidenceColor }}>{String(proposal.confidence || 'low').toUpperCase()} confidence</span>
+                          {proposal.aiDetected && <span style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed' }}>AI</span>}
                           {proposal.ambiguous && <span style={{ fontSize: 11, fontWeight: 700, color: '#b45309' }}>Ambiguous</span>}
                           {proposal.existing && <span style={{ fontSize: 11, fontWeight: 700, color: '#0369a1' }}>Existing record</span>}
                           {proposal.conflict && <span style={{ fontSize: 11, fontWeight: 700, color: '#991b1b' }}>Conflict</span>}
@@ -20114,6 +20181,7 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
                 </div>
               </div>
 
+              {partyScanSaveError && <div style={{ padding: 10, borderRadius: 8, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', fontWeight: 700 }}>{partyScanSaveError}</div>}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, position: 'sticky', bottom: 0, background: '#fff', padding: 8, borderTop: '1px solid #e2e8f0' }}>
                 <button type="button" onClick={close}>Cancel</button>
                 <button type="button" onClick={commitPartyScanApprovals} style={{ background: '#2563eb', color: '#fff', border: 0 }}>Save approved changes</button>

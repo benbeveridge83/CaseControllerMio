@@ -136,3 +136,20 @@ test('buildScanProposals reports skipped and unreadable files', () => {
   assert.equal(result.summary.proposals, 0)
 })
 
+test('buildScanProposals merges AI parties and flags aiDetected', () => {
+  const docs = [{ name: 'Petition.pdf', kind: 'petition', date: '', webUrl: '', text: 'IN THE MATTER OF THE MARRIAGE OF JANE DOE AND JOHN DOE' }]
+  const aiParties = [
+    { name: 'Jane Doe', role: 'Petitioner', attorney: { name: 'Ben Beveridge', email: 'ben@example.com' }, attorneyType: 'Party Attorney', confidence: 'high', method: 'ai', evidence: 'Petitioner' },
+    { name: 'Sam Doe', role: 'Children', confidence: 'medium', method: 'ai', evidence: 'child' }
+  ]
+  const result = buildScanProposals({ documents: docs, aiParties })
+  const jane = result.proposals.find((p) => nameKey(p.name) === 'jane doe')
+  const sam = result.proposals.find((p) => nameKey(p.name) === 'sam doe')
+  assert.ok(jane, 'AI party merges with deterministic')
+  assert.equal(jane.aiDetected, true)
+  assert.equal(jane.attorney.name, 'Ben Beveridge')
+  assert.ok(sam, 'AI-only party is included')
+  assert.equal(sam.role, 'Children')
+  assert.equal(result.proposals.length, 3)
+})
+

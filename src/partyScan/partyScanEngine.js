@@ -365,7 +365,7 @@ function matchByName(name, list) {
   if (!key) return null
   return (Array.isArray(list) ? list : []).find((item) => item && nameKey(item.name || item.full_name || item.label) === key) || null
 }
-export function buildScanProposals({ documents = [], existingParties = [], existingPeople = [], attorneyDirectory = [], filers = [] } = {}) {
+export function buildScanProposals({ documents = [], existingParties = [], existingPeople = [], attorneyDirectory = [], filers = [], aiParties = [] } = {}) {
   const docs = Array.isArray(documents) ? documents : []
   const readable = docs.filter((doc) => !doc.unreadable && !doc.skipReason && doc.text)
   const skipped = docs.filter((doc) => doc.skipReason)
@@ -390,7 +390,8 @@ export function buildScanProposals({ documents = [], existingParties = [], exist
           confidence: 'low',
           methods: new Set(),
           evidence: [],
-          sourceDocuments: []
+          sourceDocuments: [],
+          aiDetected: false
         }
         merged.set(key, entry)
       }
@@ -406,6 +407,40 @@ export function buildScanProposals({ documents = [], existingParties = [], exist
       const rank = entry.confidenceRank[party.confidence] || 1
       if (rank > (entry.confidenceRank[entry.confidence] || 1)) entry.confidence = party.confidence
     }
+  }
+
+  for (const party of (Array.isArray(aiParties) ? aiParties : [])) {
+    const key = nameKey(party.name)
+    if (!key) continue
+    let entry = merged.get(key)
+    if (!entry) {
+      entry = {
+        name: party.name,
+        roles: new Map(),
+        source: party.source || 'other',
+        attorneyNames: new Map(),
+        attorneyTypes: new Map(),
+        attorney: null,
+        confidenceRank: { high: 3, medium: 2, low: 1 },
+        confidence: 'low',
+        methods: new Set(),
+        evidence: [],
+        sourceDocuments: [],
+        aiDetected: false
+      }
+      merged.set(key, entry)
+    }
+    if (party.name.length >= entry.name.length) entry.name = party.name
+    if (party.role) entry.roles.set(party.role, (entry.roles.get(party.role) || 0) + 1)
+    if (party.source) entry.source = party.source
+    if (party.attorney?.name) entry.attorneyNames.set(party.attorney.name, (entry.attorneyNames.get(party.attorney.name) || 0) + 1)
+    if (party.attorney && !entry.attorney) entry.attorney = party.attorney
+    if (party.attorneyType) entry.attorneyTypes.set(party.attorneyType, (entry.attorneyTypes.get(party.attorneyType) || 0) + 1)
+    if (party.method) entry.methods.add(party.method)
+    entry.evidence.push({ method: party.method || 'ai', snippet: party.evidence || party.name })
+    entry.aiDetected = true
+    const rank = entry.confidenceRank[party.confidence] || 1
+    if (rank > (entry.confidenceRank[entry.confidence] || 1)) entry.confidence = party.confidence
   }
 
   const conflicts = []
@@ -465,6 +500,7 @@ export function buildScanProposals({ documents = [], existingParties = [], exist
       existing: existing ? { id: existing.id, name: existing.name, role: normalizeRole(existing.role || existing.party_type || ''), source: existing.source } : null,
       peopleMatch: Boolean(peopleMatch),
       filerMatch: Boolean(filerMatch),
+      aiDetected: Boolean(entry.aiDetected),
       conflict: conflict || undefined
     }
   })
