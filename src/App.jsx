@@ -7855,6 +7855,42 @@ function App() {
     return true
   }
 
+  async function saveMioStateBatchNow(entries = [], options = {}) {
+    // One atomic upsert of every entry so a partial failure can never leave some keys
+    // written and others not. Retries are safe: the upsert is idempotent on (user_id, key).
+    const now = new Date().toISOString()
+    const rows = (Array.isArray(entries) ? entries : [])
+      .map((entry) => {
+        const rawValue = entry?.value === undefined || entry?.value === null ? '' : String(entry.value)
+        let jsonValue = null
+        try { const parsed = JSON.parse(rawValue); if (typeof parsed !== 'string') jsonValue = parsed } catch {}
+        mioCloudStateLastValuesRef.current[entry.key] = rawValue
+        return { user_id: session?.user?.id, key: entry.key, raw_value: rawValue, json_value: jsonValue, origin: window.location.origin, updated_at: now }
+      })
+      .filter((row) => row.key && row.user_id)
+    if (!rows.length) return true
+
+    if (!session?.user?.id || mioCloudStateSkipSaveRef.current) {
+      rows.forEach((row) => { try { window.localStorage.setItem(row.key, row.raw_value) } catch {} })
+      return true
+    }
+
+    const writePromise = mioCloudStateWriteQueueRef.current
+      .catch(() => null)
+      .then(() => runSupabaseRequestWithAuthRetry(
+        () => supabase.from('case_mio_user_state').upsert(rows, { onConflict: 'user_id,key' }),
+        'Cloud state batch save'
+      ))
+    mioCloudStateWriteQueueRef.current = writePromise.then(() => null, () => null)
+    const { error } = await writePromise
+    if (error) {
+      console.warn('Cloud batch save failed; nothing was written for this batch.', error)
+      if (options.throwOnError) throw error
+      return false
+    }
+    return true
+  }
+
   function saveMioStateKey(key, value) {
     // Recovery-safe cloud sync: do not let initial default state overwrite Supabase before the cloud copy has loaded.
     // This protects large custom settings like Requested Relief issue trees during version upgrades/reloads.
@@ -20024,14 +20060,16 @@ ${documentLitigationPlacementSummary(doc.id)}`} style={{ border: placements.leng
       return
     }
 
-    // Save to the cloud first; only update the visible table after every write succeeds,
-    // so a failed save never makes it look like the matter was updated.
+    // Save all three keys in one atomic batch; only update the visible table after the
+    // batch succeeds, so a failure can never leave a partial save or make it look updated.
     try {
-      await saveMioStateKeyNow('caseControllerMatterExtraInfo', JSON.stringify(nextAll), { throwOnError: true })
-      await saveMioStateKeyNow('caseControllerPeople', JSON.stringify(nextPeople), { throwOnError: true })
-      await saveMioStateKeyNow('caseMioAttorneyDirectory', JSON.stringify(nextDirectory), { throwOnError: true })
+      await saveMioStateBatchNow([
+        { key: 'caseControllerMatterExtraInfo', value: JSON.stringify(nextAll) },
+        { key: 'caseControllerPeople', value: JSON.stringify(nextPeople) },
+        { key: 'caseMioAttorneyDirectory', value: JSON.stringify(nextDirectory) }
+      ], { throwOnError: true })
     } catch (saveError) {
-      setPartyScanSaveError(`Save failed — your approved changes were NOT saved. ${saveError?.message || saveError}`)
+      setPartyScanSaveError(`Save failed — no changes were written, so the matter's Litigation Parties row and People records were not updated. (${saveError?.message || saveError}) Please retry.`)
       return
     }
 
