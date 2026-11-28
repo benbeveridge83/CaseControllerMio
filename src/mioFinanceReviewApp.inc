@@ -223,6 +223,33 @@
     replenishmentSendingRef.current=true;setBulkBillingBusy(true)
     let sentCount=0,failedCount=0
     try {
+      // Always request a fresh reconciliation at the time of approval. The
+      // financeSyncReport state read by this handler is an earlier React
+      // render and cannot prove whether a refresh just completed.
+      const reconciliation=await refreshLawPayFinancialData({silent:false})
+      if(!reconciliation?.ok){
+        const reason=reconciliation?.error||'LawPay could not complete the transaction refresh.'
+        setReplenishmentReview(current=>({...current,
+          message:'No requests sent. LawPay verification was unsuccessful: '+reason,
+          sendingDisabledReason:reason,
+          rows:current.rows.map(row=>rows.some(chosen=>chosen.id===row.id)
+            ?{...row,send_status:'error',send_error:'LawPay verification incomplete: '+reason}
+            :row)}))
+        return
+      }
+      if(reconciliation.audit?.issues?.length){
+        const count=reconciliation.audit.issues.length
+        const reason=count+' outstanding LawPay reconciliation issue(s). Review and resolve these in Billing → LawPay reconciliation before sending.'
+        setReplenishmentReview(current=>({...current,
+          message:'No requests sent. '+reason,
+          sendingDisabledReason:reason,
+          rows:current.rows.map(row=>rows.some(chosen=>chosen.id===row.id)
+            ?{...row,send_status:'error',send_error:reason}
+            :row)}))
+        return
+      }
+      // The ledger and each proposed amount are checked again below for
+      // every matter before invoice creation or email delivery.
       for(const row of rows) {
         let sendStarted=false, sendClaim=null
         try {
@@ -246,7 +273,6 @@
           if(!manual&&!eligible.eligible)throw new Error('Matter excluded from replenishment: '+eligible.reason)
           if(!weeklyRecord && row.non_appointed_confirmed!==true)
             throw new Error('Section A appointment settings are unavailable; stop for review.')
-          if(financeSyncReport?.state!=='checked'||!financeSyncReport?.checked_at||Date.now()-Date.parse(financeSyncReport.checked_at)>300000)throw new Error('Refresh and reconcile LawPay financial data before sending; last successful check must be within five minutes.')
           const pref=preferences[row.matter_id]||{}
           if(!manual&&(pref.replenishment_enabled===false||pref.primary_replenishment_matter===false))
             throw new Error('Matter has been excluded or is not the primary replenishment matter.')
