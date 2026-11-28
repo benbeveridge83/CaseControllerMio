@@ -159,6 +159,26 @@ function isConsultationReference(tx={},request=null) {
   return [tx.reference,raw.reference,raw.mio_invoice_number,request?.reference,request?.invoice_number]
     .some(value=>/^PNC-CONSULT-/i.test(String(value||'').trim()))
 }
+function isRetainerReference(tx={},request=null) {
+  const raw=tx.raw&&typeof tx.raw==='object'?tx.raw:{}
+  return [tx.reference,raw.reference,raw.mio_invoice_number,request?.reference,request?.invoice_number]
+    .some(value=>/^PNC-RETAINER-/i.test(String(value||'').trim()))
+}
+function verifyRetainerDeposit(tx,request,detail) {
+  if(!request)return {...detail,kind:'retainer_unmatched',reason:'Retainer deposit has no matching payment request. Verify attribution and trust account.'}
+  if(String(request.account_key||'').toLowerCase()!=='trust')
+    return {...detail,kind:'retainer_wrong_request_account',reason:'Retainer request is not designated for the trust account.'}
+  if(!request.matter_id||!request.client_id)
+    return {...detail,kind:'retainer_missing_attribution',reason:'Retainer request has no verified client and matter.'}
+  if(number(request.amount_cents)!==number(tx.amount_cents))
+    return {...detail,kind:'retainer_amount_mismatch',reason:'Retainer request amount does not match the completed LawPay charge.'}
+  if(transactionAccountKey(tx)!=='trust')
+    return {...detail,kind:'retainer_account_unverified',reason:'Retainer payment request names trust, but LawPay transaction account has not been classified as trust. Verify provider account mapping.'}
+  if(String(request.status||'').toLowerCase()!=='paid'||
+      (request.gateway_transaction_id&&String(request.gateway_transaction_id)!==String(tx.gateway_transaction_id)))
+    return {...detail,kind:'retainer_request_unreconciled',reason:'Retainer charge completed, but the payment request is not confirmed paid or references a different gateway transaction.'}
+  return null
+}
 export function lawPayReconciliationMessage(report={},audit={}) {
   return `Checked ${Number(report.processed||0)} LawPay transaction(s) across ${Number(report.pages||0)} page(s), from ${String(report.openingDate||'')} through ${String(report.checkedAtLabel||'')}. ${(audit.issues||[]).length} invoice issue(s); ${(audit.unlinked||[]).length} unlinked transaction(s) require review. No trust funds were transferred.`
 }
@@ -180,6 +200,15 @@ export function auditLawPayRecords(transactions=[],invoices=[],events=[],request
       if(type==='CHARGE'&&request){matched++;continue}
       const refund=type!=='CHARGE'
       unlinked.push({...detail,invoiceNumber:'',kind:refund?'unlinked_refund':'unlinked_consultation',reason:refund?'This consultation refund requires review; no invoice is required.':'The consultation payment request could not be matched. Review its attribution; no invoice is required.'});continue
+    }
+    if(isRetainerReference(tx,request)){
+      if(type!=='CHARGE'){
+        issues.push({...detail,kind:'retainer_refund_requires_review',reason:'Retainer refund or reversal requires separate trust-ledger reconciliation.'});continue
+      }
+      const issue=verifyRetainerDeposit(tx,request,detail)
+      if(issue)issues.push(issue)
+      else matched++
+      continue
     }
     if(!invoiceNumber){unlinked.push({...detail,kind:'unlinked',reason:'No Mio invoice reference. Review attribution; this may be a consultation or refund.'});continue}
     if(!invoice){issues.push({...detail,kind:'missing_invoice',reason:'The referenced Mio invoice was not found.'});continue}
