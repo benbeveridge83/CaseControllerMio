@@ -211,6 +211,41 @@
     if(!Number.isFinite(amount)||amount<=0)return alert('Enter a positive request amount.')
     await openInvoicePdf({...row.invoice,id:row.prepared_id,invoice_number:row.invoice?.invoice_number||'PREVIEW - NOT ISSUED',invoice_type:'trust_request',matter_id:row.matter_id,client_name:row.client_name,matter_name:row.matter_name,issue_date:date,total:amount,subtotal:amount,balance:amount,amount_paid:0,line_items:[{date,description:'Trust / IOLTA retainer replenishment',amount}]},'open')
   }
+  async function recheckReplenishmentLawPay() {
+    if(replenishmentSendingRef.current||bulkBillingBusy)return
+    setBulkBillingBusy(true)
+    setReplenishmentReview(current=>({...current,message:'Connecting to LawPay and checking live transactions…',recheckStatus:'checking'}))
+    try {
+      const result=await refreshLawPayFinancialData({silent:false})
+      if(!result?.ok) {
+        const reason=result?.error||'The LawPay Edge Function could not be reached. This is a connection problem, not proof of two accounting discrepancies.'
+        setReplenishmentReview(current=>({...current,recheckStatus:'connection_error',
+          message:'LawPay connection could not be refreshed. No invoices were sent. '+reason,
+          sendingDisabledReason:reason}))
+        return
+      }
+      const issues=result.audit?.issues||[]
+      if(issues.length) {
+        const description=issues.map(i=>(i.invoiceNumber||i.kind||i.id||'Transaction')+': '+(i.reason||'Requires review')).join(' | ')
+        setReplenishmentReview(current=>({...current,recheckStatus:'discrepancy',
+          message:issues.length+' current LawPay reconciliation issue(s): '+description+'. No requests sent.',
+          sendingDisabledReason:description}))
+        return
+      }
+      setReplenishmentReview(current=>({...current,recheckStatus:'passed',
+        message:'Fresh LawPay reconciliation passed. No invoices were sent by this check. Review and reselect matters before approving.',
+        sendingDisabledReason:'',
+        rows:current.rows.map(row=>
+          row.send_status==='error'&&/LawPay|reconciliation|within five minutes/i.test(String(row.send_error||''))
+           ?{...row,send_status:'ready',send_error:'',included:false}
+           :row)}))
+    } catch(error) {
+      const reason=error?.message||String(error)
+      setReplenishmentReview(current=>({...current,recheckStatus:'connection_error',
+        message:'LawPay verification could not complete: '+reason,
+        sendingDisabledReason:reason}))
+    } finally {setBulkBillingBusy(false)}
+  }
   async function sendReplenishmentReview(rowIds=null) {
     if(replenishmentReview.sendingDisabledReason)
       return alert('Sending is disabled until reconciliation is resolved: '+replenishmentReview.sendingDisabledReason)
