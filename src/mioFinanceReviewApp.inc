@@ -231,10 +231,7 @@
         const reason=reconciliation?.error||'LawPay could not complete the transaction refresh.'
         setReplenishmentReview(current=>({...current,
           message:'No requests sent. LawPay verification was unsuccessful: '+reason,
-          sendingDisabledReason:reason,
-          rows:current.rows.map(row=>rows.some(chosen=>chosen.id===row.id)
-            ?{...row,send_status:'error',send_error:'LawPay verification incomplete: '+reason}
-            :row)}))
+          sendingDisabledReason:reason}))
         return
       }
       if(reconciliation.audit?.issues?.length){
@@ -249,10 +246,7 @@
           ' Review these transactions in Billing → LawPay reconciliation.'
         setReplenishmentReview(current=>({...current,
           message:'No requests sent. '+reason,
-          sendingDisabledReason:reason,
-          rows:current.rows.map(row=>rows.some(chosen=>chosen.id===row.id)
-            ?{...row,send_status:'error',send_error:reason}
-            :row)}))
+          sendingDisabledReason:reason}))
         return
       }
       // The ledger and each proposed amount are checked again below for
