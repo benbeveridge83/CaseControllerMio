@@ -238,8 +238,15 @@
         return
       }
       if(reconciliation.audit?.issues?.length){
-        const count=reconciliation.audit.issues.length
-        const reason=count+' outstanding LawPay reconciliation issue(s). Review and resolve these in Billing → LawPay reconciliation before sending.'
+        const issues=reconciliation.audit.issues
+        const count=issues.length
+        const detail=issues.slice(0,4).map(issue=>{
+          const name=issue.invoiceNumber||issue.kind||'Transaction'
+          return name+': '+(issue.reason||'Requires reconciliation')
+        }).join(' | ')
+        const reason=count+' LawPay reconciliation issue(s) prevent sending. '+detail+
+          (count>4?' | Plus '+(count-4)+' additional issue(s).':'')+
+          ' Review these transactions in Billing → LawPay reconciliation.'
         setReplenishmentReview(current=>({...current,
           message:'No requests sent. '+reason,
           sendingDisabledReason:reason,
