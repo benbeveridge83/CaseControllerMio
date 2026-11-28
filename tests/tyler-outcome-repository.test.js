@@ -81,3 +81,20 @@ test('classifies an accepted filing with a delivered service result as served', 
   const accepted = classifyTylerOutcome({ submission: { status: 'accepted' } })
   assert.equal(accepted.state, 'accepted')
 })
+
+test('reads tolerate a not-yet-applied migration (missing tables)', async () => {
+  const missingTable = {
+    from: () => {
+      const api = {
+        select() { return api },
+        eq() { return api },
+        order() { return api },
+        then(resolve) { resolve({ data: null, error: { code: '42P01', message: 'relation "mio_efiling_filing_receipts" does not exist' } }) },
+      }
+      return api
+    },
+  }
+  const repo = createSupabaseTylerOutcomeRepository(missingTable)
+  assert.deepEqual(await repo.listReceipts('o1', 'mA'), [])
+  assert.deepEqual(await repo.listServiceResults('o1', 'mA'), [])
+})

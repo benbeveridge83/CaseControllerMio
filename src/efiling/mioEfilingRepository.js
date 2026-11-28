@@ -149,7 +149,10 @@ export function createSupabaseEfilingRepository(client, options = {}) {
       let query = client.from('mio_efiling_filing_receipts').select('id,submission_id,kind,storage_path,sha256,file_name,received_at').eq('owner_id',ownerId)
       if(matterId) query=query.eq('matter_id',String(matterId))
       const {data,error}=await query.order('received_at',{ascending:false}).limit(100)
-      if(error) throw new Error(error.message)
+      if(error){
+        if(error.code === '42P01' || /does not exist/i.test(error.message || '')) return []
+        throw new Error(error.message)
+      }
       return data || []
     },
     async listServiceResults(ownerId,matterId = '') {
@@ -157,7 +160,10 @@ export function createSupabaseEfilingRepository(client, options = {}) {
       let query = client.from('mio_efiling_service_results').select('id,submission_id,service_contact_id,outcome,recorded_at').eq('owner_id',ownerId)
       if(matterId) query=query.eq('matter_id',String(matterId))
       const {data,error}=await query.order('recorded_at',{ascending:false}).limit(100)
-      if(error) throw new Error(error.message)
+      if(error){
+        if(error.code === '42P01' || /does not exist/i.test(error.message || '')) return []
+        throw new Error(error.message)
+      }
       return data || []
     },
 
