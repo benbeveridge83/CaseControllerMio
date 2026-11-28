@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 import { createTylerSubmitService } from '../lib/efiling/tylerSubmitService.js'
 
 const draft = { id: 'd-1', matterId: 'matter-1', documentId: 'doc-1', courtLocationId: 'court-1', causeNumber: '123-F', filingCode: 'Motion', filingMode: 'efile_only', paymentAccountId: 'a-1', serviceContacts: [] }
-const args = { draft, ownerId: 'owner-1', environment: 'stage', idempotencyKey: 'request-1', documentReference: { path: 'matter-1/doc.pdf' } }
+const args = { draft, ownerId: 'owner-1', environment: 'stage', idempotencyKey: 'request-1' }
 
-test('dry run validates intent, authorizes the matter and verifies the document without any send', async () => {
+test('dry run resolves the document server-side and never trusts a caller path/digest', async () => {
   let authorized = null
+  let retrieved = null
   const service = createTylerSubmitService({
     authorizeMatter: async (x) => { authorized = x },
-    retrieveDocument: async () => ({ sha256: 'a'.repeat(64), byteLength: 1234 }),
+    resolveDocument: async ({ documentId, matterId }) => ({ path: 'matter-1/doc.pdf', sha256: 'a'.repeat(64), byteLength: 1234 }),
+    retrieveDocument: async (ref) => { retrieved = ref; return { sha256: ref.expectedSha256, byteLength: ref.expectedByteLength } },
   })
   const result = await service.submit(args)
   assert.equal(result.dryRun, true)
@@ -19,30 +21,56 @@ test('dry run validates intent, authorizes the matter and verifies the document 
   assert.equal(result.intent.matterId, 'matter-1')
   assert.equal(result.intent.ownerId, 'owner-1')
   assert.equal(authorized.matterId, 'matter-1')
-  assert.equal(authorized.ownerId, 'owner-1')
+  // The path/digest used for retrieval come from resolveDocument, not the request.
+  assert.equal(retrieved.path, 'matter-1/doc.pdf')
+  assert.equal(retrieved.expectedSha256, 'a'.repeat(64))
+  assert.equal(retrieved.expectedByteLength, 1234)
   assert.equal(result.document.sha256, 'a'.repeat(64))
 })
 
-test('rejects an unauthorized matter before any document read', async () => {
-  let read = 0
+test('a document from one matter cannot be retrieved for another matter', async () => {
+  const records = {
+    'matter-A': { 'doc-A': { path: 'matter-A/doc.pdf', sha256: 'a'.repeat(64), byteLength: 100 } },
+    'matter-B': { 'doc-B': { path: 'matter-B/doc.pdf', sha256: 'b'.repeat(64), byteLength: 200 } },
+  }
+  const service = createTylerSubmitService({
+    authorizeMatter: async () => {},
+    resolveDocument: async ({ documentId, matterId }) => {
+      const record = records[matterId]?.[documentId]
+      if (!record) throw new Error('Document not found for this matter.')
+      return record
+    },
+    retrieveDocument: async (ref) => ({ sha256: ref.expectedSha256, byteLength: ref.expectedByteLength }),
+  })
+  // The document that belongs to matter-A resolves fine for matter-A.
+  await assert.doesNotReject(() => service.submit({ ...args, draft: { ...draft, matterId: 'matter-A', documentId: 'doc-A' } }))
+  // The same request with matter-A but doc-B (which belongs to matter-B) is denied.
+  await assert.rejects(() => service.submit({ ...args, draft: { ...draft, matterId: 'matter-A', documentId: 'doc-B' } }), /not found for this matter/)
+})
+
+test('rejects an unauthorized matter before any document resolution', async () => {
+  let resolved = 0
   const service = createTylerSubmitService({
     authorizeMatter: async () => { throw new Error('Not authorized for this matter.') },
-    retrieveDocument: async () => { read++; return { sha256: 'a'.repeat(64), byteLength: 1 } },
+    resolveDocument: async () => { resolved++; return {} },
+    retrieveDocument: async () => ({ sha256: 'a'.repeat(64), byteLength: 1 }),
   })
   await assert.rejects(() => service.submit(args), /Not authorized/)
-  assert.equal(read, 0)
+  assert.equal(resolved, 0)
 })
 
 test('rejects an invalid intent (client-supplied ownerId cannot bypass validation)', async () => {
   const service = createTylerSubmitService({
     authorizeMatter: async () => {},
+    resolveDocument: async () => ({ path: 'p.pdf', sha256: 'a'.repeat(64), byteLength: 1 }),
     retrieveDocument: async () => ({ sha256: 'a'.repeat(64), byteLength: 1 }),
   })
   await assert.rejects(() => service.submit({ ...args, draft: { ...draft, filingCode: '' } }), /Filing code/)
   await assert.rejects(() => service.submit({ ...args, ownerId: '' }), /Owner ID/)
 })
 
-test('requires both dependencies', () => {
+test('requires all three dependencies', () => {
   assert.throws(() => createTylerSubmitService({}), /authorization/)
-  assert.throws(() => createTylerSubmitService({ authorizeMatter: async () => {} }), /retrieval/)
+  assert.throws(() => createTylerSubmitService({ authorizeMatter: async () => {} }), /resolution/)
+  assert.throws(() => createTylerSubmitService({ authorizeMatter: async () => {}, resolveDocument: async () => ({}) }), /retrieval/)
 })
