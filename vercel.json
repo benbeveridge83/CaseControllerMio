@@ -10,6 +10,10 @@
       "destination": "/api/auth/callback?integration=tyler_efm"
     },
     {
+      "source": "/api/efiling/submit",
+      "destination": "/api/auth/callback?integration=tyler_efm_submit"
+    },
+    {
       "source": "/api/discovery-objections",
       "destination": "/api/auth/callback?integration=discovery_objections"
     },
